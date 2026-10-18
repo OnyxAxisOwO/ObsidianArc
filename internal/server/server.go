@@ -808,6 +808,11 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	compatHandlers := compat.NewHandlers(settingsService, users, groups, models, keys, registry)
 	compatHandlers.Guard = guard
 	compatHandlers.OnTurn = recordTurn
+	// Read per request, like the browser's, so raising the limit reaches /v1
+	// without a restart.
+	compatHandlers.MaxUploadBytes = func() int64 {
+		return int64(settingsService.Int(settings.AttachmentMaxMB, 6)) * 1024 * 1024
+	}
 	compatHandlers.Routes(mux)
 	announcement.NewHandlers(announcements).Routes(mux)
 	feedbackHandlers := feedback.NewHandlers(feedbackStore)

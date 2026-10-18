@@ -14,13 +14,13 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
-	"slices"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 	"unicode/utf8"
 
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/bonus"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/card"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/console"
@@ -791,37 +791,17 @@ func refuseFetchAddress(_, address string, _ syscall.RawConn) error {
 	if err != nil {
 		return err
 	}
-	ip := embeddedIPv4(addrPort.Addr().Unmap().WithZone(""))
+	ip := addrPort.Addr().Unmap().WithZone("")
+	// The NAT64/6to4 expansion and the metadata list are the provider
+	// dialer's own. They were copies once, and the copies drifted.
+	if embedded, ok := adapter.EmbeddedIPv4(ip); ok {
+		ip = embedded
+	}
 	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() ||
-		slices.Contains(cloudMetadataAddrs, ip) {
+		adapter.IsCloudMetadata(ip) {
 		return errors.New("that address is not reachable from a plugin")
 	}
 	return nil
-}
-
-// nat64Prefix is the well-known prefix a NAT64 gateway maps IPv4 addresses
-// into. A connection to 64:ff9b::a9fe:a9fe goes through the gateway to
-// 169.254.169.254, so the address it stands for is the one to check.
-var nat64Prefix = netip.MustParsePrefix("64:ff9b::/96")
-
-// embeddedIPv4 is the IPv4 address ip carries under the NAT64 prefix, or ip
-// itself when it carries none.
-func embeddedIPv4(ip netip.Addr) netip.Addr {
-	if !nat64Prefix.Contains(ip) {
-		return ip
-	}
-	b := ip.As16()
-	return netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]})
-}
-
-// cloudMetadataAddrs are the metadata services the link-local range does not
-// reach: Alibaba Cloud's, on a CGNAT address, and AWS's and Google's IPv6
-// ones, in unique-local ranges. internal/adapter refuses the same addresses
-// for provider calls, and the two lists have to change together.
-var cloudMetadataAddrs = []netip.Addr{
-	netip.MustParseAddr("100.100.100.200"),
-	netip.MustParseAddr("fd00:ec2::254"),
-	netip.MustParseAddr("fd20:ce::254"),
 }
 
 func (m *Manager) fetch(ctx context.Context, raw json.RawMessage) (any, error) {

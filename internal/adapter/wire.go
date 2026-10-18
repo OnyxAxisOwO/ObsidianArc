@@ -315,13 +315,10 @@ func providerTimedOut(err error) *Error {
 
 // providerDeadline bounds how long a provider may take to *start* answering.
 //
-// The per-provider timeout an operator sets in the backoffice used to be read
-// from the database, carried on Provider, and then used by nothing at all —
-// the control saved, and the request still hung for as long as the browser
-// held it. It is applied here rather than as a client-level Timeout because a
-// deadline over the whole call would cut a long streamed answer off
-// mid-sentence, which is why the client has no Timeout unless an operator sets
-// UPSTREAM_REQUEST_TIMEOUT.
+// The per-provider timeout an operator sets in the backoffice bounds how long a
+// provider may take to start answering, and it is enforced here. A client-level
+// Timeout would cut a long streamed answer off mid-sentence, so the client has no
+// Timeout unless an operator sets UPSTREAM_REQUEST_TIMEOUT.
 //
 // So the timer is stopped once the headers land, and its cancel is handed to
 // the response body: reading the stream keeps the context alive for as long
@@ -347,9 +344,10 @@ func providerDeadline(ctx context.Context, p Provider) (
 		cancel()
 	})
 
-	// done runs on every way out, not only the successful one: a request that
-	// fails in a millisecond against a refused port used to leave the timer
-	// armed for the whole configured timeout, holding a context alive with it.
+	// done runs on every way out, not only the successful one. A request that
+	// fails in a millisecond against a refused port would otherwise leave the
+	// timer armed for the whole configured timeout, holding a context alive
+	// with it.
 	return timed, fired.Load, func(response *http.Response, err error) *http.Response {
 		stopped := timer.Stop()
 		if err != nil || response == nil {

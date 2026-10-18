@@ -125,12 +125,12 @@ func (s *Store) ListImageGenerations(ctx context.Context, userID string, limit i
 // already sent is part of that transcript, and deleting it from the library
 // must not take the transcript's picture with it. Both deletes run in one
 // transaction so the library row is never removed without its picture.
-func (s *Store) DeleteImageGeneration(ctx context.Context, userID, id string) error {
+func (s *Store) DeleteImageGeneration(ctx context.Context, userID, generationID string) error {
 	return s.db.Tx(ctx, func(tx *database.Tx) error {
 		var attachmentID string
 		err := tx.QueryRow(ctx,
 			`SELECT attachment_id FROM image_generations WHERE id = ? AND user_id = ?`,
-			id, userID).Scan(&attachmentID)
+			generationID, userID).Scan(&attachmentID)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return nil
@@ -138,7 +138,7 @@ func (s *Store) DeleteImageGeneration(ctx context.Context, userID, id string) er
 			return fmt.Errorf("conversation: find image generation: %w", err)
 		}
 
-		if _, err := tx.Exec(ctx, `DELETE FROM image_generations WHERE id = ? AND user_id = ?`, id, userID); err != nil {
+		if _, err := tx.Exec(ctx, `DELETE FROM image_generations WHERE id = ? AND user_id = ?`, generationID, userID); err != nil {
 			return fmt.Errorf("conversation: delete image generation: %w", err)
 		}
 		if _, err := tx.Exec(ctx,

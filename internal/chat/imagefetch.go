@@ -55,28 +55,6 @@ var reservedRanges = []netip.Prefix{
 	netip.MustParsePrefix("64:ff9b:1::/48"),
 }
 
-// Prefixes that carry an IPv4 address in their low bits. The gateway that
-// serves them routes the packet to the embedded address, so
-// 64:ff9b::a9fe:a9fe reaches the metadata endpoint just as 169.254.169.254
-// does, and the address has to be judged as the IPv4 it stands for.
-var (
-	nat64Prefix = netip.MustParsePrefix("64:ff9b::/96")
-	sixToFour   = netip.MustParsePrefix("2002::/16")
-)
-
-// embeddedIPv4 returns the IPv4 address a NAT64 or 6to4 address carries, and
-// whether the address is one of those at all.
-func embeddedIPv4(address netip.Addr) (netip.Addr, bool) {
-	raw := address.As16()
-	switch {
-	case nat64Prefix.Contains(address):
-		return netip.AddrFrom4([4]byte{raw[12], raw[13], raw[14], raw[15]}), true
-	case sixToFour.Contains(address):
-		return netip.AddrFrom4([4]byte{raw[2], raw[3], raw[4], raw[5]}), true
-	}
-	return netip.Addr{}, false
-}
-
 // generatedImageBytes takes delivery of one image, whichever way the provider
 // chose to hand it over, and returns bytes that are safe to store along with
 // the media type they actually are.
@@ -107,12 +85,10 @@ func generatedImageBytes(
 	return checkImage(data, ceiling)
 }
 
-var (
-	ErrImageScheme  = errImageScheme
-	ErrImagePrivate = errImagePrivate
-	ErrImageMedia   = errImageMedia
-	ErrImageSize    = errImageSize
-)
+// ErrImageSize is exported because compat answers an oversized picture with its
+// own 400 message; the other image failures reach clients through the generic
+// path and need no name outside this package.
+var ErrImageSize = errImageSize
 
 // CheckImage identifies bytes rather than believing what they were called.
 func CheckImage(data []byte, ceiling int64) ([]byte, string, error) {
@@ -121,10 +97,10 @@ func CheckImage(data []byte, ceiling int64) ([]byte, string, error) {
 
 // checkImage identifies bytes rather than believing what they were called.
 //
-// Both delivery shapes used to be stored as image/png on the provider's say-so,
-// so a response that was not an image at all — a metadata document, an error
-// page — became an attachment regardless. Sniffing is what makes the fetch
-// below useless as a way to read something and get it back.
+// Both delivery shapes are checked by their bytes, never by the type the
+// provider declared. A response that is not an image at all — a metadata
+// document, an error page — would otherwise be stored as a picture, and the
+// fetch would double as a way to read something and get it back.
 func checkImage(data []byte, ceiling int64) ([]byte, string, error) {
 	if len(data) == 0 {
 		return nil, "", errImageMedia
@@ -262,7 +238,7 @@ func publicAddr(address netip.Addr) bool {
 	// Judged by the address inside, not refused outright: a NAT64 gateway is
 	// how an IPv6-only host reaches an IPv4-only image host, so a public
 	// embedded address is an ordinary destination.
-	if embedded, ok := embeddedIPv4(address); ok {
+	if embedded, ok := adapter.EmbeddedIPv4(address); ok {
 		return publicAddr(embedded)
 	}
 	return true

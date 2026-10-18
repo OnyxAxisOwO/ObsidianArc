@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"strings"
 	"time"
@@ -48,9 +49,9 @@ type Conversation struct {
 	UpdatedAt    int64  `json:"updated_at"`
 }
 
-// Mode is which surface a conversation belongs to. There is one now; the
-// work surface, where the model ran console commands, was removed, and the
-// threads opened on it are ordinary conversations.
+// Mode is the surface a conversation belongs to. Only chat is left; the type
+// and the Conversation field stay so the JSON shape does not change under
+// tabs built against it.
 type Mode string
 
 const ModeChat Mode = "chat"
@@ -137,9 +138,6 @@ const conversationColumns = `id, title, model_id, mode, project_id, pinned, arch
 type NewConversation struct {
 	Title   string
 	ModelID string
-	// Empty reads as ModeChat, which is what every caller that predates the
-	// work surface means.
-	Mode Mode
 	// Empty for a conversation that belongs to no project.
 	ProjectID string
 }
@@ -148,16 +146,12 @@ func (s *Store) Create(ctx context.Context, q database.Queryer, userID string, i
 	if q == nil {
 		q = s.db
 	}
-	mode := in.Mode
-	if !mode.Valid() {
-		mode = ModeChat
-	}
 	now := time.Now().UnixMilli()
 	record := Conversation{
 		ID:        id.New(),
 		Title:     text.TrimAndTruncate(text.Clean(in.Title), MaxTitleChars),
 		ModelID:   in.ModelID,
-		Mode:      mode,
+		Mode:      ModeChat,
 		ProjectID: in.ProjectID,
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -182,15 +176,34 @@ type ListFilter struct {
 	ProjectID *string
 }
 
-// ListWithFilter returns conversations matching the given filter.
-func (s *Store) ListWithFilter(ctx context.Context, userID string, filter ListFilter) ([]Conversation, error) {
-	// The same bound ListPage applies. The limit arrives from a query string, and
-	// without the ceiling one request reads and serialises every row the account
-	// holds.
-	limit := filter.Limit
+// clampLimit is the page bound every list path applies. The limit can arrive
+// from a query string, and without a ceiling one request reads and serialises
+// every row the account holds.
+func clampLimit(limit int) int {
 	if limit <= 0 || limit > MaxListLimit {
-		limit = DefaultListLimit
+		return DefaultListLimit
 	}
+	return limit
+}
+
+// scanConversations reads every row of a conversation query. The caller owns
+// rows and closes it.
+func scanConversations(rows *sql.Rows) ([]Conversation, error) {
+	out := []Conversation{}
+	for rows.Next() {
+		record, err := scanConversation(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, record)
+	}
+	return out, rows.Err()
+}
+
+// ListWithFilter returns conversations matching the given filter. Every
+// paginated and unpaginated list is built here, so a new filter lands once.
+func (s *Store) ListWithFilter(ctx context.Context, userID string, filter ListFilter) ([]Conversation, error) {
+	limit := clampLimit(filter.Limit)
 	offset := max(0, filter.Offset)
 
 	where := []string{"user_id = ?"}
@@ -219,26 +232,15 @@ func (s *Store) ListWithFilter(ctx context.Context, userID string, filter ListFi
 		return nil, fmt.Errorf("conversation: list: %w", err)
 	}
 	defer rows.Close()
-
-	out := []Conversation{}
-	for rows.Next() {
-		record, err := scanConversation(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, record)
-	}
-	return out, rows.Err()
+	return scanConversations(rows)
 }
 
-// List is a page of the conversations a user owns, newest first.
-// Defaults to non-archived conversations.
+// List is the first page of a user's active conversations, newest first. The
+// tests read an account through it; the product paths page with ListPage or
+// ListWithFilter, so it has no production caller.
 func (s *Store) List(ctx context.Context, userID string, limit int) ([]Conversation, error) {
-	if limit <= 0 || limit > MaxListLimit {
-		limit = DefaultListLimit
-	}
 	f := false
-	return s.ListWithFilter(ctx, userID, ListFilter{Limit: limit, Archived: &f})
+	return s.ListWithFilter(ctx, userID, ListFilter{Limit: clampLimit(limit), Archived: &f})
 }
 
 // ListForExport is one page of every conversation a user owns, archived ones
@@ -251,6 +253,8 @@ func (s *Store) List(ctx context.Context, userID string, limit int) ([]Conversat
 // repeat another. ULIDs sort in creation order, so the file comes out oldest
 // first.
 func (s *Store) ListForExport(ctx context.Context, userID, afterID string, limit int) ([]Conversation, error) {
+	// No ceiling, unlike the list paths: the caller is the backup, which picks
+	// its own page size and never passes a request's number through.
 	if limit <= 0 {
 		limit = MaxListLimit
 	}
@@ -263,30 +267,7 @@ func (s *Store) ListForExport(ctx context.Context, userID, afterID string, limit
 		return nil, fmt.Errorf("conversation: list for export: %w", err)
 	}
 	defer rows.Close()
-
-	out := []Conversation{}
-	for rows.Next() {
-		record, err := scanConversation(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, record)
-	}
-	return out, rows.Err()
-}
-
-// list is the helper behind paginated callers, defaulting to active conversations.
-func (s *Store) list(ctx context.Context, userID string, limit int, offsets ...int) ([]Conversation, error) {
-	offset := 0
-	if len(offsets) > 0 {
-		offset = max(0, offsets[0])
-	}
-	f := false
-	return s.ListWithFilter(ctx, userID, ListFilter{
-		Limit:    limit,
-		Offset:   offset,
-		Archived: &f,
-	})
+	return scanConversations(rows)
 }
 
 func (s *Store) Get(ctx context.Context, q database.Queryer, userID, conversationID string) (Conversation, error) {
@@ -336,7 +317,11 @@ func (s *Store) Update(ctx context.Context, userID, conversationID string, in Up
 	if err != nil {
 		return Conversation{}, fmt.Errorf("conversation: update: %w", err)
 	}
-	if affected, _ := result.RowsAffected(); affected == 0 {
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return Conversation{}, fmt.Errorf("conversation: update rows: %w", err)
+	}
+	if affected == 0 {
 		return Conversation{}, ErrNotFound
 	}
 	return s.Get(ctx, nil, userID, conversationID)
@@ -348,7 +333,13 @@ func (s *Store) Delete(ctx context.Context, userID, conversationID string) error
 	if err != nil {
 		return fmt.Errorf("conversation: delete: %w", err)
 	}
-	if affected, _ := result.RowsAffected(); affected == 0 {
+	// A driver that cannot report the count must not look like a missing row:
+	// that would answer 404 for a delete that may well have happened.
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("conversation: delete rows: %w", err)
+	}
+	if affected == 0 {
 		return ErrNotFound
 	}
 	return nil
@@ -359,7 +350,10 @@ func (s *Store) DeleteAll(ctx context.Context, userID string) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("conversation: delete all: %w", err)
 	}
-	removed, _ := result.RowsAffected()
+	removed, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("conversation: delete all rows: %w", err)
+	}
 	return removed, nil
 }
 
@@ -488,11 +482,10 @@ func attachTo(ctx context.Context, q database.Queryer, userID, conversationID st
 // Failed assistant turns are left out here, in the query — replaying "I could
 // not reach the API" as though the assistant had said it teaches the model
 // that refusing is a valid answer shape — and so is everything older than the
-// limit. Messages reads the whole transcript, which the chat gateway used to
-// do on every turn only to discard all but the tail in Go: a long
-// conversation cost its whole history in reads, JSON decoding and memory each
-// time a message was sent. The (conversation_id, seq) unique index answers
-// this one walking backwards from the newest row. A limit of zero or less
+// limit. Reading the whole transcript and keeping only the tail in Go would
+// cost the whole history in reads, JSON decoding and memory on every turn. The
+// (conversation_id, seq) unique index answers this one walking backwards from
+// the newest row. A limit of zero or less
 // means the whole usable transcript.
 func (s *Store) ForRequest(ctx context.Context, q database.Queryer, userID, conversationID string, limit int) ([]Message, error) {
 	if q == nil {
@@ -704,8 +697,8 @@ func (s *Store) appendIn(ctx context.Context, q database.Queryer, in AppendInput
 		stats = string(encoded)
 	}
 
-	// tool_calls_json is left to its default: only the removed work surface
-	// wrote it, and the rows it wrote keep what they had.
+	// tool_calls_json keeps its default: nothing writes it now, and rows that a
+	// removed surface wrote keep what they had.
 	_, err = q.Exec(ctx,
 		`INSERT INTO messages (id, conversation_id, user_id, seq, role, content, reasoning,
 		 error, error_code, model_id, model_name, provider_id, stats_json, created_at)
@@ -823,7 +816,11 @@ func (s *Store) UpdateMessage(ctx context.Context, q database.Queryer, userID, c
 	if err != nil {
 		return Message{}, fmt.Errorf("conversation: update message: %w", err)
 	}
-	if affected, _ := result.RowsAffected(); affected == 0 {
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return Message{}, fmt.Errorf("conversation: update message rows: %w", err)
+	}
+	if affected == 0 {
 		return Message{}, ErrMessageNotFound
 	}
 	if err := s.touch(ctx, q, conversationID, userID); err != nil {
@@ -906,7 +903,7 @@ func DeriveTitle(content string) string {
 
 // --- scanning ---------------------------------------------------------------
 
-type rowScanner interface{ Scan(dest ...any) error }
+type rowScanner = database.RowScanner
 
 func scanConversation(row rowScanner) (Conversation, error) {
 	var (
@@ -950,7 +947,9 @@ func scanMessage(row rowScanner) (Message, error) {
 	record.ModelID = modelID.String
 	if stats != "" {
 		var decoded Stats
-		if json.Unmarshal([]byte(stats), &decoded) == nil {
+		if err := json.Unmarshal([]byte(stats), &decoded); err != nil {
+			slog.Warn("message stats do not decode; the answer shows without them", "message", record.ID, "error", err)
+		} else {
 			record.Stats = &decoded
 		}
 	}

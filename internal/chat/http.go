@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
@@ -78,8 +77,8 @@ type Handlers struct {
 	// Slots for in-flight attachment decodes. See uploadAttachment.
 	decoding chan struct{}
 	// One place per account, claimed before one of the global slots. See
-	// accountSlots.
-	accountDecoding accountSlots
+	// acquireDecode.
+	accountDecoding KeyedPlaces
 }
 
 // How many uploads may be decoding at once, across every account.
@@ -97,69 +96,11 @@ const maxConcurrentDecodes = 4
 // five-minute read timeout; four of them stop everybody's uploads.
 const decodeReadWindow = 2 * time.Minute
 
-// accountSlots is the per-account half of the decoding bound. An account gets
-// one place at a time, so its own queue waits here rather than on the global
-// slots, where it would take the places every other account is waiting for.
-//
-// This is a mutex and not a row lock, for the reason uploadAttachment gives for
-// the global slots: what is being bounded is this process's memory, not an
-// invariant in the database. A second instance against the same database has
-// its own map and its own global slots, the same scope the global bound has.
-type accountSlots struct {
-	mu      sync.Mutex
-	holders map[string]*accountSlot
-}
-
-// accountSlot is one account's place. refs counts the request holding the place
-// and every request queued behind it; the entry leaves the map when that reaches
-// zero, so the map holds only accounts that are decoding or waiting.
-type accountSlot struct {
-	slot chan struct{}
-	refs int
-}
-
-// acquire waits for the account's place for as long as the request is still
-// wanted, exactly as the global wait does. The release is idempotent.
-func (s *accountSlots) acquire(ctx context.Context, account string) (func(), error) {
-	s.mu.Lock()
-	// The zero value is ready to use, so NewHandlers does not need to know this
-	// map exists.
-	if s.holders == nil {
-		s.holders = make(map[string]*accountSlot)
-	}
-	entry := s.holders[account]
-	if entry == nil {
-		entry = &accountSlot{slot: make(chan struct{}, 1)}
-		s.holders[account] = entry
-	}
-	// Taken under the same lock as the lookup and before the wait, so a holder
-	// releasing in between cannot drop an entry this request is about to queue on.
-	entry.refs++
-	s.mu.Unlock()
-
-	leave := func() {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		entry.refs--
-		if entry.refs == 0 {
-			delete(s.holders, account)
-		}
-	}
-
-	select {
-	case entry.slot <- struct{}{}:
-	case <-ctx.Done():
-		leave()
-		return nil, ctx.Err()
-	}
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			<-entry.slot
-			leave()
-		})
-	}, nil
-}
+// decodePlacesPerAccount is the per-account half of the decoding bound. An
+// account gets one place at a time, so its own queue waits there rather than
+// on the global slots, where it would take the places every other account is
+// waiting for.
+const decodePlacesPerAccount = 1
 
 // acquireDecode claims the account's place and then one of the decoding slots,
 // waiting for each for as long as the request is still wanted. The release
@@ -168,7 +109,7 @@ func (s *accountSlots) acquire(ctx context.Context, account string) (func(), err
 func (h *Handlers) acquireDecode(ctx context.Context, account string) (func(), error) {
 	// The account's place comes first, so a request queued behind its own
 	// account holds no global slot while it waits.
-	releaseAccount, err := h.accountDecoding.acquire(ctx, account)
+	releaseAccount, err := h.accountDecoding.Acquire(ctx, account, decodePlacesPerAccount)
 	if err != nil {
 		return nil, err
 	}
@@ -187,50 +128,10 @@ func (h *Handlers) acquireDecode(ctx context.Context, account string) (func(), e
 	}, nil
 }
 
-// boundBodyRead gives the body a deadline while a decoding slot is held, and
-// returns what lifts it once the body is in. Lifted rather than left to
-// expire: the server reads in the background to notice a client that has gone,
-// and a deadline that passes while the handler is still working is reported
-// there as a disconnect, cancelling the request in the middle of whatever it
-// was doing. Best effort — a ResponseWriter that cannot set a deadline keeps
-// the server-wide timeout and the returned function does nothing.
+// boundBodyRead gives the body decodeReadWindow to arrive while a decoding
+// slot is held. See BoundBodyRead for when the deadline is lifted.
 func boundBodyRead(w http.ResponseWriter, r *http.Request) (bodyRead func()) {
-	return boundBodyReadFor(w, r, decodeReadWindow)
-}
-
-// boundBodyReadFor is boundBodyRead with the window given, so a test can wait
-// for it.
-//
-// The deadline is lifted only once the body has reached EOF. A body left short
-// — refused as too large, or not valid JSON, or abandoned by a client that
-// stopped sending — keeps it: net/http reads what is left of an unread body
-// before it writes the response, and with no deadline that read waits forever
-// on a client that never sends the rest, holding the connection and its
-// goroutine. A body read to the end has nothing left for that read to wait on.
-func boundBodyReadFor(w http.ResponseWriter, r *http.Request, window time.Duration) (bodyRead func()) {
-	controller := http.NewResponseController(w)
-	_ = controller.SetReadDeadline(time.Now().Add(window))
-	body := &eofBody{ReadCloser: r.Body}
-	r.Body = body
-	return func() {
-		if body.sawEOF {
-			_ = controller.SetReadDeadline(time.Time{})
-		}
-	}
-}
-
-// eofBody is a request body that remembers whether a read reached its end.
-type eofBody struct {
-	io.ReadCloser
-	sawEOF bool
-}
-
-func (b *eofBody) Read(p []byte) (int, error) {
-	n, err := b.ReadCloser.Read(p)
-	if err == io.EOF {
-		b.sawEOF = true
-	}
-	return n, err
+	return BoundBodyRead(w, r, decodeReadWindow)
 }
 
 func NewHandlers(service *Service, conversations *conversation.Store) *Handlers {
@@ -440,6 +341,25 @@ func (h *Handlers) chat(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
+// clientIP is the address the challenge checks and the security log record. It
+// is empty when the server cannot read one, and the checks accept that.
+func (h *Handlers) clientIP(r *http.Request) string {
+	if h.ClientIP == nil {
+		return ""
+	}
+	return h.ClientIP(r)
+}
+
+// challengeFailure answers a verification that did not pass. Both gates use
+// it, so a browser sees the same code and sentence whichever one asked; the
+// wording itself is turnstile's, shared with every other challenged endpoint.
+func challengeFailure(err error) error {
+	if apiErr := turnstile.HTTPError(err); apiErr != nil {
+		return apiErr
+	}
+	return httpx.Internal(err)
+}
+
 func (h *Handlers) requireChatChallenge(r *http.Request, account user.User, token string) error {
 	if account.IsAdmin() || h.Security == nil || h.ChatChallengePolicy == nil {
 		return nil
@@ -454,10 +374,7 @@ func (h *Handlers) requireChatChallenge(r *http.Request, account user.User, toke
 		return nil
 	}
 
-	ip := ""
-	if h.ClientIP != nil {
-		ip = h.ClientIP(r)
-	}
+	ip := h.clientIP(r)
 	record := func(decision, reason string, severity securityevents.Severity) {
 		recordCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
 		defer cancel()
@@ -483,10 +400,7 @@ func (h *Handlers) requireChatChallenge(r *http.Request, account user.User, toke
 		if state.Attempt <= policy.Requests+2 {
 			record("failed", err.Error(), securityevents.SeverityWarning)
 		}
-		if apiErr := turnstile.HTTPError(err); apiErr != nil {
-			return apiErr
-		}
-		return httpx.Internal(err)
+		return challengeFailure(err)
 	}
 	clearance := policy.Clearance
 	if clearance <= 0 {
@@ -506,10 +420,7 @@ func (h *Handlers) requireChatChallenge(r *http.Request, account user.User, toke
 // plugin guards are calls to somebody's service. Each is a one-shot token, so
 // the browser asks for a fresh one per picture.
 func (h *Handlers) requireImageChallenge(r *http.Request, account user.User, body imageGenRequest) error {
-	ip := ""
-	if h.ClientIP != nil {
-		ip = h.ClientIP(r)
-	}
+	ip := h.clientIP(r)
 
 	if h.ImagePoW != nil && h.ImagePoWEnabled != nil && h.ImagePoWEnabled() {
 		if body.PoW == nil {
@@ -525,10 +436,7 @@ func (h *Handlers) requireImageChallenge(r *http.Request, account user.User, bod
 	}
 
 	if err := h.ImageChallenge.Check(r.Context(), body.Turnstile, ip); err != nil {
-		if apiErr := turnstile.HTTPError(err); apiErr != nil {
-			return apiErr
-		}
-		return httpx.Internal(err)
+		return challengeFailure(err)
 	}
 
 	if h.ImageGuards != nil {
@@ -1023,6 +931,11 @@ func imageFailure(code, friendly string) error {
 // take to arrive. A picture sent inline never waits on it.
 const pictureFetchBudget = 8 * time.Second
 
+// imageDeliveryBudget is how long the library writes for one generation may
+// take, measured from when the reads have finished. It is separate from the
+// save budget, which the reads share: one stalled link can spend most of that.
+const imageDeliveryBudget = 15 * time.Second
+
 // fetchedPicture is one picture read from a provider's answer.
 type fetchedPicture struct {
 	data []byte
@@ -1031,9 +944,9 @@ type fetchedPicture struct {
 }
 
 // readPictures reads every picture the provider returned, each on its own
-// goroutine with its own budget. The budget used to be one deadline shared by
-// the whole loop, so a single stalled URL left the others nothing: they were
-// dropped while still billed. Read together, a stall costs only itself.
+// goroutine with its own budget. One deadline shared by the whole loop would
+// let a single stalled URL leave the others nothing, and they would be dropped
+// while still billed. Read together, a stall costs only itself.
 func readPictures(
 	ctx context.Context, items []adapter.GeneratedImage, ceiling int64, budget time.Duration,
 	read func(context.Context, adapter.GeneratedImage, int64) ([]byte, string, error),
@@ -1082,7 +995,7 @@ func (h *Handlers) generateImage(w http.ResponseWriter, r *http.Request) error {
 	// A prompt on its own is a few hundred bytes and needs no protection. A
 	// request that carries pictures can be tens of megabytes of base64, which
 	// is then decoded and sniffed below — the same cost as an upload, from an
-	// endpoint that used to have no bound on how many ran at once. Those share
+	// endpoint that has to bound how many run at once. Those share
 	// the upload endpoint's slots, claimed before the body is read for the
 	// reason given there. An unknown length (chunked) is treated as large.
 	releaseDecode := func() {}
@@ -1116,26 +1029,8 @@ func (h *Handlers) generateImage(w http.ResponseWriter, r *http.Request) error {
 		}
 		return err
 	}
-
-	body.Prompt = strings.TrimSpace(body.Prompt)
-	if body.Prompt == "" {
-		return httpx.BadRequest("Prompt is required.")
-	}
-	// The same bound a chat message has. The prompt is stored with the picture
-	// and listed back, so an unbounded one is kept and sent out in full each
-	// time the library is opened.
-	if len([]rune(body.Prompt)) > conversation.MaxContentChars {
-		return httpx.BadRequest("Prompt must be %d characters or fewer.", conversation.MaxContentChars)
-	}
-	// Quality goes upstream and into the ledger like size and style do, so it is
-	// bounded the same way; left open, it was the one option the whole-body cap
-	// alone had to stop.
-	if len([]rune(body.Size)) > maxImageOptionChars || len([]rune(body.Style)) > maxImageOptionChars ||
-		len([]rune(body.Quality)) > maxImageOptionChars {
-		return httpx.BadRequest("Size, style and quality must be %d characters or fewer.", maxImageOptionChars)
-	}
-	if body.ModelID == "" {
-		return httpx.BadRequest("Model is required.")
+	if err := validateImageRequest(&body); err != nil {
+		return err
 	}
 
 	// Before the model is authorized and the quota is claimed: a refused
@@ -1207,37 +1102,18 @@ func (h *Handlers) generateImage(w http.ResponseWriter, r *http.Request) error {
 		return httpx.BadRequest("At most %d reference images may be provided.", MaxReferenceImages)
 	}
 
-	if len(rawImages) > 0 {
-		var parts []adapter.ImagePart
-		for _, raw := range rawImages {
-			raw = strings.TrimSpace(raw)
-			if raw == "" {
-				continue
-			}
-			// Sniffed and bounded exactly like a picture that arrived from a
-			// provider: what the browser calls a file has no more standing than
-			// what an upstream says it sent.
-			data, err := base64.StdEncoding.DecodeString(raw)
-			if err != nil {
-				return httpx.BadRequest("The reference image could not be read.")
-			}
-			checked, mime, err := checkImage(data, ceiling)
-			if err != nil {
-				if errors.Is(err, errImageSize) {
-					return httpx.BadRequest("The reference image is larger than this instance allows.")
-				}
-				return httpx.BadRequest("The reference image is not an image this instance accepts.")
-			}
-			parts = append(parts, adapter.ImagePart{
-				Data: checked,
-				Mime: mime,
-			})
+	parts, err := DecodeReferencePictures(rawImages, ceiling)
+	if err != nil {
+		var refused *ReferenceError
+		if errors.As(err, &refused) {
+			return httpx.BadRequest("%s", refused.Message)
 		}
-		if len(parts) > 0 {
-			imgReq.Images = parts
-			imgReq.Image = parts[0].Data
-			imgReq.ImageMime = parts[0].Mime
-		}
+		return err
+	}
+	if len(parts) > 0 {
+		imgReq.Images = parts
+		imgReq.Image = parts[0].Data
+		imgReq.ImageMime = parts[0].Mime
 	}
 
 	// The pictures now live decoded in imgReq. The base64 they came from can be
@@ -1277,49 +1153,93 @@ func (h *Handlers) generateImage(w http.ResponseWriter, r *http.Request) error {
 
 	fetched := readPictures(saveCtx, result.Data, ceiling, pictureFetchBudget, generatedImageBytes)
 
-	keepHistory := h.ImageHistoryEnabled == nil || h.ImageHistoryEnabled()
-	var images []imageGenItem
-	var undelivered int
-	var lastFailure error
-	for i, img := range result.Data {
+	// Derived from the request, not saveCtx, for the same reason saveCtx is: the
+	// generation is billed whether or not the browser is still there, so the
+	// library rows it is owed must be written either way. The writes run one
+	// after another, so one budget has to cover every picture's write.
+	deliverCtx, cancelDeliver := context.WithTimeout(context.WithoutCancel(r.Context()), imageDeliveryBudget)
+	defer cancelDeliver()
+
+	delivery := imageDelivery{
+		account:     account,
+		modelID:     resolved.Model.ID,
+		prompt:      body.Prompt,
+		size:        body.Size,
+		style:       body.Style,
+		ceiling:     ceiling,
+		keepHistory: h.ImageHistoryEnabled == nil || h.ImageHistoryEnabled(),
+	}
+	images, undelivered, lastFailure := h.deliverImages(deliverCtx, delivery, result.Data, fetched)
+
+	// Every picture failing is a failure, not an empty success: the account
+	// has been charged and has nothing to show, and the panel would otherwise
+	// report that it generated none and say why to nobody.
+	if len(images) == 0 && undelivered > 0 {
+		return undeliveredFailure(lastFailure, undelivered, ceiling)
+	}
+
+	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"created": result.Created,
+		"images":  images,
+	})
+}
+
+// imageDelivery is what deliverImages needs from the request: who asked, with
+// which model and words, and how the instance keeps what comes back.
+type imageDelivery struct {
+	account             user.User
+	modelID             string
+	prompt, size, style string
+	ceiling             int64
+	keepHistory         bool
+}
+
+// deliverImages takes delivery of the pictures the provider returned: inline
+// when the instance keeps no history, otherwise stored and entered in the
+// library. A picture that cannot be delivered is counted rather than returned
+// empty, and the last reason is kept for undeliveredFailure.
+func (h *Handlers) deliverImages(
+	saveCtx context.Context, d imageDelivery, data []adapter.GeneratedImage, fetched []fetchedPicture,
+) (images []imageGenItem, undelivered int, lastFailure error) {
+	for i, img := range data {
 		item := imageGenItem{
 			B64JSON:       img.B64JSON,
 			RevisedPrompt: img.RevisedPrompt,
 		}
 
-		data, mime, err := fetched[i].data, fetched[i].mime, fetched[i].err
-		if err == nil && !keepHistory {
+		picture, mime, err := fetched[i].data, fetched[i].mime, fetched[i].err
+		if err == nil && !d.keepHistory {
 			// Handed over inline, once: nothing is stored, so there is no
 			// attachment to quota or sweep and no row to list later.
-			item.B64JSON = base64.StdEncoding.EncodeToString(data)
+			item.B64JSON = base64.StdEncoding.EncodeToString(picture)
 			item.Mime = mime
 		} else if err == nil {
 			var att conversation.Attachment
 			att, err = h.conversations.Upload(saveCtx, conversation.UploadInput{
-				UserID:   account.ID,
+				UserID:   d.account.ID,
 				Mime:     mime,
-				Data:     data,
-				MaxBytes: ceiling,
+				Data:     picture,
+				MaxBytes: d.ceiling,
 			})
 			if err == nil {
 				item.AttachmentID = att.ID
 				item.URL = "/api/attachments/" + att.ID
 
 				gen, recErr := h.conversations.RecordImageGeneration(saveCtx, conversation.RecordImageGenerationInput{
-					UserID:        account.ID,
+					UserID:        d.account.ID,
 					AttachmentID:  att.ID,
-					ModelID:       resolved.Model.ID,
-					Prompt:        body.Prompt,
+					ModelID:       d.modelID,
+					Prompt:        d.prompt,
 					RevisedPrompt: img.RevisedPrompt,
-					Size:          body.Size,
-					Style:         body.Style,
+					Size:          d.size,
+					Style:         d.style,
 				})
 				if recErr != nil {
 					// Without the library row the picture cannot be found again
 					// after this response, and the orphan sweep removes it. Report
 					// it as undelivered rather than offer a URL that will not last.
 					slog.ErrorContext(saveCtx, "could not record a generated image in the library",
-						"error", recErr, "attachment", att.ID, "user", account.ID)
+						"error", recErr, "attachment", att.ID, "user", d.account.ID)
 					err = fmt.Errorf("%w: %w", errRecordImage, recErr)
 				} else {
 					item.ID = gen.ID
@@ -1335,7 +1255,7 @@ func (h *Handlers) generateImage(w http.ResponseWriter, r *http.Request) error {
 			// exists to avoid — so an item with nothing in it is a broken
 			// picture on screen and no explanation.
 			slog.WarnContext(saveCtx, "could not take delivery of a generated image",
-				"error", err, "user", account.ID)
+				"error", err, "user", d.account.ID)
 			undelivered++
 			lastFailure = err
 			continue
@@ -1344,34 +1264,56 @@ func (h *Handlers) generateImage(w http.ResponseWriter, r *http.Request) error {
 		images = append(images, item)
 	}
 
-	// Every picture failing is a failure, not an empty success: the account
-	// has been charged and has nothing to show, and the panel would otherwise
-	// report that it generated none and say why to nobody.
-	if len(images) == 0 && undelivered > 0 {
-		switch {
-		// A picture generated here is stored unattached, and nothing ever
-		// links it to a message, so the panel fills the same pending-image
-		// allowance the composer uses until the janitor clears it.
-		case errors.Is(lastFailure, conversation.ErrTooManyPending):
-			return httpx.TooManyRequests("too_many_pending_images",
-				"Too many images are waiting to be sent. Send or discard some first.")
-		case errors.Is(lastFailure, conversation.ErrAttachmentQuotaFull):
-			return httpx.ForbiddenCode("attachment_quota_full",
-				"This account is holding as many images as it may. Delete some conversations first.")
-		case errors.Is(lastFailure, conversation.ErrAttachmentTooLarge):
-			return httpx.BadRequest("The image the provider returned is larger than the %d MB this server accepts.",
-				ceiling/(1024*1024))
-		case errors.Is(lastFailure, errRecordImage):
-			return httpx.Internal(lastFailure)
-		}
-		return httpx.BadRequest(
-			"The provider returned %d image(s) this server could not accept.", undelivered)
-	}
+	return images, undelivered, lastFailure
+}
 
-	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
-		"created": result.Created,
-		"images":  images,
-	})
+// undeliveredFailure answers a call whose every picture failed to arrive, with
+// the reason the last one gave.
+func undeliveredFailure(lastFailure error, undelivered int, ceiling int64) error {
+	switch {
+	// A picture generated here is stored unattached, and nothing ever
+	// links it to a message, so the panel fills the same pending-image
+	// allowance the composer uses until the janitor clears it.
+	case errors.Is(lastFailure, conversation.ErrTooManyPending):
+		return httpx.TooManyRequests("too_many_pending_images",
+			"Too many images are waiting to be sent. Send or discard some first.")
+	case errors.Is(lastFailure, conversation.ErrAttachmentQuotaFull):
+		return httpx.ForbiddenCode("attachment_quota_full",
+			"This account is holding as many images as it may. Delete some conversations first.")
+	case errors.Is(lastFailure, conversation.ErrAttachmentTooLarge):
+		return httpx.BadRequest("The image the provider returned is larger than the %d MB this server accepts.",
+			ceiling/(1024*1024))
+	case errors.Is(lastFailure, errRecordImage):
+		return httpx.Internal(lastFailure)
+	}
+	return httpx.BadRequest(
+		"The provider returned %d image(s) this server could not accept.", undelivered)
+}
+
+// validateImageRequest trims the prompt and bounds what the request asks for,
+// before anything is authorized or reserved for it.
+func validateImageRequest(body *imageGenRequest) error {
+	body.Prompt = strings.TrimSpace(body.Prompt)
+	if body.Prompt == "" {
+		return httpx.BadRequest("Prompt is required.")
+	}
+	// The same bound a chat message has. The prompt is stored with the picture
+	// and listed back, so an unbounded one is kept and sent out in full each
+	// time the library is opened.
+	if len([]rune(body.Prompt)) > conversation.MaxContentChars {
+		return httpx.BadRequest("Prompt must be %d characters or fewer.", conversation.MaxContentChars)
+	}
+	// Quality goes upstream and into the ledger like size and style do, so it is
+	// bounded the same way; left open, it was the one option the whole-body cap
+	// alone had to stop.
+	if len([]rune(body.Size)) > maxImageOptionChars || len([]rune(body.Style)) > maxImageOptionChars ||
+		len([]rune(body.Quality)) > maxImageOptionChars {
+		return httpx.BadRequest("Size, style and quality must be %d characters or fewer.", maxImageOptionChars)
+	}
+	if body.ModelID == "" {
+		return httpx.BadRequest("Model is required.")
+	}
+	return nil
 }
 
 func (h *Handlers) listImageGenerations(w http.ResponseWriter, r *http.Request) error {
@@ -1405,12 +1347,12 @@ func (h *Handlers) listImageGenerations(w http.ResponseWriter, r *http.Request) 
 func (h *Handlers) deleteImageGeneration(w http.ResponseWriter, r *http.Request) error {
 	account := auth.MustUser(r.Context())
 
-	id := r.PathValue("id")
-	if id == "" {
+	generationID := r.PathValue("id")
+	if generationID == "" {
 		return httpx.BadRequest("Generation ID is required.")
 	}
 
-	if err := h.conversations.DeleteImageGeneration(r.Context(), account.ID, id); err != nil {
+	if err := h.conversations.DeleteImageGeneration(r.Context(), account.ID, generationID); err != nil {
 		return err
 	}
 	return httpx.NoContent(w)

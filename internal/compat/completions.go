@@ -340,9 +340,7 @@ func (h *Handlers) streamed(
 		_ = emitCalls(result.ToolCalls)
 	}
 
-	gone := abandoned(clientGone, r, chatErr)
-	h.record(context.WithoutCancel(r.Context()), who, resolved, requestID, usage, startedAt,
-		abortedWhenGone(chatErr, gone))
+	gone := h.settleStream(r, who, resolved, requestID, usage, startedAt, chatErr, clientGone)
 
 	if chatErr != nil {
 		if gone {
@@ -386,9 +384,10 @@ func (h *Handlers) buildRequest(body completionRequest, resolved model.Resolved)
 	}
 	var system strings.Builder
 	messages := make([]adapter.Message, 0, len(body.Messages))
+	pictureLimit := h.pictureCeiling()
 
 	for _, incoming := range body.Messages {
-		parts, err := readContent(incoming.Content)
+		parts, err := readContent(incoming.Content, pictureLimit)
 		if err != nil {
 			return adapter.ChatRequest{}, err
 		}
@@ -482,10 +481,10 @@ func (h *Handlers) buildRequest(body completionRequest, resolved model.Resolved)
 	}
 
 	// False when the field is absent, which is what the protocol says and
-	// what every client library assumes. It used to default to true, so a
+	// what every client library assumes. A default of true would answer a
 	// caller that simply did not mention streaming — the official SDK's
-	// ordinary call does not — was answered with an event stream where it
-	// was parsing a JSON document, and got no further.
+	// ordinary call does not — with an event stream where it was parsing a
+	// JSON document, and it would get no further.
 	stream := false
 	if body.Stream != nil {
 		stream = *body.Stream
@@ -630,7 +629,7 @@ func ceiling(resolved model.Resolved, body completionRequest) int {
 
 // readContent accepts both shapes the field takes: a plain string, or the
 // array of typed parts that multimodal clients send.
-func readContent(raw json.RawMessage) ([]adapter.Part, error) {
+func readContent(raw json.RawMessage, pictureLimit int64) ([]adapter.Part, error) {
 	trimmed := strings.TrimSpace(string(raw))
 	if trimmed == "" || trimmed == "null" {
 		return nil, nil
@@ -660,7 +659,7 @@ func readContent(raw json.RawMessage) ([]adapter.Part, error) {
 			if part.ImageURL == nil {
 				continue
 			}
-			image, err := decodeDataURL(part.ImageURL.URL)
+			image, err := decodeDataURL(part.ImageURL.URL, pictureLimit)
 			if err != nil {
 				return nil, err
 			}
@@ -672,13 +671,30 @@ func readContent(raw json.RawMessage) ([]adapter.Part, error) {
 	return out, nil
 }
 
+// pictureCeiling is the largest single picture this server accepts on /v1.
+func (h *Handlers) pictureCeiling() int64 {
+	if h.MaxUploadBytes != nil {
+		if configured := h.MaxUploadBytes(); configured > 0 {
+			return configured
+		}
+	}
+	return int64(conversation.MaxAttachmentBytes)
+}
+
+// bodyLimit is the JSON body cap for a request. Base64 grows a picture by a
+// third, so a picture at the operator's limit needs a body that can hold it;
+// maxBodyBytes stays the floor, so the default cap is unchanged.
+func (h *Handlers) bodyLimit() int64 {
+	return max(maxBodyBytes, h.pictureCeiling()*4/3+64*1024)
+}
+
 // decodeDataURL reads an inline image.
 //
 // Only data: URLs are accepted. A remote one would have this server fetch a
 // URL of the caller's choosing, which is a request forgery primitive aimed at
 // whatever the server can reach and the internal network it sits in — and the
 // browser client has never needed it, because it uploads bytes.
-func decodeDataURL(value string) (adapter.Part, error) {
+func decodeDataURL(value string, pictureLimit int64) (adapter.Part, error) {
 	const refuse = "Images must be inline data: URLs; this server does not fetch remote images."
 
 	if !strings.HasPrefix(value, "data:") {
@@ -697,9 +713,9 @@ func decodeDataURL(value string) (adapter.Part, error) {
 	if err != nil {
 		return adapter.Part{}, badRequest("messages", "Image data is not valid base64.")
 	}
-	checked, sniffed, err := inlinePicture(data)
+	checked, sniffed, err := inlinePicture(data, pictureLimit)
 	if err != nil {
-		return adapter.Part{}, badRequest("messages", pictureRefusal(err))
+		return adapter.Part{}, badRequest("messages", pictureRefusal(err, pictureLimit))
 	}
 	return adapter.Part{Kind: adapter.PartImage, MediaType: sniffed, Data: checked}, nil
 }
@@ -708,15 +724,15 @@ func decodeDataURL(value string) (adapter.Part, error) {
 // to an upload: the size ceiling, then what the bytes actually are. The media
 // type the caller declared is only a claim, so the provider is told the one the
 // bytes sniff as, and a document labelled image/svg+xml never reaches it.
-func inlinePicture(data []byte) ([]byte, string, error) {
-	return chat.CheckImage(data, conversation.MaxAttachmentBytes)
+func inlinePicture(data []byte, pictureLimit int64) ([]byte, string, error) {
+	return chat.CheckImage(data, pictureLimit)
 }
 
 // pictureRefusal is the sentence a caller reads for a picture inlinePicture
 // turned away. The limit is named because it is the one thing they can act on.
-func pictureRefusal(err error) string {
+func pictureRefusal(err error, pictureLimit int64) string {
 	if errors.Is(err, chat.ErrImageSize) {
-		return "Images must be at most " + strconv.Itoa(conversation.MaxAttachmentBytes/(1024*1024)) + " MB."
+		return "Images must be at most " + strconv.FormatInt(pictureLimit/(1024*1024), 10) + " MB."
 	}
 	return "Images must be PNG, JPEG, WebP or GIF."
 }
@@ -945,6 +961,21 @@ func abandoned(clientGone bool, r *http.Request, failure error) bool {
 	return clientGone || (r.Context().Err() != nil && chat.Cancelled(failure))
 }
 
+// settleStream records a streamed turn once its provider call has returned, and
+// reports whether the client had already gone. The record is written either way,
+// because the tokens were spent either way. The protocol's error frame, if there
+// is one, is only written afterwards, and only to a client that is still there,
+// which is why the order is fixed here rather than left to each protocol.
+func (h *Handlers) settleStream(
+	r *http.Request, who caller, resolved model.Resolved, requestID string,
+	usage adapter.Usage, startedAt time.Time, chatErr error, clientGone bool,
+) bool {
+	gone := abandoned(clientGone, r, chatErr)
+	h.record(context.WithoutCancel(r.Context()), who, resolved, requestID, usage, startedAt,
+		abortedWhenGone(chatErr, gone))
+	return gone
+}
+
 // abortedWhenGone is the failure the ledger should see for a turn whose client
 // went away. The write that failed, or the cancelled request, is what cut the
 // turn short: recording it as an error would blame the provider and this server
@@ -955,6 +986,11 @@ func abortedWhenGone(failure error, gone bool) error {
 	}
 	return failure
 }
+
+// recordBudget bounds how long a turn's ledger write may take once the request
+// is over. The write is detached from the request, so this budget is the only
+// thing that stops a stuck database from holding it open indefinitely.
+const recordBudget = 15 * time.Second
 
 func (h *Handlers) record(
 	ctx context.Context, who caller, resolved model.Resolved,
@@ -969,7 +1005,7 @@ func (h *Handlers) record(
 	// Detached and bounded: the request context is cancelled the instant the
 	// client hangs up, and a turn that is not recorded is one the account
 	// never pays for.
-	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), recordBudget)
 	defer cancel()
 
 	h.OnTurn(recordCtx, chat.TurnRecord{
@@ -1009,7 +1045,7 @@ func (h *Handlers) decode(w http.ResponseWriter, r *http.Request, who caller, ds
 		return err
 	}
 	defer release()
-	if err := httpx.DecodeJSONLenient(w, r, dst, maxBodyBytes); err != nil {
+	if err := httpx.DecodeJSONLenient(w, r, dst, h.bodyLimit()); err != nil {
 		var decided *httpx.Error
 		if errors.As(err, &decided) {
 			return apiError{
@@ -1071,7 +1107,7 @@ func translateUpstream(err error) apiError {
 	// and is told the provider refused it.
 	if chat.Cancelled(err) {
 		return apiError{
-			status:  499,
+			status:  statusClientClosedRequest,
 			kind:    "invalid_request_error",
 			code:    "cancelled",
 			message: "The request was cancelled.",
@@ -1082,28 +1118,26 @@ func translateUpstream(err error) apiError {
 	code, message := chat.Describe(err)
 	status := http.StatusBadGateway
 	kind := "server_error"
-	switch code {
-	case "provider_rate_limited":
-		status, kind = http.StatusTooManyRequests, "rate_limit_error"
-	case "refusal", "images_unsupported":
-		status, kind = http.StatusBadRequest, "invalid_request_error"
-	case "internal":
-		status = http.StatusInternalServerError
-	}
-
 	// What the provider wrote goes to the log, which is already written with
 	// err below. The caller gets one of these sentences instead: the provider's
 	// text can name the upstream model or an endpoint, and this surface promises
-	// that no provider text reaches the caller.
+	// that no provider text reaches the caller. A code's status and its sentence
+	// are written together here, so the two answers for one code cannot drift.
 	switch code {
+	case "provider_rate_limited":
+		status, kind = http.StatusTooManyRequests, "rate_limit_error"
 	case "provider_error":
 		message = "The provider could not complete this request. Try again shortly."
 	case "provider_rejected":
 		message = "The provider would not accept this request."
 	case "refusal":
+		status, kind = http.StatusBadRequest, "invalid_request_error"
 		message = "The model declined to answer this request."
 	case "images_unsupported":
+		status, kind = http.StatusBadRequest, "invalid_request_error"
 		message = "This model does not accept images."
+	case "internal":
+		status = http.StatusInternalServerError
 	}
 
 	// Not logged here. The cause travels on the error, and whoever renders it

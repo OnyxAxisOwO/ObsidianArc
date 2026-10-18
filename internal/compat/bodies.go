@@ -2,10 +2,10 @@ package compat
 
 import (
 	"context"
-	"io"
 	"net/http"
-	"sync"
 	"time"
+
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/chat"
 )
 
 // maxBodyPlaces is how many request bodies one account may be reading into
@@ -24,22 +24,8 @@ const maxBodyPlaces = 4
 // point: an account whose bodies trickle in would otherwise hold a place that
 // every other account is waiting for. The cost is that the bound on memory
 // grows with the number of accounts rather than being one figure.
-//
-// This is a mutex and not a row lock, for the reason the attachment endpoints
-// give: what is bounded is this process's memory, not an invariant in the
-// database. A second instance against the same database has its own map.
 type bodyPlaces struct {
-	mu      sync.Mutex
-	holders map[string]*accountPlaces
-}
-
-// accountPlaces is one account's places. places holds a token for each body
-// being read, so its length is the number in use. refs counts the requests
-// that hold a place or queue for one; the entry leaves the map when that
-// reaches zero, so the map holds only accounts that are reading or waiting.
-type accountPlaces struct {
-	places chan struct{}
-	refs   int
+	places chat.KeyedPlaces
 }
 
 // acquire waits for one of the account's places until the request's context
@@ -47,46 +33,9 @@ type accountPlaces struct {
 // body has reached EOF, so a client that vanished before sending its body is not
 // released from the queue: it waits for a place like any other request, and its
 // first read fails at once. The wait is bounded by the holders' windows, not a
-// leak. The release gives the place back and is idempotent, so a path can give
-// it back early and still defer it.
+// leak.
 func (p *bodyPlaces) acquire(ctx context.Context, account string) (func(), error) {
-	p.mu.Lock()
-	if p.holders == nil {
-		p.holders = make(map[string]*accountPlaces)
-	}
-	entry := p.holders[account]
-	if entry == nil {
-		entry = &accountPlaces{places: make(chan struct{}, maxBodyPlaces)}
-		p.holders[account] = entry
-	}
-	// Counted under the same lock as the lookup and before the wait, so a
-	// request leaving in between cannot drop an entry this one is about to
-	// queue on.
-	entry.refs++
-	p.mu.Unlock()
-
-	leave := func() {
-		p.mu.Lock()
-		defer p.mu.Unlock()
-		entry.refs--
-		if entry.refs == 0 {
-			delete(p.holders, account)
-		}
-	}
-
-	select {
-	case entry.places <- struct{}{}:
-	case <-ctx.Done():
-		leave()
-		return nil, ctx.Err()
-	}
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			<-entry.places
-			leave()
-		})
-	}, nil
+	return p.places.Acquire(ctx, account, maxBodyPlaces)
 }
 
 // bodyReadWindow is how long a request body may take to arrive once its place
@@ -96,22 +45,6 @@ func (p *bodyPlaces) acquire(ctx context.Context, account string) (func(), error
 // queued behind four others would spend its window waiting and be cut off for
 // time that was not its own.
 const bodyReadWindow = 5 * time.Minute
-
-// trackedBody is the request body as the handler reads it. It records whether a
-// read reached the end, which decides whether the window is lifted when the
-// place is given back.
-type trackedBody struct {
-	io.ReadCloser
-	sawEOF bool
-}
-
-func (b *trackedBody) Read(p []byte) (int, error) {
-	n, err := b.ReadCloser.Read(p)
-	if err == io.EOF {
-		b.sawEOF = true
-	}
-	return n, err
-}
 
 // claimBody takes one of the account's places before a request body is read.
 // The caller gives it back once the body is in and parsed, which is before the
@@ -125,7 +58,7 @@ func (h *Handlers) claimBody(w http.ResponseWriter, r *http.Request, who caller)
 		// The request's context ended while it waited, so nobody is left to read
 		// the answer.
 		return nil, apiError{
-			status:  499,
+			status:  statusClientClosedRequest,
 			kind:    "invalid_request_error",
 			code:    "cancelled",
 			message: "The request was cancelled.",
@@ -135,22 +68,11 @@ func (h *Handlers) claimBody(w http.ResponseWriter, r *http.Request, who caller)
 	if window == 0 {
 		window = bodyReadWindow
 	}
-	// Best effort, as boundBodyRead is: a ResponseWriter that cannot set a
-	// deadline keeps the server's own.
-	controller := http.NewResponseController(w)
-	_ = controller.SetReadDeadline(time.Now().Add(window))
-	body := &trackedBody{ReadCloser: r.Body}
-	r.Body = body
+	// The same window the panel's uploads get, lifted by the same rule: only
+	// once the body has reached EOF. See chat.BoundBodyRead.
+	lift := chat.BoundBodyRead(w, r, window)
 	return func() {
-		// Lifted only once the body has reached EOF, which is when net/http starts
-		// its background read. A deadline still running then would be taken for
-		// the client going away and cancel the generation. A body left short keeps
-		// its deadline: net/http reads what is left of it before it writes the
-		// response headers, and with no deadline that read waits on a client that
-		// may never send the rest.
-		if body.sawEOF {
-			_ = controller.SetReadDeadline(time.Time{})
-		}
+		lift()
 		release()
 	}, nil
 }

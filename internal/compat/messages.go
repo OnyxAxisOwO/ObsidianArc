@@ -15,7 +15,6 @@ package compat
 // chunk shape, and an error envelope of its own.
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -118,8 +117,9 @@ func (h *Handlers) buildMessagesRequest(body messagesRequest, resolved model.Res
 		return adapter.ChatRequest{}, anthropicBadRequest("At least one message is required.")
 	}
 	messages := make([]adapter.Message, 0, len(body.Messages))
+	pictureLimit := h.pictureCeiling()
 	for _, incoming := range body.Messages {
-		blocks, err := readAnthropicContent(incoming.Content, false)
+		blocks, err := readAnthropicContent(incoming.Content, false, pictureLimit)
 		if err != nil {
 			return adapter.ChatRequest{}, err
 		}
@@ -273,7 +273,7 @@ func readAnthropicSystem(raw json.RawMessage) (string, error) {
 // inside a result would hold its payload once per level, and a request a few
 // thousand levels deep would hold it thousands of times. Refusing the nesting
 // keeps every byte decoded a fixed number of times, however deep the body goes.
-func readAnthropicContent(raw json.RawMessage, inToolResult bool) ([]adapter.Part, error) {
+func readAnthropicContent(raw json.RawMessage, inToolResult bool, pictureLimit int64) ([]adapter.Part, error) {
 	trimmed := strings.TrimSpace(string(raw))
 	if trimmed == "" || trimmed == "null" {
 		return nil, nil
@@ -306,7 +306,7 @@ func readAnthropicContent(raw json.RawMessage, inToolResult bool) ([]adapter.Par
 			if inToolResult {
 				return nil, anthropicBadRequest("A tool_result may contain only text blocks: an image cannot travel inside one. Send the picture in a user message instead.")
 			}
-			part, err := readAnthropicImage(block)
+			part, err := readAnthropicImage(block, pictureLimit)
 			if err != nil {
 				return nil, err
 			}
@@ -325,7 +325,7 @@ func readAnthropicContent(raw json.RawMessage, inToolResult bool) ([]adapter.Par
 			if block.ToolUseID == "" {
 				return nil, anthropicBadRequest("A tool_result block must name the call it answers in tool_use_id.")
 			}
-			nested, err := readAnthropicContent(block.Content, true)
+			nested, err := readAnthropicContent(block.Content, true, pictureLimit)
 			if err != nil {
 				return nil, err
 			}
@@ -346,7 +346,7 @@ func readAnthropicContent(raw json.RawMessage, inToolResult bool) ([]adapter.Par
 	return out, nil
 }
 
-func readAnthropicImage(block anthropicInBlock) (adapter.Part, error) {
+func readAnthropicImage(block anthropicInBlock, pictureLimit int64) (adapter.Part, error) {
 	// Only inline bytes. A url source would have this server fetch an address
 	// of the caller's choosing, which is the request forgery primitive the
 	// other surface refuses for the same reason.
@@ -361,9 +361,9 @@ func readAnthropicImage(block anthropicInBlock) (adapter.Part, error) {
 	if err != nil {
 		return adapter.Part{}, anthropicBadRequest("Image data is not valid base64.")
 	}
-	checked, sniffed, err := inlinePicture(data)
+	checked, sniffed, err := inlinePicture(data, pictureLimit)
 	if err != nil {
-		return adapter.Part{}, anthropicBadRequest(pictureRefusal(err))
+		return adapter.Part{}, anthropicBadRequest(pictureRefusal(err, pictureLimit))
 	}
 	return adapter.Part{Kind: adapter.PartImage, MediaType: sniffed, Data: checked}, nil
 }
@@ -592,9 +592,7 @@ func (h *Handlers) messagesStreamed(
 	}
 	closeText()
 
-	gone := abandoned(clientGone, r, chatErr)
-	h.record(context.WithoutCancel(r.Context()), who, resolved, requestID, usage, startedAt,
-		abortedWhenGone(chatErr, gone))
+	gone := h.settleStream(r, who, resolved, requestID, usage, startedAt, chatErr, clientGone)
 
 	if chatErr != nil {
 		if gone {

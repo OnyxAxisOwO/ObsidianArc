@@ -505,7 +505,7 @@ func TestDuplicatePublicModelNamesResolveByQualifiedRef(t *testing.T) {
 		ref, _ := entry["id"].(string)
 		refs[ref] = true
 	}
-	wantRefs := []string{f.model.ModelID + "-" + tail(f.model.ID), duplicate.ModelID + "-" + tail(duplicate.ID)}
+	wantRefs := []string{f.model.ModelID + "-" + model.IDTail(f.model.ID), duplicate.ModelID + "-" + model.IDTail(duplicate.ID)}
 	for _, ref := range wantRefs {
 		if !refs[ref] {
 			t.Errorf("listed refs %v, want qualified ref %q", refs, ref)
@@ -515,6 +515,30 @@ func TestDuplicatePublicModelNamesResolveByQualifiedRef(t *testing.T) {
 		if response.Code != http.StatusOK {
 			t.Errorf("qualified ref %q: status = %d: %s", ref, response.Code, response.Body.String())
 		}
+	}
+}
+
+// GET and POST resolve a qualified ref through two implementations of one rule.
+// Only POST was pinned, so the same ref is asked of GET here.
+func TestQualifiedRefResolvesOnGETAsOnPOST(t *testing.T) {
+	f := newFixture(t)
+	duplicate, err := f.models.Create(context.Background(), model.CreateInput{
+		ProviderID: f.model.ProviderID, ModelID: f.model.ModelID,
+		DisplayName: "Mock Fast Backup", Enabled: true,
+		Capabilities: model.Capabilities{SupportsStreaming: true, SupportsSystemPrompt: true},
+		Weights:      model.Weights{InputToken: 1, OutputToken: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ref := duplicate.ModelID + "-" + model.IDTail(duplicate.ID)
+	got := f.do(t, http.MethodGet, "/v1/models/"+ref, f.token, "")
+	if got.Code != http.StatusOK {
+		t.Fatalf("GET qualified ref %q: status = %d, want 200: %s", ref, got.Code, got.Body.String())
+	}
+	if id, _ := decodeJSON(t, got)["id"].(string); id != ref {
+		t.Errorf("GET qualified ref answered with id %q, want %q", id, ref)
 	}
 }
 
@@ -531,7 +555,7 @@ func TestChosenAPINameResolvesAheadOfUnchosenCollision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	qualified := chosenName + "-" + tail(unnamed.ID)
+	qualified := chosenName + "-" + model.IDTail(unnamed.ID)
 
 	for _, test := range []struct {
 		ref           string
@@ -1094,17 +1118,17 @@ func TestInlineImagesAreAccepted(t *testing.T) {
 }
 
 func TestContentAcceptsBothWireShapes(t *testing.T) {
-	parts, err := readContent(json.RawMessage(`"just a string"`))
+	parts, err := readContent(json.RawMessage(`"just a string"`), 6<<20)
 	if err != nil || len(parts) != 1 || parts[0].Text != "just a string" {
 		t.Fatalf("string form: %+v, %v", parts, err)
 	}
 
-	parts, err = readContent(json.RawMessage(`[{"type":"text","text":"an array"}]`))
+	parts, err = readContent(json.RawMessage(`[{"type":"text","text":"an array"}]`), 6<<20)
 	if err != nil || len(parts) != 1 || parts[0].Text != "an array" {
 		t.Fatalf("array form: %+v, %v", parts, err)
 	}
 
-	if parts, err := readContent(json.RawMessage(`null`)); err != nil || len(parts) != 0 {
+	if parts, err := readContent(json.RawMessage(`null`), 6<<20); err != nil || len(parts) != 0 {
 		t.Errorf("null content: %+v, %v", parts, err)
 	}
 }

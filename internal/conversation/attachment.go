@@ -213,7 +213,10 @@ func (s *Store) Discard(ctx context.Context, conversationID string) (int64, erro
 	if err != nil {
 		return 0, fmt.Errorf("conversation: discard attachments: %w", err)
 	}
-	dropped, _ := result.RowsAffected()
+	dropped, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("conversation: discard attachments rows: %w", err)
+	}
 	return dropped, nil
 }
 
@@ -393,6 +396,9 @@ func (s *Store) DeleteOrphans(ctx context.Context, olderThan time.Duration) (int
 	if err != nil {
 		return 0, fmt.Errorf("conversation: prune attachments: %w", err)
 	}
-	removed, _ := result.RowsAffected()
+	removed, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("conversation: prune attachments rows: %w", err)
+	}
 	return removed, nil
 }

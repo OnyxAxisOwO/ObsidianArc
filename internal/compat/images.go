@@ -2,7 +2,6 @@ package compat
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"io"
 	"mime/multipart"
@@ -13,18 +12,19 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/chat"
-	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/reqlog"
 )
 
-// maxEditBytes is the most an image edit may send: every reference image at
-// the attachment ceiling, and room for the text fields and part headers.
+// The most an image edit may send, from the operator's picture limit: every
+// reference image at that limit, and room for the text fields and part headers.
 // Multipart carries raw bytes, so unlike the JSON body there is no base64 to
 // allow for.
-const maxEditBytes = int64(conversation.MaxAttachmentBytes)*int64(chat.MaxReferenceImages) + 256*1024
+func editBodyLimit(ceiling int64) int64 {
+	return ceiling*int64(chat.MaxReferenceImages) + 256*1024
+}
 
 type imageGenerationRequest struct {
 	Prompt         string   `json:"prompt"`
@@ -65,7 +65,8 @@ func (h *Handlers) imagesGenerations(w http.ResponseWriter, r *http.Request, who
 	}
 	defer releasePlace()
 
-	ceiling := int64(conversation.MaxAttachmentBytes)
+	ceiling := h.pictureCeiling()
+	maxEditBytes := editBodyLimit(ceiling)
 
 	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
 		// The body is capped before anything parses it. ParseMultipartForm's
@@ -122,17 +123,11 @@ func (h *Handlers) imagesGenerations(w http.ResponseWriter, r *http.Request, who
 			if err != nil {
 				return badRequest("image", "Could not read reference image.")
 			}
-			checked, mime, err := chat.CheckImage(data, ceiling)
+			part, err := chat.ReferencePicture(data, ceiling)
 			if err != nil {
-				if errors.Is(err, chat.ErrImageSize) {
-					return badRequest("image", "The reference image is larger than this instance allows.")
-				}
-				return badRequest("image", "The reference image is not an image this instance accepts.")
+				return referenceRefusal(err)
 			}
-			parts = append(parts, adapter.ImagePart{
-				Data: checked,
-				Mime: mime,
-			})
+			parts = append(parts, part)
 		}
 	} else {
 		maxBodyBytes := (ceiling*4/3+16*1024)*int64(chat.MaxReferenceImages) + 64*1024
@@ -158,30 +153,22 @@ func (h *Handlers) imagesGenerations(w http.ResponseWriter, r *http.Request, who
 		if len(rawImages) > chat.MaxReferenceImages {
 			return badRequest("images", "At most "+strconv.Itoa(chat.MaxReferenceImages)+" reference images may be provided.")
 		}
-		for _, raw := range rawImages {
-			raw = strings.TrimSpace(raw)
-			if raw == "" {
-				continue
-			}
+		// A data: URL is taken here as well as bare base64, which the panel's
+		// endpoint does not: clients written against OpenAI's image API send
+		// either, and nothing is lost by reading past the prefix. The panel's
+		// contract has only ever been bare base64.
+		bare := make([]string, len(rawImages))
+		for i, raw := range rawImages {
 			if idx := strings.Index(raw, ";base64,"); idx != -1 {
-				raw = raw[idx+8:]
+				raw = raw[idx+len(";base64,"):]
 			}
-			data, err := base64.StdEncoding.DecodeString(raw)
-			if err != nil {
-				return badRequest("image", "The reference image could not be read.")
-			}
-			checked, mime, err := chat.CheckImage(data, ceiling)
-			if err != nil {
-				if errors.Is(err, chat.ErrImageSize) {
-					return badRequest("image", "The reference image is larger than this instance allows.")
-				}
-				return badRequest("image", "The reference image is not an image this instance accepts.")
-			}
-			parts = append(parts, adapter.ImagePart{
-				Data: checked,
-				Mime: mime,
-			})
+			bare[i] = raw
 		}
+		decoded, err := chat.DecodeReferencePictures(bare, ceiling)
+		if err != nil {
+			return referenceRefusal(err)
+		}
+		parts = decoded
 	}
 
 	// Nothing after this reads the body, so the place goes back here rather
@@ -249,6 +236,12 @@ func (h *Handlers) imagesGenerations(w http.ResponseWriter, r *http.Request, who
 		h.recordImages(r.Context(), who, resolved, requestID, startedAt, 0, err)
 		return translateUpstream(err)
 	}
+	// The reservation covered n pictures and nothing more. An upstream that
+	// sends extra is billed and answered for the count that was asked for, as
+	// the panel's endpoint does, so the surplus is dropped before it is charged.
+	if len(result.Data) > n {
+		result.Data = result.Data[:n]
+	}
 	h.recordImages(r.Context(), who, resolved, requestID, startedAt, len(result.Data), nil)
 
 	resp := openAIImageResponse{
@@ -282,13 +275,21 @@ func (h *Handlers) imagesGenerations(w http.ResponseWriter, r *http.Request, who
 	return writeJSON(w, http.StatusOK, resp)
 }
 
+// referenceRefusal answers a reference picture the shared check turned away.
+func referenceRefusal(err error) error {
+	var refused *chat.ReferenceError
+	if errors.As(err, &refused) {
+		return badRequest("image", refused.Message)
+	}
+	return internalError(err)
+}
+
 // recordImages settles an image call the way record settles a completion.
 //
 // It is separate because the arithmetic differs rather than the bookkeeping:
 // an image model reports no tokens, so the charge is the model's per-request
-// credit taken once per picture returned. Until this existed the endpoint
-// reserved an allowance, released it and settled nothing, which made every
-// picture free and left no ledger row behind it.
+// credit taken once per picture returned. Settling only the reservation would
+// make every picture free and leave no ledger row behind it.
 func (h *Handlers) recordImages(
 	ctx context.Context, who caller, resolved model.Resolved,
 	requestID string, startedAt time.Time, images int, failure error,
@@ -300,7 +301,9 @@ func (h *Handlers) recordImages(
 	// A call that came back empty still reached the provider.
 	billable := max(1, images)
 
-	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	// Detached like record: the provider generated and billed for these pictures
+	// whether or not the client is still listening, so the entry is owed either way.
+	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), recordBudget)
 	defer cancel()
 
 	h.OnTurn(recordCtx, chat.TurnRecord{

@@ -20,7 +20,7 @@ import (
 // connection and its goroutine held for as long as the client cared to wait.
 func TestAStalledUploadIsAnsweredAndItsConnectionCloses(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		bodyRead := boundBodyReadFor(w, r, 300*time.Millisecond)
+		bodyRead := BoundBodyRead(w, r, 300*time.Millisecond)
 		var body struct {
 			Name string `json:"name"`
 		}
@@ -62,7 +62,7 @@ func TestAStalledUploadIsAnsweredAndItsConnectionCloses(t *testing.T) {
 // picture being generated — is not mistaken for the client going away.
 func TestACompleteUploadOutlastsItsWindow(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		bodyRead := boundBodyReadFor(w, r, 200*time.Millisecond)
+		bodyRead := BoundBodyRead(w, r, 200*time.Millisecond)
 		var body struct {
 			Name string `json:"name"`
 		}

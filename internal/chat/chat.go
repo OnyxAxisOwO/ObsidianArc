@@ -180,10 +180,7 @@ type ErrorPayload struct {
 // the turn, which is how a disconnected client cancels the provider call.
 type Emit func(event string, payload any) error
 
-var (
-	ErrEmptyTurn = errors.New("chat: nothing to send")
-	ErrNoModel   = errors.New("chat: no model selected")
-)
+var ErrNoModel = errors.New("chat: no model selected")
 
 // Release undoes what Prepare claimed. Always non-nil, so a caller can
 // defer it without checking.

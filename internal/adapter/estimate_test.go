@@ -151,11 +151,3 @@ func TestAStoppedCallIsChargedForWhatItWrote(t *testing.T) {
 		t.Errorf("a reported count larger than the text was replaced: %+v", got)
 	}
 }
-
-// Separate calls add; reports about one call do not.
-func TestAddingRoundsSumsThem(t *testing.T) {
-	total := Usage{InputTokens: 10, OutputTokens: 5}.Add(Usage{InputTokens: 20, OutputTokens: 8, Estimated: true})
-	if total.InputTokens != 30 || total.OutputTokens != 13 || !total.Estimated {
-		t.Errorf("total = %+v", total)
-	}
-}

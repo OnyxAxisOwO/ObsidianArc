@@ -104,8 +104,6 @@ type failingAdapter struct {
 	deltas []string
 }
 
-func (failingAdapter) Kind() Kind { return KindOpenAI }
-
 func (a failingAdapter) Chat(_ context.Context, _ *http.Client, _ Provider, _ ChatRequest, sink Sink) (Result, error) {
 	for _, delta := range a.deltas {
 		if err := sink(Event{Type: EventDelta, Text: delta}); err != nil {
