@@ -17,6 +17,7 @@ import OaOverlay from '@/components/OaOverlay.vue';
 import OaPagination from '@/components/OaPagination.vue';
 import type { PageState } from '@/components/table-types';
 import OaBadge from '@/components/OaBadge.vue';
+import OaBadgeRow from '@/components/OaBadgeRow.vue';
 import OaConfirmButton from '@/components/OaConfirmButton.vue';
 import AdminControlCard from './AdminControlCard.vue';
 import AdminWorkbench from './AdminWorkbench.vue';
@@ -1527,11 +1528,11 @@ onMounted(load);
           </div>
           <h4 class="oa-2fa-subhead">{{ t('twoFactorAdminsWithout') }}</h4>
           <p v-if="!adoption.admins_without.length" class="oa-field-hint">{{ t('twoFactorAdminsAllSet') }}</p>
-          <div v-else class="oa-badge-row">
+          <OaBadgeRow v-else>
             <OaBadge v-for="member in adoption.admins_without" :key="member.id" tone="warning">
               @{{ maskUser(member.username) }}
             </OaBadge>
-          </div>
+          </OaBadgeRow>
         </template>
         <p v-else class="oa-table-empty">{{ t('loading') }}</p>
       </AdminControlCard>

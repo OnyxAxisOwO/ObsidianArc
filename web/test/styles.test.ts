@@ -471,3 +471,35 @@ describe('focus, width and cascade rules in the stylesheet source', () => {
     expect([...used].filter((token) => !declared(token))).toEqual([]);
   });
 });
+
+// Rules that change what a reader sees in a state jsdom never renders: a
+// disabled button, a touch screen, a jump to a section.
+describe('control states in the stylesheet source', () => {
+  const sheet = (name: string) => fs.readFileSync(path.resolve(__dirname, '../src/styles', name), 'utf8');
+
+  it('dims the new-project button when the list is at its cap', () => {
+    const chat = sheet('_chat.scss');
+
+    expect(chat).toMatch(/\.ai-chat-new:disabled \{[^}]*opacity:\s*0\.5;/);
+    expect(chat).toMatch(/\.ai-chat-new:hover:not\(:disabled\) \{/);
+  });
+
+  it('shows a project row action faintly where there is no hover to reveal it', () => {
+    const block = /@media \(hover: none\) \{\s*\.ai-project-action-btn \{([^}]*)\}/.exec(sheet('_surfaces.scss'));
+
+    expect(block, 'project edit and delete stay invisible on a touch screen').toBeTruthy();
+    expect(block![1]).toMatch(/opacity:\s*0\.45/);
+  });
+
+  it('stops a jump to a dashboard card short of the top, as the other jump targets do', () => {
+    expect(sheet('_dashboard.scss')).toMatch(/\.oa-dashboard-card \{[^}]*scroll-margin-top:\s*14px/);
+  });
+
+  it('draws every armed danger second click from one rule', () => {
+    const surfaces = sheet('_surfaces.scss');
+
+    expect(surfaces).toMatch(/\.oa-btn-danger-solid,\s*\.oa-bulk-bar \.oa-btn\.armed,\s*\.oa-ban-confirm\.armed \{/);
+    expect(surfaces.match(/\.oa-bulk-bar \.oa-btn\.armed\b/g)).toHaveLength(1);
+    expect(surfaces.match(/\.oa-ban-confirm\.armed\b/g)).toHaveLength(1);
+  });
+});

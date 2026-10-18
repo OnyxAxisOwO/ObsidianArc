@@ -183,8 +183,16 @@
   transition: background-color 0.15s ease;
 }
 
-.ai-chat-new:hover {
+.ai-chat-new:hover:not(:disabled) {
   background: var(--ai-state-hover);
+}
+
+/* The project list disables this at its cap. Without a look of its own the
+   button kept its full colour and hover, so it read as clickable and simply
+   did nothing; the dimming is the one .oa-btn:disabled uses. */
+.ai-chat-new:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .ai-history-search-row {
@@ -1294,8 +1302,8 @@
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  width: 34px;
-  height: 34px;
+  width: 36px;
+  height: 36px;
   padding: 0;
   border: none;
   border-radius: 50%;
@@ -1616,12 +1624,7 @@
   box-shadow: none;
 }
 
-.ai-chat-plus {
-  border: none;
-}
-
-.ai-chat-wide .ai-chat-send,
-.ai-chat-plus {
+.ai-chat-wide .ai-chat-send {
   width: 36px;
   height: 36px;
 }

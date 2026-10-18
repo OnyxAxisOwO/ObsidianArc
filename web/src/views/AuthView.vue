@@ -779,7 +779,7 @@ async function onSubmit(): Promise<void> {
               <a
                 v-for="provider in providers"
                 :key="provider.id"
-                class="oa-btn oa-auth-provider"
+                class="oa-btn oa-btn-block oa-auth-provider"
                 :href="signInURL(provider.id, { next: safeNext(route.query['next']), register: registering })"
                 @click="onProviderClick($event, provider.id)"
               >

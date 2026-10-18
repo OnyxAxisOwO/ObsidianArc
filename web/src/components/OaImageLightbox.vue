@@ -65,7 +65,6 @@ const source = computed(() => safeSource(props.src));
           target="_blank"
           rel="noopener"
           class="oa-btn primary"
-          style="text-decoration: none; display: inline-flex; align-items: center; gap: 6px;"
         >
           <IconDownload :size="14" />
           <span>{{ t('downloadImage') }}</span>

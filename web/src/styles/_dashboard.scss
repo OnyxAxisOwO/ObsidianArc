@@ -46,7 +46,11 @@ a.oa-dashboard-resource:hover { background: var(--ai-state-hover); }
 
 /* --- cards --------------------------------------------------------------- */
 .oa-dashboard-middle { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(300px, 1fr); gap: 16px; align-items: stretch; }
-.oa-dashboard-card { min-width: 0; padding: 22px 24px; background: var(--ai-surface-card); border-radius: 18px; }
+/* The same card as the usage report's .oa-viz-card, kept in this file because
+   each sits in its own @container. Two of these are search-jump targets
+   (secBusiestModels, secRecentRequests), so they take the 14px the other
+   jump targets stop short of the top by, instead of landing flush on it. */
+.oa-dashboard-card { min-width: 0; padding: 22px 24px; background: var(--ai-surface-card); border-radius: 18px; scroll-margin-top: 14px; }
 .oa-dashboard-section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .oa-dashboard-section-head h2 { margin: 3px 0 0; font-size: 15px; line-height: 1.4; font-weight: 650; letter-spacing: -.2px; }
 .oa-dashboard-section-head p { margin: 5px 0 0; font-size: 11.5px; color: var(--ai-text-secondary); }

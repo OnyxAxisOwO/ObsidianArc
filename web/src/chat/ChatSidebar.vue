@@ -123,15 +123,15 @@ function onNewChat(): void {
       <!-- Replaces the old static "History" label: the tab a reader is on
            already says what the list below is, so the label and the switch
            are one control instead of two that could disagree. -->
-      <div class="ai-sidebar-tabs" role="tablist">
+      <div class="oa-slide-tabs" role="tablist">
         <span
-          class="ai-sidebar-pill"
-          :class="{ 'tab-projects': activeTab === 'projects' }"
+          class="oa-slide-pill"
+          :class="{ second: activeTab === 'projects' }"
           aria-hidden="true"
         />
         <button
           type="button"
-          class="ai-sidebar-tab"
+          class="oa-slide-tab ai-sidebar-tab"
           :class="{ active: activeTab === 'history' }"
           role="tab"
           :aria-selected="activeTab === 'history'"
@@ -139,7 +139,7 @@ function onNewChat(): void {
         >{{ t('tabHistory') }}</button>
         <button
           type="button"
-          class="ai-sidebar-tab"
+          class="oa-slide-tab ai-sidebar-tab"
           :class="{ active: activeTab === 'projects' }"
           role="tab"
           :aria-selected="activeTab === 'projects'"

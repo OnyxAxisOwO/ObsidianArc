@@ -390,6 +390,9 @@
   animation-play-state: paused;
 }
 
+/* The badge's colours at an eyebrow's size rather than an OaBadge: a 20px
+   badge is sized for a table cell, and above a display headline it reads as
+   a status rather than a heading's first line. */
 .oa-front-kicker {
   display: inline-flex;
   align-items: center;
@@ -495,7 +498,6 @@
   min-height: 42px;
   padding: 0 22px;
   font-size: 13.5px;
-  text-decoration: none;
   transition:
     transform 0.22s cubic-bezier(0.16, 1, 0.3, 1),
     box-shadow 0.22s cubic-bezier(0.16, 1, 0.3, 1),
