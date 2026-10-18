@@ -121,12 +121,14 @@ func TestAnUpdateTakesAwayTheBindingAndRuleItRetired(t *testing.T) {
 }
 
 // The metadata services are refused however their address is spelled: under
-// the NAT64 prefix a gateway maps IPv4 into, as a mapped IPv4 address, and in
-// the IPv6 ranges the clouds use.
+// the NAT64 prefix a gateway maps IPv4 into, inside a 6to4 address, as a
+// mapped IPv4 address, and in the IPv6 ranges the clouds use.
 func TestTheCloudMetadataAddressesAreRefusedWhateverTheirSpelling(t *testing.T) {
 	for _, addr := range []string{
 		"[fd20:ce::254]:80",
 		"[fd00:ec2::254]:80",
+		"[2002:a9fe:a9fe::]:80",
+		"[2002:6464:64c8::1]:80",
 		"[64:ff9b::a9fe:a9fe]:80",
 		"[64:ff9b::169.254.169.254]:80",
 		"[64:ff9b::6464:64c8]:80",

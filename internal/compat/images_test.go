@@ -312,3 +312,59 @@ func TestImagesEditsTakesTheBracketedFieldName(t *testing.T) {
 		t.Errorf("upstream received %d reference images, want 2", got)
 	}
 }
+
+// The reservation covers the n pictures that were asked for. An upstream that
+// answers with more used to have every one of them billed and relayed, past
+// what was reserved; the panel's endpoint already dropped the surplus.
+func TestImagesGenerationsDropsWhatTheProviderSentPastN(t *testing.T) {
+	fix := newFixture(t)
+	imageModel(t, fix, "painter", 2)
+	fix.upstream.reply(`{"created": 1, "data": [
+		{"b64_json": "aGVsbG8="}, {"b64_json": "aGVsbG8="}, {"b64_json": "aGVsbG8="}
+	]}`)
+
+	w := fix.do(t, http.MethodPost, "/v1/images/generations", fix.token,
+		`{"model": "painter", "prompt": "just one", "n": 1}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	var resp openAIImageResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Data) != 1 {
+		t.Errorf("relayed %d images, want the 1 that was asked for", len(resp.Data))
+	}
+
+	fix.mu.Lock()
+	defer fix.mu.Unlock()
+	if len(fix.records) != 1 {
+		t.Fatalf("wrote %d ledger records, want 1", len(fix.records))
+	}
+	// One picture at a request weight of two, not three.
+	if got := fix.records[0].Credits; got != 2 {
+		t.Errorf("charged %v credits, want 2", got)
+	}
+}
+
+// Clients written against OpenAI's image API send a reference picture as a
+// data: URL as often as bare base64, and this endpoint reads both. The
+// panel's endpoint takes bare base64 only, so this is held here rather than
+// in the shared decoder.
+func TestImagesGenerationsTakesADataURLReference(t *testing.T) {
+	fix := newFixture(t)
+	imageModel(t, fix, "painter", 0)
+	fix.upstream.reply(`{"created":1700000000,"data":[{"b64_json":"aGVsbG8="}]}`)
+
+	w := fix.do(t, http.MethodPost, "/v1/images/generations", fix.token,
+		`{"model":"painter","prompt":"from this","image":"data:image/png;base64,`+testPNG+`"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+
+	w = fix.do(t, http.MethodPost, "/v1/images/generations", fix.token,
+		`{"model":"painter","prompt":"from this","image":"data:image/png;base64,not base64"}`)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "could not be read") {
+		t.Errorf("status = %d, want 400 saying it could not be read: %s", w.Code, w.Body.String())
+	}
+}

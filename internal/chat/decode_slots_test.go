@@ -50,23 +50,14 @@ func (l *imageLab) serve(path string, body io.Reader) (*httptest.ResponseRecorde
 // holding their place or queued behind it. After every request has ended it
 // must be zero, or the map is growing with the accounts that ever uploaded.
 func (l *imageLab) placesInUse() int {
-	s := &l.handlers.accountDecoding
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.holders)
+	return l.handlers.accountDecoding.Tracked()
 }
 
 // placeState reports how many requests hold or queue for the account's place,
 // and whether the place is taken.
 func (l *imageLab) placeState(account string) (refs int, held bool) {
-	s := &l.handlers.accountDecoding
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	entry := s.holders[account]
-	if entry == nil {
-		return 0, false
-	}
-	return entry.refs, len(entry.slot) == 1
+	inUse, refs := l.handlers.accountDecoding.State(account)
+	return refs, inUse == 1
 }
 
 func waitUntil(t *testing.T, what string, holds func() bool) {

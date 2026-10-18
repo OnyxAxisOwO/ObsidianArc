@@ -28,3 +28,21 @@ func TestAProviderCallCannotReachMetadataThroughNAT64(t *testing.T) {
 		t.Errorf("a public address through NAT64 was refused: %v", err)
 	}
 }
+
+// A 6to4 address carries an IPv4 address the same way, and only the picture
+// fetch used to know it: 2002:a9fe:a9fe:: went past the provider dialer.
+func TestAProviderCallCannotReachMetadataThrough6to4(t *testing.T) {
+	for _, addr := range []string{
+		"[2002:a9fe:a9fe::]:443",
+		"[2002:6464:64c8::1]:443",
+		"[2002::]:443",
+	} {
+		if err := refuseDestination("tcp", addr, nil); err == nil {
+			t.Errorf("%s was allowed", addr)
+		}
+	}
+	// A provider on the LAN stays reachable, however it is spelled.
+	if err := refuseDestination("tcp", "[2002:0a00:0001::1]:443", nil); err != nil {
+		t.Errorf("a private address through 6to4 was refused: %v", err)
+	}
+}

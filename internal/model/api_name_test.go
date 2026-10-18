@@ -142,11 +142,11 @@ func TestAnAPINameIsHeldToTheShapeOfAnIdentifier(t *testing.T) {
 	}
 }
 
-// readCallable spells out its own scan targets rather than going through
-// scan(), so the two lists can drift apart in silence — adding api_name to
-// the shared column list and not to that hand-written scan turned every
-// completion into a 500 with no clue in it. This is the guard: the gateway's
-// own read has to carry the field too.
+// readCallable used to spell out its own scan targets rather than going
+// through scan(), and adding api_name to the shared column list and not to
+// that hand-written scan turned every completion into a 500 with no clue in
+// it. It goes through scan() now; this stays as the guard that the gateway's
+// own read carries the field too.
 func TestTheGatewaysReadCarriesTheAPIName(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()

@@ -2,7 +2,6 @@ package compat
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"io"
 	"mime/multipart"
@@ -122,17 +121,11 @@ func (h *Handlers) imagesGenerations(w http.ResponseWriter, r *http.Request, who
 			if err != nil {
 				return badRequest("image", "Could not read reference image.")
 			}
-			checked, mime, err := chat.CheckImage(data, ceiling)
+			part, err := chat.ReferencePicture(data, ceiling)
 			if err != nil {
-				if errors.Is(err, chat.ErrImageSize) {
-					return badRequest("image", "The reference image is larger than this instance allows.")
-				}
-				return badRequest("image", "The reference image is not an image this instance accepts.")
+				return referenceRefusal(err)
 			}
-			parts = append(parts, adapter.ImagePart{
-				Data: checked,
-				Mime: mime,
-			})
+			parts = append(parts, part)
 		}
 	} else {
 		maxBodyBytes := (ceiling*4/3+16*1024)*int64(chat.MaxReferenceImages) + 64*1024
@@ -158,30 +151,22 @@ func (h *Handlers) imagesGenerations(w http.ResponseWriter, r *http.Request, who
 		if len(rawImages) > chat.MaxReferenceImages {
 			return badRequest("images", "At most "+strconv.Itoa(chat.MaxReferenceImages)+" reference images may be provided.")
 		}
-		for _, raw := range rawImages {
-			raw = strings.TrimSpace(raw)
-			if raw == "" {
-				continue
-			}
+		// A data: URL is taken here as well as bare base64, which the panel's
+		// endpoint does not: clients written against OpenAI's image API send
+		// either, and nothing is lost by reading past the prefix. The panel's
+		// contract has only ever been bare base64.
+		bare := make([]string, len(rawImages))
+		for i, raw := range rawImages {
 			if idx := strings.Index(raw, ";base64,"); idx != -1 {
-				raw = raw[idx+8:]
+				raw = raw[idx+len(";base64,"):]
 			}
-			data, err := base64.StdEncoding.DecodeString(raw)
-			if err != nil {
-				return badRequest("image", "The reference image could not be read.")
-			}
-			checked, mime, err := chat.CheckImage(data, ceiling)
-			if err != nil {
-				if errors.Is(err, chat.ErrImageSize) {
-					return badRequest("image", "The reference image is larger than this instance allows.")
-				}
-				return badRequest("image", "The reference image is not an image this instance accepts.")
-			}
-			parts = append(parts, adapter.ImagePart{
-				Data: checked,
-				Mime: mime,
-			})
+			bare[i] = raw
 		}
+		decoded, err := chat.DecodeReferencePictures(bare, ceiling)
+		if err != nil {
+			return referenceRefusal(err)
+		}
+		parts = decoded
 	}
 
 	// Nothing after this reads the body, so the place goes back here rather
@@ -249,6 +234,12 @@ func (h *Handlers) imagesGenerations(w http.ResponseWriter, r *http.Request, who
 		h.recordImages(r.Context(), who, resolved, requestID, startedAt, 0, err)
 		return translateUpstream(err)
 	}
+	// The reservation covered n pictures and nothing more. An upstream that
+	// sends extra is billed and answered for the count that was asked for, as
+	// the panel's endpoint does, so the surplus is dropped before it is charged.
+	if len(result.Data) > n {
+		result.Data = result.Data[:n]
+	}
 	h.recordImages(r.Context(), who, resolved, requestID, startedAt, len(result.Data), nil)
 
 	resp := openAIImageResponse{
@@ -280,6 +271,15 @@ func (h *Handlers) imagesGenerations(w http.ResponseWriter, r *http.Request, who
 	})
 
 	return writeJSON(w, http.StatusOK, resp)
+}
+
+// referenceRefusal answers a reference picture the shared check turned away.
+func referenceRefusal(err error) error {
+	var refused *chat.ReferenceError
+	if errors.As(err, &refused) {
+		return badRequest("image", refused.Message)
+	}
+	return internalError(err)
 }
 
 // recordImages settles an image call the way record settles a completion.

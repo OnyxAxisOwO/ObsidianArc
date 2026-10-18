@@ -1021,40 +1021,27 @@ func (s *Store) readCallable(
 		WHERE ` + where
 
 	var (
-		record     Model
 		upstream   provider.Provider
 		sealed     []byte
 		headerJSON string
-		tiers      string
-		route      sql.NullString
 	)
-	err := s.db.QueryRow(ctx, query, args...).Scan(
-		&record.ID, &record.ProviderID, &record.ModelID, &record.DisplayName, &record.Description,
-		&record.Avatar, &record.Enabled, &record.SortOrder,
-		&record.SupportsReasoning, &record.SupportsImages, &record.SupportsVision,
-		&record.SupportsStreaming, &record.SupportsSystemPrompt, &record.SupportsTools,
-		&record.ContextWindow, &record.MaxOutputTokens,
-		&record.Request, &record.InputToken, &record.OutputToken, &record.ReasoningToken,
-		&record.CreatedAt, &record.UpdatedAt, &route, &record.ReasoningStyle,
-		&record.Hidden, &tiers, &record.APIName, &record.AutoDisabled, &record.SystemPrompt,
-		&record.SupportsImageGen, &record.SupportsChatImageGen, &record.RequestOverride,
-		&record.EmulateTools,
-		&record.ProviderName, &record.ProviderKind,
+	// The model's own columns go through scan(), the one list every other read
+	// uses; only the provider's columns are added here. This used to be a
+	// second hand-written copy of that list, and it drifted twice: once
+	// without api_name (every completion a 500) and once without decoding
+	// the reasoning tiers (every chat request on the adapter's built-in
+	// budgets).
+	record, err := scan(s.db.QueryRow(ctx, query, args...), true, false,
 		&upstream.BaseURL, &sealed, &headerJSON, &upstream.AnthropicVersion, &upstream.ReasoningStyle,
 		&upstream.TimeoutSeconds, &upstream.SortOrder, &upstream.Enabled,
 		&upstream.CreatedAt, &upstream.UpdatedAt, &upstream.KeyRotation,
 	)
 	if err != nil {
-		if database.IsNotFound(err) {
+		if errors.Is(err, ErrNotFound) {
 			return Model{}, provider.Provider{}, nil, ErrNotFound
 		}
 		return Model{}, provider.Provider{}, nil, fmt.Errorf("model: read callable: %w", err)
 	}
-	record.RouteToID = route.String
-	// Authorize resolves the reasoning slider against this record, so its
-	// tiers must be here. scan() decodes them too; leaving this out made
-	// every chat request fall back to the adapter's built-in budgets.
-	record.ReasoningTiers = decodeTiers(tiers)
 	upstream.Headers = decodeHeaders(headerJSON)
 	return record, upstream, sealed, nil
 }
@@ -1571,7 +1558,9 @@ func assign[T any](target *T, value *T) {
 
 type rowScanner interface{ Scan(dest ...any) error }
 
-func scan(row rowScanner, joined bool, withUsable bool) (Model, error) {
+// scan reads the model's columns, then the joined provider name and kind, then
+// Usable, then whatever extra targets a query selects after those.
+func scan(row rowScanner, joined bool, withUsable bool, extra ...any) (Model, error) {
 	var record Model
 	var tiers string
 	// NULL rather than empty, because the column carries a foreign key:
@@ -1595,6 +1584,7 @@ func scan(row rowScanner, joined bool, withUsable bool) (Model, error) {
 	if withUsable {
 		targets = append(targets, &record.Usable)
 	}
+	targets = append(targets, extra...)
 	if err := row.Scan(targets...); err != nil {
 		if database.IsNotFound(err) {
 			return Model{}, ErrNotFound

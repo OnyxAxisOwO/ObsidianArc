@@ -104,24 +104,14 @@ func allRead(slow []*slowRequest) bool {
 // placesState reports how many of the account's places are in use, and how many
 // requests hold one or wait for one.
 func placesState(f *fixture, account string) (inUse, requests int) {
-	p := &f.handlers.bodies
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	entry := p.holders[account]
-	if entry == nil {
-		return 0, 0
-	}
-	return len(entry.places), entry.refs
+	return f.handlers.bodies.places.State(account)
 }
 
 // accountsTracked is how many accounts the places map still has an entry for.
 // It must be zero once every request has ended, or the map grows with every
 // account that ever sent a body.
 func accountsTracked(f *fixture) int {
-	p := &f.handlers.bodies
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return len(p.holders)
+	return f.handlers.bodies.places.Tracked()
 }
 
 // waitDone fails the test unless done closes within a few seconds.

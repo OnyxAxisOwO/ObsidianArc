@@ -62,7 +62,10 @@ func refusalReason(address netip.Addr) string {
 	// fd00:ec2::254%eth0 would miss the metadata list and ::%eth0 would not
 	// satisfy IsUnspecified. The bit-level predicates read the address itself
 	// and were never affected.
-	address = embeddedIPv4(address.Unmap().WithZone(""))
+	address = address.Unmap().WithZone("")
+	if embedded, ok := EmbeddedIPv4(address); ok {
+		address = embedded
+	}
 	switch {
 	case address.IsUnspecified():
 		return "an unspecified address"
@@ -70,26 +73,44 @@ func refusalReason(address netip.Addr) string {
 		return "a multicast address"
 	case address.IsLinkLocalUnicast():
 		return "a link-local address"
-	case slices.Contains(cloudMetadata, address):
+	case IsCloudMetadata(address):
 		return "a cloud metadata address"
 	}
 	return ""
 }
 
-// nat64Prefix is the well-known prefix a NAT64 gateway maps IPv4 addresses
-// into. On an IPv6-only network DNS64 gives a name that has only an IPv4
-// address this form, so 169.254.169.254 arrives here as 64:ff9b::a9fe:a9fe,
-// which none of the predicates recognise. The gateway connects to the embedded
-// address, so that is the one to check. internal/plugin unwraps the same prefix
-// for a plugin's fetches, and the two change together.
-var nat64Prefix = netip.MustParsePrefix("64:ff9b::/96")
+// IsCloudMetadata reports whether address is one of the metadata services
+// the link-local rule does not reach. internal/plugin refuses the same ones
+// for a plugin's fetches through this, so there is one list.
+func IsCloudMetadata(address netip.Addr) bool {
+	return slices.Contains(cloudMetadata, address)
+}
 
-// embeddedIPv4 is the IPv4 address a NAT64 address stands for, or the address
-// itself when it is not under the prefix.
-func embeddedIPv4(address netip.Addr) netip.Addr {
-	if !nat64Prefix.Contains(address) {
-		return address
+// Prefixes that carry an IPv4 address in their bits. On an IPv6-only network
+// DNS64 gives a name that has only an IPv4 address the NAT64 form, so
+// 169.254.169.254 arrives as 64:ff9b::a9fe:a9fe, which none of the predicates
+// recognise; a 6to4 address carries its IPv4 relay endpoint the same way. The
+// gateway goes to the embedded address, so that is the one to judge.
+var (
+	nat64Prefix = netip.MustParsePrefix("64:ff9b::/96")
+	sixToFour   = netip.MustParsePrefix("2002::/16")
+)
+
+// EmbeddedIPv4 returns the IPv4 address a NAT64 or 6to4 address carries, and
+// whether the address is one of those at all.
+//
+// One function for every outbound check — provider calls here, picture
+// fetches in internal/chat, a plugin's fetches in internal/plugin — because
+// three copies of it had drifted: only the picture fetch knew about 6to4.
+// What each check then refuses stays its own; the picture fetch also refuses
+// private ranges that a provider on the LAN must be able to use.
+func EmbeddedIPv4(address netip.Addr) (netip.Addr, bool) {
+	raw := address.As16()
+	switch {
+	case nat64Prefix.Contains(address):
+		return netip.AddrFrom4([4]byte{raw[12], raw[13], raw[14], raw[15]}), true
+	case sixToFour.Contains(address):
+		return netip.AddrFrom4([4]byte{raw[2], raw[3], raw[4], raw[5]}), true
 	}
-	b := address.As16()
-	return netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]})
+	return netip.Addr{}, false
 }

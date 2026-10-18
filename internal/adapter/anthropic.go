@@ -523,14 +523,13 @@ func (anthropicAdapter) readStream(ctx context.Context, response *http.Response,
 		// Anthropic reports input tokens when the message starts and output
 		// tokens as it ends, so both have to be folded in rather than
 		// overwriting one another.
-		if usage := (Usage{InputTokens: event.Message.Usage.InputTokens, OutputTokens: event.Message.Usage.OutputTokens}); usage.Total() > 0 {
-			result.Usage = result.Usage.Merge(usage)
-			if err := sink(Event{Type: EventUsage, Usage: result.Usage}); err != nil {
-				sinkErr = err
-				return err
+		for _, usage := range [...]Usage{
+			{InputTokens: event.Message.Usage.InputTokens, OutputTokens: event.Message.Usage.OutputTokens},
+			{InputTokens: event.Usage.InputTokens, OutputTokens: event.Usage.OutputTokens},
+		} {
+			if usage.Total() <= 0 {
+				continue
 			}
-		}
-		if usage := (Usage{InputTokens: event.Usage.InputTokens, OutputTokens: event.Usage.OutputTokens}); usage.Total() > 0 {
 			result.Usage = result.Usage.Merge(usage)
 			if err := sink(Event{Type: EventUsage, Usage: result.Usage}); err != nil {
 				sinkErr = err
