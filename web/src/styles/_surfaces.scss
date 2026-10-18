@@ -1,3 +1,5 @@
+@use 'mixins' as *;
+
 /* Every surface that is not the chat: panels, fields, forms, tables, charts,
  * and the screens built out of them — settings, the API keys page, About, and
  * the administration backoffice.
@@ -301,12 +303,7 @@
 }
 
 .oa-admin-body-wrap {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
+  @include scroll-area-shell;
   /* Matches the 18px card radius at the bottom so the track and contents do not bleed. */
   border-radius: 0 0 18px 18px;
 }
@@ -763,23 +760,28 @@
   color: var(--ai-text-secondary);
 }
 
+/* A bonus bar (.oa-bonus-bar, further down) is drawn this way too and
+   shares the inner rules below; only this frame is the window's own. */
 .oa-usage-large {
   padding: 12px 14px;
   border-radius: 14px;
   background: var(--ai-surface-container-low);
 }
 
-.oa-usage-large .oa-usage-row {
+.oa-usage-large .oa-usage-row,
+.oa-bonus-bar .oa-usage-row {
   font-size: 13px;
   margin-bottom: 8px;
 }
 
-.oa-usage-large .oa-usage-value {
+.oa-usage-large .oa-usage-value,
+.oa-bonus-bar .oa-usage-value {
   font-size: 15px;
   font-weight: 600;
 }
 
-.oa-usage-large .oa-usage-reset {
+.oa-usage-large .oa-usage-reset,
+.oa-bonus-bar .oa-usage-reset {
   display: block;
   margin-top: 8px;
   font-size: 11.5px;
@@ -978,12 +980,7 @@
 }
 
 .oa-panel-body-wrap {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
+  @include scroll-area-shell;
 }
 
 /* When the panel has no footer, the scrolling body extends to the bottom
@@ -1259,7 +1256,8 @@
 /* Slimmer and fully rounded, closer to a media scrubber than to a gauge. The
    fill keeps the accent: no token here hardcodes a hue, and the accent is
    what colours the interface. */
-.oa-usage-large .oa-meter {
+.oa-usage-large .oa-meter,
+.oa-bonus-bar .oa-meter {
   height: 8px;
 }
 
@@ -1546,12 +1544,7 @@
 }
 
 .oa-panel:not(.fullscreen) .oa-settings-scroll-wrap {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
+  @include scroll-area-shell;
   border-radius: 0 0 18px 18px;
 }
 
@@ -1604,13 +1597,8 @@
 }
 
 .oa-panel.fullscreen .oa-settings-scroll-wrap {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
+  @include scroll-area-shell;
   height: 100%;
-  overflow: hidden;
   border-radius: 14px;
 }
 
@@ -2683,11 +2671,15 @@
   transition: background 0.13s ease;
 }
 
-.oa-log-row:hover {
+/* The audit log's rows are drawn after these, so both lists hover and
+   focus from one pair of rules; a later tweak to one reaches the other. */
+.oa-log-row:hover,
+.oa-audit-row:hover {
   background: var(--ai-state-hover);
 }
 
-.oa-log-row:focus-visible {
+.oa-log-row:focus-visible,
+.oa-audit-row:focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px var(--ai-focus-shadow);
 }
@@ -2890,15 +2882,6 @@
   background: transparent;
   content: '';
   transform: translateY(-50%);
-}
-
-.oa-audit-row:hover {
-  background: var(--ai-state-hover);
-}
-
-.oa-audit-row:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
 }
 
 .oa-audit-row.is-notable::before {
@@ -4553,10 +4536,8 @@
 }
 
 .oa-board-avatar {
-  flex-shrink: 0;
   width: 28px;
   height: 28px;
-  font-size: 11px;
 }
 
 .oa-board-main {
@@ -5824,7 +5805,11 @@
   font-weight: 600;
 }
 
-.oa-2fa-head-meta {
+/* The secondary line under a settings card's title. The check-in card's
+   reward lines are the same voice, so they share it rather than copy it. */
+.oa-2fa-head-meta,
+.oa-checkin-meta,
+.oa-checkin-milestone-meta {
   margin: 0;
   color: var(--ai-text-secondary);
   font-size: 12px;
@@ -6257,6 +6242,14 @@
   border-radius: inherit;
   background: var(--ai-primary);
   transition: width 0.4s cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* The usage meters drop their width animation under reduced motion; this
+   one was the bar left sliding. */
+@media (prefers-reduced-motion: reduce) {
+  .oa-2fa-meter span {
+    transition: none;
+  }
 }
 
 .oa-2fa-subhead {
@@ -7279,27 +7272,8 @@
 }
 
 /* A bar is drawn the way a large allowance window is: the figure over a slim
-   meter, with the small print under it. */
-.oa-bonus-bar .oa-usage-row {
-  margin-bottom: 8px;
-  font-size: 13px;
-}
-
-.oa-bonus-bar .oa-usage-value {
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.oa-bonus-bar .oa-meter {
-  height: 8px;
-}
-
-.oa-bonus-bar .oa-usage-reset {
-  display: block;
-  margin-top: 8px;
-  font-size: 11.5px;
-}
-
+   meter, with the small print under it. Its row, figure, meter and small
+   print share the .oa-usage-large rules, so the two cannot drift apart. */
 .oa-bonus-bar.is-spent .oa-meter-fill {
   opacity: 0.4;
 }
@@ -7333,14 +7307,6 @@
 .oa-checkin-milestone-title {
   font-size: 13px;
   font-weight: 600;
-}
-
-.oa-checkin-meta,
-.oa-checkin-milestone-meta {
-  margin: 0;
-  color: var(--ai-text-secondary);
-  font-size: 12px;
-  line-height: 1.55;
 }
 
 /* What just happened, or what went wrong, above the month: the field tone, so

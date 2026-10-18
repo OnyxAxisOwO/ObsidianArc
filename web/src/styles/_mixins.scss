@@ -25,6 +25,20 @@
   overflow-y: auto;
 }
 
+// The outer box of an OaScrollArea whose scroller fills a column: positioned
+// so the overlay track can sit on it, clipped so neither the track nor the
+// contents leave the card, and shrinkable so the scroller inside engages.
+// Only for the wrappers that are that shell; a select's or a board's wrap is
+// a different box and keeps its own rule.
+@mixin scroll-area-shell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
 // The rounded 18px card every surface in this product is made of — the rail,
 // the transcript, the side panel and the sign-in box are all one of these.
 @mixin card($radius: 18px) {

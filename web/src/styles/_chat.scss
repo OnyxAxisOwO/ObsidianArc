@@ -1,3 +1,5 @@
+@use 'mixins' as *;
+
 /* Styles for src/chat.js. Defines its own color tokens (rather than assuming
    a host page supplies them) so the component is self-contained enough to
    drop into a different app's page and still look intentional — a host that
@@ -264,6 +266,9 @@
   color: var(--ai-danger);
 }
 
+/* The one OaScrollArea wrapper that is not clipped: the rail's track sits
+   8px outside it (right: -8px below), in the gutter beside the list, and
+   overflow: hidden would cut it off. */
 .ai-chat-list-wrap {
   position: relative;
   display: flex;
@@ -509,12 +514,7 @@
 /* --- transcript -------------------------------------------------------------- */
 
 .ai-chat-scroll-wrap {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
+  @include scroll-area-shell;
 }
 
 .ai-chat-scroll {
@@ -985,22 +985,11 @@
   width: 100%;
 }
 
-/* The composer's textarea is transparent because the pill around it carries
-   the fill. Reused on its own in the transcript it had nothing behind it, so
-   it gets its own surface here rather than a second class doing half a job. */
-.ai-msg-edit-input {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 10px 12px;
-  border-radius: 14px;
-  background: var(--ai-field-bg);
-  color: var(--ai-text);
-}
-
-.ai-msg-edit-input:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
-}
+/* .ai-msg-edit-input has no rule of its own: the editor's textarea also
+   carries .ai-chat-input, which is later in this file at the same
+   specificity, and the always-on .ai-chat-wide overrides beat both. A fill,
+   padding or ring written here never reached the screen, so the class is
+   only the hook the tests find the textarea by. */
 
 .ai-msg-editor-actions {
   display: flex;

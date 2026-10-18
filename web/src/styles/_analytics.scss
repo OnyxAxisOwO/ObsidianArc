@@ -20,8 +20,10 @@
 }
 
 /* The line above a card's title: what the card is about, in the ordinary
-   secondary voice rather than capitals, which Chinese does not have. */
-.oa-kicker {
+   secondary voice rather than capitals, which Chinese does not have. The
+   overview's kicker is the same line. */
+.oa-kicker,
+.oa-dashboard-kicker {
   display: block;
   color: var(--ai-text-secondary);
   font-size: 11px;
@@ -152,7 +154,8 @@
   min-width: 0;
 }
 
-.oa-viz-head h2 {
+.oa-viz-head h2,
+.oa-dashboard-section-head h2 {
   margin: 3px 0 0;
   font-size: 15px;
   font-weight: 650;
@@ -277,7 +280,11 @@
   white-space: nowrap;
 }
 
-.oa-kpi-foot {
+/* Wraps rather than squeezes: the arrow and the note beside it are two
+   things, and a narrow card should put the note under the arrow, not cut it.
+   The overview's figure cards end the same way. */
+.oa-kpi-foot,
+.oa-dashboard-metric-note {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -742,11 +749,15 @@
   transition: background-color 0.15s ease;
 }
 
-.oa-board-frame button.oa-board-row:hover {
+/* The allowance list below is the same kind of clickable row, so it takes
+   its hover and focus from these two rules instead of a copy of them. */
+.oa-board-frame button.oa-board-row:hover,
+.oa-allow-row:hover {
   background: var(--ai-state-hover);
 }
 
-.oa-board-frame button.oa-board-row:focus-visible {
+.oa-board-frame button.oa-board-row:focus-visible,
+.oa-allow-row:focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px var(--ai-focus-shadow);
 }
@@ -778,7 +789,10 @@
   user-select: none;
 }
 
-.oa-board-user .oa-board-mark {
+/* Every allowance row is a person, so its mark is the user board's round
+   badge without the list having to say kind=user. */
+.oa-board-user .oa-board-mark,
+.oa-allow-mark {
   border-radius: 50%;
   background: var(--ai-badge-bg);
   color: var(--ai-badge-text);
@@ -941,21 +955,6 @@
   text-align: left;
   cursor: pointer;
   transition: background-color 0.15s ease;
-
-  &:hover {
-    background: var(--ai-state-hover);
-  }
-
-  &:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 3px var(--ai-focus-shadow);
-  }
-}
-
-.oa-allow-mark {
-  border-radius: 50%;
-  background: var(--ai-badge-bg);
-  color: var(--ai-badge-text);
 }
 
 .oa-allow-who {
@@ -963,14 +962,6 @@
   flex-direction: column;
   gap: 3px;
   min-width: 0;
-}
-
-.oa-allow-sub {
-  overflow: hidden;
-  color: var(--ai-text-secondary);
-  font-size: 10.5px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .oa-allow-windows {

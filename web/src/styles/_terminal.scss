@@ -1,3 +1,5 @@
+@use 'mixins' as *;
+
 // The terminal: CONTRACT.md #5. Imported last from index.scss, after
 // surfaces — nothing else in the app depends on load order here, but this is
 // where a rule that turns out to need overriding one of surfaces' own goes
@@ -285,12 +287,7 @@
 }
 
 .oa-terminal-scroll-wrap {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
+  @include scroll-area-shell;
 }
 
 .oa-terminal-scroll-wrap .oa-overlay-track {
