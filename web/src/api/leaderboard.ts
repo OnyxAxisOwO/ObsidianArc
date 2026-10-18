@@ -22,7 +22,7 @@ export interface LeaderboardEntry {
   self?: boolean;
 }
 
-export interface LeaderboardModel {
+interface LeaderboardModel {
   rank: number;
   name: string;
   avatar?: string;
@@ -32,7 +32,7 @@ export interface LeaderboardModel {
   tokens: number;
 }
 
-export interface LeaderboardStanding {
+interface LeaderboardStanding {
   /** Zero when the reader has no answered turns in the window. */
   rank: number;
   value: number;

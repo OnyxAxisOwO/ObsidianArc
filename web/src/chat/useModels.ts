@@ -11,7 +11,7 @@ import type { StringKey } from '@/i18n';
 import { t } from '@/composables/useI18n';
 import { currentPreferences, onSignOut, syncPreferences } from '@/stores/session';
 
-export interface ModelCapabilities {
+interface ModelCapabilities {
   supports_reasoning: boolean;
   supports_images: boolean;
   supports_vision: boolean;
@@ -62,7 +62,7 @@ export interface AvailableModel extends ModelCapabilities {
  */
 type Effort = string;
 
-export interface ReasoningState {
+interface ReasoningState {
   enabled: boolean;
   effort: Effort;
 }

@@ -7,7 +7,7 @@
  * Plain state, no Vue: it owns nothing that needs tearing down, so it can be
  * made anywhere, and several in one component keep their requests apart.
  */
-export interface LatestRequest {
+interface LatestRequest {
   /** Takes the next ticket, retiring every one handed out before it. */
   begin(): number;
   /** Whether no request has begun, and nothing was invalidated, since this ticket. */

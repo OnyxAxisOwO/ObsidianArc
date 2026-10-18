@@ -11,7 +11,7 @@
 import { nextTick, ref } from 'vue';
 
 export const flyingIDs = ref<string[]>([]);
-export const flownIDs = ref<string[]>([]);
+const flownIDs = ref<string[]>([]);
 export const lastComposerRect = ref<DOMRect | null>(null);
 
 const activeAnimations = new Map<string, { animation: Animation; clone: HTMLElement }>();
@@ -97,7 +97,7 @@ export function resetFlightState(): void {
   flownIDs.value = [];
 }
 
-export interface SendAnimationOptions {
+interface SendAnimationOptions {
   messageID: string;
   mainEl: HTMLElement;
   transcriptEl: HTMLElement;

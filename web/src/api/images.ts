@@ -28,7 +28,7 @@ export interface ImageGenerationRecord {
   mime?: string;
 }
 
-export interface ImageGenerationRequest {
+interface ImageGenerationRequest {
   model_id: string;
   prompt: string;
   size?: string;
@@ -45,7 +45,7 @@ export interface ImageGenerationRequest {
   guards?: Record<string, string>;
 }
 
-export interface ImageGenerationResponse {
+interface ImageGenerationResponse {
   created: number;
   images: ImageGenerationItem[];
 }

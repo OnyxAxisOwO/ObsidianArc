@@ -7,7 +7,7 @@
 import { t } from '@/composables/useI18n';
 import { ApiError, api } from './client';
 
-export interface BackupTurn {
+interface BackupTurn {
   role: 'user' | 'assistant';
   content: string;
   reasoning?: string;
@@ -17,7 +17,7 @@ export interface BackupTurn {
   images?: number;
 }
 
-export interface BackupThread {
+interface BackupThread {
   title: string;
   pinned?: boolean;
   created_at?: number;
@@ -32,7 +32,7 @@ export interface BackupDocument {
   conversations: BackupThread[];
 }
 
-export interface ImportResult {
+interface ImportResult {
   conversations: number;
   messages: number;
   preferences: boolean;

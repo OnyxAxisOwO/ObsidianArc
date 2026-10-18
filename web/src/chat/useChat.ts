@@ -35,7 +35,7 @@ import { currentModel, reasoning } from './useModels';
 import { markFlying, resetFlightState } from './useSendAnimation';
 
 export const MAX_MESSAGE_CHARS = 32000;
-export const MAX_IMAGES = 6;
+const MAX_IMAGES = 6;
 /**
  * How many conversations the rail holds — the server's own default, asked for
  * by name so the rail can tell when it is full and its search, which only
@@ -79,7 +79,7 @@ export interface Pending {
   startedAt: number;
 }
 
-export interface ComposerAttachment {
+interface ComposerAttachment {
   ref: AttachmentRef;
   preview: string;
 }

@@ -26,7 +26,7 @@ const IMAGE_TYPES = {
   'image/svg+xml': { aliases: [], extensions: ['.svg'] },
 } as const satisfies Record<string, { aliases: readonly string[]; extensions: readonly string[] }>;
 
-export type ImageType = keyof typeof IMAGE_TYPES;
+type ImageType = keyof typeof IMAGE_TYPES;
 
 // Each upload names its own list, because each mirrors what the server takes
 // for that slot: a logo may be an SVG or an icon, a background may not.

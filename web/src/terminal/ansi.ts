@@ -10,7 +10,7 @@
 
 const ESC = '\x1b';
 
-export type AnsiTokenKind = 'text' | 'clear';
+type AnsiTokenKind = 'text' | 'clear';
 
 /**
  * One piece of output. `kind: 'clear'` carries no text — it means "the pane
@@ -100,7 +100,7 @@ function isFinalByte(ch: string): boolean {
   return code >= 0x40 && code <= 0x7e;
 }
 
-export interface AnsiTokenizerState {
+interface AnsiTokenizerState {
   sgr: SgrState;
   /** Bytes of an escape sequence seen so far but not yet resolved — from the `ESC` on, verbatim. Carried whole into the next chunk. */
   pending: string;
@@ -220,7 +220,7 @@ export function tokenizeAnsiChunk(
  * instance per running command, since SGR state is scoped to one command's
  * output the way a real terminal's is scoped to one screen.
  */
-export interface AnsiTokenizer {
+interface AnsiTokenizer {
   push(chunk: string): AnsiToken[];
   reset(): void;
 }

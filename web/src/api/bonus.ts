@@ -34,7 +34,7 @@ export interface BonusBar {
 }
 
 /** What an account is told about a pool everybody draws on. */
-export interface BonusPoolView {
+interface BonusPoolView {
   only: boolean;
   /** Zero is no daily limit. */
   daily_limit: number;
@@ -43,7 +43,7 @@ export interface BonusPoolView {
   resets_at: number;
 }
 
-export interface BonusSummary {
+interface BonusSummary {
   bars: BonusBar[];
   /**
    * How the instance words an allowance, sent with the bars for the reason the

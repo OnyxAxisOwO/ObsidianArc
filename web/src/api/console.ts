@@ -10,20 +10,20 @@ import { ApiError, api, fetchApi } from '@/api/client';
 import { readSSE, streamRefusal, type SSEEvent } from '@/api/sse';
 import { currentLanguage, t } from '@/composables/useI18n';
 
-export interface ConsoleYou {
+interface ConsoleYou {
   username: string;
   role: 'super_admin' | 'admin' | 'user';
   permissions: string[];
 }
 
-export interface ConsoleSSHInfo {
+interface ConsoleSSHInfo {
   enabled: boolean;
   addr: string;
   fingerprint: string;
 }
 
 /** One flag a command accepts, as the spec describes it for `help` and completion. */
-export interface ConsoleCommandFlag {
+interface ConsoleCommandFlag {
   name: string;
   hint: string;
   /** Absent for a boolean flag like `--yes`; present names the value's placeholder, e.g. "TEXT". */
@@ -31,14 +31,14 @@ export interface ConsoleCommandFlag {
 }
 
 /** One positional argument a command accepts. */
-export interface ConsoleCommandArg {
+interface ConsoleCommandArg {
   name: string;
   hint: string;
   required: boolean;
 }
 
 /** One command, as the spec describes it — everything the client needs to render `help` and complete locally without a round trip per keystroke. */
-export interface ConsoleCommandSpec {
+interface ConsoleCommandSpec {
   name: string;
   group: string;
   summary: string;
@@ -128,7 +128,7 @@ export interface ConsoleExecDone {
 }
 
 /** `event: error` payload — an engine failure (bad permission, a line that could not be parsed), never a command's own error output. A command's own failure is text inside `onOut`, rendered by `render.go` as `error: <message>`. */
-export interface ConsoleExecError {
+interface ConsoleExecError {
   code: string;
   message: string;
 }

@@ -26,7 +26,7 @@ export interface OAuthProvider {
   enabled: boolean;
 }
 
-export interface OAuthConnections {
+interface OAuthConnections {
   connections: OAuthConnection[];
   providers: OAuthProvider[];
   /**

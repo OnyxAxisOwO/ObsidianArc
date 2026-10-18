@@ -13,7 +13,7 @@ import type { StringKey } from '@/composables/useI18n';
 
 export type SafeCategory = 'users' | 'providers' | 'credentials' | 'billing' | 'logs';
 
-export interface SafeCategoryInfo {
+interface SafeCategoryInfo {
   key: SafeCategory;
   labelKey: StringKey;
   hintKey: StringKey;

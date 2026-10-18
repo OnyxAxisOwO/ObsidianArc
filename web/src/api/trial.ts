@@ -21,7 +21,7 @@ export interface TrialMessage {
  * chat is: the request is a POST carrying the exchange, and aborting a fetch
  * is what cancels the whole chain.
  */
-export interface TrialResult {
+interface TrialResult {
   /**
    * The server's signed count of turns used. Opaque here: it exists so the
    * limit is enforced against a number the server wrote rather than one this

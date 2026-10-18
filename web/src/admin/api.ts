@@ -97,12 +97,12 @@ export interface CodeRedemption {
   redeemed_at: number;
 }
 
-export type InviteStatus = 'active' | 'used_up' | 'expired' | 'revoked';
+type InviteStatus = 'active' | 'used_up' | 'expired' | 'revoked';
 
 /** What a code is for. Independent of `owner_id`, which only ever tells "an
  *  account's own" (personal) from "nobody's" (batch and partner are both
  *  `owner_id: ''`) — only `kind` tells those last two apart. */
-export type InviteKind = 'batch' | 'partner' | 'personal';
+type InviteKind = 'batch' | 'partner' | 'personal';
 
 /** One code — a batch entry, a partner's named link, or a personal one an
  *  account carries. */
@@ -154,7 +154,7 @@ export interface InviteUse {
   via: 'register' | 'claim';
 }
 
-export interface InviteTopInviter {
+interface InviteTopInviter {
   user_id: string;
   username: string;
   nickname: string;
@@ -163,7 +163,7 @@ export interface InviteTopInviter {
 }
 
 /** One row of the partner leaderboard `InviteStats.partners` returns. */
-export interface InvitePartnerStat {
+interface InvitePartnerStat {
   id: string;
   code: string;
   name: string;
@@ -179,7 +179,7 @@ export interface InviteStats {
   partners: InvitePartnerStat[];
 }
 
-export interface GroupModelGrant {
+interface GroupModelGrant {
   model_id: string;
   access: 'use' | 'view';
 }
@@ -211,7 +211,7 @@ export interface BonusBarRow {
   pool?: BonusPool;
 }
 
-export interface BonusPool {
+interface BonusPool {
   amount: number;
   used: number;
   reset_period: '' | 'day' | 'week' | 'month';
@@ -234,7 +234,7 @@ export interface BonusGrantRow {
   created_at: number;
 }
 
-export interface BonusGrantBody {
+interface BonusGrantBody {
   all?: boolean;
   group_id?: string;
   usernames?: string[];
@@ -445,7 +445,7 @@ export interface UsageReport {
   current_rpm?: number;
 }
 
-export type UsageDimension = 'model' | 'provider' | 'user' | 'group' | 'status';
+type UsageDimension = 'model' | 'provider' | 'user' | 'group' | 'status';
 
 export interface UsageRecord {
   id: string;
@@ -497,7 +497,7 @@ export interface Meta {
 }
 
 /** A problem with this instance worth a super administrator's attention. */
-export interface UpdateNotice {
+interface UpdateNotice {
   kind: 'cloudflare_unclaimed';
 }
 
@@ -596,7 +596,7 @@ export interface AuditEntry {
   changes?: AuditChange[];
 }
 
-export interface AuditChange {
+interface AuditChange {
   field: string;
   from: string;
   to: string;
@@ -660,7 +660,7 @@ export interface LogFacets {
  * How a breakdown is ranked. Several defensible answers to "the most"; `users`
  * is the one that asks how popular something is rather than how busy.
  */
-export type UsageMetric = 'requests' | 'tokens' | 'credits' | 'users';
+type UsageMetric = 'requests' | 'tokens' | 'credits' | 'users';
 
 /**
  * The reader's distance from UTC in minutes east, which is what the server
@@ -749,8 +749,8 @@ export interface CardHolding {
 }
 
 export type GroupOption = Pick<Group, 'id' | 'name'>;
-export type ModelOption = Pick<AdminModel, 'id' | 'display_name' | 'model_id' | 'enabled' | 'provider_name'>;
-export type ProviderOption = Pick<Provider, 'id' | 'name' | 'kind' | 'enabled'>;
+type ModelOption = Pick<AdminModel, 'id' | 'display_name' | 'model_id' | 'enabled' | 'provider_name'>;
+type ProviderOption = Pick<Provider, 'id' | 'name' | 'kind' | 'enabled'>;
 /** An application registered to sign people in with accounts from here. */
 export interface SignInApplication {
   id: string;
@@ -769,7 +769,7 @@ export interface SignInApplication {
   updated_at: number;
 }
 
-export interface ApplicationInput {
+interface ApplicationInput {
   name?: string;
   description?: string;
   /** One per line, as the textarea collects them. */
@@ -790,7 +790,7 @@ export interface AdminMailSettings {
   password_set: boolean;
 }
 
-export interface AdminMailUpdate extends Omit<AdminMailSettings, 'password_set'> {
+interface AdminMailUpdate extends Omit<AdminMailSettings, 'password_set'> {
   password: string;
   clear_password: boolean;
 }
@@ -802,12 +802,12 @@ export interface AdminUserCheckSettings {
   api_key_set: boolean;
 }
 
-export interface AdminUserCheckUpdate extends Omit<AdminUserCheckSettings, 'api_key_set'> {
+interface AdminUserCheckUpdate extends Omit<AdminUserCheckSettings, 'api_key_set'> {
   api_key: string;
   clear_api_key: boolean;
 }
 
-export interface AdminUserCheckTestResult {
+interface AdminUserCheckTestResult {
   disposable: boolean;
   skipped?: boolean;
 }
@@ -863,7 +863,7 @@ export interface AdminBackupInput {
 // than a field the server ignores without a word. A field left out of a PATCH
 // keeps what the record holds.
 
-export interface AdminReviewTrialInput {
+interface AdminReviewTrialInput {
   username: string;
   email: string;
   fields: Record<string, string>;
@@ -964,7 +964,7 @@ export interface AdminBonusPoolInput {
   amount?: number;
 }
 
-export interface AdminBonusBarInput {
+interface AdminBonusBarInput {
   name: string;
   description: string;
   kind: BonusBarRow['kind'];
@@ -977,7 +977,7 @@ export interface AdminBonusBarInput {
   pool?: AdminBonusPoolInput | undefined;
 }
 
-export interface AdminCodeInput {
+interface AdminCodeInput {
   code: string;
   name: string;
   windows: string[];
@@ -987,7 +987,7 @@ export interface AdminCodeInput {
   expires_at: number;
 }
 
-export interface AdminInviteInput {
+interface AdminInviteInput {
   count: number;
   code: string;
   max_uses: number;
@@ -1001,7 +1001,7 @@ export interface AdminInviteInput {
   allow_existing?: boolean;
 }
 
-export interface AdminPolicyInput {
+interface AdminPolicyInput {
   scope: QuotaPolicy['scope'];
   scope_id: string;
   rpm: number | null;
@@ -1009,7 +1009,7 @@ export interface AdminPolicyInput {
   windows: Partial<Record<QuotaWindowKind, QuotaLimits>>;
 }
 
-export interface AdminAnnouncementInput {
+interface AdminAnnouncementInput {
   title: string;
   body: string;
   display_mode: DisplayMode;
@@ -1042,7 +1042,7 @@ function withQuery(path: string, query?: AdminQuery): string {
 }
 
 /** Where a plugin stands on this instance. Only a compiled-in one is ever `available`. */
-export type PluginState = 'available' | 'enabled' | 'disabled';
+type PluginState = 'available' | 'enabled' | 'disabled';
 
 export interface PluginText {
   en: string;

@@ -28,7 +28,7 @@ export function createProject(name: string, instructions = ''): Promise<Project>
   return api.post<Project>('/api/projects', { name, instructions });
 }
 
-export interface ProjectPatch {
+interface ProjectPatch {
   name?: string;
   instructions?: string;
 }
