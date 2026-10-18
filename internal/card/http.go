@@ -201,6 +201,8 @@ func translate(err error) error {
 		return httpx.BadRequest("Leave the code empty when generating more than one.")
 	case errors.Is(err, ErrBatchTooLarge):
 		return httpx.BadRequestCode("card_batch_too_large", "A batch makes at most %d codes at a time.", MaxBatch)
+	case errors.Is(err, ErrTooManyCards):
+		return httpx.BadRequestCode("card_too_many", "A request holds at most %d cards.", MaxCards)
 	case errors.Is(err, ErrInvalidCount):
 		return httpx.BadRequest("At least one card is required.")
 	case errors.Is(err, ErrInvalidExpiry):

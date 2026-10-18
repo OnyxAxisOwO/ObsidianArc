@@ -63,7 +63,7 @@ const columns = `p.id, p.name, p.instructions, p.created_at, p.updated_at,
 // Create makes one project for userID.
 //
 // The cap check and the insert share a transaction that locks the owner's
-// row first, for the reason apikey.Store.Issue does the same: a count
+// row first, for the reason apikey.Store.IssueModels does the same: a count
 // followed by a standalone insert lets two parallel requests both see the
 // last free slot and take it.
 func (s *Store) Create(ctx context.Context, userID, name, instructions string) (Project, error) {

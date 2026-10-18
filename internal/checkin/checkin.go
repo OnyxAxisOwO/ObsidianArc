@@ -65,12 +65,12 @@ type Config struct {
 }
 
 var (
-	ErrDisabled      = errors.New("checkin: check-in is switched off")
-	ErrAlreadyToday  = errors.New("checkin: already checked in today")
-	ErrNoSuchRule    = errors.New("checkin: no such milestone")
-	ErrNotReached    = errors.New("checkin: the milestone has not been reached")
-	ErrAlreadyClaimd = errors.New("checkin: that milestone was already claimed for this period")
-	ErrInvalid       = errors.New("checkin: invalid configuration")
+	ErrDisabled       = errors.New("checkin: check-in is switched off")
+	ErrAlreadyToday   = errors.New("checkin: already checked in today")
+	ErrNoSuchRule     = errors.New("checkin: no such milestone")
+	ErrNotReached     = errors.New("checkin: the milestone has not been reached")
+	ErrAlreadyClaimed = errors.New("checkin: that milestone was already claimed for this period")
+	ErrInvalid        = errors.New("checkin: invalid configuration")
 	// The reward a milestone names cannot be paid any more: its bar was
 	// switched off or ended, or its card windows are gone. The claim is
 	// refused, and nothing is recorded, so it can be tried again once the
@@ -114,10 +114,18 @@ func (s *Service) Enabled() bool { return s.settings.Bool(settings.CheckinEnable
 // rather than failing every check-in for a typo.
 func (s *Service) Location() *time.Location {
 	name := strings.TrimSpace(s.settings.Get(settings.CheckinTimezone))
-	if loc, err := time.LoadLocation(name); err == nil && name != "" {
-		return loc
+	if name == "" {
+		return time.UTC
 	}
-	return time.UTC
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		// A typo has always fallen back here. The log is for a valid name the host
+		// cannot load, which has no zone database to read from: every day is then
+		// counted in UTC, and nothing else reports it.
+		slog.Warn("checkin: timezone cannot be loaded, counting days in UTC", "zone", name, "error", err)
+		return time.UTC
+	}
+	return loc
 }
 
 // Config is the rewards as saved, empty when none were.

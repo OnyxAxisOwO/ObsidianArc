@@ -218,11 +218,11 @@ func newFixture(t *testing.T) *fixture {
 	}
 
 	keys := apikey.NewStore(db)
-	_, token, err := keys.Issue(ctx, account.ID, "test", "", 0)
+	_, token, err := keys.IssueModels(ctx, account.ID, "test", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, adminToken, err := keys.Issue(ctx, administrator.ID, "root", "", 0)
+	_, adminToken, err := keys.IssueModels(ctx, administrator.ID, "root", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1215,7 +1215,7 @@ func TestAnUnverifiedAccountIsNotLockedOutOfTheAPI(t *testing.T) {
 	if unconfirmed.EmailVerified {
 		t.Fatal("the fixture account is confirmed; this test proves nothing")
 	}
-	_, token, err := f.keys.Issue(ctx, unconfirmed.ID, "unconfirmed key", "", 0)
+	_, token, err := f.keys.IssueModels(ctx, unconfirmed.ID, "unconfirmed key", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1268,7 +1268,7 @@ func TestPausedKeyIsRefused(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture(t)
 
-	keyRecord, pausedToken, err := f.keys.Issue(ctx, f.account.ID, "paused-key", "", 0)
+	keyRecord, pausedToken, err := f.keys.IssueModels(ctx, f.account.ID, "paused-key", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1515,7 +1515,7 @@ func TestRefusedRequestsAreLoggedAgainstTheirCaller(t *testing.T) {
 	}
 
 	// A paused key is refused by name: the owner is known, and the row must say so.
-	pausedKey, pausedToken, err := f.keys.Issue(ctx, f.account.ID, "paused", "", 0)
+	pausedKey, pausedToken, err := f.keys.IssueModels(ctx, f.account.ID, "paused", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -153,6 +153,27 @@ func (s *Store) Get(ctx context.Context, q database.Queryer, scope Scope, scopeI
 		scope, scopeID))
 }
 
+// accountLayers is the order Resolve layers an account's policies in: the global
+// level, then the account's group when it has one, then the account's own. A
+// level with no row is nil and contributes nothing. Both the single read and the
+// batch read stack levels through here, so the rule for which levels count is
+// written once.
+func accountLayers(hasGroup bool, global, group, user *Policy) []Policy {
+	layers := make([]Policy, 0, 3)
+	if global != nil {
+		layers = append(layers, *global)
+	}
+	// An account with no group must not pick up a group row whose id is empty,
+	// which the query for its layers would otherwise match.
+	if hasGroup && group != nil {
+		layers = append(layers, *group)
+	}
+	if user != nil {
+		layers = append(layers, *user)
+	}
+	return layers
+}
+
 // layersFor reads the policies that apply to one account in one query, in the
 // order Resolve layers them. Every chat and API turn resolves its account's
 // policy, and three lookups were three round trips before the turn could
@@ -181,15 +202,13 @@ func (s *Store) layersFor(ctx context.Context, q database.Queryer, groupID, user
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	layers := make([]Policy, 0, 3)
-	for _, scope := range []Scope{ScopeGlobal, ScopeGroup, ScopeUser} {
-		// An account with no group must not pick up a group row whose id is
-		// empty, which the query above would otherwise match.
-		if policy, ok := byScope[scope]; ok && (scope != ScopeGroup || groupID != "") {
-			layers = append(layers, policy)
+	pick := func(scope Scope) *Policy {
+		if policy, ok := byScope[scope]; ok {
+			return &policy
 		}
+		return nil
 	}
-	return layers, nil
+	return accountLayers(groupID != "", pick(ScopeGlobal), pick(ScopeGroup), pick(ScopeUser)), nil
 }
 
 // GetOrEmpty reads one level, as an empty policy where it has no row, which is

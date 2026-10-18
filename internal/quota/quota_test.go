@@ -1206,26 +1206,26 @@ func TestCountersNeverGoNegative(t *testing.T) {
 func TestConcurrencyCapIsPerAccount(t *testing.T) {
 	service, _ := newService(t)
 
-	releases := make([]func(), 0, MaxConcurrentPerUser)
-	for i := 0; i < MaxConcurrentPerUser; i++ {
-		release, err := service.Begin("user-1", MaxConcurrentPerUser)
+	releases := make([]func(), 0, DefaultMaxConcurrent)
+	for i := 0; i < DefaultMaxConcurrent; i++ {
+		release, err := service.Begin("user-1", DefaultMaxConcurrent)
 		if err != nil {
-			t.Fatalf("slot %d of an allowed %d was refused", i+1, MaxConcurrentPerUser)
+			t.Fatalf("slot %d of an allowed %d was refused", i+1, DefaultMaxConcurrent)
 		}
 		releases = append(releases, release)
 	}
 
-	if _, err := service.Begin("user-1", MaxConcurrentPerUser); err != ErrTooManyInFlight {
+	if _, err := service.Begin("user-1", DefaultMaxConcurrent); err != ErrTooManyInFlight {
 		t.Fatalf("err = %v, want ErrTooManyInFlight", err)
 	}
 	// Another account is unaffected.
-	if _, err := service.Begin("user-2", MaxConcurrentPerUser); err != nil {
+	if _, err := service.Begin("user-2", DefaultMaxConcurrent); err != nil {
 		t.Fatalf("a second account was blocked by the first: %v", err)
 	}
 
 	releases[0]()
 	releases[0]() // idempotent: a deferred release may also be called early
-	if _, err := service.Begin("user-1", MaxConcurrentPerUser); err != nil {
+	if _, err := service.Begin("user-1", DefaultMaxConcurrent); err != nil {
 		t.Fatalf("a freed slot was not reusable: %v", err)
 	}
 }

@@ -352,13 +352,7 @@ func (s *Store) poolCandidates(ctx context.Context, q database.Queryer, userID, 
 		if err != nil || !(Bar{ModelIDs: ids}).covers(modelID) {
 			continue
 		}
-		on := mode == ModeOn
-		if mode == ModeUser {
-			on = defOn
-			if enabled != nil {
-				on = *enabled
-			}
-		}
+		on := switchedOn(mode, defOn, enabled)
 		switch phase {
 		case Exclusive:
 			// Every pool that covers the model pays here, whatever its switch: the

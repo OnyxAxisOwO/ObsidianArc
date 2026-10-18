@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"strconv"
 	"strings"
@@ -208,7 +209,7 @@ func (s *Service) reserve(
 			return Reservation{}, err
 		}
 		if only {
-			return s.reservePool(ctx, account, modelID, estimate, policy, now)
+			return s.reserveFromBonus(ctx, account, modelID, estimate, policy, now, bonus.Exclusive)
 		}
 	}
 
@@ -223,7 +224,7 @@ func (s *Service) reserve(
 		return Reservation{}, err
 	}
 	if s.bonus != nil && estimate.Credits > 0 {
-		if fallback, ferr := s.reserveFallback(ctx, account, modelID, estimate, policy, now); ferr == nil {
+		if fallback, ferr := s.reserveFromBonus(ctx, account, modelID, estimate, policy, now, bonus.Fallback); ferr == nil {
 			return fallback, nil
 		} else if !errors.Is(ferr, bonus.ErrInsufficient) {
 			return Reservation{}, ferr
@@ -235,56 +236,27 @@ func (s *Service) reserve(
 	return Reservation{}, err
 }
 
-// reserveFallback pays for a request out of the bars that were kept back,
-// whole or not at all. The allowance windows are not touched: they have nothing
-// left, and counting the request against them would only push them further
-// over. The burst limits are: a bar is more allowance, not a way round them.
-func (s *Service) reserveFallback(
-	ctx context.Context, account user.User, modelID string, estimate Estimate, policy Policy, now time.Time,
+// reserveFromBonus pays for a request out of the bonus rows, whole or not at
+// all. phase picks the rows: Fallback is what was kept back for when the
+// windows have nothing left, Exclusive is what only a pool may pay for. The
+// allowance windows are not touched: they have nothing left, and counting the
+// request against them would only push them further over. The burst limits
+// are: a row is more allowance, not a way round them.
+func (s *Service) reserveFromBonus(
+	ctx context.Context, account user.User, modelID string, estimate Estimate, policy Policy, now time.Time, phase bonus.Phase,
 ) (Reservation, error) {
 	var holds []bonus.Hold
 	err := s.db.Tx(ctx, func(tx *database.Tx) error {
-		// The bars come before the minute, as in the lock order above. A refund
-		// of one of these holds takes the bar and then the minute, so taking the
+		// The rows come before the minute, as in the lock order above. A refund
+		// of one of these holds takes the row and then the minute, so taking the
 		// minute first here could leave each side holding the row the other wants.
-		claimed, takeErr := s.bonus.Take(ctx, tx, account.ID, modelID, estimate.Credits, bonus.Fallback)
+		claimed, takeErr := s.bonus.Take(ctx, tx, account.ID, modelID, estimate.Credits, phase)
 		if takeErr != nil && !errors.Is(takeErr, bonus.ErrInsufficient) {
 			return takeErr
 		}
-		// A bar that cannot pay whole is decided after the minute, so a request
+		// A row that cannot pay whole is decided after the minute, so a request
 		// the minute refuses is still reported as that refusal, the same as when
 		// the minute was checked first.
-		if err := reserveRate(ctx, tx, policy, scopeKey(account.ID), estimate.Tokens, now); err != nil {
-			return err
-		}
-		if takeErr != nil {
-			return takeErr
-		}
-		holds = claimed
-		return nil
-	})
-	if err != nil {
-		return Reservation{}, err
-	}
-	res := Reservation{at: now, funding: &funding{holds: holds}, guard: &releaseGuard{}}
-	if policy.tokenRateOn() {
-		res.covered = estimate.Tokens
-	}
-	return s.noted(ctx, res), nil
-}
-
-// reservePool is reserveFallback for a model only a pool may pay for: the
-// pools pay the whole request or it is refused with what refused it.
-func (s *Service) reservePool(
-	ctx context.Context, account user.User, modelID string, estimate Estimate, policy Policy, now time.Time,
-) (Reservation, error) {
-	var holds []bonus.Hold
-	err := s.db.Tx(ctx, func(tx *database.Tx) error {
-		// The pools before the minute, as reserveFallback takes the bars first.
-		claimed, takeErr := s.bonus.Take(ctx, tx, account.ID, modelID, estimate.Credits, bonus.Exclusive)
-		if takeErr != nil && !errors.Is(takeErr, bonus.ErrInsufficient) {
-			return takeErr
-		}
 		if err := reserveRate(ctx, tx, policy, scopeKey(account.ID), estimate.Tokens, now); err != nil {
 			return err
 		}
@@ -983,9 +955,7 @@ func readCurrentCounters(
 	ctx context.Context, db *database.DB, accounts []user.User, now time.Time, counters map[counterSlot]counter,
 ) error {
 	args := make([]any, 0, len(accounts)+2*len(AllowanceWindows))
-	keys := make([]string, len(accounts))
-	for i, account := range accounts {
-		keys[i] = "?"
+	for _, account := range accounts {
 		args = append(args, scopeKey(account.ID))
 	}
 	kinds := make([]string, 0, len(AllowanceWindows))
@@ -996,7 +966,7 @@ func readCurrentCounters(
 
 	rows, err := db.Query(ctx,
 		`SELECT scope_key, window_kind, window_start, requests, tokens, credits FROM usage_counters
-		 WHERE scope_key IN (`+strings.Join(keys, ", ")+`) AND (`+strings.Join(kinds, " OR ")+`)`,
+		 WHERE scope_key IN (`+database.Placeholders(len(accounts))+`) AND (`+strings.Join(kinds, " OR ")+`)`,
 		args...)
 	if err != nil {
 		return fmt.Errorf("quota: read counters: %w", err)
@@ -1019,10 +989,11 @@ func readCurrentCounters(
 // overview of everyone's allowance reads, where one query per account per
 // window would make the page's cost grow with the instance.
 //
-// The answers are the ones SummaryFor gives each account — the resolution and
-// the bucket arithmetic are the same code — and a counter for a window that
-// has since rolled over is simply not found, which reads as nothing spent,
-// exactly as it does there.
+// The answers are the ones SummaryFor gives each account. The stacking of
+// levels is accountLayers, which PolicyFor shares, and the bucket arithmetic is
+// bucketStart, so the two readers cannot disagree about which levels count. A
+// counter for a window that has since rolled over is simply not found, which
+// reads as nothing spent, exactly as it does there.
 func (s *Service) SummariesFor(ctx context.Context, accounts []user.User) (map[string]Summary, error) {
 	policies, err := s.policies.List(ctx)
 	if err != nil {
@@ -1060,11 +1031,10 @@ func (s *Service) SummariesFor(ctx context.Context, accounts []user.User) (map[s
 	for _, account := range accounts {
 		policy := newPolicy(ScopeUser, account.ID)
 		if !s.exempt(account) {
-			layers := []Policy{global}
-			if account.GroupID != "" {
-				layers = append(layers, groups[account.GroupID])
-			}
-			policy = Resolve(append(layers, users[account.ID])...)
+			// A level with no row is the zero Policy here, which Resolve passes
+			// over, so the account's own level is always stacked.
+			group, own := groups[account.GroupID], users[account.ID]
+			policy = Resolve(accountLayers(account.GroupID != "", &global, &group, &own)...)
 		}
 		anchor := anchorFor(account.CreatedAt, resetAt)
 		summary := Summary{Unlimited: policy.Unlimited(), Display: display, Windows: make([]WindowUsage, 0, len(AllowanceWindows))}
@@ -1187,6 +1157,11 @@ func globalResetAt(ctx context.Context, q database.Queryer) (int64, error) {
 	}
 	resetAt, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil {
+		// Read as no reset, which drops the usage counted against the real one:
+		// every counter is looked up from the account's creation. Not refused,
+		// because a refused reservation would stop every account on the instance,
+		// but logged, because only a reset writes this row.
+		slog.Warn("quota: global reset is not a timestamp, reading it as never reset", "value", raw, "error", err)
 		return 0, nil
 	}
 	return resetAt, nil
@@ -1303,13 +1278,11 @@ func (s *Service) ResetWindows(ctx context.Context, q database.Queryer, userIDs 
 		end := min(start+batch, len(userIDs))
 		chunk := userIDs[start:end]
 
-		placeholders := make([]string, len(chunk))
 		args := make([]any, len(chunk))
 		for i, userID := range chunk {
-			placeholders[i] = "?"
 			args[i] = scopeKey(userID)
 		}
-		scope := `scope_key IN (` + strings.Join(placeholders, ", ") + `)`
+		scope := `scope_key IN (` + database.Placeholders(len(chunk)) + `)`
 
 		reset := func(tx database.Queryer) error {
 			if err := lockAllowanceBoundary(ctx, tx); err != nil {
@@ -1356,10 +1329,6 @@ func (s *Service) Reset(ctx context.Context, userIDs []string) error {
 	return s.ResetWindows(ctx, nil, userIDs, nil)
 }
 
-// Windows are fixed and aligned rather than rolling, so "when does this
-// reset" has an answer the interface can show. Minutes and five-hour blocks
-// align to the epoch; weeks to Monday and months to the first, both in UTC,
-// so an instance behaves the same wherever it runs.
 // bucketStart is the moment the window a turn falls in began.
 //
 // The rate windows stay on the wall clock: a minute is a minute, and giving
@@ -1479,10 +1448,7 @@ func AsExceeded(err error) (*ExceededError, bool) {
 // many upstream connections as it likes. This is the backstop on connections
 // rather than on cost, and it is small because a person cannot read four
 // answers at once.
-const (
-	DefaultMaxConcurrent = 4
-	MaxConcurrentPerUser = DefaultMaxConcurrent
-)
+const DefaultMaxConcurrent = 4
 
 var ErrTooManyInFlight = errors.New("quota: too many generations in flight for this account")
 

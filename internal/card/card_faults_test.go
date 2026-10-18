@@ -49,7 +49,7 @@ func TestAutomaticResetPicksAnotherCardWhenItsChoiceWasSpentFirst(t *testing.T) 
 	}
 
 	race := &spendRace{Queryer: f.db, t: t}
-	spent, err := f.store.spendNextLocked(ctx, race, reader.ID, "")
+	spent, err := f.store.spendNextCard(ctx, race, reader.ID, "")
 	if err != nil {
 		t.Fatalf("reset refused with a card still unused: %v", err)
 	}

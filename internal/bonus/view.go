@@ -84,13 +84,7 @@ func (s *Store) ViewFor(ctx context.Context, userID string) ([]View, error) {
 		}
 		a := byBar[b.ID]
 		if a == nil {
-			on := b.ToggleMode == ModeOn
-			if b.ToggleMode == ModeUser {
-				on = b.DefaultOn
-				if enabled != nil {
-					on = *enabled
-				}
-			}
+			on := switchedOn(b.ToggleMode, b.DefaultOn, enabled)
 			a = &acc{view: View{
 				BarID: b.ID, Name: b.Name, Description: b.Description, Kind: b.Kind, ToggleMode: b.ToggleMode,
 				Choosable: b.Kind == KindBonus && b.ToggleMode == ModeUser,
@@ -181,13 +175,7 @@ func (s *Store) poolViews(ctx context.Context, userID string) ([]View, error) {
 	loc := s.loc()
 	for _, b := range bars {
 		p := pools[b.ID]
-		on := b.ToggleMode == ModeOn || b.ToggleMode == ModeOnly
-		if b.ToggleMode == ModeUser {
-			on = b.DefaultOn
-			if enabled := choices[b.ID]; enabled != nil {
-				on = *enabled
-			}
-		}
+		on := b.ToggleMode == ModeOnly || switchedOn(b.ToggleMode, b.DefaultOn, choices[b.ID])
 		v := View{
 			BarID: b.ID, Name: b.Name, Description: b.Description, Kind: b.Kind, ToggleMode: b.ToggleMode,
 			Choosable: b.ToggleMode == ModeUser, Enabled: on, ShowTotal: b.ShowTotal, ModelIDs: b.ModelIDs,

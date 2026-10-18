@@ -51,7 +51,9 @@ const fallbackSize = 20
 
 // Periods a reader may choose, as how far back from now they reach. A fixed
 // set rather than any duration a caller sends, so a request cannot ask for an
-// aggregate over the whole ledger on every page load.
+// aggregate over the whole ledger on every page load. A month here is thirty
+// days, a rolling window; the quota's month is a calendar month anchored to the
+// account, so the two do not line up and neither is wrong for its own page.
 var periods = map[string]time.Duration{
 	"day":   24 * time.Hour,
 	"week":  7 * 24 * time.Hour,
@@ -67,9 +69,13 @@ var metrics = map[string]string{
 
 type cachedBoard struct {
 	createdAt time.Time
-	userRows  []usage.Breakdown
-	userInfos map[string]user.User
-	modelRows []usage.Breakdown
+	// Both orders are fixed when the board is built. A read used to sort every
+	// account again, once per request, while the cache held the board for all
+	// of its readers.
+	byTokens   []usage.Breakdown
+	byRequests []usage.Breakdown
+	userInfos  map[string]user.User
+	modelRows  []usage.Breakdown
 }
 
 type Handlers struct {
@@ -242,24 +248,18 @@ func (h *Handlers) board(w http.ResponseWriter, r *http.Request) error {
 
 			// Pre-collect top user IDs by tokens and by requests so that whichever
 			// metric the caller asks for, the top accounts have their profiles resolved.
+			// They are read from the orders the board is drawn from: a place drawn
+			// without its profile is shown as anonymous.
+			byTokens, byRequests := orderAccounts(userRows)
 			topUserKeys := make(map[string]struct{})
-			tokensLimit := maxFetch
-			if tokensLimit > len(userRows) {
-				tokensLimit = len(userRows)
-			}
-			for i := 0; i < tokensLimit; i++ {
-				topUserKeys[userRows[i].Key] = struct{}{}
-			}
-
-			requestsSorted := make([]usage.Breakdown, len(userRows))
-			copy(requestsSorted, userRows)
-			sortByRequests(requestsSorted)
-			requestsLimit := maxFetch
-			if requestsLimit > len(requestsSorted) {
-				requestsLimit = len(requestsSorted)
-			}
-			for i := 0; i < requestsLimit; i++ {
-				topUserKeys[requestsSorted[i].Key] = struct{}{}
+			for _, order := range [][]usage.Breakdown{byTokens, byRequests} {
+				limit := maxFetch
+				if limit > len(order) {
+					limit = len(order)
+				}
+				for i := 0; i < limit; i++ {
+					topUserKeys[order[i].Key] = struct{}{}
+				}
 			}
 
 			// One query for up to two hundred profiles; reading them one at a time
@@ -282,10 +282,11 @@ func (h *Handlers) board(w http.ResponseWriter, r *http.Request) error {
 			}
 
 			b := &cachedBoard{
-				createdAt: time.Now(),
-				userRows:  userRows,
-				userInfos: userInfos,
-				modelRows: modelRows,
+				createdAt:  time.Now(),
+				byTokens:   byTokens,
+				byRequests: byRequests,
+				userInfos:  userInfos,
+				modelRows:  modelRows,
 			}
 			h.setCache(cacheKey, b)
 			return b, nil
@@ -340,22 +341,37 @@ func sortByRequests(rows []usage.Breakdown) {
 	})
 }
 
-func (h *Handlers) projectAccounts(b *cachedBoard, self, metric string, size int, identity string) ([]Entry, Standing) {
-	sorted := make([]usage.Breakdown, len(b.userRows))
-	copy(sorted, b.userRows)
+// sortByTokens is the tokens board's order, with the same tie-breaks as
+// sortByRequests so that the two boards rank a tie the same way.
+func sortByTokens(rows []usage.Breakdown) {
+	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].TotalTokens != rows[j].TotalTokens {
+			return rows[i].TotalTokens > rows[j].TotalTokens
+		}
+		if rows[i].Requests != rows[j].Requests {
+			return rows[i].Requests > rows[j].Requests
+		}
+		return rows[i].Key < rows[j].Key
+	})
+}
 
+// orderAccounts returns the accounts in the tokens order and in the requests
+// order. Each is a copy, so the fetched rows keep their own order.
+func orderAccounts(rows []usage.Breakdown) (byTokens, byRequests []usage.Breakdown) {
+	byTokens = make([]usage.Breakdown, len(rows))
+	copy(byTokens, rows)
+	sortByTokens(byTokens)
+	byRequests = make([]usage.Breakdown, len(rows))
+	copy(byRequests, rows)
+	sortByRequests(byRequests)
+	return byTokens, byRequests
+}
+
+func (h *Handlers) projectAccounts(b *cachedBoard, self, metric string, size int, identity string) ([]Entry, Standing) {
+	// Read-only: the cached orders are shared by every reader of the board.
+	sorted := b.byTokens
 	if metric == usage.MetricRequests {
-		sortByRequests(sorted)
-	} else {
-		sort.SliceStable(sorted, func(i, j int) bool {
-			if sorted[i].TotalTokens != sorted[j].TotalTokens {
-				return sorted[i].TotalTokens > sorted[j].TotalTokens
-			}
-			if sorted[i].Requests != sorted[j].Requests {
-				return sorted[i].Requests > sorted[j].Requests
-			}
-			return sorted[i].Key < sorted[j].Key
-		})
+		sorted = b.byRequests
 	}
 
 	ranks := make([]int, len(sorted))
@@ -458,8 +474,12 @@ func (h *Handlers) projectModels(ctx context.Context, modelRows []usage.Breakdow
 	entries := make([]ModelEntry, 0, len(kept))
 	for i, row := range kept {
 		m := known[row.Key]
+		// Places are shared on the metric alone, as on the accounts board: models
+		// level on the figure share a place, so the figure beside a name never
+		// implies a lead that the figure beside the other name does not show.
+		// Users only orders the models that are level.
 		rank := i + 1
-		if i > 0 && kept[i].Users == kept[i-1].Users && valueOf(kept[i], metric) == valueOf(kept[i-1], metric) {
+		if i > 0 && valueOf(kept[i], metric) == valueOf(kept[i-1], metric) {
 			rank = entries[i-1].Rank
 		}
 		entries = append(entries, ModelEntry{

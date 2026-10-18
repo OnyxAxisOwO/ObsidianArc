@@ -45,6 +45,24 @@ const (
 	ModeOnly Mode = "only"
 )
 
+// switchedOn is whether an account has a bar switched on. Only ModeUser lets
+// the account choose, falling back to the bar's default until it does. A pool
+// in ModeOnly is not switched on: it is never drawn on in order, only paid for
+// alone, so nothing reads the answer for it. Grants never sit on a pool.
+func switchedOn(mode Mode, defOn bool, enabled *bool) bool {
+	switch mode {
+	case ModeOn:
+		return true
+	case ModeUser:
+		if enabled != nil {
+			return *enabled
+		}
+		return defOn
+	default:
+		return false
+	}
+}
+
 // Bar is the rules; what an account holds in it is Grants.
 type Bar struct {
 	ID          string   `json:"id"`

@@ -244,7 +244,7 @@ func (s *Service) Claim(ctx context.Context, userID, ruleID string) (Reward, err
 			return fmt.Errorf("checkin: record claim: %w", err)
 		}
 		if n, _ := res.RowsAffected(); n == 0 {
-			return ErrAlreadyClaimd
+			return ErrAlreadyClaimed
 		}
 		if err := s.give(ctx, tx, userID, rule.Reward, "checkin", now); err != nil {
 			// Named so the response can say the reward is gone rather than

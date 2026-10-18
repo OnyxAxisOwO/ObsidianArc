@@ -255,7 +255,7 @@ func validate(in Input) (Input, error) {
 // Create records one report for userID.
 //
 // The daily cap and the insert share a transaction that locks the author's
-// row first, for the reason apikey.Store.Issue and project.Store.Create do
+// row first, for the reason apikey.Store.IssueModels and project.Store.Create do
 // the same: a count followed by a standalone insert lets two parallel
 // requests both see the last free slot and take it, and the deployment notes
 // allow a second server process against one database, so a mutex here would

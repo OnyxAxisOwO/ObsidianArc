@@ -145,14 +145,12 @@ func (h *Handlers) chat(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	sink := func(event adapter.Event) error {
-		switch event.Type {
-		case adapter.EventDelta:
+		if event.Type == adapter.EventDelta {
 			return sse.Event("delta", map[string]any{"text": event.Text})
-		case adapter.EventReasoning:
-			// Swallowed. A trial is a sample of the answer, and the reasoning
-			// of a model the visitor did not choose is noise.
-			return nil
 		}
+		// Everything else is dropped, reasoning included: a trial is a sample of
+		// the answer, and the reasoning of a model the visitor did not choose is
+		// noise.
 		return nil
 	}
 
