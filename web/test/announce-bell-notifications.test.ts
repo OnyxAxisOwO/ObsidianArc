@@ -5,6 +5,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, nextTick, type App } from 'vue';
+import { createMemoryHistory, createRouter } from 'vue-router';
 import { changeLanguage, t } from '@/composables/useI18n';
 import AnnounceBell from '@/announce/AnnounceBell.vue';
 
@@ -26,11 +27,14 @@ vi.mock('@/api/client', () => ({
     post: vi.fn() as unknown as <T>(url: string, body?: unknown) => Promise<T>,
   },
 }));
-vi.mock('@/router', () => ({ router: { push: vi.fn() } }));
 
 import { api } from '@/api/client';
-import { router } from '@/router';
 import { notificationList, notificationsUnread, stopNotifications } from '@/stores/notifications';
+
+// The row navigates through the router the bell is mounted with. A memory
+// router records the push without moving the page.
+const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:p(.*)*', component: { render: () => null } }] });
+const pushRoute = vi.spyOn(router, 'push').mockResolvedValue(undefined);
 
 const post = vi.mocked(api.post);
 
@@ -54,6 +58,7 @@ afterEach(() => {
 
 async function mount(): Promise<void> {
   app = createApp(AnnounceBell);
+  app.use(router);
   app.mount(host);
   await new Promise((resolve) => setTimeout(resolve, 0));
   await nextTick();
@@ -109,7 +114,7 @@ describe('the bell, with notifications added', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     await nextTick();
 
-    expect(router.push).toHaveBeenCalledWith('/usage');
+    expect(pushRoute).toHaveBeenCalledWith('/usage');
     expect(post).toHaveBeenCalledWith('/api/notifications/read', { up_to: 2000 });
     expect(api.get).toHaveBeenCalledWith('/api/notifications/poll?after=0');
     expect(notificationsUnread.value).toBe(3);

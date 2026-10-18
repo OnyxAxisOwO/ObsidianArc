@@ -2,8 +2,8 @@
 // The option list, drawn here instead of by the operating system.
 //
 // A native <select> hands its popup to the platform. That is why every
-// dropdown here used to open a grey OS list with a blue bar through it, in
-// the middle of a rounded translucent panel.
+// dropdown here would open a grey OS list with a blue bar through it, in the
+// middle of a rounded translucent panel, and no theme could restyle it.
 //
 // What makes this harder than an ordinary menu: a select appears inside
 // something that clips, every time. The settings body and the admin body
@@ -18,8 +18,8 @@
 // That teleport is also the cost: a node on <body> has no idea its trigger
 // has moved. So while a list is open one frame callback watches the trigger —
 // it closes when the trigger leaves the document or the window, and re-places
-// when it moves. Unmounting is handled for us now that this is a component,
-// which is the one part the hand-written version had to police by hand.
+// when it moves. Unmounting takes the watcher down with the component, so the
+// frame callback cannot outlive the trigger it was watching.
 
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import { useEventListener, useRafFn } from '@vueuse/core';
@@ -48,6 +48,9 @@ const emit = defineEmits<{
 
 // Long enough for the transition in the stylesheet.
 const CLOSE_MS = 160;
+// A pause longer than this between keys starts a new type-ahead word, about
+// where a native select starts one.
+const TYPE_AHEAD_MS = 900;
 
 // aria-activedescendant needs an id to point at, and two selects on one
 // screen must not mint the same one.
@@ -81,7 +84,13 @@ const origin = ref<'top left' | 'bottom left'>('top left');
 // whole list, and the watch below runs sixty times a second.
 let natural = 0;
 let width = 0;
-let anchor = '';
+// Where the trigger was when the list was last placed; null makes the next
+// frame place it whatever the trigger did.
+let anchor: { top: number; left: number; width: number } | null = null;
+let hideTimer = 0;
+// The type-ahead's letters so far and when the last one arrived (see search).
+let typed = '';
+let typedAt = 0;
 
 const label = computed(() => props.choices.find((choice) => choice.value === props.modelValue)?.label ?? '');
 
@@ -153,12 +162,8 @@ async function openList(): Promise<void> {
 
   await nextTick();
   if (!open.value) return;
-  // Before anything is placed: a hidden node has no height.
-  measure();
-  place();
-  markActive(Math.max(0, choices.value.findIndex((choice) => choice.value === props.modelValue)));
-  scrollArea.value?.update();
-  anchor = '';
+  settle();
+  anchor = null;
   follow.resume();
 
   // WebKit does not focus a button on click, and every key this control reads
@@ -181,7 +186,19 @@ async function openList(): Promise<void> {
   });
 }
 
-let hideTimer = 0;
+/**
+ * Sizes and places a list that has just been built, and marks the row the
+ * reader starts on: the chosen value's, or the first match once a search has
+ * narrowed the list. Measured before anything is placed, because a hidden
+ * node has no height.
+ */
+function settle(): void {
+  measure();
+  place();
+  active.value = 0;
+  markActive(query.value ? 0 : Math.max(0, choices.value.findIndex((choice) => choice.value === props.modelValue)));
+  scrollArea.value?.update();
+}
 
 function close(): void {
   if (!open.value) return;
@@ -230,12 +247,11 @@ const follow = useRafFn(() => {
     close();
     return;
   }
-  const key = `${box.top}|${box.left}|${box.width}`;
-  if (key === anchor) return;
+  if (anchor && anchor.top === box.top && anchor.left === box.left && anchor.width === box.width) return;
   // A trigger that changed width changes the list's width with it, which is
   // the one move that needs the size measured again.
-  if (anchor.split('|')[2] !== String(box.width)) measure();
-  anchor = key;
+  if (anchor?.width !== box.width) measure();
+  anchor = { top: box.top, left: box.left, width: box.width };
   place();
 }, { immediate: false });
 
@@ -256,17 +272,15 @@ useEventListener(document, 'pointerdown', (event: Event) => {
 // --- type-ahead ---------------------------------------------------------------
 //
 // The letters typed so far and when the last one arrived, so a pause starts a
-// new word the way a native select does.
-let typed = '';
-let typedAt = 0;
-
+// new word the way a native select does. Lower-cased the way the search box
+// lower-cases, so the two agree on what a label starts with.
 function search(): void {
   const from = typed.length > 1 ? active.value - 1 : active.value;
   const at = props.choices.findIndex((choice, index) =>
-    index > from && choice.label.toLowerCase().startsWith(typed));
+    index > from && choice.label.toLocaleLowerCase().startsWith(typed));
   const found = at >= 0
     ? at
-    : props.choices.findIndex((choice) => choice.label.toLowerCase().startsWith(typed));
+    : props.choices.findIndex((choice) => choice.label.toLocaleLowerCase().startsWith(typed));
   if (found < 0) return;
   if (open.value) markActive(found);
   else choose(props.choices[found]!.value);
@@ -326,22 +340,24 @@ function onKey(event: KeyboardEvent): void {
   // A single printable character, so a shortcut with a modifier is left alone.
   if (editing || event.key.length !== 1 || event.ctrlKey || event.metaKey || event.altKey) return;
   const now = Date.now();
-  typed = now - typedAt > 900 ? event.key.toLowerCase() : typed + event.key.toLowerCase();
+  const letter = event.key.toLocaleLowerCase();
+  typed = now - typedAt > TYPE_AHEAD_MS ? letter : typed + letter;
   typedAt = now;
   search();
 }
 
+// What the list draws, as one string. Callers write their options inline, so
+// the array is a new reference on every render of the parent; a re-render that
+// leaves the rows alone must not re-measure the list or move the highlight.
+const rows = computed(() => JSON.stringify(choices.value.map((choice) => [choice.value, choice.label])));
+
 // A rebuilt list has a new height, a new set of ids, and possibly fewer rows
 // than the arrow keys had walked to.
-watch(choices, async () => {
+watch(rows, async () => {
   if (!open.value) return;
   await nextTick();
   if (!open.value) return;
-  measure();
-  place();
-  active.value = 0;
-  markActive(query.value ? 0 : Math.max(0, choices.value.findIndex((choice) => choice.value === props.modelValue)));
-  scrollArea.value?.update();
+  settle();
 });
 
 onBeforeUnmount(() => {

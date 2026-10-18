@@ -7,7 +7,8 @@
 
 import { computed, ref } from 'vue';
 import type { UsageSlot } from '@/admin/api';
-import { currentLanguage, t } from '@/composables/useI18n';
+import { t } from '@/composables/useI18n';
+import { localeTag } from '@/lib/format';
 import { intensity } from './scale';
 
 const props = defineProps<{
@@ -21,7 +22,7 @@ const HOURS = Array.from({ length: 24 }, (_, hour) => hour);
 // A Sunday, so that adding a weekday number lands on that weekday.
 const SUNDAY = Date.UTC(2023, 11, 31);
 
-const locale = computed(() => currentLanguage() === 'zh' ? 'zh-CN' : 'en-US');
+const locale = computed(() => localeTag());
 const hovered = ref<{ weekday: number; hour: number } | null>(null);
 
 const grid = computed(() => {

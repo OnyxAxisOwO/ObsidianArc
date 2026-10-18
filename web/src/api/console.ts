@@ -1,4 +1,4 @@
-// The terminal's HTTP client: CONTRACT.md #4.
+// The terminal's HTTP client.
 //
 // Three endpoints, one of which streams. `exec` is deliberately the same
 // shape as `sendTurn` in `api/chat.ts` — fetch + ReadableStream, not
@@ -6,7 +6,8 @@
 // aborting a fetch is the only cancellation mechanism: there is no stop
 // endpoint, so `Ctrl-C` in the pane is one `AbortController.abort()`.
 
-import { ApiError, api, fetchApi, noteSessionEnded } from '@/api/client';
+import { ApiError, api, fetchApi } from '@/api/client';
+import { readSSE, streamRefusal, type SSEEvent } from '@/api/sse';
 import { currentLanguage, t } from '@/composables/useI18n';
 
 export interface ConsoleYou {
@@ -158,54 +159,15 @@ export async function execConsoleLine(
     signal,
   });
 
-  if (!response.ok) {
-    // Everything checkable before the stream opens — permission, a malformed
-    // line — is checked before it opens, so a refusal here is still an
-    // ordinary JSON error with a real status, same as `sendTurn`.
-    const text = await response.text();
-    let code = 'error';
-    let message = t('failed');
-    let details: Record<string, unknown> = {};
-    try {
-      const body = JSON.parse(text) as { error?: { code?: string; message?: string } & Record<string, unknown> };
-      if (body.error) {
-        const { code: bodyCode, message: bodyMessage, ...rest } = body.error;
-        code = bodyCode ?? code;
-        message = bodyMessage ?? message;
-        details = rest;
-      }
-    } catch {
-      // A non-JSON body (a proxy's error page) leaves the defaults.
-    }
-    // The terminal is a stream too; a console left open when the session
-    // ends has to sign out with every other page, not sit on a dead prompt.
-    noteSessionEnded(code);
-    throw new ApiError(response.status, code, message, details);
-  }
-
+  // Everything checkable before the stream opens — permission, a malformed
+  // line — is checked before it opens, same as `sendTurn`. The terminal is a
+  // stream too, so a console left open when the session ends signs out with
+  // every other page rather than sitting on a dead prompt.
+  if (!response.ok) throw await streamRefusal(response);
   if (!response.body) throw new ApiError(0, 'stream', t('streamMissing'));
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-
   try {
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-
-      // `\r\n\r\n` as well as `\n\n` — see api/chat.ts for why: a proxy that
-      // rewrites line endings must not turn this into one event that never
-      // closes.
-      let boundary = /\r?\n\r?\n/.exec(buffer);
-      while (boundary) {
-        const frame = buffer.slice(0, boundary.index);
-        buffer = buffer.slice(boundary.index + boundary[0].length);
-        boundary = /\r?\n\r?\n/.exec(buffer);
-        dispatch(frame, handlers);
-      }
-    }
+    await readSSE(response.body, (event) => dispatch(event, handlers));
   } catch (error) {
     // Stop is one `AbortController.abort()` and nothing else — there is no
     // stop endpoint. The aborted read is the expected shape of cancelling,
@@ -215,16 +177,7 @@ export async function execConsoleLine(
   }
 }
 
-function dispatch(frame: string, handlers: ConsoleExecHandlers): void {
-  let event = '';
-  let data = '';
-
-  for (const line of frame.split(/\r?\n/)) {
-    if (line.startsWith('event:')) event = line.slice(6).trim();
-    else if (line.startsWith('data:')) data += line.slice(5).trim();
-  }
-  if (!data) return;
-
+function dispatch({ event, data }: SSEEvent, handlers: ConsoleExecHandlers): void {
   let payload: unknown;
   try {
     payload = JSON.parse(data);
@@ -234,9 +187,13 @@ function dispatch(frame: string, handlers: ConsoleExecHandlers): void {
   }
 
   switch (event) {
-    case 'out':
-      handlers.onOut?.((payload as { text: string }).text);
+    // Destructuring still throws for a null frame, as reading .text always did:
+    // the terminal's stream test relies on a failing handler closing the stream.
+    case 'out': {
+      const { text } = payload as { text?: unknown };
+      if (typeof text === 'string') handlers.onOut?.(text);
       break;
+    }
     case 'done':
       handlers.onDone?.(payload as ConsoleExecDone);
       break;

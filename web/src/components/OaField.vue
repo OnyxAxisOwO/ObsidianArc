@@ -4,6 +4,10 @@
 // A <label> rather than a div, so the text is part of the control's hit area
 // and reads as its name — which is also why the select's outside-click check
 // has to treat a click on this element as inside.
+//
+// Only for a row with one control. A group of controls (a segmented choice, a
+// radio set) keeps a plain div.oa-field: a label around the group hands its
+// click to the first control and cannot name the group.
 
 const props = defineProps<{
   label: string;

@@ -7,7 +7,6 @@
 // the administrator has not switched check-in on.
 
 import { computed, onMounted, ref } from 'vue';
-import { ApiError } from '@/api/client';
 import {
   checkInNow, claimMilestone, fetchCheckin,
   type CheckinReward, type CheckinRule, type CheckinStatus,
@@ -15,6 +14,7 @@ import {
 import OaBadge from '@/components/OaBadge.vue';
 import OaCollapsible from '@/components/OaCollapsible.vue';
 import { t } from '@/composables/useI18n';
+import { apiErrorText } from '@/lib/api-error';
 import { apiFailureText } from '@/lib/api-error-text';
 
 const emit = defineEmits<{ changed: [] }>();
@@ -63,7 +63,7 @@ async function checkIn(): Promise<void> {
     // the page is a day or a click behind, and a successful read clears the
     // error, which would erase the reason the account is looking for.
     await load();
-    error.value = caught instanceof ApiError ? caught.message : t('checkinFailed');
+    error.value = apiErrorText(caught, 'checkinFailed');
     section.value?.reveal();
   } finally {
     busy.value = '';
@@ -81,7 +81,7 @@ async function claim(rule: CheckinRule): Promise<void> {
     emit('changed');
   } catch (caught) {
     await load();
-    error.value = caught instanceof ApiError ? caught.message : t('checkinFailed');
+    error.value = apiErrorText(caught, 'checkinFailed');
     section.value?.reveal();
   } finally {
     busy.value = '';

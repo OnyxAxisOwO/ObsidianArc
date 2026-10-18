@@ -1,4 +1,4 @@
-// The terminal: CONTRACT.md #5. Imported last from index.scss, after
+// The terminal. Imported last from index.scss, after
 // surfaces — nothing else in the app depends on load order here, but this is
 // where a rule that turns out to need overriding one of surfaces' own goes
 // without a specificity fight.
@@ -72,7 +72,7 @@
 }
 
 /* --- tab strip -------------------------------------------------------------
-   CONTRACT.md #5.2: never wider than the card, whatever the tab count. The
+   Never wider than the card, whatever the tab count. The
    strip is a flex row of two flex-shrink:0 ends (the scroller, the settings
    button) around nothing that can itself grow past the card — the scroller
    is the only thing here allowed to overflow, and it turns that overflow into

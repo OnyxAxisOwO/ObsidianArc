@@ -2,11 +2,9 @@
 // The chat screen, and the column that opens beside it.
 //
 // /settings, /keys, /usage and /about are child routes of this one rather
-// than pages of their own. That is what the hand-written version was doing by
-// calling `renderChatPage` at the top of each of those screens and then
-// opening a panel over the row it returned — except that it rebuilt the whole
-// chat every time. Here the chat stays mounted and the child route is the
-// panel, which is both less code and one fewer thing to get wrong.
+// than pages of their own. The chat stays mounted and the child route is the
+// panel opened over the row beside it, so no screen has to draw the chat
+// itself, and leaving a panel does not rebuild the conversation behind it.
 
 import { computed, onMounted } from 'vue';
 import { useMediaQuery } from '@vueuse/core';

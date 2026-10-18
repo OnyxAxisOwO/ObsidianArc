@@ -29,7 +29,7 @@ import { celebrate } from '@/composables/useConfetti';
 import { t } from '@/composables/useI18n';
 import { usePanelExit } from '@/composables/usePanelExit';
 import { IconClose, IconLock, IconPlus, IconRefresh } from '@/icons';
-import { absoluteTime, compactNumber, relativeTime, tokenFigure } from '@/lib/format';
+import { absoluteTime, compactNumber, localeTag, relativeTime, tokenFigure } from '@/lib/format';
 import { currentPreferences, currentUser, siteInfo, syncPreferences } from '@/stores/session';
 
 interface Totals {
@@ -164,13 +164,13 @@ const columns = computed<Array<Column<Turn>>>(() => [
 ]);
 
 function expiry(at: number): string {
-  return new Date(at).toLocaleString(undefined, {
+  return new Date(at).toLocaleString(localeTag(), {
     month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit',
   });
 }
 
 function expiryDay(at: number): string {
-  return new Date(at).toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' });
+  return new Date(at).toLocaleDateString(localeTag(), { month: 'numeric', day: 'numeric' });
 }
 
 function formatCardScope(card: Card): string {

@@ -13,6 +13,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import type { Account } from '@/api/auth';
 import { ApiError } from '@/api/client';
+import { apiFailureText } from '@/lib/api-error-text';
 import { fetchSessions, revokeOtherSessions, revokeSession, type DeviceSession } from '@/api/sessions';
 import {
   disableTwoFactor, fetchTwoFactor, regenerateRecovery, type TwoFactorStatus,
@@ -87,7 +88,7 @@ function refusal(failure: unknown): string {
   switch (failure.code) {
     case 'two_factor_code': return t('twoFactorCodeWrong');
     case 'two_factor_mandatory': return t('twoFactorMandatoryNote');
-    default: return failure.message;
+    default: return apiFailureText(failure, 'failed');
   }
 }
 

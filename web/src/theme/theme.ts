@@ -1,5 +1,5 @@
-// Theme and accent, lifted out of the standalone workspace module so every
-// page — chat, login, admin — is painted by the same code.
+// Theme and accent, shared by every page — chat, login, admin — so they are
+// painted by the same code.
 //
 // Both preferences live in localStorage rather than in a store: they must be
 // readable before the first paint and before any network call, including on
@@ -165,10 +165,6 @@ function normalizeSiteTheme(value: unknown): SiteTheme | null {
   };
 }
 
-export function siteTheme(): SiteTheme | null {
-  return site;
-}
-
 /** Whether the instance has taken the reader's appearance settings over. */
 export function themeEnforced(): boolean {
   return site?.enforce === true;
@@ -188,7 +184,7 @@ export function setSiteAppearance(theme: unknown, backgrounds: Record<string, Si
   site = normalizeSiteTheme(theme);
   write(SITE_THEME_KEY, site ? JSON.stringify(site) : '');
   siteBackgrounds = backgrounds ?? {};
-  applyTheme();
+  applyTheme(true);
   applyWallpaper();
   notify();
 }
@@ -273,7 +269,7 @@ export function isDark(): boolean {
 
 export function setThemeMode(mode: ThemeMode): void {
   write(THEME_KEY, mode);
-  applyTheme();
+  applyTheme(true);
 }
 
 // The order light → dark → auto that the header button cycles through.
@@ -289,12 +285,8 @@ let switching = 0;
  * Marks the root for the length of a theme change, so the stylesheet can
  * animate every colour at once instead of the handful of rules that happen to
  * carry a transition of their own.
- *
- * Not applied on the first paint: the class is only added once a theme is
- * already on screen, so a page loading dark does not fade into itself.
  */
 function markSwitching(root: HTMLElement): void {
-  if (!started) return;
   root.classList.add('theme-switching');
   window.clearTimeout(switching);
   switching = window.setTimeout(() => root.classList.remove('theme-switching'), 240);
@@ -306,10 +298,15 @@ function repaintWallpaper(): void {
   if (lastWallpaper !== before) notify();
 }
 
-function applyTheme(): void {
+/**
+ * `animate` is for a change the reader makes while the page is up. The startup
+ * call leaves it off: a page loading dark must not fade into the colours the
+ * pre-paint script in index.html has already set.
+ */
+function applyTheme(animate = false): void {
   const root = document.documentElement;
   const mode = themeMode();
-  markSwitching(root);
+  if (animate) markSwitching(root);
   if (mode === 'auto') root.removeAttribute('data-theme');
   else root.setAttribute('data-theme', mode);
   write(EFFECTIVE_THEME_KEY, mode);
@@ -383,13 +380,16 @@ function paletteFor(pref: AccentPreference, dark: boolean): Record<string, strin
   const primary = dark && pref.accent === 'neutral' ? '#FFFFFF' : displayAccent(base, dark);
   const onPrimary = colorIsLight(primary) ? '#000000' : '#FFFFFF';
   const hover = shiftHex(primary, colorIsLight(primary) ? -32 : 24);
+  // Read once: every read goes to localStorage, and this runs for both schemes
+  // on each apply.
+  const background = backgroundAccent();
 
   return {
     // The surfaces, borders and text: the accent hue is the interface's hue,
     // not a colour applied on top of a violet one.
     // Background and controls are separate choices; both use the same ramp
     // so a pastel background remains legible in either display mode.
-    ...accentPalette(backgroundAccent() ? ACCENTS[backgroundAccent() as AccentName] : base, dark),
+    ...accentPalette(background ? ACCENTS[background] : base, dark),
     '--ai-primary': primary,
     '--ai-primary-text': onPrimary,
     '--ai-primary-hover': hover,
@@ -405,17 +405,20 @@ function paletteFor(pref: AccentPreference, dark: boolean): Record<string, strin
 function applyAccent(): void {
   const pref = accentPreference();
   const dark = isDark();
+  // Each scheme is derived once. The shown one goes to the root and both go to
+  // the cache, so the scheme on screen is not worked out a second time.
+  const palettes = { light: paletteFor(pref, false), dark: paletteFor(pref, true) };
 
   const style = document.documentElement.style;
-  for (const [token, value] of Object.entries(paletteFor(pref, dark))) {
+  for (const [token, value] of Object.entries(dark ? palettes.dark : palettes.light)) {
     style.setProperty(token, value);
   }
 
   // Both schemes are cached, because which one applies on the next load
   // depends on a system preference that can change while this tab is closed.
   write(PALETTE_KEY, JSON.stringify({
-    light: declarations(paletteFor(pref, false)),
-    dark: declarations(paletteFor(pref, true)),
+    light: declarations(palettes.light),
+    dark: declarations(palettes.dark),
   }));
 
   notify();
@@ -567,7 +570,7 @@ export function startTheme(): void {
   applyTheme();
   applyWallpaper();
   window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener('change', () => {
-    if (themeMode() === 'auto') applyTheme();
+    if (themeMode() === 'auto') applyTheme(true);
   });
   // The instance's background comes in a shape per screen, so turning a
   // phone, or docking a tablet to a keyboard, may want another picture.

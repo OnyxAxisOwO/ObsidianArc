@@ -31,9 +31,9 @@ const props = defineProps<{ slug: string; entry?: string }>();
 
 const panels = usePanelExit();
 
-// Looked up rather than fixed at setup: the plugins load after the first
-// paint, and a reader who opened /x/<slug> from a bookmark gets here before
-// the plugin that owns it has said anything.
+// Looked up in a computed, not once at setup, so it follows the plugin registry
+// rather than a snapshot of it. Boot waits for the plugins before the first
+// paint, so a bookmarked /x/<slug> normally finds its panel on the first run.
 const spec = computed(() => userPanels().find((panel) => panel.slug === props.slug) ?? null);
 
 const values = ref<UserFormValues>({});

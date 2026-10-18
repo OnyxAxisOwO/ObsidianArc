@@ -13,6 +13,7 @@
 
 import { ApiError } from '@/api/client';
 import { t, type StringKey } from '@/composables/useI18n';
+import { serverFailure } from '@/lib/api-error-text';
 import { absoluteTime } from '@/lib/format';
 
 const CODE_KEYS: Record<string, StringKey> = {
@@ -32,6 +33,12 @@ const CODE_KEYS: Record<string, StringKey> = {
   preferences_too_large: 'errPreferencesTooLarge',
   attachment_unavailable: 'errAttachmentUnavailable',
   reward_unavailable: 'errRewardUnavailable',
+  // The check-in screen's refusals. They were shown as the server's English
+  // whenever a screen did not map them itself.
+  already_checked_in: 'errAlreadyCheckedIn',
+  milestone_not_reached: 'errMilestoneNotReached',
+  milestone_claimed: 'errMilestoneClaimed',
+  checkin_disabled: 'errCheckinDisabled',
   card_batch_too_large: 'errCardBatchTooLarge',
   provider_rate_limited: 'errProviderRateLimited',
   provider_unreachable: 'errProviderUnreachable',
@@ -85,13 +92,16 @@ export function storedErrorText(code: string, sentence: string): string {
   return codeText(code) ?? sentence;
 }
 
-export function apiErrorText(error: unknown): string {
+// `fallback` is the screen's own line for a failure it has no better words for,
+// shown where the server's sentence must not be (a server fault, a failure that
+// was not an API answer at all). Without one, the generic line is used.
+export function apiErrorText(error: unknown, fallback: StringKey = 'failed'): string {
   if (!(error instanceof ApiError)) {
     // A network or engine failure reads as `TypeError: Failed to fetch`, which
     // is for whoever reads the console, not the reader. The original goes to
     // the console so it is not lost.
     console.warn('request failed', error);
-    return t('failed');
+    return t(fallback);
   }
   if (error.code === 'quota_exceeded') {
     // The window name comes from the server, so a value like "constructor" must
@@ -108,8 +118,7 @@ export function apiErrorText(error: unknown): string {
   const text = codeText(error.code);
   if (text) return text;
   // A server failure's sentence is English and was written for logs and API
-  // clients, so a reader on a Chinese screen gets the screen's own fallback, as
-  // apiFailureText gives. Mirrors that rule so the two helpers do not disagree.
-  if (error.status === 0 || error.status >= 500 || error.code === 'internal') return t('failed');
+  // clients, so a reader on a Chinese screen gets the screen's own fallback.
+  if (serverFailure(error)) return t(fallback);
   return error.message;
 }

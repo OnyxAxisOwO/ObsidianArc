@@ -8,6 +8,9 @@
 // is why it is confined to this file and the few challenged surfaces.
 
 const SCRIPT = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+// Long enough for a slow link to fetch the script, short enough that a stalled
+// request does not leave the form's challenge box blank for good.
+const LOAD_DEADLINE_MS = 15_000;
 
 interface TurnstileAPI {
   render(target: HTMLElement, options: Record<string, unknown>): string;
@@ -38,24 +41,35 @@ export function loadTurnstile(): Promise<TurnstileAPI | null> {
     const script = document.createElement('script');
     script.src = SCRIPT;
     script.async = true;
-    script.onload = () => {
-      const api = window.turnstile ?? null;
-      // A script that ran without its API has failed as surely as one that
-      // did not load, and the next widget should get another attempt. Its tag
-      // goes too, or every retry leaves one more dead script in the document.
-      if (!api) {
-        loading = null;
-        script.remove();
-      }
-      resolve(api);
-    };
-    script.onerror = () => {
-      // Remembered for the page's lifetime, this made every later widget draw
-      // nothing after one blip on the network. The next one tries again.
+    // Every way of giving up goes through here. Remembered for the page's
+    // lifetime, a failure made every later widget draw nothing after one blip
+    // on the network, so the next widget tries again. The handlers are
+    // detached first: a late event from this script must not clear a retry
+    // that has started since.
+    const giveUp = (): void => {
+      clearTimeout(deadline);
+      script.onload = null;
+      script.onerror = null;
       loading = null;
       script.remove();
       resolve(null);
     };
+    // A request the network accepts and never answers would leave this promise
+    // pending for the life of the page, and every widget would wait on it.
+    const deadline = setTimeout(giveUp, LOAD_DEADLINE_MS);
+    script.onload = () => {
+      clearTimeout(deadline);
+      const api = window.turnstile ?? null;
+      // A script that ran without its API has failed as surely as one that
+      // did not load. Its tag goes too, or every retry leaves one more dead
+      // script in the document.
+      if (!api) {
+        giveUp();
+        return;
+      }
+      resolve(api);
+    };
+    script.onerror = giveUp;
     document.head.appendChild(script);
   });
   return loading;

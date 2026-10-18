@@ -31,7 +31,7 @@ import type { Column, PageState } from '@/components/table-types';
 import { celebrate } from '@/composables/useConfetti';
 import { t, tn, type StringKey } from '@/composables/useI18n';
 import { IconClose } from '@/icons';
-import { compactNumber, relativeTime, tokenFigure } from '@/lib/format';
+import { compactNumber, localeTag, relativeTime, tokenFigure } from '@/lib/format';
 import { rememberedPageSize } from '@/lib/page-size';
 import { maskUser, maskProvider, maskBilling } from '@/admin/safeMode';
 import { windowFigure } from '@/admin/quota';
@@ -95,7 +95,7 @@ function toLocalISO(date: Date): string {
 }
 
 const customLabel = computed(() => range.value === 'custom' && customSince && customUntil
-  ? `${new Date(customSince).toLocaleDateString()} – ${new Date(customUntil).toLocaleDateString()}`
+  ? `${new Date(customSince).toLocaleDateString(localeTag())} – ${new Date(customUntil).toLocaleDateString(localeTag())}`
   : t('rangeCustomShort'));
 const rangeKicker = computed(() => range.value === 'custom'
   ? customLabel.value

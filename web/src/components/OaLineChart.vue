@@ -1,8 +1,9 @@
 <script setup lang="ts">
 // An inline SVG line chart showing a model's availability trend over time.
 //
-// Native SVG without external dependencies, matching the interface's design
-// tokens. A chart library would add tens of kilobytes for one graph.
+// Native SVG without external dependencies. Its status colours are fixed hues
+// rather than --ai-* tokens (see strokeColor). A chart library would add tens
+// of kilobytes for one graph.
 
 import { computed, ref } from 'vue';
 import { t } from '@/composables/useI18n';
@@ -35,6 +36,22 @@ const height = 76;
 const plotW = width - padL - padR;
 const plotH = height - padT - padB;
 
+// Hit target and dot sizes in SVG units. The hit circle is wider than the
+// dot so a point can be hovered with a finger, not only with a precise cursor.
+const HIT_RADIUS = 8;
+const DOT_RADIUS = 2;
+const DOT_RADIUS_HOVER = 3.5;
+
+// Reference lines at 100%, 50% and 0%, top to bottom.
+const gridYs = [padT, padT + plotH / 2, padT + plotH];
+
+// The status hues are fixed on purpose rather than read from --ai-* tokens,
+// because the accent colour is the reader's choice: "up" must stay green when
+// the accent is green, or the chart cannot tell an outage from the accent.
+// --ai-danger is the only red token, and it is a different red in each theme,
+// so the down line keeps one fixed red in both. The status dots beside the
+// chart use these same three hexes, so a line and its dot always agree; a
+// success or warning token would add two hues to the theme for one screen.
 const strokeColor = computed(() => {
   switch (props.state) {
     case 'up':
@@ -100,12 +117,21 @@ function formatTime(timestamp: number): string {
   return `${h}:${m}`;
 }
 
+// Rounding 99.7% to a whole percent prints "100%", which reads as a window
+// with no failures at all. Near the top the value is truncated to one decimal
+// instead, so only a window that really had no failures says 100.
+function formatUptime(uptime: number): string {
+  if (uptime >= 1) return '100';
+  if (uptime >= 0.995) return (Math.floor(uptime * 1000) / 10).toFixed(1);
+  return (uptime * 100).toFixed(1);
+}
+
 function pointTooltip(p: ChartPoint): string {
   const timeStr = formatTime(p.at);
   if (p.total === 0 || p.uptime === null) {
     return `${timeStr} — ${t('uptimeNoData')}`;
   }
-  const pct = (p.uptime * 100).toFixed(p.uptime >= 0.995 ? 0 : 1);
+  const pct = formatUptime(p.uptime);
   return `${timeStr} — ${pct}% (${p.total} ${t('statRequests').toLowerCase()})`;
 }
 
@@ -138,26 +164,14 @@ const activeInfo = computed(() => {
         </linearGradient>
       </defs>
 
-      <!-- Reference grid lines at 100% and 0% -->
+      <!-- Reference grid lines at 100%, 50% and 0% -->
       <line
+        v-for="(y, i) in gridYs"
+        :key="i"
         :x1="padL"
-        :y1="padT"
+        :y1="y"
         :x2="width - padR"
-        :y2="padT"
-        class="oa-linechart-grid"
-      />
-      <line
-        :x1="padL"
-        :y1="padT + plotH / 2"
-        :x2="width - padR"
-        :y2="padT + plotH / 2"
-        class="oa-linechart-grid"
-      />
-      <line
-        :x1="padL"
-        :y1="padT + plotH"
-        :x2="width - padR"
-        :y2="padT + plotH"
+        :y2="y"
         class="oa-linechart-grid"
       />
 
@@ -217,7 +231,7 @@ const activeInfo = computed(() => {
           <circle
             :cx="m.x"
             :cy="m.y"
-            r="8"
+            :r="HIT_RADIUS"
             fill="transparent"
             class="oa-linechart-target"
           />
@@ -225,7 +239,7 @@ const activeInfo = computed(() => {
             v-if="m.hasTraffic || hovered === i"
             :cx="m.x"
             :cy="m.y"
-            :r="hovered === i ? 3.5 : 2"
+            :r="hovered === i ? DOT_RADIUS_HOVER : DOT_RADIUS"
             :fill="strokeColor"
             class="oa-linechart-dot"
           />

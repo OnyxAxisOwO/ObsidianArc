@@ -21,6 +21,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import type { Account } from '@/api/auth';
 import { saveAsFile } from '@/api/backup';
 import { ApiError } from '@/api/client';
+import { apiFailureText } from '@/lib/api-error-text';
 import { beginTwoFactor, enableTwoFactor, type TwoFactorSetup } from '@/api/twofactor';
 import { copyToClipboard } from '@/chat/markdown';
 import OaTextField from '@/components/OaTextField.vue';
@@ -84,7 +85,7 @@ function refusal(failure: unknown): string {
     case 'password_required': return t('twoFactorPasswordRequired');
     case 'current_password_wrong': return t('currentPasswordWrong');
     case 'reauth_required': return t('reauthForTwoFactor');
-    default: return failure.message;
+    default: return apiFailureText(failure, 'failed');
   }
 }
 

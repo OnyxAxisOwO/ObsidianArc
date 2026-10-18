@@ -397,9 +397,11 @@ onMounted(() => {
 </script>
 
 <template>
-  <!-- Reached directly rather than from inside the app: the chat is drawn
-       behind the refusal so it sits over the product rather than over a boot
-       spinner that will now never resolve. -->
+  <!-- Refused here rather than redirected by the router: an administrator's
+       link opened by somebody else should say so over the product, not bounce
+       them silently to the chat. The chat is drawn behind the refusal so that,
+       reached directly rather than from inside the app, it sits over the
+       product rather than over a boot spinner that will now never resolve. -->
   <template v-if="!isAdmin">
     <ChatLayout />
     <UnauthorizedModal />

@@ -13,12 +13,11 @@ vi.mock('@/api/client', () => ({
     post: vi.fn() as unknown as <T>(url: string, body?: unknown) => Promise<T>,
   },
 }));
-vi.mock('@/router', () => ({ router: { push: vi.fn() } }));
 
 import { api } from '@/api/client';
 import type { Notification } from '@/api/notifications';
-import { router } from '@/router';
 import { feedbackUnread, forgetFeedbackUnread } from '@/stores/feedback';
+import { forget } from '@/stores/session';
 import {
   activeToasts, notificationList, notificationsUnread, openNotification,
   startNotifications, stopNotifications,
@@ -144,6 +143,22 @@ describe('the notifications store', () => {
     expect(activeToasts.value).toHaveLength(0);
   });
 
+  // The toast stack is what calls stopNotifications, and it unmounts with the
+  // shell. Sign-out must not depend on that teardown order: the sign-out
+  // reset clears the inbox on its own, so the previous account's rows never
+  // show while the stack is still mounted.
+  it('clears the inbox on sign-out even when nothing stops the store', async () => {
+    get.mockResolvedValue({ notifications: [row('a', 1000)], unread: 1, seen_at: 0, now: 1000 });
+    startNotifications();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(notificationList.value).toHaveLength(1);
+
+    forget();
+    expect(notificationList.value).toHaveLength(0);
+    expect(notificationsUnread.value).toBe(0);
+    expect(activeToasts.value).toHaveLength(0);
+  });
+
   it('opening a notification navigates, drops its toast and moves the watermark', async () => {
     // The server's count follows the watermark: once it has moved, nothing is unread.
     let unreadOnServer = 1;
@@ -158,9 +173,10 @@ describe('the notifications store', () => {
     const toast = activeToasts.value[0];
     expect(toast).toBeDefined();
 
-    await openNotification(toast!.notification);
+    const go = vi.fn();
+    await openNotification(toast!.notification, go);
 
-    expect(router.push).toHaveBeenCalledWith('/usage');
+    expect(go).toHaveBeenCalledWith('/usage');
     expect(activeToasts.value).toHaveLength(0);
     expect(post).toHaveBeenCalledWith('/api/notifications/read', { up_to: 3000 });
     expect(notificationsUnread.value).toBe(0);
@@ -178,7 +194,7 @@ describe('the notifications store', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(notificationsUnread.value).toBe(1);
 
-    await openNotification(row('a', 1000));
+    await openNotification(row('a', 1000), vi.fn());
     expect(post).toHaveBeenCalledWith('/api/notifications/read', { up_to: 1000 });
     expect(notificationsUnread.value).toBe(1);
   });
@@ -239,6 +255,29 @@ describe('the notifications store', () => {
     resolveFirst({ notifications: [row('b', 2000)], unread: 1, now: 2000 });
     await vi.advanceTimersByTimeAsync(0);
     expect(activeToasts.value.map((toast) => toast.id)).toEqual(['b']);
+  });
+
+  it('gives up on a poll that is accepted and never answered, so the next tick asks again', async () => {
+    // A half-open connection: the request never settles on its own, and only
+    // aborting its signal ends it, the way fetch rejects when aborted.
+    let pollCalls = 0;
+    get.mockImplementation(async (url: string, options?: { signal?: AbortSignal }) => {
+      if (!url.includes('/poll')) return { notifications: [], unread: 0, seen_at: 0, now: 1000 };
+      pollCalls += 1;
+      if (pollCalls > 1) return { notifications: [row('late', 4000)], unread: 1, now: 4000 };
+      return new Promise((_, reject) => {
+        options?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+      });
+    });
+
+    startNotifications();
+    await vi.advanceTimersByTimeAsync(0); // the initial load
+    await vi.advanceTimersByTimeAsync(POLL_MS); // the poll that hangs
+    expect(pollCalls).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(POLL_MS); // past its deadline, so this tick goes out
+    expect(pollCalls).toBe(2);
+    expect(activeToasts.value.map((toast) => toast.id)).toEqual(['late']);
   });
 
   it('drops a response that lands after sign-out instead of writing into the next session', async () => {

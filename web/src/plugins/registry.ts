@@ -80,9 +80,10 @@ export function pluginsSettled(): boolean {
   return settled.value;
 }
 
-// Boot waits for every package before the first paint, so a request that is
-// accepted and never answered would hold the whole page on its spinner. A
-// package that has not answered by then is left out like one that failed.
+// Boot waits for every plugin before the first paint, packages and compiled-in
+// halves alike, so a request that is accepted and never answered would hold the
+// whole page on its spinner. A plugin that has not answered by then is left out
+// like one that failed.
 const PACKAGE_DEADLINE_MS = 10_000;
 
 /**
@@ -117,13 +118,16 @@ export async function loadPackageModule(name: string, url: string): Promise<ArcP
  * One plugin's browser half whether or not the server runs it, for the
  * plugins screen: its install dialog draws the settings the plugin declares
  * before there is anything running to declare them. Null when this build has
- * no browser half for it.
+ * no browser half for it. Boot awaits these too, so they get the same deadline
+ * as a package; `load` is only passed by tests that need a module that stalls.
  */
-export async function loadPluginModule(name: string): Promise<ArcPlugin | null> {
-  const load = modules[`./${name}/${name}.plugin.ts`];
+export async function loadPluginModule(
+  name: string,
+  load: (() => Promise<{ default: ArcPlugin }>) | undefined = modules[`./${name}/${name}.plugin.ts`],
+): Promise<ArcPlugin | null> {
   if (!load) return null;
   try {
-    return (await load()).default;
+    return (await within(load(), PACKAGE_DEADLINE_MS)).default;
   } catch (failure) {
     console.warn(`plugin ${name} could not be loaded`, failure);
     return null;
@@ -147,15 +151,22 @@ export function installPlugins(list: ArcPlugin[], blocks: Record<string, PluginC
   settled.value = true;
 }
 
-/** The spec for an account field, when a loaded plugin owns it. */
-export function fieldSpec(key: string): AccountFieldSpec | undefined {
+// The first loaded plugin's own entry under key, in plugin name order. Own keys
+// only: the key can come from a query string, and an inherited name
+// (constructor) would otherwise come back as an entry. Every per-plugin table
+// goes through here so that rule is written once.
+function ownEntry<T>(pick: (plugin: ArcPlugin) => Record<string, T> | undefined, key: string): T | undefined {
   for (const plugin of loaded.value) {
-    // Own keys only: the key can come from a query string, and an inherited
-    // name (constructor) would otherwise come back as a spec.
-    const spec = plugin.fields && Object.hasOwn(plugin.fields, key) ? plugin.fields[key] : undefined;
-    if (spec) return spec;
+    const table = pick(plugin);
+    const entry = table && Object.hasOwn(table, key) ? table[key] : undefined;
+    if (entry) return entry;
   }
   return undefined;
+}
+
+/** The spec for an account field, when a loaded plugin owns it. */
+export function fieldSpec(key: string): AccountFieldSpec | undefined {
+  return ownEntry((plugin) => plugin.fields, key);
 }
 
 /** The panels the loaded plugins offer everybody signed in, in plugin name order. */
@@ -174,14 +185,8 @@ export function guards(): Array<{ guard: GuardSpec; config: PluginConfig }> {
 }
 
 function lookup(pick: (plugin: ArcPlugin) => Record<string, Text> | undefined, key: string): string | null {
-  for (const plugin of loaded.value) {
-    // Own keys only, for the reason fieldSpec gives: an inherited name would be
-    // called as though the plugin had written it.
-    const table = pick(plugin);
-    const text = table && Object.hasOwn(table, key) ? table[key] : undefined;
-    if (text) return text();
-  }
-  return null;
+  const text = ownEntry(pick, key);
+  return text ? text() : null;
 }
 
 /** A plugin's wording for an API error code, or null. Field codes are included. */
@@ -205,23 +210,12 @@ export function pluginOAuthError(code: string): string | null {
 
 /** Why provider's connection cannot be removed, when a plugin pins it. */
 export function pinnedProvider(provider: string): { hint: Text; refused: Text } | null {
-  for (const plugin of loaded.value) {
-    const table = plugin.pinnedProviders;
-    const pinned = table && Object.hasOwn(table, provider) ? table[provider] : undefined;
-    if (pinned) return pinned;
-  }
-  return null;
+  return ownEntry((plugin) => plugin.pinnedProviders, provider) ?? null;
 }
 
-// Own keys only, as lookup() and fieldSpec() are: a kind such as "constructor"
-// is otherwise found on every object and called as though a plugin wrote it.
 export function pluginNotification(kind: string, params: Record<string, unknown>): NotificationText | null {
-  for (const plugin of loaded.value) {
-    const table = plugin.notifications;
-    const word = table && Object.hasOwn(table, kind) ? table[kind] : undefined;
-    if (word) return word(params);
-  }
-  return null;
+  const word = ownEntry((plugin) => plugin.notifications, kind);
+  return word ? word(params) : null;
 }
 
 /** A plugin's line under an invitee in the inviter's own list, or null. */

@@ -62,8 +62,8 @@ describe('OaLineChart', () => {
   });
 
   // The axis end is a word, not a format placeholder like the two offsets
-  // beside it, so it has to be translated. The chart is drawn by both the
-  // public uptime panel and the admin availability screen.
+  // beside it, so it has to be translated. The chart is drawn by the public
+  // uptime panel.
   it('labels the end of the axis in the reader\'s language', async () => {
     await changeLanguage('en');
     app = createApp({
@@ -85,5 +85,32 @@ describe('OaLineChart', () => {
     await nextTick();
     expect(labels().at(-1)).toBe(t('chartNow'));
     expect(labels().at(-1)).not.toBe('Now');
+  });
+
+  // Rounding 99.75% to a whole percent prints 100%, which reads as a window
+  // without a single failure. Only a true 100% may say so.
+  async function hoverTooltip(uptime: number): Promise<string> {
+    app = createApp({
+      render: () =>
+        h(OaLineChart, {
+          points: [{ at: Date.now(), uptime, total: 400 }],
+          state: 'up',
+        }),
+    });
+    app.mount(host);
+    host.querySelector('.oa-linechart-point-group')!.dispatchEvent(new Event('mouseenter'));
+    await nextTick();
+    return host.querySelector('.oa-linechart-hover-info')?.textContent ?? '';
+  }
+
+  it('does not round a window with failures up to 100%', async () => {
+    const info = await hoverTooltip(0.9975);
+    expect(info).toContain('99.7%');
+    expect(info).not.toContain('100%');
+  });
+
+  it('says 100% only for a window with no failures', async () => {
+    const info = await hoverTooltip(1);
+    expect(info).toContain('100%');
   });
 });

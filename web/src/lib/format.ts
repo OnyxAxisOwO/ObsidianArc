@@ -5,7 +5,16 @@
 // not hypothetical: one import of `formatUptime` from the About panel used to
 // pull the whole backoffice back into the main bundle.
 
-import { t } from '@/composables/useI18n';
+import { currentLanguage, t } from '@/composables/useI18n';
+
+/**
+ * The locale every date and time is printed in: the interface's language, not
+ * the browser's. Without this a reader who picks Chinese on an English browser
+ * gets English dates inside a Chinese sentence.
+ */
+export function localeTag(): string {
+  return currentLanguage() === 'zh' ? 'zh-CN' : 'en-US';
+}
 
 /**
  * A token figure the provider never reported, marked as the estimate it is.
@@ -45,7 +54,7 @@ export function relativeTime(at: number): string {
   // one expiring this second. There is no future vocabulary here to reach
   // for, and inventing one is a set of strings this has never needed, so a
   // future moment is given as the date it is.
-  if (seconds < 0) return new Date(at).toLocaleString();
+  if (seconds < 0) return new Date(at).toLocaleString(localeTag());
   if (seconds < 60) return t('timeJustNow');
   const minutes = Math.round(seconds / 60);
   if (minutes < 60) return t('timeMinutes', { count: minutes });
@@ -53,12 +62,12 @@ export function relativeTime(at: number): string {
   if (hours < 48) return t('timeHours', { count: hours });
   const days = Math.round(hours / 24);
   if (days < 30) return t('timeDays', { count: days });
-  return new Date(at).toLocaleDateString();
+  return new Date(at).toLocaleDateString(localeTag());
 }
 
 export function absoluteTime(at: number): string {
   if (!at) return '—';
-  return new Date(at).toLocaleString();
+  return new Date(at).toLocaleString(localeTag());
 }
 
 export function formatUptime(seconds: number): string {

@@ -1,6 +1,7 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { currentModel, loadModels, models, selectModel, selectedID } from '../src/chat/useModels';
+import { currentModel, loadModels, models, modelsListed, selectModel, selectedID } from '../src/chat/useModels';
+import { forget } from '../src/stores/session';
 import type { AvailableModel } from '../src/chat/useModels';
 
 // Being able to generate in the image lab and being able to hold a
@@ -141,5 +142,45 @@ describe('the price list the allowance forms read', () => {
     } finally {
       lookup.mockRestore();
     }
+  });
+});
+
+describe('whether the list has answered yet', () => {
+  // The flag is module state, and sign-out is the only thing that clears it.
+  beforeEach(() => {
+    forget();
+  });
+
+  it('is not known while the list is still on its way', async () => {
+    let answer: (response: Response) => void = () => {};
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => { answer = resolve; })));
+    expect(modelsListed.value).toBe(false);
+
+    const pending = loadModels();
+    expect(modelsListed.value).toBe(false);
+
+    answer(new Response(JSON.stringify({ models: [TALKER] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    await pending;
+    expect(modelsListed.value).toBe(true);
+  });
+
+  it('counts a list that failed as an answer, so the setup card still shows', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new TypeError('offline');
+    }));
+    await expect(loadModels()).rejects.toThrow();
+    expect(modelsListed.value).toBe(true);
+  });
+
+  it('starts over for the next account', async () => {
+    answerWith([TALKER]);
+    await loadModels();
+    expect(modelsListed.value).toBe(true);
+
+    forget();
+    expect(modelsListed.value).toBe(false);
   });
 });

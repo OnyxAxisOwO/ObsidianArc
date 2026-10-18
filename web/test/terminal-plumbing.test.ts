@@ -1,4 +1,4 @@
-// The non-visual half of the admin terminal: CONTRACT.md #5.1/#5.7.
+// The non-visual half of the admin terminal: session state, the transports and output handling.
 //
 // No component is mounted here — that is `terminal.test.ts`'s job, once the
 // Vue half exists. This file is the ANSI tokeniser, the preferences store

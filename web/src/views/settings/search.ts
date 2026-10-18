@@ -50,5 +50,8 @@ const TERMS = {
 export type SettingsGroup = keyof typeof TERMS;
 
 export function matchesSettings(query: string, group: SettingsGroup): boolean {
+  // Translating a group's terms is the expensive part, and every group asks on
+  // every render, so an empty search skips it.
+  if (!query.trim()) return true;
   return matchesSearch(query, ...TERMS[group].map((key) => t(key)));
 }

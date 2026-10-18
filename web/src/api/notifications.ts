@@ -31,16 +31,18 @@ export interface NotificationPoll {
   now: number;
 }
 
-export function fetchNotifications(before?: number): Promise<NotificationFeed> {
+export function fetchNotifications(before?: number, signal?: AbortSignal): Promise<NotificationFeed> {
   const query = before ? `?before=${before}` : '';
-  return api.get<NotificationFeed>(`/api/notifications${query}`);
+  const path = `/api/notifications${query}`;
+  return signal ? api.get<NotificationFeed>(path, { signal }) : api.get<NotificationFeed>(path);
 }
 
 /** after is the last moment already seen — a millisecond timestamp, or 0 for
  *  the beginning of time. The server re-returns anything within a 10s grace
  *  window of it, so the caller must de-duplicate by id. */
-export function pollNotifications(after: number): Promise<NotificationPoll> {
-  return api.get<NotificationPoll>(`/api/notifications/poll?after=${after}`);
+export function pollNotifications(after: number, signal?: AbortSignal): Promise<NotificationPoll> {
+  const path = `/api/notifications/poll?after=${after}`;
+  return signal ? api.get<NotificationPoll>(path, { signal }) : api.get<NotificationPoll>(path);
 }
 
 /** Moves the read watermark to min(upTo, server now), or to server now when

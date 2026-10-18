@@ -14,6 +14,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ApiError } from '@/api/client';
+import { apiFailureText } from '@/lib/api-error-text';
 import {
   claimInviteCode, fetchProfileInvites, formatInviteCode, inviteLink, regenerateProfileInvite,
   type ProfileInvitee, type ProfileInvites,
@@ -146,7 +147,7 @@ function claimErrorText(failure: unknown): string {
     case 'invite_invalid':
       return t('inviteClaimInvalid');
     default:
-      return failure.message;
+      return apiFailureText(failure, 'failed');
   }
 }
 

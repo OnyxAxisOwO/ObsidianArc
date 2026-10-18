@@ -16,18 +16,16 @@ import { loadPlugins } from '@/plugins/registry';
 import { changeLanguage, currentLanguage } from '@/composables/useI18n';
 import { within } from '@/lib/deadline';
 import {
-  accentPreference,
   setAccentPreference,
   setBackgroundAccent,
   setSignedIn,
   setSiteAppearance,
   setThemeMode,
   setWallpaper,
-  themeMode,
   type ThemeMode,
   type Wallpaper,
 } from '@/theme/theme';
-import type { AccentName } from '@/theme/color-utils';
+import { isAccentName } from '@/theme/color-utils';
 
 const account = ref<Account | null>(null);
 const preferences = ref<Preferences>({});
@@ -145,7 +143,15 @@ export function forget(): void {
   // on screens that have no account to draw it for.
   setWallpaper(null);
   forgetTerminalHistory();
-  for (const reset of signOutResets) reset();
+  // Each on its own: one store that throws must not leave every store
+  // registered after it holding the account that just signed out.
+  for (const reset of signOutResets) {
+    try {
+      reset();
+    } catch (failure) {
+      console.warn('a sign-out reset failed', failure);
+    }
+  }
 }
 
 // What the terminal's prompt remembered belongs to the person who typed it,
@@ -175,6 +181,12 @@ const ACCOUNT_LANGUAGE_DEADLINE_MS = 3_000;
 // Resolves the session and the instance's public settings in one round trip
 // pair at startup. A 401 is the expected answer for a signed-out visitor, not
 // an error worth surfacing.
+//
+// Not bounded the way the language and plugin packages are, on purpose. Those
+// have a fallback that is still the right page; this one does not. A deadline
+// here would read a slow answer as no account, and the router would then send
+// somebody who is signed in to the sign-in page. Waiting on the spinner until
+// the answer, or the proxy's own timeout, is the lesser failure.
 export async function startSession(): Promise<void> {
   const [me, info] = await Promise.allSettled([fetchMe(), fetchSite()]);
   let languageReady: Promise<void> = Promise.resolve();
@@ -232,7 +244,11 @@ export async function refreshSite(): Promise<void> {
 // stalls, which is why startSession bounds its wait on it; the page then
 // stays in the language it was drawn in until the dictionary lands.
 function applyServerPreferences(prefs: Preferences): Promise<void> {
-  if (typeof prefs['background_accent'] === 'string') setBackgroundAccent(prefs['background_accent'] as AccentName | '');
+  // Checked rather than cast, as the theme and the wallpaper below are: the
+  // stored value came from whichever client last wrote it, and a name this
+  // build has no preset for would otherwise be kept as the reader's choice.
+  const background = prefs['background_accent'];
+  if (background === '' || (typeof background === 'string' && isAccentName(background))) setBackgroundAccent(background);
   const theme = prefs['theme'];
   if (theme === 'light' || theme === 'dark' || theme === 'auto') {
     setThemeMode(theme);
@@ -240,9 +256,9 @@ function applyServerPreferences(prefs: Preferences): Promise<void> {
 
   const accent = prefs['accent'];
   const custom = prefs['custom_accent'];
-  if (typeof accent === 'string') {
+  if (typeof accent === 'string' && (accent === 'custom' || isAccentName(accent))) {
     setAccentPreference({
-      accent: accent as AccentName | 'custom',
+      accent,
       customAccent: typeof custom === 'string' ? custom : '',
     });
   }
@@ -281,8 +297,14 @@ function applyServerPreferences(prefs: Preferences): Promise<void> {
 export function syncPreferences(patch: Preferences): void {
   if (!account.value) return;
   preferences.value = { ...preferences.value, ...patch };
-  void savePreferences(patch).catch(() => {
-    // Offline, or the session expired. The local value stands.
+  void savePreferences(patch).catch((failure: unknown) => {
+    // Offline, or the session expired: the local value stands, and the next
+    // change carries it. A refusal is different — the server will not take
+    // this value however often it is sent, so the two now disagree until the
+    // next sign-in, and that is worth a line where somebody can see it.
+    if (failure instanceof ApiError && failure.status > 0 && !failure.isAuth) {
+      console.warn('the server refused a preference', patch, failure);
+    }
   });
 }
 
@@ -292,10 +314,3 @@ export function persistTheme(mode: ThemeMode): void {
   setThemeMode(mode);
   syncPreferences({ theme: mode });
 }
-
-export function persistAccent(accent: AccentName | 'custom', customAccent: string): void {
-  setAccentPreference({ accent, customAccent });
-  syncPreferences({ accent, custom_accent: customAccent });
-}
-
-export { themeMode, accentPreference };

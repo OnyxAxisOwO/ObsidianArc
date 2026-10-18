@@ -66,12 +66,18 @@ export interface GuardSpec {
   token(action: GuardAction, config: PluginConfig, form?: HTMLFormElement): Promise<string>;
   /** What the submit button says while token() runs. */
   checking: Text;
-  /** What the card says when token() rejects. */
   /** What the card says when token() rejects; the rejection is passed for a guard with more than one way to fail. */
   failed: (failure?: unknown) => string;
 }
 
-/** One control in a settings section. */
+/**
+ * One control in a settings section.
+ *
+ * Its placeholder is a plain string, as an action card's is, not Text: on the
+ * backoffice it is a sample value or a stored mask, which the plugin writes as
+ * it should appear and the page shows as it stands. The account forms further
+ * down are read by everybody, so theirs is a sentence, and translated.
+ */
 export type SettingControl =
   | { kind: 'text'; key: string; label: Text; hint?: Text; placeholder?: string }
   /** Write-only: shown empty with the stored mask as its placeholder, and sent only when typed in. */
@@ -192,6 +198,7 @@ export interface ListCell {
   sub?: string;
   /** Mask title and sub as account identifiers while safe mode is on. */
   mask?: boolean;
+  /** A subset of BadgeTone, kept as it shipped: widening it changes the SDK copy in sdk/web/arc-plugin.d.ts too. */
   badge?: { tone: 'default' | 'muted' | 'danger' };
 }
 

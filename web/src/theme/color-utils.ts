@@ -1,7 +1,5 @@
-// The accent picker's colour maths, carried over from the standalone build
-// (which took it from PageDye, the sibling project this interface grew out
-// of) so the two keep the same "pick one hue, get a scheme that works in both
-// light and dark" behaviour.
+// The accent picker's colour maths. Picking one hue gives a scheme that works
+// in both light and dark, and the functions here are what keeps that true.
 //
 // A user picks ONE hex per accent — there is no separate light and dark
 // colour to keep in step — and displayAccent clamps that hue's lightness per
@@ -26,6 +24,12 @@ export const ACCENTS = {
 export type AccentName = keyof typeof ACCENTS;
 
 export const ACCENT_NAMES = Object.keys(ACCENTS) as AccentName[];
+
+/** Own keys only, so a stored "constructor" is not taken for a preset. */
+export function isAccentName(value: string): value is AccentName {
+  return Object.hasOwn(ACCENTS, value);
+}
+
 // Black and white. The accent now drives every surface, not just the buttons,
 // so the default has to be the one that imposes least on an instance that
 // never opens the picker. The :root fallbacks in chat.css are this accent's
@@ -60,7 +64,7 @@ interface Hsl {
   l: number;
 }
 
-export function hexToHsl(color: string): Hsl {
+function hexToHsl(color: string): Hsl {
   const hex = normalizeHex(color, ACCENTS[DEFAULT_ACCENT]).replace('#', '');
   const r = parseInt(hex.slice(0, 2), 16) / 255;
   const g = parseInt(hex.slice(2, 4), 16) / 255;
@@ -81,7 +85,7 @@ export function hexToHsl(color: string): Hsl {
   return { h, s: s * 100, l: l * 100 };
 }
 
-export function hslToHex(h: number, s: number, l: number): string {
+function hslToHex(h: number, s: number, l: number): string {
   const sat = s / 100;
   const light = l / 100;
   const c = (1 - Math.abs(2 * light - 1)) * sat;
@@ -128,16 +132,14 @@ export function shiftHex(color: string, amount: number): string {
 
 // --- the surface ramp ------------------------------------------------------
 //
-// The violet the standalone build shipped was not one colour with a neutral
-// interface around it: every surface, border and text colour in that palette
-// is the same hue at a fixed saturation and lightness. Read the default
-// tokens back as HSL and they all land within a few degrees of #6C4CD6.
-//
-// That is why picking red used to change the buttons and leave the interface
-// violet — the ramp was baked into the stylesheet, and only --ai-primary was
-// ever recomputed. These tables are that ramp, measured off the original
-// values, so violet reproduces itself exactly and every other hue gets the
-// treatment violet always had.
+// The default palette is not one colour with a neutral interface around it:
+// every surface, border and text colour in it is the same hue at a fixed
+// saturation and lightness. Read the default tokens back as HSL and they all
+// land within a few degrees of #6C4CD6. A ramp baked into the stylesheet could
+// only ever recolour --ai-primary for another accent, so these tables are that
+// ramp, measured off the default values, and every accent is generated from
+// them: violet reproduces itself exactly and every other hue gets the same
+// treatment.
 
 interface RampStop {
   token: string;

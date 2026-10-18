@@ -10,7 +10,7 @@ import type { ScrollbackBlock } from './session';
 
 const props = defineProps<{
   block: ScrollbackBlock;
-  /** A dim clock next to the line, for `echo` blocks only — CONTRACT.md #5.4. */
+  /** A dim clock next to the line, for `echo` blocks only. */
   timestamps: boolean;
 }>();
 

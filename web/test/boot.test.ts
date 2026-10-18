@@ -250,6 +250,32 @@ describe('the application, mounted', () => {
     expect(host.querySelector('.ai-chat-setup')).not.toBeNull();
   });
 
+  it('does not offer the setup card until the model list has answered', async () => {
+    adopt(ACCOUNT);
+    const served = vi.mocked(fetch).getMockImplementation();
+    let answerModels: (response: Response) => void = () => {};
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes('/api/models')) {
+        return new Promise<Response>((resolve) => { answerModels = resolve; });
+      }
+      return served!(input, init);
+    }));
+
+    await mountAt('/');
+    // An empty picker before the list is in is not yet "no models configured".
+    expect(host.querySelector('.ai-chat-composer')).not.toBeNull();
+    expect(host.querySelector('.ai-chat-setup')).toBeNull();
+
+    answerModels(new Response(JSON.stringify({ models: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    expect(host.querySelector('.ai-chat-setup')).not.toBeNull();
+  });
+
   it('opens a panel beside the chat rather than replacing it', async () => {
     adopt(ACCOUNT);
     await mountAt('/settings');

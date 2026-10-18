@@ -2,8 +2,8 @@
 //
 // One answer for every list rather than one per screen: somebody who asked
 // for a hundred rows on the models page wants a hundred on the users page,
-// and every list used to start again at 20 on each visit. The pagination
-// control writes it; each list reads it for its starting value.
+// and a list that did not read it would start again at 20 on each visit. The
+// pagination control writes it; each list reads it for its starting value.
 
 const KEY = 'obsidian-arc-page-size';
 const SIZES = [10, 20, 50, 100, 200];

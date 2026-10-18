@@ -14,6 +14,7 @@ import {
   updateProject as apiUpdateProject,
   type Project,
 } from '@/api/projects';
+import { within } from '@/lib/deadline';
 import { onSignOut } from '@/stores/session';
 
 const projects = ref<Project[]>([]);
@@ -22,6 +23,11 @@ const loaded = ref(false);
 // Shared by every caller so a rail and a composer mounting in the same tick
 // await one request instead of two racing to set `loaded`.
 let inFlight: Promise<void> | null = null;
+// The list is the one load here whose promise is handed to every later
+// caller, so an ask that is accepted and never answered would be the answer
+// for the rest of the tab's life: the projects tab reading "no projects" until
+// a reload. Given up on after this, the next mount asks again.
+const LIST_DEADLINE_MS = 30_000;
 // Bumped on sign-out. An answer to a request made before it belongs to the
 // account that signed out, and is dropped rather than shown to the next one.
 let generation = 0;
@@ -38,10 +44,10 @@ export const projectMax: Ref<number> = max;
 export function loadProjects(): Promise<void> {
   if (loaded.value) return Promise.resolve();
   if (!inFlight) {
-    const account = generation;
-    inFlight = listProjects()
+    const gen = generation;
+    inFlight = within(listProjects(), LIST_DEADLINE_MS)
       .then((result) => {
-        if (account !== generation) return;
+        if (gen !== generation) return;
         projects.value = result.projects;
         max.value = result.max;
         loaded.value = true;
@@ -49,18 +55,18 @@ export function loadProjects(): Promise<void> {
       .finally(() => {
         // Only the request that started this generation may clear it: a
         // newer one may already be in flight for the next account.
-        if (account === generation) inFlight = null;
+        if (gen === generation) inFlight = null;
       });
   }
   return inFlight;
 }
 
 export async function createProject(name: string, instructions = ''): Promise<Project> {
-  const account = generation;
+  const gen = generation;
   const record = await apiCreateProject(name, instructions);
   // Newest first, matching the order the server itself returns on List
   // (most recently changed first).
-  if (account === generation) projects.value = [record, ...projects.value];
+  if (gen === generation) projects.value = [record, ...projects.value];
   return record;
 }
 

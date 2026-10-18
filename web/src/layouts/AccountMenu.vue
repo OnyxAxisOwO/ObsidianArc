@@ -12,7 +12,8 @@ import { IconArchive, IconChart, IconGear, IconImage, IconInfo, IconKey, IconLog
 import { displayName } from '@/lib/account';
 import { userPanels } from '@/plugins/registry';
 import { feedbackUnread, refreshFeedbackUnread } from '@/stores/feedback';
-import { forget, siteInfo, isAdmin, canAdmin } from '@/stores/session';
+import { forget, isAdmin } from '@/stores/session';
+import { panelAllowed } from '@/views/panels';
 
 const props = defineProps<{ account: Account }>();
 
@@ -136,14 +137,14 @@ async function signOut(close: () => void): Promise<void> {
         <template #leading><IconImage :size="14" /></template>
       </OaMenuItem>
       <OaMenuItem
-        v-if="canAdmin('availability') || siteInfo.health_show_users"
+        v-if="panelAllowed('uptime')"
         :title="t('uptimeTitle')"
         @click="openPanel(close, '/uptime')"
       >
         <template #leading><IconPulse :size="14" /></template>
       </OaMenuItem>
       <OaMenuItem
-        v-if="canAdmin('leaderboard') || siteInfo.leaderboard_show_users"
+        v-if="panelAllowed('leaderboard')"
         :title="t('leaderboardTitle')"
         @click="openPanel(close, '/leaderboard')"
       >
