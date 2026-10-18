@@ -234,8 +234,10 @@ function viaLabel(via: string): string {
   return key ? at(key) : via;
 }
 
+// Both from the core dictionary, which already carries the roles for the
+// rest of the backoffice: a second copy here is a second place to translate.
 function roleLabel(role: string): string {
-  if (role === 'super_admin') return at('roleSuperAdmin');
+  if (role === 'super_admin') return t('superAdmin');
   if (role === 'admin') return t('roleAdmin');
   return role || '—';
 }

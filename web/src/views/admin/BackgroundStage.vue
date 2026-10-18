@@ -23,7 +23,7 @@ import { computed, ref } from 'vue';
 import { useElementSize } from '@vueuse/core';
 import { Code, Monitor, Smartphone, Tablet, Trash2, Upload } from 'lucide-vue-next';
 import { adminApi } from '@/admin/api';
-import { ApiError } from '@/api/client';
+import { BACKGROUND_TYPES, imageProblem, imageType, MAX_BACKGROUND_BYTES, pickImage, readAsBase64 } from '@/admin/upload';
 import OaConfirmButton from '@/components/OaConfirmButton.vue';
 import OaIconButton from '@/components/OaIconButton.vue';
 import OaOverlay from '@/components/OaOverlay.vue';
@@ -31,6 +31,7 @@ import { t, type StringKey } from '@/composables/useI18n';
 import { useTheme } from '@/composables/useTheme';
 import { IconClose, IconImage, IconMoon, IconSun } from '@/icons';
 import { pickBackground, type ScreenKind, type SiteBackground } from '@/theme/theme';
+import { failureText } from './shared';
 
 const props = withDefaults(defineProps<{
   prefix: '' | 'app_';
@@ -94,11 +95,20 @@ const status = computed(() => {
   return props.prefix ? t('bgNoneSignedIn') : t('bgNoneSignedOut');
 });
 
+// The desktop stage is never drawn wider than this, and before the card has
+// been measured it is drawn at this width.
+const STAGE_MAX_WIDTH = 560;
+// The stage is a miniature of the real screen, so each blur radius is scaled
+// down with it. Two factors because the backdrop and the panel are separate
+// CSS properties, each with its own radius.
+const BACKDROP_BLUR_SCALE = 0.4;
+const PANEL_BLUR_SCALE = 0.5;
+
 const block = ref<HTMLElement | null>(null);
 const { width: blockWidth } = useElementSize(block);
 // One height for all three, that of the desktop stage at this card's width.
 const frameStyle = computed(() => {
-  const height = Math.round(Math.min(blockWidth.value || 560, 560) / FRAME.desktop.ratio);
+  const height = Math.round(Math.min(blockWidth.value || STAGE_MAX_WIDTH, STAGE_MAX_WIDTH) / FRAME.desktop.ratio);
   const frame = FRAME[screen.value];
   return {
     width: `${Math.round(height * frame.ratio)}px`,
@@ -112,9 +122,9 @@ const stageStyle = computed(() => {
   if (!look) return {};
   return {
     '--stage-dim': String(look.dim / 100),
-    '--stage-blur': `${look.blur * 0.4}px`,
+    '--stage-blur': `${look.blur * BACKDROP_BLUR_SCALE}px`,
     '--stage-surface': `${100 - look.translucency}%`,
-    '--stage-panel-blur': look.panelBlur > 0 ? `blur(${look.panelBlur * 0.5}px)` : 'none',
+    '--stage-panel-blur': look.panelBlur > 0 ? `blur(${look.panelBlur * PANEL_BLUR_SCALE}px)` : 'none',
   };
 });
 
@@ -132,43 +142,21 @@ let seed = '';
 let draftKey = '';
 let pageRequest = 0;
 
-function detectFileType(file: File): string {
-  const type = file.type.toLowerCase();
-  if (type === 'image/jpeg' || type === 'image/jpg') return 'image/jpeg';
-  if (type === 'image/png') return 'image/png';
-  if (type === 'image/webp') return 'image/webp';
-  if (type === 'image/avif') return 'image/avif';
-  const name = file.name.toLowerCase();
-  if (name.endsWith('.jpg') || name.endsWith('.jpeg')) return 'image/jpeg';
-  if (name.endsWith('.png')) return 'image/png';
-  if (name.endsWith('.webp')) return 'image/webp';
-  if (name.endsWith('.avif')) return 'image/avif';
-  return '';
-}
-
 function fail(failure: unknown): void {
-  emit('status', failure instanceof ApiError ? failure.message : String(failure), false);
+  emit('status', failureText(failure), false);
 }
 
 async function uploadFile(file: File): Promise<void> {
-  const mime = detectFileType(file);
-  if (!mime || file.size > 6 * 1024 * 1024) {
-    emit('status', t('loginBgFormats'), false);
+  const problem = imageProblem(file, BACKGROUND_TYPES, MAX_BACKGROUND_BYTES, t('loginBgFormats'));
+  const mime = imageType(file, BACKGROUND_TYPES);
+  if (problem || !mime) {
+    emit('status', problem, false);
     return;
   }
   const target = key.value;
   busy.value = true;
   try {
-    const base64 = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const res = String(reader.result ?? '');
-        const comma = res.indexOf(',');
-        resolve(comma !== -1 ? res.slice(comma + 1) : res);
-      };
-      reader.onerror = () => reject(new Error('Failed to read file'));
-      reader.readAsDataURL(file);
-    });
+    const base64 = await readAsBase64(file);
     const res = await adminApi.uploadLoginBackground(target, mime, base64);
     emit('changed', target, { url: res.url, html: false });
     emit('status', t('loginBgUploaded'), true);
@@ -180,14 +168,7 @@ async function uploadFile(file: File): Promise<void> {
 }
 
 function choose(): void {
-  const input = document.createElement('input');
-  input.type = 'file';
-  input.accept = 'image/png,image/jpeg,image/webp,image/avif,.jpg,.jpeg,.png,.webp,.avif';
-  input.onchange = () => {
-    const file = input.files?.[0];
-    if (file) void uploadFile(file);
-  };
-  input.click();
+  pickImage(BACKGROUND_TYPES, (file) => void uploadFile(file));
 }
 
 function onDrop(event: DragEvent): void {
@@ -213,15 +194,25 @@ async function openEditor(): Promise<void> {
   // The stored page, so editing starts from it rather than from nothing. An
   // answer that arrives after the operator has typed, or after another open, is
   // dropped: it must not overwrite what is on screen.
+  // A page that cannot be read leaves the editor shut. Opened empty, it would
+  // look like a variant with no page, and Save would replace the stored one.
+  const unreadable = (): void => {
+    if (ticket !== pageRequest || !editing.value) return;
+    editing.value = false;
+    emit('status', t('failed'), false);
+  };
   try {
     const res = await fetch(bg.url, { credentials: 'omit' });
-    if (!res.ok) return;
+    if (!res.ok) {
+      unreadable();
+      return;
+    }
     const text = await res.text();
     if (ticket !== pageRequest || !editing.value || draft.value !== '') return;
     draft.value = text;
     seed = text;
   } catch {
-    // An empty editor is still an editor; saving replaces what was there.
+    unreadable();
   }
 }
 

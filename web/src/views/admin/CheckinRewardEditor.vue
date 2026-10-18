@@ -22,6 +22,13 @@ const props = defineProps<{
 
 const emit = defineEmits<{ 'update:modelValue': [value: CheckinRewardBody] }>();
 
+const MAX_VALID_DAYS = 3650;
+// A bonus with zero valid days never expires on the server, so a cleared bonus
+// field means the same as the expiry fields' "for ever". A card must last at
+// least a day, so a cleared card field falls back to its default span instead.
+const BONUS_DEFAULT_DAYS = 7;
+const CARD_DEFAULT_DAYS = 30;
+
 const kinds = computed(() => [
   ...(props.allowNone ? [{ value: '', label: t('checkinRewardNone') }] : []),
   { value: 'bonus', label: t('checkinRewardBonusKind') },
@@ -39,9 +46,9 @@ const scopeChoices = computed(() => [
 
 function setKind(kind: string): void {
   if (kind === 'bonus') {
-    emit('update:modelValue', { kind: 'bonus', bar_id: barChoices.value[0]?.value ?? '', amount: 1, valid_days: 7 });
+    emit('update:modelValue', { kind: 'bonus', bar_id: barChoices.value[0]?.value ?? '', amount: 1, valid_days: BONUS_DEFAULT_DAYS });
   } else if (kind === 'card') {
-    emit('update:modelValue', { kind: 'card', name: '', windows: [], cards: 1, valid_days: 30 });
+    emit('update:modelValue', { kind: 'card', name: '', windows: [], cards: 1, valid_days: CARD_DEFAULT_DAYS });
   } else {
     emit('update:modelValue', { kind: '' });
   }
@@ -81,7 +88,7 @@ const scope = computed(() => props.modelValue.windows?.[0] ?? 'full');
         :model-value="props.modelValue.valid_days ?? null"
         :label="t('checkinRewardValidDays')"
         :min="0"
-        :max="3650"
+        :max="MAX_VALID_DAYS"
         @update:model-value="patch({ valid_days: $event ?? 0 })"
       />
     </template>
@@ -110,8 +117,8 @@ const scope = computed(() => props.modelValue.windows?.[0] ?? 'full');
         :model-value="props.modelValue.valid_days ?? null"
         :label="t('checkinRewardValidDays')"
         :min="1"
-        :max="3650"
-        @update:model-value="patch({ valid_days: $event ?? 30 })"
+        :max="MAX_VALID_DAYS"
+        @update:model-value="patch({ valid_days: $event ?? CARD_DEFAULT_DAYS })"
       />
     </template>
   </div>

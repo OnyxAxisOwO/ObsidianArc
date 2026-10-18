@@ -7,6 +7,7 @@
 
 import { computed, onMounted, ref } from 'vue';
 import { adminApi, type AdminModel, type HeldAttachments } from '@/admin/api';
+import { imageProblem, imageType, LOGO_TYPES, MAX_LOGO_BYTES, pickImage, readAsBase64 } from '@/admin/upload';
 import { pickJSONFile, saveAsFile } from '@/api/backup';
 import { ApiError } from '@/api/client';
 import OaConfirmButton from '@/components/OaConfirmButton.vue';
@@ -175,8 +176,6 @@ const PWA_DEFAULT_COLOR = '#18181b';
 const TRIAL_TURNS_DEFAULT = 3;
 const MAX_TURNS_DEFAULT = 40;
 const MAX_CONCURRENT_DEFAULT = 4;
-// The largest logo the picker sends; bigger files are refused before they are read.
-const LOGO_MAX_BYTES = 4 * 1024 * 1024;
 
 const form = ref({
   siteName: '',
@@ -420,56 +419,23 @@ function onBackgroundStatus(message: string, ok: boolean): void {
   flash.value = message;
 }
 
-function detectLogoType(file: File): string {
-  const type = file.type.toLowerCase();
-  if (type === 'image/jpeg' || type === 'image/jpg') return 'image/jpeg';
-  if (type === 'image/png') return 'image/png';
-  if (type === 'image/webp') return 'image/webp';
-  if (type === 'image/avif') return 'image/avif';
-  if (type === 'image/gif') return 'image/gif';
-  if (type === 'image/x-icon' || type === 'image/vnd.microsoft.icon') return 'image/x-icon';
-  if (type === 'image/svg+xml') return 'image/svg+xml';
-  const name = file.name.toLowerCase();
-  if (name.endsWith('.jpg') || name.endsWith('.jpeg')) return 'image/jpeg';
-  if (name.endsWith('.png')) return 'image/png';
-  if (name.endsWith('.webp')) return 'image/webp';
-  if (name.endsWith('.avif')) return 'image/avif';
-  if (name.endsWith('.gif')) return 'image/gif';
-  if (name.endsWith('.ico')) return 'image/x-icon';
-  if (name.endsWith('.svg')) return 'image/svg+xml';
-  return '';
-}
-
 // One logo change at a time. The preview accepts clicks and drops even while
 // an upload is in flight, and the response that arrives last decides which
 // image the page shows, which need not be the one the server kept.
 async function uploadLogoFile(file: File): Promise<void> {
   if (uploadingLogo.value) return;
-  const mime = detectLogoType(file);
-  if (!mime) {
+  const problem = imageProblem(file, LOGO_TYPES, MAX_LOGO_BYTES, t('siteLogoFormats'));
+  const mime = imageType(file, LOGO_TYPES);
+  if (problem || !mime) {
     flashOK.value = false;
-    flash.value = t('siteLogoFormats');
-    return;
-  }
-  if (file.size > LOGO_MAX_BYTES) {
-    flashOK.value = false;
-    flash.value = t('siteLogoFormats');
+    flash.value = problem;
     return;
   }
 
   uploadingLogo.value = true;
   flash.value = '';
   try {
-    const base64 = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const res = String(reader.result ?? '');
-        const comma = res.indexOf(',');
-        resolve(comma !== -1 ? res.slice(comma + 1) : res);
-      };
-      reader.onerror = () => reject(new Error(t('imageFailed')));
-      reader.readAsDataURL(file);
-    });
+    const base64 = await readAsBase64(file);
 
     const res = await adminApi.uploadSiteLogo(mime, base64);
     siteLogoUrl.value = res.url;
@@ -495,16 +461,7 @@ async function uploadLogoFile(file: File): Promise<void> {
 
 function chooseAndUploadLogo(): void {
   if (uploadingLogo.value) return;
-  const input = document.createElement('input');
-  input.type = 'file';
-  input.accept = 'image/png,image/jpeg,image/webp,image/svg+xml,image/x-icon,image/avif,image/gif,.jpg,.jpeg,.png,.webp,.svg,.ico,.avif,.gif';
-  input.onchange = () => {
-    const file = input.files?.[0];
-    if (file) {
-      void uploadLogoFile(file);
-    }
-  };
-  input.click();
+  pickImage(LOGO_TYPES, (file) => void uploadLogoFile(file));
 }
 
 async function onDropLogo(event: DragEvent): Promise<void> {

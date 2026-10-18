@@ -1,9 +1,9 @@
 // The administrative API, typed.
 //
 // Kept apart from the rest of the client so the shape of what an
-// administrator can do is one file. Note what is not here: no provider API
-// key, in either direction beyond writing a new one. The server never sends
-// one back, and there is no field on these types that could carry it.
+// administrator can do is one file. Provider and service keys go one way: a
+// request body may carry a new one, and the server answers with a flag or a
+// masked hint, so no response type on these pages can hold a key.
 
 import {
   api,
@@ -13,6 +13,12 @@ import {
   noteSessionEnded,
   type RequestOptions,
 } from '../api/client';
+import type { Account, Role, AccountStatus } from '../api/auth';
+import type { Announcement, DisplayMode } from '../api/announcements';
+import type { Conversation, Message } from '../api/chat';
+import type {
+  Feedback, FeedbackKind, FeedbackPriority, FeedbackReply, FeedbackStatus, FeedbackThread,
+} from '../api/feedback';
 import type { ApiKey } from '../api/keys';
 import type { SiteBackground } from '../theme/theme';
 import type { UsageDisplay, UsageSummary, UsageWindow } from '../api/usage';
@@ -22,9 +28,10 @@ import { t } from '../composables/useI18n';
 // shape on this surface already does.
 export type { ApiKey };
 
-/** A session on the operator's side of the same list `DeviceSession` is for
- *  an account's own screen — no "current" flag, since nothing about the
- *  operator's own browser belongs in somebody else's device list. */
+/** A device session as an operator sees an account's list of them. Unlike
+ *  `DeviceSession`, which is an account's own screen, there is no "current"
+ *  flag: nothing about the operator's own browser belongs in somebody else's
+ *  device list. */
 export interface AdminSession {
   id: string;
   created_at: number;
@@ -32,8 +39,6 @@ export interface AdminSession {
   ip: string;
   user_agent: string;
 }
-import type { Account, Role, AccountStatus } from '../api/auth';
-import type { Conversation, Message } from '../api/chat';
 
 export type ProviderKind = 'openai' | 'anthropic';
 export type ReasoningStyle = 'auto' | 'none' | 'anthropic' | 'openai_effort' | 'openrouter' | 'qwen';
@@ -512,11 +517,6 @@ export interface UpdateStatus {
 
 // The reader's client already describes this shape, and one row of JSON
 // should not have two declarations that can drift apart.
-import type { Announcement, DisplayMode } from '../api/announcements';
-import type {
-  Feedback, FeedbackKind, FeedbackPriority, FeedbackReply, FeedbackStatus, FeedbackThread,
-} from '../api/feedback';
-
 export type { Announcement, DisplayMode };
 export type { Feedback, FeedbackKind, FeedbackPriority, FeedbackReply, FeedbackStatus, FeedbackThread };
 
@@ -1015,11 +1015,11 @@ export const adminApi = {
       '/api/admin/applications', input,
     ),
   updateApplication: (id: string, input: ApplicationInput) =>
-    api.patch<{ application: SignInApplication }>(`/api/admin/applications/${id}`, input),
+    api.patch<{ application: SignInApplication }>(`/api/admin/applications/${encodeURIComponent(id)}`, input),
   rotateApplicationSecret: (id: string) =>
-    api.post<{ client_secret: string }>(`/api/admin/applications/${id}/secret`, {}),
+    api.post<{ client_secret: string }>(`/api/admin/applications/${encodeURIComponent(id)}/secret`, {}),
   deleteApplication: (id: string) =>
-    api.delete<void>(`/api/admin/applications/${id}`),
+    api.delete<void>(`/api/admin/applications/${encodeURIComponent(id)}`),
   twoFactorAdoption: () => api.get<TwoFactorAdoption>('/api/admin/security/two-factor'),
   securityEvents: (query = '') =>
     api.get<{ events: SecurityEvent[]; total: number; limit: number; offset: number }>(
@@ -1040,8 +1040,8 @@ export const adminApi = {
         reset_at?: number;
       };
     }>(`/api/admin/health?hours=${hours}`),
-  probeAllModels: (onProgress: (progress: ProbeProgress) => void) =>
-    streamProbeAllModels(onProgress),
+  probeAllModels: (onProgress: (progress: ProbeProgress) => void, options?: { signal?: AbortSignal }) =>
+    streamProbeAllModels(onProgress, options?.signal),
   resetHealth: () =>
     api.post<{ reset_at: number; probes_cleared: number; models_reenabled: number }>(
       '/api/admin/health/reset',
@@ -1058,61 +1058,61 @@ export const adminApi = {
       models?: UsageBreakdown[];
       policy: QuotaPolicy;
       cards: CardHolding;
-    }>(`/api/admin/users/${id}`),
+    }>(`/api/admin/users/${encodeURIComponent(id)}`),
   updateUser: (id: string, patch: Record<string, unknown>) =>
-    api.patch<{ user: Account }>(`/api/admin/users/${id}`, patch),
-  deleteUser: (id: string) => api.delete<void>(`/api/admin/users/${id}`),
+    api.patch<{ user: Account }>(`/api/admin/users/${encodeURIComponent(id)}`, patch),
+  deleteUser: (id: string) => api.delete<void>(`/api/admin/users/${encodeURIComponent(id)}`),
   resetPassword: (id: string, newPassword: string) =>
-    api.post<void>(`/api/admin/users/${id}/password`, { new_password: newPassword }),
+    api.post<void>(`/api/admin/users/${encodeURIComponent(id)}/password`, { new_password: newPassword }),
   resetTwoFactor: (id: string) =>
-    api.delete<{ user: Account }>(`/api/admin/users/${id}/two-factor`),
+    api.delete<{ user: Account }>(`/api/admin/users/${encodeURIComponent(id)}/two-factor`),
   // Only ever the record, never the token: the server keeps a digest, so
   // there is nothing an administrator could be shown even in principle.
-  userKeys: (id: string) => api.get<{ keys: ApiKey[] }>(`/api/admin/users/${id}/keys`),
+  userKeys: (id: string) => api.get<{ keys: ApiKey[] }>(`/api/admin/users/${encodeURIComponent(id)}/keys`),
   revokeUserKey: (id: string, keyID: string) =>
-    api.delete<void>(`/api/admin/users/${id}/keys/${keyID}`),
+    api.delete<void>(`/api/admin/users/${encodeURIComponent(id)}/keys/${encodeURIComponent(keyID)}`),
 
-  userSessions: (id: string) => api.get<{ sessions: AdminSession[] }>(`/api/admin/users/${id}/sessions`),
+  userSessions: (id: string) => api.get<{ sessions: AdminSession[] }>(`/api/admin/users/${encodeURIComponent(id)}/sessions`),
   revokeUserSession: (id: string, sessionID: string) =>
-    api.delete<void>(`/api/admin/users/${id}/sessions/${sessionID}`),
-  revokeAllUserSessions: (id: string) => api.delete<void>(`/api/admin/users/${id}/sessions`),
+    api.delete<void>(`/api/admin/users/${encodeURIComponent(id)}/sessions/${encodeURIComponent(sessionID)}`),
+  revokeAllUserSessions: (id: string) => api.delete<void>(`/api/admin/users/${encodeURIComponent(id)}/sessions`),
 
   userConversations: (id: string, query = '') =>
-    api.get<{ conversations: Conversation[]; total: number }>(`/api/admin/users/${id}/conversations${query}`),
+    api.get<{ conversations: Conversation[]; total: number }>(`/api/admin/users/${encodeURIComponent(id)}/conversations${query}`),
   userTranscript: (id: string, conversationID: string) =>
     api.get<{ conversation: Conversation; messages: Message[] }>(
-      `/api/admin/users/${id}/conversations/${conversationID}`,
+      `/api/admin/users/${encodeURIComponent(id)}/conversations/${encodeURIComponent(conversationID)}`,
     ),
 
   groups: () => api.get<{ groups: Group[]; policies: QuotaPolicy[] }>('/api/admin/groups'),
   assignGroupMembers: (id: string, user_ids: string[], expires_at: number) =>
-    api.post<{ updated: number }>(`/api/admin/groups/${id}/members`, { user_ids, expires_at }),
+    api.post<{ updated: number }>(`/api/admin/groups/${encodeURIComponent(id)}/members`, { user_ids, expires_at }),
   createGroup: (body: Record<string, unknown>) => api.post<{ group: Group }>('/api/admin/groups', body),
   updateGroup: (id: string, body: Record<string, unknown>) =>
-    api.patch<{ group: Group }>(`/api/admin/groups/${id}`, body),
-  deleteGroup: (id: string) => api.delete<{ moved_to: string }>(`/api/admin/groups/${id}`),
+    api.patch<{ group: Group }>(`/api/admin/groups/${encodeURIComponent(id)}`, body),
+  deleteGroup: (id: string) => api.delete<{ moved_to: string }>(`/api/admin/groups/${encodeURIComponent(id)}`),
 
   providers: () => api.get<{ providers: Provider[] }>('/api/admin/providers'),
   createProvider: (body: Record<string, unknown>) =>
     api.post<{ provider: Provider }>('/api/admin/providers', body),
   updateProvider: (id: string, body: Record<string, unknown>) =>
-    api.patch<{ provider: Provider }>(`/api/admin/providers/${id}`, body),
-  deleteProvider: (id: string) => api.delete<void>(`/api/admin/providers/${id}`),
+    api.patch<{ provider: Provider }>(`/api/admin/providers/${encodeURIComponent(id)}`, body),
+  deleteProvider: (id: string) => api.delete<void>(`/api/admin/providers/${encodeURIComponent(id)}`),
   detect: (id: string) =>
     api.post<{ models: Array<{ model_id: string; display_name: string; configured: boolean }> }>(
-      `/api/admin/providers/${id}/detect`,
+      `/api/admin/providers/${encodeURIComponent(id)}/detect`,
     ),
 
   models: (providerID?: string) =>
     api.get<{ models: AdminModel[] }>(
-      `/api/admin/models${providerID ? `?provider_id=${providerID}` : ''}`,
+      `/api/admin/models${providerID ? `?provider_id=${encodeURIComponent(providerID)}` : ''}`,
     ),
   createModel: (body: Record<string, unknown>) => api.post<{ model: AdminModel }>('/api/admin/models', body),
   importModels: (models: unknown[]) =>
     api.post<{ created: number; updated: number; skipped: string[] }>(
       '/api/admin/models/import', { models }),
   updateModel: (id: string, body: Record<string, unknown>) =>
-    api.patch<{ model: AdminModel }>(`/api/admin/models/${id}`, body),
+    api.patch<{ model: AdminModel }>(`/api/admin/models/${encodeURIComponent(id)}`, body),
   bonusBars: () => api.get<{ bars: BonusBarRow[] }>('/api/admin/bonus/bars'),
   saveBonusBar: (id: string | null, body: Record<string, unknown>) =>
     id
@@ -1136,7 +1136,7 @@ export const adminApi = {
     api.post<{ codes: RedemptionCode[] }>('/api/admin/codes', body),
   codeRedemptions: (id: string) =>
     api.get<{ redemptions: CodeRedemption[] }>(`/api/admin/codes/${encodeURIComponent(id)}/redemptions`),
-  deleteCode: (id: string) => api.delete<void>(`/api/admin/codes/${id}`),
+  deleteCode: (id: string) => api.delete<void>(`/api/admin/codes/${encodeURIComponent(id)}`),
   invites: (query: string) =>
     api.get<{ codes: InviteCode[]; total: number }>(`/api/admin/invites${query}`),
   createInvites: (body: Record<string, unknown>) =>
@@ -1148,29 +1148,27 @@ export const adminApi = {
     api.get<{ uses: InviteUse[]; total: number }>(`/api/admin/invites/${encodeURIComponent(id)}/uses`),
   inviteStats: () => api.get<InviteStats>('/api/admin/invites/stats'),
   grantCards: (userID: string, body: { name?: string; windows?: string[]; cards: number; expires_at: number }) =>
-    api.post<void>(`/api/admin/users/${userID}/cards`, body),
+    api.post<void>(`/api/admin/users/${encodeURIComponent(userID)}/cards`, body),
   // Moves cards the account already holds. Omitting card_ids means every
   // unused one, expired included — which is what "their card ran out" asks
   // for and what granting another one would get wrong.
   rescheduleCards: (userID: string, body: { expires_at: number; card_ids?: string[] }) =>
-    api.patch<{ moved: number }>(`/api/admin/users/${userID}/cards`, body),
+    api.patch<{ moved: number }>(`/api/admin/users/${encodeURIComponent(userID)}/cards`, body),
   // Takes one unused card back. Nothing is sent to the account: cards arrive
   // without a message and they leave the same way.
   revokeCard: (userID: string, cardID: string) =>
-    api.delete<void>(`/api/admin/users/${userID}/cards/${encodeURIComponent(cardID)}`),
+    api.delete<void>(`/api/admin/users/${encodeURIComponent(userID)}/cards/${encodeURIComponent(cardID)}`),
   reorderModels: (ids: string[]) =>
     api.put<void>('/api/admin/models/order', { ids }),
   resetQuota: (body: { scope: 'all' | 'group' | 'user'; id?: string }) =>
     api.post<{ accounts: number }>('/api/admin/usage/reset', body),
-  deleteModel: (id: string) => api.delete<void>(`/api/admin/models/${id}`),
+  deleteModel: (id: string) => api.delete<void>(`/api/admin/models/${encodeURIComponent(id)}`),
 
   logs: (query: string) =>
     api.get<{ entries: LogEntry[]; total: number; limit: number; offset: number }>(
       `/api/admin/logs${query}`,
     ),
   logFacets: (query: string) => api.get<LogFacets>(`/api/admin/logs/facets${query}`),
-  pruneLogs: (days: number) =>
-    api.post<{ removed: number }>('/api/admin/logs/prune', { days }),
 
   audit: (query: string) =>
     api.get<{ entries: AuditEntry[]; total: number; limit: number; offset: number }>(
@@ -1196,8 +1194,6 @@ export const adminApi = {
   policies: () => api.get<{ policies: QuotaPolicy[] }>('/api/admin/quota/policies'),
   savePolicy: (policy: Record<string, unknown>) =>
     api.put<{ policy: QuotaPolicy }>('/api/admin/quota/policies', policy),
-  deletePolicy: (scope: string, scopeID: string) =>
-    api.delete<void>(`/api/admin/quota/policies/${scope}?scope_id=${encodeURIComponent(scopeID)}`),
 
   settings: () =>
     api.get<{
@@ -1218,20 +1214,20 @@ export const adminApi = {
   testBackup: () => api.post<{ ok: true }>('/api/admin/backup/test', {}),
   runBackup: () => api.post<{ ok: true; running: true }>('/api/admin/backup/run', {}),
   uploadLoginBackground: (variant: string, mime: string, data: string) =>
-    api.put<{ url: string; updated_at: number }>(`/api/admin/login-background/${variant}`, { mime, data }),
+    api.put<{ url: string; updated_at: number }>(`/api/admin/login-background/${encodeURIComponent(variant)}`, { mime, data }),
   uploadBackgroundHTML: (variant: string, html: string) =>
-    api.put<{ url: string; html: true; updated_at: number }>(`/api/admin/login-background/${variant}`, { html }),
+    api.put<{ url: string; html: true; updated_at: number }>(`/api/admin/login-background/${encodeURIComponent(variant)}`, { html }),
   deleteLoginBackground: (variant: string) =>
-    api.delete<void>(`/api/admin/login-background/${variant}`),
+    api.delete<void>(`/api/admin/login-background/${encodeURIComponent(variant)}`),
   uploadSiteLogo: (mime: string, data: string) =>
     api.put<{ url: string; updated_at: number }>('/api/admin/logo', { mime, data }),
   deleteSiteLogo: () =>
     api.delete<void>('/api/admin/logo'),
-  // More forgiving than saveSettings: identifiers that mean nothing on this
-  // instance are cleared and named back rather than failing the whole file.
   // The daily purge, on demand. Same operation, without waiting for 03:00.
   purgeAttachments: () =>
     api.post<{ purged: number; attachments: HeldAttachments }>('/api/admin/attachments/purge'),
+  // More forgiving than saveSettings: identifiers that mean nothing on this
+  // instance are cleared and named back rather than failing the whole file.
   importSettings: (values: Record<string, string>) =>
     api.post<{ settings: Record<string, string>; applied: number; skipped: string[] }>(
       '/api/admin/settings/import',
@@ -1242,8 +1238,8 @@ export const adminApi = {
   createAnnouncement: (body: Record<string, unknown>) =>
     api.post<{ announcement: Announcement }>('/api/admin/announcements', body),
   updateAnnouncement: (id: string, body: Record<string, unknown>) =>
-    api.patch<{ announcement: Announcement }>(`/api/admin/announcements/${id}`, body),
-  deleteAnnouncement: (id: string) => api.delete<void>(`/api/admin/announcements/${id}`),
+    api.patch<{ announcement: Announcement }>(`/api/admin/announcements/${encodeURIComponent(id)}`, body),
+  deleteAnnouncement: (id: string) => api.delete<void>(`/api/admin/announcements/${encodeURIComponent(id)}`),
 
   feedback: (query = '') =>
     api.get<{
@@ -1254,25 +1250,29 @@ export const adminApi = {
     }>(`/api/admin/feedback${query}`),
   // Fetching a thread is also what marks it read on the operator's side:
   // there is no other reason to open one.
-  feedbackThread: (id: string) => api.get<FeedbackThread>(`/api/admin/feedback/${id}`),
+  feedbackThread: (id: string) => api.get<FeedbackThread>(`/api/admin/feedback/${encodeURIComponent(id)}`),
   replyToFeedback: (id: string, body: string) =>
-    api.post<FeedbackReply>(`/api/admin/feedback/${id}/replies`, { body }),
+    api.post<FeedbackReply>(`/api/admin/feedback/${encodeURIComponent(id)}/replies`, { body }),
   deleteFeedbackReply: (id: string, replyID: string) =>
-    api.delete<void>(`/api/admin/feedback/${id}/replies/${replyID}`),
+    api.delete<void>(`/api/admin/feedback/${encodeURIComponent(id)}/replies/${encodeURIComponent(replyID)}`),
   // Status is the only thing about the report itself an operator may change:
   // the words are what somebody wrote.
   setFeedbackStatus: (id: string, status: FeedbackStatus) =>
-    api.patch<Feedback>(`/api/admin/feedback/${id}`, { status }),
-  deleteFeedback: (id: string) => api.delete<void>(`/api/admin/feedback/${id}`),
+    api.patch<Feedback>(`/api/admin/feedback/${encodeURIComponent(id)}`, { status }),
+  deleteFeedback: (id: string) => api.delete<void>(`/api/admin/feedback/${encodeURIComponent(id)}`),
 };
 
 async function streamProbeAllModels(
   onProgress: (progress: ProbeProgress) => void,
+  signal?: AbortSignal,
 ): Promise<ProbeProgress> {
+  // Aborting the request closes the connection, and the server stops probing
+  // the models it has not reached yet: the browser's disconnect is its cancel.
   const response = await fetchApi('/api/admin/health/probe', {
     method: 'POST',
     credentials: 'same-origin',
     headers: { Accept: 'text/event-stream' },
+    ...(signal ? { signal } : {}),
   });
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as
@@ -1293,18 +1293,25 @@ async function streamProbeAllModels(
   let buffer = '';
   let finished: ProbeProgress | null = null;
 
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
 
-    let boundary = /\r?\n\r?\n/.exec(buffer);
-    while (boundary) {
-      const result = probeFrame(buffer.slice(0, boundary.index), onProgress);
-      if (result) finished = result;
-      buffer = buffer.slice(boundary.index + boundary[0].length);
-      boundary = /\r?\n\r?\n/.exec(buffer);
+      let boundary = /\r?\n\r?\n/.exec(buffer);
+      while (boundary) {
+        const result = probeFrame(buffer.slice(0, boundary.index), onProgress);
+        if (result) finished = result;
+        buffer = buffer.slice(boundary.index + boundary[0].length);
+        boundary = /\r?\n\r?\n/.exec(buffer);
+      }
     }
+  } catch (failure) {
+    // A frame that threw, or an abort, would otherwise leave the body held
+    // until the garbage collector reached it. Cancelling is what closes it now.
+    void reader.cancel().catch(() => undefined);
+    throw failure;
   }
   if (!finished) throw new ApiError(0, 'stream', t('probeAllModelsFailed'));
   return finished;
@@ -1315,16 +1322,18 @@ function probeFrame(
   onProgress: (progress: ProbeProgress) => void,
 ): ProbeProgress | null {
   let event = '';
-  let data = '';
+  // A frame can carry several data lines; the spec joins them with newlines,
+  // not by running them together.
+  const data: string[] = [];
   for (const line of frame.split(/\r?\n/)) {
     if (line.startsWith('event:')) event = line.slice(6).trim();
-    else if (line.startsWith('data:')) data += line.slice(5).trim();
+    else if (line.startsWith('data:')) data.push(line.slice(5).trim());
   }
-  if (!data) return null;
+  if (!data.length) return null;
 
   let payload: ProbeProgress;
   try {
-    payload = JSON.parse(data) as ProbeProgress;
+    payload = JSON.parse(data.join('\n')) as ProbeProgress;
   } catch {
     return null;
   }

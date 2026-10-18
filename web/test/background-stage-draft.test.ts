@@ -52,11 +52,13 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-async function mountStage(): Promise<void> {
+async function mountStage(onStatus: (message: string, ok: boolean) => void = () => {}): Promise<void> {
   // Both schemes hold the same HTML page, so the stage has one whichever scheme
   // the theme is in when it mounts.
   const page = { url: '/stage.html', html: true };
-  app = createApp({ render: () => h(BackgroundStage, { prefix: '', backgrounds: { landscape_light: page, landscape_dark: page } }) });
+  app = createApp({
+    render: () => h(BackgroundStage, { prefix: '', backgrounds: { landscape_light: page, landscape_dark: page }, onStatus }),
+  });
   app.mount(host);
   await settle();
 }
@@ -95,6 +97,19 @@ describe('the HTML background editor', () => {
     expect(source()!.value).toBe('my unsaved draft');
     // The draft is somebody's work: reopening does not read the stored page over it.
     expect(fetchPage).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the editor shut and says so when the stored page cannot be read', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('upstream gone', { status: 500 })));
+    const onStatus = vi.fn();
+    await mountStage(onStatus);
+
+    editButton().click();
+    await flush();
+    // Opened empty, the editor would read as a variant with no page, and Save
+    // would replace the stored one. Shut, the operator is told and can try again.
+    expect(source()).toBeNull();
+    expect(onStatus).toHaveBeenCalledWith(t('failed'), false);
   });
 
   it('does not replace typing on screen when the stored page arrives late', async () => {

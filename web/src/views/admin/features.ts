@@ -217,25 +217,11 @@ export const ADMIN_FEATURES: AdminFeatureItem[] = [
     keywords: ['添加供应商', '新建供应商', '添加渠道', 'new provider', 'add provider'],
   },
   {
-    id: 'providerProtocol',
-    pageSlug: 'providers',
-    titleKey: 'protocol',
-    searchKeys: ['protocolHint', 'protocolAnthropic', 'protocolOpenAI', 'baseURL', 'apiKey'],
-    keywords: ['接口协议', 'OpenAI', 'Anthropic', 'Base URL', 'API Key', '密钥', '端点', 'endpoint'],
-  },
-  {
     id: 'secBehaviour',
     pageSlug: 'providers',
     titleKey: 'secBehaviour',
     searchKeys: ['reasoningStyle', 'timeoutSeconds', 'allowInsecure'],
     keywords: ['供应商行为', '超时时间', '思考推理格式', '代理', 'reasoning style', 'timeout', 'proxy'],
-  },
-  {
-    id: 'providerDetect',
-    pageSlug: 'providers',
-    titleKey: 'detect',
-    searchKeys: ['detecting', 'nModelsFound'],
-    keywords: ['检测模型', '自动拉取模型', '探测端点', 'detect models', 'fetch models'],
   },
 
   // --- Models
@@ -392,16 +378,10 @@ export const ADMIN_FEATURES: AdminFeatureItem[] = [
     keywords: ['用量排行', '消耗排行', 'ranking', 'top users', 'top models', 'usage ranking'],
   },
   {
-    id: 'secByModel',
+    id: 'secPopularModels',
     pageSlug: 'usage',
     titleKey: 'secByModel',
     keywords: ['按模型用量', '模型消耗明细', 'usage by model'],
-  },
-  {
-    id: 'secByProvider',
-    pageSlug: 'usage',
-    titleKey: 'secByProvider',
-    keywords: ['按供应商用量', '供应商消耗明细', 'usage by provider'],
   },
   {
     id: 'resetQuota',

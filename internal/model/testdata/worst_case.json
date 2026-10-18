@@ -1,0 +1,7 @@
+[
+  { "max_output_tokens": 0, "request_weight": 1, "output_token_weight": 2, "tokens": 4096, "credits": 9.192 },
+  { "max_output_tokens": 1000, "request_weight": 0, "output_token_weight": 1.5, "tokens": 1000, "credits": 1.5 },
+  { "max_output_tokens": 4096, "request_weight": 0.5, "output_token_weight": 1, "tokens": 4096, "credits": 4.596 },
+  { "max_output_tokens": 256004, "request_weight": 1, "output_token_weight": 1, "tokens": 4096, "credits": 5.096 },
+  { "max_output_tokens": 0, "request_weight": 0, "output_token_weight": 15, "tokens": 4096, "credits": 61.44 }
+]

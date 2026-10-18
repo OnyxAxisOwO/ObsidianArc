@@ -18,6 +18,7 @@ import { createMemoryHistory, createRouter } from 'vue-router';
 import { adminApi, emptyPolicy, type Account } from '../src/admin/api';
 import { providePanelHost } from '../src/composables/usePanelHost';
 import AdminGroups from '../src/views/admin/AdminGroups.vue';
+import AdminProviders from '../src/views/admin/AdminProviders.vue';
 import AdminUsers from '../src/views/admin/AdminUsers.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
 import { ADMIN_FEATURES } from '../src/views/admin/features';
@@ -108,6 +109,20 @@ async function openNewGroupPanel(): Promise<void> {
   await settle();
 }
 
+// The provider form's sections exist only while its panel is open, and the panel
+// waits for the server's list of provider kinds and reasoning styles.
+async function openNewProviderPanel(): Promise<void> {
+  vi.spyOn(adminApi, 'providers').mockResolvedValue({ providers: [] } as unknown as Awaited<ReturnType<typeof adminApi.providers>>);
+  vi.spyOn(adminApi, 'meta').mockResolvedValue({
+    provider_kinds: ['openai', 'anthropic'],
+    reasoning_styles: ['auto', 'none'],
+  } as unknown as Awaited<ReturnType<typeof adminApi.meta>>);
+  mountPage(AdminProviders);
+  await settle();
+  actions.querySelector<HTMLButtonElement>('#addProvider')!.click();
+  await settle();
+}
+
 function undrawn(slug: string): string[] {
   const ids = ADMIN_FEATURES.filter((item) => item.pageSlug === slug).map((item) => item.id);
   expect(ids.length).toBeGreaterThan(0);
@@ -123,5 +138,10 @@ describe('admin search anchors', () => {
   it('draws every entry the index names on the groups page with its id', async () => {
     await openNewGroupPanel();
     expect(undrawn('groups')).toEqual([]);
+  });
+
+  it('draws every entry the index names on the providers page with its id', async () => {
+    await openNewProviderPanel();
+    expect(undrawn('providers')).toEqual([]);
   });
 });

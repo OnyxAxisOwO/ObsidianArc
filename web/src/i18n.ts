@@ -992,7 +992,6 @@ const en = {
   secTotals: 'Totals',
   secOverTime: 'Over time',
   secByModel: 'By model',
-  secByProvider: 'By provider',
   secRequestsN: 'Requests ({count})',
   defaultLimitsHint: 'Applies to everyone whose group and account do not override it.',
   adminsExemptHint: 'Administrators are exempt from all of this unless that is turned off in Settings.',

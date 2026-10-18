@@ -14,6 +14,13 @@ import { absoluteTime } from '@/lib/format';
 import { rememberedPageSize } from '@/lib/page-size';
 import { maskUser } from '@/admin/safeMode';
 import ExpiryPresets from './ExpiryPresets.vue';
+import { failureText } from './shared';
+
+// Typing in the account search waits this long before it asks the server again.
+const SEARCH_DEBOUNCE_MS = 200;
+// The server refuses a membership change naming more accounts than this in one request
+// (internal/admin/group_members.go).
+const MAX_ACCOUNTS_PER_SAVE = 200;
 
 const props = defineProps<{ group: Group; groups: Group[] }>();
 const emit = defineEmits<{ (event: 'saved'): void }>();
@@ -57,7 +64,7 @@ async function load(): Promise<void> {
     accounts.value = result.users ?? [];
     total.value = result.total;
   } catch (failure) {
-    if (current === request) error.value = failure instanceof Error ? failure.message : String(failure);
+    if (current === request) error.value = failureText(failure);
   } finally {
     if (current === request) loading.value = false;
   }
@@ -73,7 +80,7 @@ watch([search, scope], () => {
   // search are off the screen, and Save would otherwise assign them unseen.
   selected.value = [];
   window.clearTimeout(timer);
-  timer = window.setTimeout(() => void load(), 200);
+  timer = window.setTimeout(() => void load(), SEARCH_DEBOUNCE_MS);
 });
 
 function page(next: PageState): void {
@@ -99,7 +106,7 @@ async function save(): Promise<void> {
     emit('saved');
     await load();
   } catch (failure) {
-    error.value = failure instanceof Error ? failure.message : String(failure);
+    error.value = failureText(failure);
   } finally {
     busy.value = false;
   }
@@ -143,7 +150,7 @@ onBeforeUnmount(() => {
     <ExpiryPresets permanent @pick="expiresAt = $event" />
     <div class="oa-log-filter-actions">
       <button type="button" class="oa-btn" :disabled="busy || !selected.length" @click="selected = []">{{ t('clearSelection') }}</button>
-      <button type="button" class="oa-btn primary" :disabled="busy || !selected.length || selected.length > 200" @click="save">
+      <button type="button" class="oa-btn primary" :disabled="busy || !selected.length || selected.length > MAX_ACCOUNTS_PER_SAVE" @click="save">
         {{ busy ? t('loading') : t('saveMembers') }}
       </button>
     </div>

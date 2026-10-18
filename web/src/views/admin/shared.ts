@@ -1,8 +1,31 @@
 // The pieces more than one administration screen needs.
 
 import { adminApi, type AdminModel } from '@/admin/api';
+import { ApiError } from '@/api/client';
 import { t } from '@/composables/useI18n';
+import { codeText } from '@/lib/api-error';
 import { onSignOut } from '@/stores/session';
+import { toLocalInput } from './localTime';
+
+/**
+ * The line an administration screen shows for a failed request.
+ *
+ * An ApiError shows the server's own sentence, as these screens always have,
+ * and a plugin's 4xx-5xx explanation is passed through on purpose
+ * (internal/plugin/routes.go). A code with a reader's sentence is translated
+ * first, so the English behind a known code does not reach a Chinese screen.
+ *
+ * An Error shows its message as written: it was written by the code that threw
+ * it, which on these pages is a plugin or the backoffice itself. Anything that
+ * is not an Error at all has no sentence to show, so it goes to the console and
+ * the screen gets the generic line.
+ */
+export function failureText(failure: unknown): string {
+  if (failure instanceof ApiError) return codeText(failure.code) ?? failure.message;
+  if (failure instanceof Error) return failure.message;
+  console.warn('request failed', failure);
+  return t('failed');
+}
 
 /**
  * The models an allowance is actually spent on. Fetched once and shared by
@@ -44,6 +67,11 @@ export function addMonths(from: Date, months: number): Date {
   return date;
 }
 
+// model.DefaultMaxOutput. The reservation is the server's; this copy only
+// words it, and internal/model/testdata/worst_case.json holds the two to one
+// table so that neither moves without the other.
+const DEFAULT_MAX_OUTPUT = 4096;
+
 /**
  * What one turn reserves before it runs, mirroring Model.WorstCase in Go.
  *
@@ -54,9 +82,9 @@ export function addMonths(from: Date, months: number): Date {
  * being told before saving rather than after a user complains.
  */
 export function worstCase(entry: AdminModel): number {
-  const ceiling = entry.max_output_tokens > 0 && entry.max_output_tokens < 4096
+  const ceiling = entry.max_output_tokens > 0 && entry.max_output_tokens < DEFAULT_MAX_OUTPUT
     ? entry.max_output_tokens
-    : 4096;
+    : DEFAULT_MAX_OUTPUT;
   return entry.request_weight + (ceiling / 1000) * entry.output_token_weight;
 }
 
@@ -93,6 +121,5 @@ export function minutesLabel(minutes: number): string {
  * come out in the zone's local time at that moment.
  */
 export function toDateTimeLocal(at: Date | number): string {
-  const date = new Date(at);
-  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+  return toLocalInput(new Date(at));
 }

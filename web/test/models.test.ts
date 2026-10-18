@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { currentModel, loadModels, models, modelsListed, selectModel, selectedID } from '../src/chat/useModels';
@@ -115,6 +117,20 @@ describe('worstCase and priciest calculations', () => {
     expect(worstCase(small)).toBe(2);
 
     expect(priciest([deepseek, claude, small])?.id).toBe('claude');
+  });
+
+  // The same table internal/model's TestWorstCaseMatchesTheSharedTable reads,
+  // so the estimate here cannot drift from what the server reserves.
+  it('reserves what the server reserves', async () => {
+    const { worstCase } = await import('../src/views/admin/shared');
+    const table = JSON.parse(readFileSync(resolve(__dirname, '../../internal/model/testdata/worst_case.json'), 'utf8')) as {
+      max_output_tokens: number; request_weight: number; output_token_weight: number; credits: number;
+    }[];
+    expect(table.length).toBeGreaterThan(0);
+    for (const row of table) {
+      const entry = adminModel('m', row.request_weight, row.output_token_weight, row.max_output_tokens);
+      expect(worstCase(entry)).toBeCloseTo(row.credits, 9);
+    }
   });
 
   it('lists the dearest few, dearest first', async () => {

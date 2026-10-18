@@ -10,19 +10,27 @@ import { computed } from 'vue';
 import OaSelectField from '@/components/OaSelectField.vue';
 import OaSwitchField from '@/components/OaSwitchField.vue';
 import OaTextField from '@/components/OaTextField.vue';
-import type { SettingsSection } from '@/plugins/types';
+import type { SettingControl } from '@/plugins/types';
 
 const props = defineProps<{
-  section: SettingsSection;
+  controls: SettingControl[];
   /** The values being edited, by key. Secrets are empty until typed into. */
   draft: Record<string, string>;
-  /** What is stored for each secret, as the server masked it. */
-  hints: Record<string, string>;
+  /**
+   * What is stored for each secret, as the server masked it. Absent on an install,
+   * where nothing is stored yet.
+   */
+  storedMasks?: Record<string, string>;
 }>();
 
 // Only the controls the caller has a value for. A page leaves out the keys
 // the server did not show this account, which are ones it may not write.
-const shown = computed(() => props.section.controls.filter((control) => control.key in props.draft));
+const shown = computed(() => props.controls.filter((control) => control.key in props.draft));
+
+// Every kind draws the same caption: the label, and the help text under it.
+function caption(control: SettingControl): { label: string; hint: string | undefined } {
+  return { label: control.label(), hint: control.hint?.() };
+}
 
 function set(key: string, value: string): void {
   // The caller's reactive object, written in place: the caller is what
@@ -39,34 +47,30 @@ function set(key: string, value: string): void {
       <code class="oa-plugin-control-key">{{ control.key }}</code>
       <OaTextField
         v-if="control.kind === 'text'"
+        v-bind="caption(control)"
         :model-value="draft[control.key] ?? ''"
-        :label="control.label()"
-        :hint="control.hint?.()"
         :placeholder="control.placeholder"
         @update:model-value="set(control.key, $event)"
       />
       <OaTextField
         v-else-if="control.kind === 'secret'"
+        v-bind="caption(control)"
         type="password"
         autocomplete="off"
         :model-value="draft[control.key] ?? ''"
-        :label="control.label()"
-        :hint="control.hint?.()"
-        :placeholder="hints[control.key] || control.placeholder"
+        :placeholder="storedMasks?.[control.key] || control.placeholder"
         @update:model-value="set(control.key, $event)"
       />
       <OaSwitchField
         v-else-if="control.kind === 'switch'"
+        v-bind="caption(control)"
         :model-value="draft[control.key] === 'true'"
-        :label="control.label()"
-        :hint="control.hint?.()"
         @update:model-value="set(control.key, String($event))"
       />
       <OaSelectField
         v-else-if="control.kind === 'select'"
+        v-bind="caption(control)"
         :model-value="draft[control.key] ?? ''"
-        :label="control.label()"
-        :hint="control.hint?.()"
         :searchable="false"
         :options="control.options.map((option) => ({ value: option.value, label: option.label() }))"
         @update:model-value="set(control.key, $event)"

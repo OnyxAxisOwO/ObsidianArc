@@ -935,4 +935,24 @@ describe('AdminAvailability safe mode masking', () => {
   });
 });
 
+describe('Admin Safe Mode categories', () => {
+  it('offers a switch for every category the stored state carries', () => {
+    expect(SAFE_CATEGORIES.map((c) => c.key).sort()).toEqual(Object.keys(safeModeCategories.value).sort());
+  });
+
+  it('masks a category another tab saved without mentioning it', () => {
+    window.dispatchEvent(new StorageEvent('storage', {
+      key: STORAGE_KEY,
+      newValue: JSON.stringify({ enabled: true, categories: { users: false } }),
+    }));
+    expect(safeModeEnabled.value).toBe(true);
+    expect(safeModeCategories.value.users).toBe(false);
+    for (const cat of SAFE_CATEGORIES.filter((c) => c.key !== 'users')) {
+      expect(safeModeCategories.value[cat.key]).toBe(true);
+    }
+    safeModeEnabled.value = false;
+    setAllCategories(true);
+  });
+});
+
 
