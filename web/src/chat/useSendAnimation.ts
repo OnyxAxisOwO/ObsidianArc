@@ -255,6 +255,9 @@ export async function playSendAnimation(options: SendAnimationOptions): Promise<
   clone.style.willChange = 'transform, opacity, border-radius, box-shadow';
 
   // 8. Keyframes: emerge enlarged from composer and shrink down into target bubble (1.0x)
+  // The radii, shadows and easing here are literals, not the chat's tokens: the
+  // flight is an element animated through the Web Animations API, which takes
+  // plain values, and the stylesheet has no radius or easing tokens to read.
   const emerge = {
     transform: `translate3d(${deltaX}px, ${deltaY}px, 0) scale(${EMERGE_SCALE})`,
     borderRadius: '22px',

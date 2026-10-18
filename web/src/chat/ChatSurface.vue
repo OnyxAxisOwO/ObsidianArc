@@ -39,6 +39,10 @@ const emit = defineEmits<{ (event: 'open-setup'): void }>();
 const mainRef = ref<HTMLElement | null>(null);
 const scroll = ref<InstanceType<typeof OaScrollArea> | null>(null);
 const composer = ref<InstanceType<typeof ChatComposer> | null>(null);
+// Every message is mounted, with no windowing. Find-in-page and screen readers
+// need the whole transcript in the DOM, and a message painted lazily would need
+// a height estimate that scrollToEnd and the follow logic depend on. Opening a
+// long conversation pays for its full render once; that is the trade taken here.
 const transcriptRef = ref<HTMLElement | null>(null);
 const autoScroll = ref(true);
 const rising = ref(false);

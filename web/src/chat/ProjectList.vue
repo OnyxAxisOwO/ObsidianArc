@@ -45,6 +45,10 @@ function reportFailure(error: unknown): void {
 
 // --- project expansion and conversation list ---------------------------------
 
+// A collapsed project's rows stay mounted, and loaded, until this list goes.
+// The grid slide is what closes a project, and rows unmounted with it would
+// take an open row menu down with them and cut the slide short. Opening again
+// shows the rows already loaded and refreshes them behind.
 const expandedProjects = ref<Record<string, boolean>>({});
 const projectConversations = ref<Record<string, Conversation[]>>({});
 const loadingProjects = ref<Record<string, boolean>>({});

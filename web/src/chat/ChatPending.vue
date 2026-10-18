@@ -5,6 +5,10 @@
 // it is the one thing on screen that changes many times a second: keeping it
 // separate is what confines a delta to re-rendering this subtree instead of
 // the whole conversation.
+//
+// The answer is drawn again in full on every frame that brings text (see
+// OaMarkdown), so a selection made in it does not survive the next frame. It is
+// whole again once the turn ends and the server's copy takes its place.
 
 import { onBeforeUnmount, ref, watch } from 'vue';
 import OaMarkdown from '@/components/OaMarkdown.vue';
