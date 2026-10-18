@@ -85,13 +85,15 @@ export function storedErrorText(code: string, sentence: string): string {
   return codeText(code) ?? sentence;
 }
 
-export function apiErrorText(error: unknown): string {
+// `fallback` is the screen's own generic line, for a screen that has a more
+// specific one than 'failed' (the usage panel's "usage unavailable").
+export function apiErrorText(error: unknown, fallback: StringKey = 'failed'): string {
   if (!(error instanceof ApiError)) {
     // A network or engine failure reads as `TypeError: Failed to fetch`, which
     // is for whoever reads the console, not the reader. The original goes to
     // the console so it is not lost.
     console.warn('request failed', error);
-    return t('failed');
+    return t(fallback);
   }
   if (error.code === 'quota_exceeded') {
     // The window name comes from the server, so a value like "constructor" must
@@ -110,6 +112,6 @@ export function apiErrorText(error: unknown): string {
   // A server failure's sentence is English and was written for logs and API
   // clients, so a reader on a Chinese screen gets the screen's own fallback, as
   // apiFailureText gives. Mirrors that rule so the two helpers do not disagree.
-  if (error.status === 0 || error.status >= 500 || error.code === 'internal') return t('failed');
+  if (error.status === 0 || error.status >= 500 || error.code === 'internal') return t(fallback);
   return error.message;
 }

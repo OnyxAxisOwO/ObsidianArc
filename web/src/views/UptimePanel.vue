@@ -8,6 +8,7 @@
 
 import { computed, onMounted, ref } from 'vue';
 import { api } from '@/api/client';
+import { apiErrorText } from '@/lib/api-error';
 import OaBadge from '@/components/OaBadge.vue';
 import OaFormSection from '@/components/OaFormSection.vue';
 import OaIconButton from '@/components/OaIconButton.vue';
@@ -91,7 +92,7 @@ async function load(): Promise<void> {
   try {
     data.value = await api.get<UptimeResponse>('/api/uptime');
   } catch (err) {
-    error.value = err instanceof Error ? err.message : t('failed');
+    error.value = apiErrorText(err);
   } finally {
     loading.value = false;
   }

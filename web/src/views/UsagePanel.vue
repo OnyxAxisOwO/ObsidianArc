@@ -10,6 +10,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { useDocumentVisibility, useIntervalFn } from '@vueuse/core';
 import { ApiError, api } from '@/api/client';
+import { apiErrorText } from '@/lib/api-error';
 import { fetchUsage, type UsageSummary } from '@/api/usage';
 import OaBonusBars from '@/components/OaBonusBars.vue';
 import OaCheckin from '@/components/OaCheckin.vue';
@@ -26,7 +27,7 @@ import OaUsageWindow from '@/components/OaUsageWindow.vue';
 import type { Column } from '@/components/table-types';
 import type { Stat } from '@/components/stat';
 import { celebrate } from '@/composables/useConfetti';
-import { t } from '@/composables/useI18n';
+import { t, type StringKey } from '@/composables/useI18n';
 import { usePanelExit } from '@/composables/usePanelExit';
 import { IconClose, IconLock, IconPlus, IconRefresh } from '@/icons';
 import { absoluteTime, compactNumber, relativeTime, tokenFigure } from '@/lib/format';
@@ -173,23 +174,30 @@ function expiryDay(at: number): string {
   return new Date(at).toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' });
 }
 
+// One row per window the server names, shortest first: the order here is the
+// order a combined card lists its windows in. `alone` is the sentence for a
+// card that resets that window only, `part` its name inside a combined one.
+const CARD_WINDOWS: readonly { window: string; alone: StringKey; part: StringKey }[] = [
+  { window: '5h', alone: 'cardScope5H', part: 'cardScopeLabel5H' },
+  { window: '1w', alone: 'cardScope1W', part: 'cardScopeLabel1W' },
+  { window: '1m', alone: 'cardScope1M', part: 'cardScopeLabel1M' },
+];
+
 function formatCardScope(card: Card): string {
   const wins = card.windows ?? [];
   if (wins.length === 0 || wins.includes('full')) {
     return t('cardFullReset');
   }
-  const order = ['5h', '1w', '1m'];
+  const order = CARD_WINDOWS.map((row) => row.window);
   const sorted = [...wins].sort((a, b) => order.indexOf(a) - order.indexOf(b));
-  if (sorted.length === 1) {
-    if (sorted[0] === '5h') return t('cardScope5H');
-    if (sorted[0] === '1w') return t('cardScope1W');
-    if (sorted[0] === '1m') return t('cardScope1M');
-  }
+  const known = (w: string) => CARD_WINDOWS.find((row) => row.window === w);
+  const lone = sorted.length === 1 ? known(sorted[0]!) : undefined;
+  if (lone) return t(lone.alone);
+  // A window this build has no name for is shown as the server spelled it,
+  // rather than dropped from the list of what the card resets.
   const labels = sorted.map((w) => {
-    if (w === '5h') return t('cardScopeLabel5H');
-    if (w === '1w') return t('cardScopeLabel1W');
-    if (w === '1m') return t('cardScopeLabel1M');
-    return w;
+    const row = known(w);
+    return row ? t(row.part) : w;
   });
   return t('cardScopeCombined', { windows: labels.join(' + ') });
 }
@@ -246,11 +254,30 @@ const cardStacks = computed<CardStack[]>(() => {
 
 const cardsLeft = computed(() => cards.value.length);
 
-async function loadAllowance(): Promise<void> {
+// Each list on this screen is written by the read on open, the refresh button,
+// the periodic refresh and, for the cards, the read after a spend or a
+// redemption. A read asked for earlier can arrive after a later one, so each
+// list keeps a ticket and only its newest read may write it — otherwise a
+// spent card comes back, or a slow tick paints older figures over newer ones,
+// until the next tick.
+//
+// `quiet` is the periodic refresh: a failure leaves what is on screen, because
+// the last good figures are a better answer than an error where they were.
+// Success clears the error either way, so a panel that opened while the server
+// was unreachable recovers on its own.
+let allowanceTicket = 0;
+let historyTicket = 0;
+let cardsTicket = 0;
+
+async function loadAllowance(quiet = false): Promise<void> {
+  const mine = ++allowanceTicket;
   try {
-    summary.value = await fetchUsage();
+    const next = await fetchUsage();
+    if (mine !== allowanceTicket) return;
+    summary.value = next;
     allowanceError.value = '';
   } catch {
+    if (mine !== allowanceTicket || quiet) return;
     allowanceError.value = t('usageUnavailable');
   }
 }
@@ -276,13 +303,17 @@ async function fetchHistory(): Promise<{ totals: Totals; turns: Turn[] }> {
   return api.get<{ totals: Totals; turns: Turn[] }>('/api/usage/me/history');
 }
 
-async function loadHistory(): Promise<void> {
+async function loadHistory(quiet = false): Promise<void> {
+  const mine = ++historyTicket;
   try {
     const payload = await fetchHistory();
+    if (mine !== historyTicket) return;
     totals.value = payload.totals;
     turns.value = payload.turns;
+    historyError.value = '';
   } catch (error) {
-    historyError.value = error instanceof ApiError ? error.message : t('usageUnavailable');
+    if (mine !== historyTicket || quiet) return;
+    historyError.value = apiErrorText(error, 'usageUnavailable');
   }
 }
 
@@ -290,46 +321,25 @@ async function fetchCards(): Promise<{ cards: Card[] }> {
   return api.get<{ cards: Card[] }>('/api/usage/cards');
 }
 
-// The cards list is written by three paths: this read, the periodic refresh
-// and the read after a spend or a redemption. A read asked for before a later
-// change can arrive after it, so only the newest read may write the list —
-// otherwise a spent card comes back until the next tick.
-let cardsTicket = 0;
-
-async function loadCards(): Promise<void> {
+async function loadCards(quiet = false): Promise<void> {
   const mine = ++cardsTicket;
-  cardsError.value = '';
+  if (!quiet) cardsError.value = '';
   try {
     const payload = await fetchCards();
     if (mine !== cardsTicket) return;
     cards.value = payload.cards;
+    cardsError.value = '';
   } catch {
-    if (mine !== cardsTicket) return;
+    if (mine !== cardsTicket || quiet) return;
     cardsError.value = t('usageUnavailable');
   }
 }
 
-// The same reads without the error handling: a failed refresh leaves
-// what is on screen, because the last good figures are a better answer than
-// an error where they were. Success clears the errors, so a panel that
-// opened while the server was unreachable recovers on its own.
 function refreshQuietly(): void {
   bonusKey.value += 1;
-  fetchUsage().then((next) => {
-    summary.value = next;
-    allowanceError.value = '';
-  }).catch(() => {});
-  fetchHistory().then((payload) => {
-    totals.value = payload.totals;
-    turns.value = payload.turns;
-    historyError.value = '';
-  }).catch(() => {});
-  const mine = ++cardsTicket;
-  fetchCards().then((payload) => {
-    if (mine !== cardsTicket) return;
-    cards.value = payload.cards;
-    cardsError.value = '';
-  }).catch(() => {});
+  void loadAllowance(true);
+  void loadHistory(true);
+  void loadCards(true);
 }
 
 async function submitRedemption(code: string, turnstile = ''): Promise<void> {
@@ -352,7 +362,7 @@ async function submitRedemption(code: string, turnstile = ''): Promise<void> {
       redeemGuard.value?.reset();
     } else {
       redeemChallenge.value = false;
-      cardFlash.value = error instanceof ApiError ? error.message : String(error);
+      cardFlash.value = apiErrorText(error);
     }
   } finally {
     redeeming.value = false;
@@ -396,7 +406,7 @@ async function spend(card: Card): Promise<void> {
     // the card look like it did nothing.
     await Promise.all([loadAllowance(), loadCards(), loadHistory()]);
   } catch (error) {
-    cardFlash.value = error instanceof ApiError ? error.message : String(error);
+    cardFlash.value = apiErrorText(error);
   } finally {
     spending.value = '';
   }
@@ -412,16 +422,16 @@ function toggleRedeem(): void {
 }
 
 onMounted(() => {
-  // Two requests rather than one endpoint returning everything: the allowance
-  // is already served, cached and read by the composer every few seconds, and
-  // folding a page of history into that hot path would make every menu open
-  // carry fifty rows nobody opened it for.
+  // Separate requests rather than one endpoint returning everything: the
+  // allowance is already served, cached and read by the composer each time its
+  // menu opens, and folding a page of history into that path would make every
+  // menu open carry fifty rows nobody opened it for.
   void loadAllowance();
   void loadHistory();
   void loadCards();
 });
 
-// Not while the tab is hidden — five endpoints every fifteen seconds for a
+// Not while the tab is hidden — four requests every fifteen seconds for a
 // panel nobody is looking at — and at once when it is shown again, the rule
 // the backoffice's own live pages already keep.
 const visibility = useDocumentVisibility();
@@ -521,27 +531,29 @@ watch(visibility, (now, was) => {
       <div class="oa-card-list">
         <p v-if="cardsError" class="oa-field-hint">{{ cardsError }}</p>
         <p v-else-if="!cards.length" class="oa-field-hint">{{ t('cardNone') }}</p>
-        <div v-for="stack in cardStacks" v-else :key="stack.key" class="oa-card-row">
-          <div>
-            <span class="oa-card-title">
-              {{ cardTitle(stack.first) }}
-              <!-- Only when there is more than one. "× 1" is noise on the
-                   row it was added to make legible. -->
-              <em v-if="stack.count > 1" class="oa-card-times">&times; {{ stack.count }}</em>
-            </span>
-            <!-- A stack spans a day, so it is dated to the day. A lone card
-                 keeps its time: that is the one somebody is deciding whether
-                 to spend before it runs out this evening. -->
-            <span class="oa-card-sub">{{ cardSubtitle(stack) }}</span>
+        <template v-else>
+          <div v-for="stack in cardStacks" :key="stack.key" class="oa-card-row">
+            <div>
+              <span class="oa-card-title">
+                {{ cardTitle(stack.first) }}
+                <!-- Only when there is more than one. "× 1" is noise on the
+                     row it was added to make legible. -->
+                <em v-if="stack.count > 1" class="oa-card-times">&times; {{ stack.count }}</em>
+              </span>
+              <!-- A stack spans a day, so it is dated to the day. A lone card
+                   keeps its time: that is the one somebody is deciding whether
+                   to spend before it runs out this evening. -->
+              <span class="oa-card-sub">{{ cardSubtitle(stack) }}</span>
+            </div>
+            <span class="oa-header-spacer" />
+            <button
+              type="button"
+              class="oa-btn"
+              :disabled="spending === stack.first.id"
+              @click="spend(stack.first)"
+            >{{ t('cardUse') }}</button>
           </div>
-          <span class="oa-header-spacer" />
-          <button
-            type="button"
-            class="oa-btn"
-            :disabled="spending === stack.first.id"
-            @click="spend(stack.first)"
-          >{{ t('cardUse') }}</button>
-        </div>
+        </template>
       </div>
 
       <OaSwitchField

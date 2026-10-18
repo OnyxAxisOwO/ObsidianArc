@@ -21,6 +21,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import type { Account } from '@/api/auth';
 import { saveAsFile } from '@/api/backup';
 import { ApiError } from '@/api/client';
+import { apiErrorText } from '@/lib/api-error';
 import { beginTwoFactor, enableTwoFactor, type TwoFactorSetup } from '@/api/twofactor';
 import { copyToClipboard } from '@/chat/markdown';
 import OaTextField from '@/components/OaTextField.vue';
@@ -76,7 +77,7 @@ const apps = computed(() => t('twoFactorAppsList').split('·').map((name) => nam
 const groupedKey = computed(() => (setup.value?.secret ?? '').replace(/(.{4})(?=.)/g, '$1 '));
 
 function refusal(failure: unknown): string {
-  if (!(failure instanceof ApiError)) return String(failure);
+  if (!(failure instanceof ApiError)) return apiErrorText(failure);
   switch (failure.code) {
     case 'two_factor_code': return t('twoFactorCodeWrong');
     case 'two_factor_no_setup': return t('twoFactorNoSetup');
@@ -84,7 +85,7 @@ function refusal(failure: unknown): string {
     case 'password_required': return t('twoFactorPasswordRequired');
     case 'current_password_wrong': return t('currentPasswordWrong');
     case 'reauth_required': return t('reauthForTwoFactor');
-    default: return failure.message;
+    default: return apiErrorText(failure);
   }
 }
 

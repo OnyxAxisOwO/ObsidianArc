@@ -20,6 +20,7 @@
 
 import { computed, onMounted, ref } from 'vue';
 import { ApiError } from '@/api/client';
+import { apiErrorText } from '@/lib/api-error';
 import {
   fetchThread, listFeedback, replyToFeedback, sendFeedback,
   type Feedback, type FeedbackKind, type FeedbackPriority, type FeedbackThread,
@@ -104,7 +105,7 @@ async function refresh(): Promise<void> {
     mine.value = result.feedback;
     remaining.value = result.remaining;
   } catch (failure) {
-    error.value = failure instanceof ApiError ? failure.message : t('failed');
+    error.value = apiErrorText(failure);
   } finally {
     loaded.value = true;
   }
@@ -168,7 +169,7 @@ async function submit(token: string): Promise<void> {
       guard.value?.reset();
     } else {
       challengeOpen.value = false;
-      error.value = failure instanceof ApiError ? failure.message : t('failed');
+      error.value = apiErrorText(failure);
     }
   } finally {
     busy.value = false;
@@ -219,7 +220,7 @@ async function open(record: Feedback): Promise<void> {
     void refreshFeedbackUnread();
     if (seq === openSeq) thread.value = opened;
   } catch (failure) {
-    if (seq === openSeq) error.value = failure instanceof ApiError ? failure.message : t('failed');
+    if (seq === openSeq) error.value = apiErrorText(failure);
   } finally {
     if (seq === openSeq) threadBusy.value = false;
   }
@@ -274,7 +275,7 @@ async function submitReply(token: string): Promise<void> {
       guard.value?.reset();
     } else {
       challengeOpen.value = false;
-      error.value = failure instanceof ApiError ? failure.message : t('failed');
+      error.value = apiErrorText(failure);
     }
   } finally {
     // A stale reply must not release the composer for the report now open,

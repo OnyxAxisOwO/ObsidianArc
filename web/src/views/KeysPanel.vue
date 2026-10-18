@@ -12,6 +12,7 @@
 
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { ApiError, api } from '@/api/client';
+import { apiErrorText } from '@/lib/api-error';
 import { createKey, deleteKey, listKeys, updateKey, type ApiKey } from '@/api/keys';
 import { copyToClipboard } from '@/chat/markdown';
 import type { AvailableModel } from '@/chat/useModels';
@@ -244,7 +245,7 @@ function refusalText(failure: unknown): string {
     case 'key_not_found':
       return t('keyErrorNotFound');
     default:
-      return failure.message;
+      return apiErrorText(failure);
   }
 }
 

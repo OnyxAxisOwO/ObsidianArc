@@ -93,6 +93,23 @@ describe('apiErrorText', () => {
     expect(apiErrorText(new ApiError(400, 'internal', SERVER_SENTENCE))).toBe(t('failed'));
   });
 
+  // A screen with a more specific generic line than 'failed' passes its own,
+  // and it replaces only what 'failed' would have: a coded or 4xx answer keeps
+  // its own wording.
+  it('uses the screen\'s own fallback where it names one', async () => {
+    await changeLanguage('zh');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    expect(apiErrorText(new ApiError(502, 'bad_gateway', SERVER_SENTENCE), 'usageUnavailable'))
+      .toBe(t('usageUnavailable'));
+    expect(apiErrorText(new TypeError('Failed to fetch'), 'usageUnavailable')).toBe(t('usageUnavailable'));
+    expect(apiErrorText(new ApiError(401, 'session_required', SERVER_SENTENCE), 'usageUnavailable'))
+      .toBe(t('errSessionEnded'));
+    expect(apiErrorText(new ApiError(400, 'some_new_code', SERVER_SENTENCE), 'usageUnavailable'))
+      .toBe(SERVER_SENTENCE);
+    warn.mockRestore();
+  });
+
   // The server-failure rule must come after the code lookup, or a provider
   // outage (a 5xx with a code) would lose its translation to the generic line.
   it('translates a coded server failure rather than showing the generic line', async () => {

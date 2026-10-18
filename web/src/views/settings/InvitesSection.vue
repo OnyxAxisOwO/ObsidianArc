@@ -14,6 +14,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ApiError } from '@/api/client';
+import { apiErrorText } from '@/lib/api-error';
 import {
   claimInviteCode, fetchProfileInvites, formatInviteCode, inviteLink, regenerateProfileInvite,
   type ProfileInvitee, type ProfileInvites,
@@ -46,7 +47,7 @@ async function load(): Promise<void> {
   try {
     data.value = await fetchProfileInvites();
   } catch (failure) {
-    flash.value = failure instanceof ApiError ? failure.message : String(failure);
+    flash.value = apiErrorText(failure);
   } finally {
     loading.value = false;
   }
@@ -105,7 +106,7 @@ async function regenerate(): Promise<void> {
     if (failure instanceof ApiError && failure.code === 'too_many_attempts') {
       flash.value = t('tooManyAttempts', { count: Number(failure.details['retry_after_seconds'] ?? 60) });
     } else {
-      flash.value = failure instanceof ApiError ? failure.message : String(failure);
+      flash.value = apiErrorText(failure);
     }
   } finally {
     busy.value = false;
@@ -136,7 +137,7 @@ onMounted(() => {
 });
 
 function claimErrorText(failure: unknown): string {
-  if (!(failure instanceof ApiError)) return String(failure);
+  if (!(failure instanceof ApiError)) return apiErrorText(failure);
   switch (failure.code) {
     case 'invite_claimed': return t('inviteClaimAlready');
     case 'invite_group_conflict': return t('inviteClaimConflict');
@@ -146,7 +147,7 @@ function claimErrorText(failure: unknown): string {
     case 'invite_invalid':
       return t('inviteClaimInvalid');
     default:
-      return failure.message;
+      return apiErrorText(failure);
   }
 }
 

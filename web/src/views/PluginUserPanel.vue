@@ -14,6 +14,7 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import { fetchPoWChallenge } from '@/api/auth';
 import { ApiError } from '@/api/client';
+import { apiErrorText } from '@/lib/api-error';
 import OaBadge from '@/components/OaBadge.vue';
 import OaImageLightbox from '@/components/OaImageLightbox.vue';
 import OaPanel from '@/components/OaPanel.vue';
@@ -91,7 +92,7 @@ function say(failure: unknown): string {
   if (!(failure instanceof ApiError)) return t('failed');
   if (failure.code === 'challenge_failed' || failure.code.startsWith('pow_')) return t('challengeFailed');
   if (failure.code === 'challenge_unavailable') return t('challengeUnavailable');
-  return pluginRefusal(failure.code) ?? failure.message;
+  return pluginRefusal(failure.code) ?? apiErrorText(failure);
 }
 
 /** The first required control left empty, by its label; empty when none is. */

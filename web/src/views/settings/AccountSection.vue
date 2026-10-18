@@ -159,7 +159,7 @@ async function loadConnections(): Promise<void> {
       failedLoad = '';
     }
   } catch (error) {
-    const message = error instanceof ApiError ? error.message : String(error);
+    const message = apiErrorText(error);
     failedLoad = message;
     connectionFlash.value = message;
     // Until this loads the password section cannot say which form it is, so the
@@ -179,8 +179,8 @@ function disconnect(provider: string): void {
       connectionFlash.value = error instanceof ApiError && error.code === 'last_way_in'
         ? t('oauthLastWayIn')
         : error instanceof ApiError && error.code === 'oidc_pinned'
-          ? pinnedProvider(provider)?.refused() ?? error.message
-          : error instanceof ApiError ? error.message : String(error);
+          ? pinnedProvider(provider)?.refused() ?? apiErrorText(error)
+          : apiErrorText(error);
     })
     .finally(() => { connectionsBusy.value = false; });
 }
@@ -246,7 +246,7 @@ async function loadAuthorizations(): Promise<void> {
     const result = await fetchAuthorizations();
     authorizations.value = result.authorizations ?? [];
   } catch (error) {
-    authorizationFlash.value = error instanceof ApiError ? error.message : String(error);
+    authorizationFlash.value = apiErrorText(error);
   }
 }
 
@@ -262,7 +262,7 @@ function withdraw(appID: string): void {
   void withdrawAuthorization(appID)
     .then(loadAuthorizations)
     .catch((error: unknown) => {
-      authorizationFlash.value = error instanceof ApiError ? error.message : String(error);
+      authorizationFlash.value = apiErrorText(error);
     })
     .finally(() => { authorizationsBusy.value = false; });
 }
@@ -332,7 +332,7 @@ async function saveProfile(): Promise<void> {
       // which refusalText words in the reader's language.
       profileFlash.value = refusalText(error);
     } else if (error instanceof ApiError) {
-      profileFlash.value = pluginRefusal(error.code ?? '') ?? error.message;
+      profileFlash.value = pluginRefusal(error.code ?? '') ?? apiErrorText(error);
     } else {
       profileFlash.value = String(error);
     }
@@ -364,7 +364,7 @@ async function savePassword(): Promise<void> {
     } else if (error instanceof ApiError && error.code === 'current_password_wrong') {
       passwordFlash.value = t('currentPasswordWrong');
     } else {
-      passwordFlash.value = error instanceof ApiError ? error.message : String(error);
+      passwordFlash.value = apiErrorText(error);
     }
   } finally {
     passwordBusy.value = false;
@@ -388,7 +388,7 @@ function exportData(): void {
       dataStatus.value = t('exportDone', { count: document.conversations.length });
     })
     .catch((error: unknown) => {
-      dataStatus.value = error instanceof ApiError ? error.message : t('failed');
+      dataStatus.value = apiErrorText(error);
     })
     .finally(() => { exporting.value = false; });
 }

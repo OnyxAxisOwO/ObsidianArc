@@ -163,13 +163,44 @@ describe('UsagePanel', () => {
 
     mountPanel();
     await advance(0);
-    expect(document.body.textContent).toContain('boom');
+    // A server failure's sentence was written for logs, so the reader gets the
+    // panel's own line rather than the English it came with.
+    expect(document.body.textContent).not.toContain('boom');
+    expect(document.body.textContent).toContain(t('usageUnavailable'));
 
     down = false;
     await advance(REFRESH_MS);
 
-    expect(document.body.textContent).not.toContain('boom');
+    expect(document.body.textContent).not.toContain(t('usageUnavailable'));
     expect(document.body.textContent).toContain('5');
+  });
+
+  it('does not paint an older history read over a newer one', async () => {
+    let historyReads = 0;
+    let releaseStale!: (value: unknown) => void;
+    get.mockImplementation(async (url: string) => {
+      if (url === '/api/usage/me/history') {
+        historyReads += 1;
+        if (historyReads === 1) return { totals: totals(1), turns: [] };
+        // The first periodic read, held open past the next one.
+        if (historyReads === 2) return new Promise((resolve) => { releaseStale = resolve; });
+        return { totals: totals(777), turns: [] };
+      }
+      return panelRoutes({ totals: totals(0), turns: [] })(url);
+    });
+
+    mountPanel();
+    await advance(0);
+    await advance(REFRESH_MS);
+    await advance(REFRESH_MS);
+    expect(historyReads).toBe(3);
+    expect(document.body.textContent).toContain('777');
+
+    releaseStale({ totals: totals(333), turns: [] });
+    await advance(0);
+
+    expect(document.body.textContent).toContain('777');
+    expect(document.body.textContent).not.toContain('333');
   });
 
   it('does not put back a card spent while an earlier periodic read was on its way', async () => {

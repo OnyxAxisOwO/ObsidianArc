@@ -13,6 +13,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import type { Account } from '@/api/auth';
 import { ApiError } from '@/api/client';
+import { apiErrorText } from '@/lib/api-error';
 import { fetchSessions, revokeOtherSessions, revokeSession, type DeviceSession } from '@/api/sessions';
 import {
   disableTwoFactor, fetchTwoFactor, regenerateRecovery, type TwoFactorStatus,
@@ -58,7 +59,7 @@ async function load(): Promise<void> {
   try {
     status.value = await fetchTwoFactor();
   } catch (failure) {
-    flash.value = failure instanceof ApiError ? failure.message : String(failure);
+    flash.value = apiErrorText(failure);
   }
 }
 
@@ -83,11 +84,11 @@ function finishFresh(): void {
 }
 
 function refusal(failure: unknown): string {
-  if (!(failure instanceof ApiError)) return String(failure);
+  if (!(failure instanceof ApiError)) return apiErrorText(failure);
   switch (failure.code) {
     case 'two_factor_code': return t('twoFactorCodeWrong');
     case 'two_factor_mandatory': return t('twoFactorMandatoryNote');
-    default: return failure.message;
+    default: return apiErrorText(failure);
   }
 }
 
@@ -158,7 +159,7 @@ async function loadDevices(): Promise<void> {
     const { sessions } = await fetchSessions();
     devices.value = sessions;
   } catch (failure) {
-    devicesFlash.value = failure instanceof ApiError ? failure.message : String(failure);
+    devicesFlash.value = apiErrorText(failure);
   }
 }
 
@@ -172,7 +173,7 @@ async function signOutDevice(id: string): Promise<void> {
     await revokeSession(id);
     devices.value = (devices.value ?? []).filter((entry) => entry.id !== id);
   } catch (failure) {
-    devicesFlash.value = failure instanceof ApiError ? failure.message : String(failure);
+    devicesFlash.value = apiErrorText(failure);
   } finally {
     revokingID.value = '';
   }
@@ -187,7 +188,7 @@ async function signOutOthers(): Promise<void> {
     devices.value = (devices.value ?? []).filter((entry) => entry.current);
     devicesNotice.value = t('deviceSignOutOthersDone');
   } catch (failure) {
-    devicesFlash.value = failure instanceof ApiError ? failure.message : String(failure);
+    devicesFlash.value = apiErrorText(failure);
   } finally {
     revokingOthers.value = false;
   }

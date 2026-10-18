@@ -12,7 +12,7 @@
 // shows the top twenty answers the question for twenty people.
 
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { ApiError } from '@/api/client';
+import { apiErrorText } from '@/lib/api-error';
 import {
   fetchLeaderboard,
   type Leaderboard,
@@ -145,7 +145,7 @@ async function load(): Promise<void> {
     data.value = result;
   } catch (failure) {
     if (controller.signal.aborted || isAbortError(failure)) return;
-    error.value = failure instanceof ApiError ? failure.message : t('failed');
+    error.value = apiErrorText(failure);
   } finally {
     if (abortController === controller) {
       abortController = null;
