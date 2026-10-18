@@ -107,6 +107,12 @@
   min-width: 0;
   gap: 4px;
   height: 100%;
+  /* Room for the 3px focus ring: a scroller clips on both axes, so the first
+     tab's ring lost its left edge at the strip's edge. The padding makes the
+     room and the equal negative margin gives it back, so the tabs and the
+     button beside the strip stay exactly where they were. */
+  padding: 0 3px;
+  margin: 0 -3px;
   overflow-x: auto;
   overflow-y: hidden;
   /* The global thin, invisible-until-hover scrollbar (_base.scss) applies to
@@ -141,7 +147,7 @@
    click focuses a tab too, and focus-within would leave the ring on whichever
    tab was clicked, which the old focus-visible rule never did. */
 .oa-terminal-tab-group:has(.oa-terminal-tab:focus-visible) {
-  box-shadow: 0 0 0 2px var(--ai-focus-shadow);
+  @include focus-ring;
 }
 
 .oa-terminal-tab-group.active {
@@ -479,9 +485,9 @@
   height: 13px;
   flex-shrink: 0;
   margin-bottom: 8px;
-  border-radius: 999px;
-  border: 2px solid var(--ai-outline-variant);
-  border-top-color: var(--ai-primary);
+  /* The chat's ring. Its 50% corner draws the same circle the 999px this
+     used to carry did, on a square box. */
+  @include spinner-ring;
   /* The chat's own turn, not a second copy of it. */
   animation: ai-chat-spin 0.7s linear infinite;
 }

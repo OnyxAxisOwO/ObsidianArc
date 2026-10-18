@@ -968,10 +968,10 @@
   text-align: center;
 }
 
+/* Its colour is the shared empty line's, in _chat.scss. */
 .oa-board-empty {
   margin: 0;
   padding: 40px 8px;
-  color: var(--ai-text-secondary);
   font-size: 12px;
   text-align: center;
 }

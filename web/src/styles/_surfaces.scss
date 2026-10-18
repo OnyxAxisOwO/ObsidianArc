@@ -330,16 +330,13 @@
 
 /* An empty list is a shape in the place the list would be, not a sentence
    floating in the page: the same rounded band a row is, taller, so the
-   screen does not look half-drawn while there is nothing to show. */
+   screen does not look half-drawn while there is nothing to show. The band's
+   fill and the colour are the shared empty line's, in _chat.scss. */
 .oa-table-empty {
   margin: 0;
   padding: 44px 16px;
   border-radius: 14px;
-  background: color-mix(in srgb, var(--ai-text) 3%, transparent);
   font-size: 12.5px;
-  line-height: 1.6;
-  text-align: center;
-  color: var(--ai-text-secondary);
 }
 
 /* Secondary columns remain available on phones through the table scroller. */
@@ -1319,14 +1316,6 @@
   color: var(--ai-text);
 }
 
-.oa-connection-body {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-  flex: 1;
-}
-
 .oa-connection-name {
   font-size: 13px;
   font-weight: 600;
@@ -1751,14 +1740,27 @@
   color: var(--ai-danger, #e5484d);
 }
 
+/* The grey note on the field tone: the key panel's warnings, the two-step
+   card's notes and the check-in notice are one box, drawn once here. Each
+   keeps its own margin below; the key warning also keeps its tighter padding,
+   10px corner and full text colour, which are not unified here because
+   changing them would be visible. */
+.oa-usage-note,
+.oa-2fa-note,
 .oa-key-warning {
-  margin: 0;
   font-size: 12px;
   line-height: 1.55;
-  color: var(--ai-text);
+  background: var(--ai-field-bg);
+  border-radius: 11px;
+  padding: 9px 12px;
+  color: var(--ai-text-secondary);
+}
+
+.oa-key-warning {
+  margin: 0;
   padding: 9px 11px;
   border-radius: 10px;
-  background: var(--ai-field-bg);
+  color: var(--ai-text);
 }
 
 /* The warning that is answered by typing (OaTypedConfirm). The word is drawn
@@ -1959,14 +1961,22 @@
   margin-top: 12px;
 }
 
-/* One generated image with its prompt note and download action. */
-.oa-image-lab-card {
-  display: flex;
-  flex-direction: column;
+/* The lab's result, the gallery tile and the image in a chat answer are one
+   picture frame, so it is drawn once here; each keeps only its own layout
+   below (and in _chat.scss). Both files land in the same stylesheet. */
+.oa-image-lab-card,
+.oa-gallery-card,
+.ai-chat-generated-card {
   border-radius: 12px;
   overflow: hidden;
   background: var(--ai-surface-container-low);
   border: 1px solid var(--ai-border);
+}
+
+/* One generated image with its prompt note and download action. */
+.oa-image-lab-card {
+  display: flex;
+  flex-direction: column;
   padding: 12px;
 }
 
@@ -2004,10 +2014,12 @@
 .oa-gallery-spacer { flex: 1; }
 
 /* --- image lab gallery ---------------------------------------------------- */
+/* margin: 0 like every other empty line: without it the paragraph kept the
+   browser's 1em above and below, which no other empty state has. */
 .oa-gallery-empty {
+  margin: 0;
   padding: 48px 16px;
   text-align: center;
-  color: var(--ai-text-secondary);
   font-size: 13px;
 }
 
@@ -2020,10 +2032,6 @@
 .oa-gallery-card {
   display: flex;
   flex-direction: column;
-  border-radius: 12px;
-  background: var(--ai-surface-container-low);
-  overflow: hidden;
-  border: 1px solid var(--ai-border);
   transition: border-color 0.15s ease;
 }
 
@@ -2187,9 +2195,10 @@
     font-weight: 600;
   }
 
+  /* The shared 3px ring, as every other control wears; this was the one
+     2px copy, with nothing recording why. */
   &:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 2px var(--ai-focus-shadow);
+    @include mixins.focus-ring;
   }
 }
 
@@ -2201,6 +2210,16 @@
   white-space: nowrap;
   padding: 6px 14px;
   font-size: 12.5px;
+}
+
+/* The rest of this switch is .oa-slide-tabs; the rail is narrower than the
+   image lab's panel, so its tabs are the smaller size. It stays in this file,
+   after .oa-slide-tab, while the rest of the rail's project rules live in
+   _chat.scss: .oa-slide-tab's `font: inherit` would otherwise win the tie
+   and reset the size. */
+.ai-sidebar-tab {
+  padding: 6px 10px;
+  font-size: 12px;
 }
 
 /* Tighten top padding for image lab panel so form starts right under the title. */
@@ -3247,7 +3266,6 @@
 .oa-search-empty {
   margin: 0;
   padding: 18px 8px;
-  color: var(--ai-text-secondary);
   font-size: 12px;
   line-height: 1.6;
   text-align: center;
@@ -3414,112 +3432,6 @@
   /* A 16px input prevents iOS from zooming the page when searching. */
   .oa-select-search input { font-size: 16px; }
   .oa-pagination-actions { width: 100%; justify-content: space-between; }
-}
-
-/* --- chat sidebar: work-surface tabs and the projects list ----------------
- * This is rail material, not backoffice material — it belongs beside
- * .ai-chat-sidebar in _chat.scss, and reuses that file's .ai-chat-list-item,
- * .ai-chat-list-open, .ai-chat-list-empty and .ai-chat-new outright. It
- * lands here anyway because this file was the one free of a concurrent
- * editor this round, and _chat.scss was not. Move it back if that stops
- * being the reason.
- */
-
-/* The rest of this switch is .oa-slide-tabs; the rail is narrower than the
-   image lab's panel, so its tabs are the smaller size. */
-.ai-sidebar-tab {
-  padding: 6px 10px;
-  font-size: 12px;
-}
-
-.ai-project-panel {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 8px;
-  min-height: 0;
-}
-
-.ai-project-meta {
-  font-size: 10.5px;
-  color: var(--ai-text-secondary);
-}
-
-/* The same 26px row action as .ai-chat-list-more, kept as its own class
- * because that one is a menu trigger: the row's context-menu handler finds
- * it with querySelector('.ai-chat-list-more') and clicks it, so a project's
- * edit or delete button carrying that class would be the one clicked.
- */
-.ai-project-action-btn {
-  display: inline-flex;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  margin-right: 4px;
-  padding: 0;
-  border: none;
-  border-radius: 50%;
-  background: transparent;
-  color: var(--ai-text-secondary);
-  opacity: 0;
-  cursor: pointer;
-}
-
-/* Revealed by the row itself, the same way .ai-chat-list-more is: one hover
- * rule on .ai-chat-list-item covers every action button in it.
- */
-.ai-chat-list-item:hover .ai-project-action-btn,
-.ai-project-action-btn:focus-visible {
-  opacity: 1;
-}
-
-.ai-project-action-btn:hover {
-  background: var(--ai-state-hover);
-  color: var(--ai-text);
-}
-
-.ai-project-action-btn.danger:hover {
-  background: transparent;
-  color: var(--ai-danger);
-}
-
-/* Without this, moving the pointer off the row between the arming click and
- * the confirming one would fade the button out from under an answer the
- * reader is mid-way through giving.
- */
-.ai-project-action-btn.armed {
-  opacity: 1;
-}
-
-/* A touch screen has no hover to reveal these, and an opacity-0 button still
- * takes the tap, so a phone reader would be pressing edit or delete blind.
- * Kept faint, the way .ai-chat-list-more is under the same query. */
-@media (hover: none) {
-  .ai-project-action-btn {
-    opacity: 0.45;
-  }
-}
-
-.ai-project-action-btn.danger.armed {
-  background: color-mix(in srgb, var(--ai-danger) 18%, transparent);
-  color: var(--ai-danger);
-}
-
-/* Keyboard focus on the row's edit and delete buttons is the ring, as on the
- * other icon controls, not the browser's outline. */
-.ai-project-action-btn:focus-visible {
-  @include mixins.focus-ring;
-}
-
-.ai-project-form {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 10px;
-  border-radius: 14px;
-  background: var(--ai-surface-container-high);
 }
 
 .oa-feedback-detail-badges {
@@ -3917,14 +3829,9 @@
   line-height: 1.55;
 }
 
+/* The box itself is shared with .oa-key-warning, above. */
 .oa-2fa-note {
   margin: 0 16px 12px;
-  padding: 9px 12px;
-  border-radius: 11px;
-  background: var(--ai-field-bg);
-  color: var(--ai-text-secondary);
-  font-size: 12px;
-  line-height: 1.55;
 }
 
 .oa-2fa-panel-body {
@@ -3941,14 +3848,6 @@
   gap: 12px;
   padding: 12px 16px;
   border-top: 1px solid var(--ai-border);
-}
-
-.oa-2fa-row-text {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
 }
 
 .oa-2fa-row-title {
@@ -4333,14 +4232,6 @@
   color: var(--ai-text-secondary);
 }
 
-.oa-toast-body {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-  flex: 1;
-}
-
 .oa-toast-title {
   font-size: 13px;
   font-weight: 700;
@@ -4538,9 +4429,10 @@
 
 /* Timings and easing for the inner layer are the variables in _app.scss, so
    retuning the slide there moves both layers together. The !important on the
-   rules below is what lets the inner layer slide at all: _app.scss pins
-   .oa-workspace > .oa-chat-root with transform: none !important, and an
-   equal-weight rule has to win over that pin. */
+   rules below was first written to beat a transform: none !important pin on
+   the chat root in _app.scss; that pin is gone, and the weight stays so that
+   only the reduced-motion block at the end of this section, at the same
+   weight, can still the layer. */
 /* Header Cross-fade: keeps header fixed in place while smoothly cross-fading */
 .page-slide-left-enter-active .oa-header,
 .page-slide-right-enter-active .oa-header {
@@ -4757,15 +4649,10 @@
 }
 
 /* What just happened, or what went wrong, above the month: the field tone, so
-   it stands apart from the card the way the two-step card's notes do. */
+   it stands apart from the card the way the two-step card's notes do. The box
+   is shared with .oa-key-warning, above. */
 .oa-usage-note {
   margin: 0 0 12px;
-  padding: 9px 12px;
-  border-radius: 11px;
-  background: var(--ai-field-bg);
-  color: var(--ai-text-secondary);
-  font-size: 12px;
-  line-height: 1.55;
 }
 
 .oa-usage-note.error {
@@ -4984,14 +4871,6 @@
   border-radius: 10px;
   background: var(--ai-field-bg);
   color: var(--ai-text);
-}
-
-.oa-group-row-text {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
 }
 
 .oa-group-row-title {

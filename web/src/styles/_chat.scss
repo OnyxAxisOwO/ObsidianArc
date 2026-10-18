@@ -310,6 +310,32 @@
   @include hidden-scrollbar;
 }
 
+/* The "nothing here" line, wherever a list, menu, search or gallery comes up
+   empty: one colour for all of them, written once. What differs (a band or
+   a bare line, centred or flush, how much room) stays with each class. The
+   chart and dashboard empties are drawn differently and keep their own. This
+   sits in the earliest stylesheet that draws one of them, and no other rule
+   gives these elements a colour, so where it sits does not change who wins. */
+.ai-chat-list-empty,
+.ai-project-empty-convs,
+.oa-menu-empty,
+.oa-table-empty,
+.oa-search-empty,
+.oa-gallery-empty,
+.oa-board-empty {
+  color: var(--ai-text-secondary);
+}
+
+/* The two empties drawn as a band: a shape where the rows would be, rather
+   than a sentence floating in the page. Their size is their own, below and
+   in _surfaces.scss. */
+.ai-chat-list-empty,
+.oa-table-empty {
+  background: color-mix(in srgb, var(--ai-text) 3%, transparent);
+  line-height: 1.6;
+  text-align: center;
+}
+
 /* An empty list is a quiet band where the rows would be, centred like every
    other empty state, rather than a sentence flush against the rail's edge
    that reads as a line someone forgot to style. */
@@ -317,11 +343,7 @@
   margin: 4px 0;
   padding: 22px 12px;
   border-radius: 12px;
-  background: color-mix(in srgb, var(--ai-text) 3%, transparent);
   font-size: 12px;
-  line-height: 1.6;
-  text-align: center;
-  color: var(--ai-text-secondary);
 }
 
 .ai-chat-list-item {
@@ -409,6 +431,100 @@
   .ai-chat-list-more {
     opacity: 0.45;
   }
+}
+
+/* The projects list in the rail. It reuses .ai-chat-list-item,
+   .ai-chat-list-open, .ai-chat-list-empty and .ai-chat-new outright; the
+   tabs that switch to it are .oa-slide-tabs, in _surfaces.scss. */
+
+.ai-project-panel {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+
+.ai-project-meta {
+  font-size: 10.5px;
+  color: var(--ai-text-secondary);
+}
+
+/* The same 26px row action as .ai-chat-list-more, kept as its own class
+ * because that one is a menu trigger: the row's context-menu handler finds
+ * it with querySelector('.ai-chat-list-more') and clicks it, so a project's
+ * edit or delete button carrying that class would be the one clicked.
+ */
+.ai-project-action-btn {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  margin-right: 4px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ai-text-secondary);
+  opacity: 0;
+  cursor: pointer;
+}
+
+/* Revealed by the row itself, the same way .ai-chat-list-more is: one hover
+ * rule on .ai-chat-list-item covers every action button in it.
+ */
+.ai-chat-list-item:hover .ai-project-action-btn,
+.ai-project-action-btn:focus-visible {
+  opacity: 1;
+}
+
+.ai-project-action-btn:hover {
+  background: var(--ai-state-hover);
+  color: var(--ai-text);
+}
+
+.ai-project-action-btn.danger:hover {
+  background: transparent;
+  color: var(--ai-danger);
+}
+
+/* Without this, moving the pointer off the row between the arming click and
+ * the confirming one would fade the button out from under an answer the
+ * reader is mid-way through giving.
+ */
+.ai-project-action-btn.armed {
+  opacity: 1;
+}
+
+/* A touch screen has no hover to reveal these, and an opacity-0 button still
+ * takes the tap, so a phone reader would be pressing edit or delete blind.
+ * Kept faint, the way .ai-chat-list-more is under the same query. */
+@media (hover: none) {
+  .ai-project-action-btn {
+    opacity: 0.45;
+  }
+}
+
+.ai-project-action-btn.danger.armed {
+  background: color-mix(in srgb, var(--ai-danger) 18%, transparent);
+  color: var(--ai-danger);
+}
+
+/* Keyboard focus on the row's edit and delete buttons is the ring, as on the
+ * other icon controls, not the browser's outline. */
+.ai-project-action-btn:focus-visible {
+  @include mixins.focus-ring;
+}
+
+.ai-project-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 14px;
+  background: var(--ai-surface-container-high);
 }
 
 .ai-chat-context-menu.open-up {
@@ -507,14 +623,6 @@
 .ai-project-new-chat:hover {
   background: var(--ai-surface-container-high);
   color: var(--ai-text);
-}
-
-/* 12px, the size of the project's own rows and of the shared inline empty
-   line it was copied from; the half pixel less had no reason behind it. */
-.ai-project-empty-convs {
-  margin: 4px 8px;
-  font-size: 12px;
-  color: var(--ai-text-secondary);
 }
 
 .ai-project-conv-item {
@@ -1264,12 +1372,9 @@
   margin-bottom: 8px;
 }
 
+/* Its frame is shared with the image lab's cards, in _surfaces.scss. */
 .ai-chat-generated-card {
   position: relative;
-  overflow: hidden;
-  border-radius: 12px;
-  border: 1px solid var(--ai-border);
-  background: var(--ai-surface-container-low);
 }
 
 .ai-chat-generated-img {

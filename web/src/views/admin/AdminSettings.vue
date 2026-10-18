@@ -1028,7 +1028,7 @@ onMounted(load);
       <h1 class="oa-auth-title">{{ t('aboutDisableModalTitle') }}</h1>
       <p class="oa-auth-sub">{{ t('aboutDisableModalDesc') }}</p>
 
-      <div class="oa-auth-form" style="margin-top: 18px; display: flex; gap: 8px; flex-direction: column;">
+      <div class="oa-auth-form oa-admin-auth-stack">
         <button
           type="button"
           class="oa-btn primary oa-btn-block"

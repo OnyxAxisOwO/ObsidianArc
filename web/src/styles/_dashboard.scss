@@ -463,7 +463,3 @@ a.oa-dashboard-resource:hover { background: var(--ai-state-hover); }
   .oa-dashboard-section-head { flex-wrap: wrap; }
   .oa-dashboard-link { height: 30px; font-size: 11px; padding: 0 11px; }
 }
-@media (prefers-reduced-motion: no-preference) {
-  .oa-dashboard-refresh .is-refreshing { animation: oaDashboardRefresh 1s linear infinite; }
-}
-@keyframes oaDashboardRefresh { to { transform: rotate(360deg); } }

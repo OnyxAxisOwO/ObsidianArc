@@ -693,37 +693,23 @@
 
 .oa-segmented-option {
   flex: 1;
-  /* One word per segment, whatever the language. Three options broken across
-     two lines each is what this control looked like in Chinese, where the
-     labels are short enough to fit and long enough to wrap. */
-  white-space: nowrap;
+  /* One word per segment, whatever the language (the mixin's nowrap). Three
+     options broken across two lines each is what this control looked like in
+     Chinese, where the labels are short enough to fit and long enough to
+     wrap. */
+  @include pill-option;
   padding: 5px 8px;
-  border: none;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--ai-text-secondary);
-  font: inherit;
-  font-size: 11.5px;
-  cursor: pointer;
-  transition: background-color 0.15s ease, color 0.15s ease;
 }
 
 .oa-segmented-option:hover {
-  background: var(--ai-state-hover);
-  color: var(--ai-text);
+  @include pill-option-hover;
 }
 
 /* aria-pressed is the one hook for "chosen", as on .oa-segment: a second
-   class saying the same thing is a second thing that can disagree. */
+   class saying the same thing is a second thing that can disagree. Its
+   reduced-motion rule is .oa-segment's, in _segment.scss. */
 .oa-segmented-option[aria-pressed='true'] {
-  background: var(--ai-primary);
-  color: var(--ai-primary-text);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .oa-segmented-option {
-    transition: none;
-  }
+  @include pill-option-pressed;
 }
 
 /* --- composer menu ----------------------------------------------------------- */
@@ -1313,12 +1299,20 @@ button.oa-home-notice-main:focus-visible {
   padding-top: 64px;
 }
 
-.oa-verify-text {
+/* A title over a line of detail beside an icon or an action: the verify
+   banner, a sign-in connection, a two-step or invite row, a toast and OaRow
+   all lay the column out the same way, so it is written once. min-width lets
+   the text shrink and wrap instead of pushing the row's action off it. */
+.oa-verify-text,
+.oa-connection-body,
+.oa-2fa-row-text,
+.oa-toast-body,
+.oa-group-row-text {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  flex: 1;
   min-width: 0;
+  flex: 1;
 }
 
 .oa-verify-text span {
@@ -1546,13 +1540,18 @@ $oa-slide-ease: cubic-bezier(0.16, 1, 0.3, 1);
   pointer-events: none;
 }
 
-/* Suppress conflicting vertical entrance animations on children while full-page horizontal slide runs */
+/* Suppress conflicting vertical entrance animations on children while full-page horizontal slide runs.
+   The workspace's header and the transform on its chat root are not here:
+   _surfaces.scss pins the header inside a workspace page and moves the chat
+   root itself, so a reset of either here only ever lost to those rules. */
 .page-slide-left-enter-active,
 .page-slide-right-enter-active,
 .page-slide-left-leave-active,
 .page-slide-right-leave-active {
-  .oa-workspace > .oa-header,
-  .oa-workspace > .oa-chat-root,
+  .oa-workspace > .oa-chat-root {
+    animation: none !important;
+  }
+
   .oa-admin-rail,
   .oa-admin-main.enter-rise {
     animation: none !important;

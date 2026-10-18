@@ -534,7 +534,7 @@ describe('control states in the stylesheet source', () => {
   });
 
   it('shows a project row action faintly where there is no hover to reveal it', () => {
-    const block = /@media \(hover: none\) \{\s*\.ai-project-action-btn \{([^}]*)\}/.exec(sheet('_surfaces.scss'));
+    const block = /@media \(hover: none\) \{\s*\.ai-project-action-btn \{([^}]*)\}/.exec(sheet('_chat.scss'));
 
     expect(block, 'project edit and delete stay invisible on a touch screen').toBeTruthy();
     expect(block![1]).toMatch(/opacity:\s*0\.45/);

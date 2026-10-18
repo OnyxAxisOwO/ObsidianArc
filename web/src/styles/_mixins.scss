@@ -112,10 +112,11 @@ $frosted-filter: blur(20px) saturate(1.6);
   }
 }
 
-// The track and coloured arc of a loading ring. Size, timing and whatever a
-// spinner adds around the ring stay at the call site. The terminal's ring keeps
-// its own copy: it declares its radius before its border, and moving it here
-// would reorder that rule in the compiled stylesheet.
+// The track and coloured arc of a loading ring. Size, timing, box-sizing and
+// whatever a spinner adds around the ring stay at the call site. The terminal's
+// ring takes it too: its old copy declared its radius first and as 999px, which
+// on a square box is the same circle as 50%, so nothing it drew depended on
+// keeping that copy.
 @mixin spinner-ring {
   border: 2px solid var(--ai-outline-variant);
   border-radius: 50%;
@@ -129,6 +130,38 @@ $frosted-filter: blur(20px) saturate(1.6);
 @mixin focus-ring {
   outline: none;
   box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+}
+
+// One option of a pill switch: .oa-segment's buttons (_segment.scss) and
+// .oa-segmented-option (_app.scss) were written as one look in two files that
+// load on either side of _surfaces.scss. A mixin rather than a shared selector
+// list, so each rule keeps the file, position and specificity the cascade
+// already depends on (.oa-bg-switch overrides .oa-segment by load order). The
+// track, the size and the padding stay with each switch. Unlike the mixins
+// above this one reorders declarations in one of the two rules; none of them
+// overlap, so the computed style is the same. A caller that sets font-weight
+// does so after the include, since `font: inherit` resets it.
+@mixin pill-option {
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ai-text-secondary);
+  font: inherit;
+  font-size: 11.5px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+@mixin pill-option-hover {
+  background: var(--ai-state-hover);
+  color: var(--ai-text);
+}
+
+// aria-pressed is the one hook for "chosen" on both switches.
+@mixin pill-option-pressed {
+  background: var(--ai-primary);
+  color: var(--ai-primary-text);
 }
 
 // The pill a filter field and the bulk-ban reason both wear: one height, the

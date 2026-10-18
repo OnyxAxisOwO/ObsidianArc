@@ -808,7 +808,8 @@
     color-mix(in srgb, var(--ai-primary-text) 12%, transparent) 40deg,
     transparent 80deg
   );
-  animation: oaFrontSpin 9s linear infinite;
+  /* The chat's turn (_chat.scss), at its own slow speed. */
+  animation: ai-chat-spin 9s linear infinite;
   pointer-events: none;
 }
 
@@ -1242,12 +1243,6 @@
   50% {
     transform: translateY(5px);
     opacity: 1;
-  }
-}
-
-@keyframes oaFrontSpin {
-  to {
-    transform: rotate(1turn);
   }
 }
 

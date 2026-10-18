@@ -294,10 +294,14 @@
   @include ellipsis;
 }
 
-.oa-menu-empty {
+/* The inline empty line: flush with the rows it stands in for. An empty
+   project in the rail is the same line; it is 12px like the project's own
+   rows, and the half pixel less it once had had no reason behind it. Its
+   colour is the shared empty line's, in _chat.scss. */
+.oa-menu-empty,
+.ai-project-empty-convs {
   margin: 4px 8px;
   font-size: 12px;
-  color: var(--ai-text-secondary);
 }
 
 /* --- the select, and the list it opens -------------------------------------- */

@@ -2643,3 +2643,12 @@
   color: var(--ai-text-secondary);
   text-decoration: line-through;
 }
+
+/* The stacked buttons under the prompt that hides the About page. Only the
+   backoffice opens that prompt, so the rule loads with it instead of adding
+   to every first paint; the doubled class outranks .oa-auth-form's gap
+   whichever of the two stylesheets arrives last. */
+.oa-auth-form.oa-admin-auth-stack {
+  margin-top: 18px;
+  gap: 8px;
+}
