@@ -1,3 +1,4 @@
+@use 'mixins' as *;
 /* The front page.
  *
  * Its own file, for the reason `_terminal.scss` is: one screen with several
@@ -750,9 +751,7 @@
 
 .oa-front-node,
 .oa-front-core {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+  @include flex-column;
   padding: 18px;
   border-radius: 18px;
   background: var(--ai-surface-container);

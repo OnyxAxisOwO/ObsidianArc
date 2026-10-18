@@ -1,3 +1,4 @@
+@use 'mixins' as *;
 /* The usage report and the chart vocabulary it shares with the overview:
    cards, segmented switches, figures with a direction, a curve over a grid,
    a week folded onto a clock, a table of who uses what, ranked boards.
@@ -620,9 +621,7 @@
 .oa-matrix-head span,
 .oa-matrix-head small,
 .oa-matrix-user > span:last-child {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  @include ellipsis;
 }
 
 .oa-matrix-head span {
@@ -816,9 +815,7 @@
 
 .oa-board-frame .oa-board-name,
 .oa-board-frame .oa-board-notes {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  @include ellipsis;
 }
 
 /* The base rule makes the name a flex container, so a plain-text name becomes
@@ -892,11 +889,7 @@
   scrollbar-width: none;
   -ms-overflow-style: none;
 
-  &::-webkit-scrollbar {
-    display: none;
-    width: 0;
-    height: 0;
-  }
+  @include hidden-scrollbar;
 
   --fade-top: 0px;
   --fade-bottom: 0px;

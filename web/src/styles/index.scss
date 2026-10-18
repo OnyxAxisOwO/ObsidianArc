@@ -1,18 +1,17 @@
 // The whole stylesheet, in the order the cascade needs it.
 //
-// The first five partials are the standalone build's stylesheets carried over
-// unchanged rather than rewritten into nested Sass. That is deliberate: this
-// port is meant to be pixel-for-pixel identical to what it replaces, and
-// re-indenting five thousand declarations into `&`-nesting is a change with
-// thousands of chances to move something by a pixel and no way to see that it
-// did. Sass is used where it earns its place — the split into partials, the
-// mixins in `_mixins.scss` — and not as a reformatting exercise.
+// Most rules here began as the standalone build's stylesheets and were moved
+// over without reformatting, so the port could be checked pixel for pixel
+// against what it replaced. A rule changed since then is changed one at a
+// time, with its reason beside it. Nesting (`&`) and the mixins in
+// `_mixins.scss` are used where they earn their place; nothing is rewritten
+// for its own sake.
 //
 // The order matters. `_chat` defines the `--ai-*` tokens every other file
-// consumes, `_base` paints the page behind them, and `_surfaces` comes last
-// because its panels sit over everything. `_terminal` is the one file here
-// that was not carried over from anywhere, and it comes after `_surfaces`
-// because the console reuses that vocabulary and overrides a little of it.
+// consumes, `_base` paints the page behind them, and `_surfaces` follows the
+// partials above it because its panels sit over them. `_terminal` and the
+// screen partials after it were written against the same vocabulary and
+// override a little of it where they must, so they come after `_surfaces`.
 
 @use 'base';
 @use 'chat';

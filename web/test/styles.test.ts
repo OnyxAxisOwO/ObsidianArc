@@ -260,6 +260,20 @@ describe('phone and state rules in the stylesheet source', () => {
     expect(offenders).toEqual([]);
   });
 
+  it('never reads --ai-accent from a component, since no theme defines it', () => {
+    // Inline styles in the Vue sources read tokens the same way the sheets
+    // do. `--ai-accent` was never defined, so a success line written with it
+    // ignored the accent the user picked and showed the fallback green.
+    const offenders = fs.readdirSync(path.resolve(__dirname, '../src'), { recursive: true })
+      .map(String)
+      .filter((name) => /\.(vue|ts)$/.test(name))
+      .filter((name) => /--ai-accent\b/.test(
+        fs.readFileSync(path.resolve(__dirname, '../src', name), 'utf8'),
+      ));
+
+    expect(offenders).toEqual([]);
+  });
+
   it('reads only custom properties that something defines, in the surfaces sheet', () => {
     // A read with no fallback has nothing to fall back on: an undeclared name
     // makes the whole declaration invalid, so the uptime button's hover fill

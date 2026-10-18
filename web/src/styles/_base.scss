@@ -1,5 +1,6 @@
-/* Page-level shell. Everything below the app root is styled by chat.css and
-   workspace.css, which own the design tokens this file consumes. */
+@use 'mixins' as *;
+/* Page-level shell. Everything below the app root is styled by _chat.scss and
+   _workspace.scss, which own the design tokens this file consumes. */
 
 html,
 body {
@@ -91,7 +92,7 @@ textarea:placeholder-shown::selection {
 /* The rail is matched through .ai-chat-wide, like the transcript beside it.
    Not because the narrow layout needs excluding — though it does, since there
    the rail is an overlay over content rather than a card on the wallpaper —
-   but because chat.css redeclares its background at the same weight this
+   but because _chat.scss redeclares its background at the same weight this
    selector would otherwise have, and wins on being the later file. */
 .has-wallpaper .ai-chat-wide .ai-chat-sidebar,
 .has-wallpaper .ai-chat-wide .ai-chat-main,
@@ -121,8 +122,8 @@ textarea:placeholder-shown::selection {
   background: color-mix(in srgb, var(--ai-surface-container) 38%, transparent);
   /* Saturation back up after the blur washes it out — without it a material
      is a sheet of grey plastic instead of the colour behind it, softened. */
-  -webkit-backdrop-filter: blur(20px) saturate(1.6);
-  backdrop-filter: blur(20px) saturate(1.6);
+  -webkit-backdrop-filter: $frosted-filter;
+  backdrop-filter: $frosted-filter;
 }
 
 .has-wallpaper .oa-header .oa-brand {

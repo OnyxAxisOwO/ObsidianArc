@@ -181,9 +181,7 @@
 .oa-terminal-tab-label {
   flex: 1;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  @include ellipsis;
 }
 
 /* Takes the label's place in the pill, so it carries the same left inset the
@@ -313,10 +311,8 @@
   font-variant-ligatures: var(--oa-term-ligatures);
 }
 
-.oa-terminal-scroll::-webkit-scrollbar {
-  display: none;
-  width: 0;
-  height: 0;
+.oa-terminal-scroll {
+  @include hidden-scrollbar;
 }
 
 .oa-terminal-blocks {
@@ -469,10 +465,8 @@
   caret-shape: var(--oa-term-cursor-style);
 }
 
-.oa-terminal-input::-webkit-scrollbar {
-  display: none;
-  width: 0;
-  height: 0;
+.oa-terminal-input {
+  @include hidden-scrollbar;
 }
 
 .oa-terminal-spinner {

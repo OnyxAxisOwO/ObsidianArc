@@ -1,6 +1,6 @@
 @use 'mixins' as *;
 
-/* Styles for src/chat.js. Defines its own color tokens (rather than assuming
+/* Styles for the chat surface. Defines its own color tokens (rather than assuming
    a host page supplies them) so the component is self-contained enough to
    drop into a different app's page and still look intentional — a host that
    wants its own palette can simply redefine these custom properties on an
@@ -39,31 +39,13 @@
   --ai-danger: #b91c1c;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --ai-text: #ededef;
-    --ai-text-secondary: #b0b0b3;
-    --ai-border: rgba(237, 237, 239, 0.12);
-    --ai-outline-variant: rgba(237, 237, 239, 0.16);
-    --ai-state-hover: rgba(255, 255, 255, 0.16);
-    --ai-surface-card: #19191b;
-    --ai-surface-container: #242426;
-    --ai-surface-container-low: #1c1c1e;
-    --ai-surface-container-high: #2e2e30;
-    --ai-field-bg: #343437;
-    --ai-field-bg-hover: #3e3e41;
-    --ai-primary: #ffffff;
-    --ai-primary-text: #000000;
-    --ai-primary-hover: #dfdfdf;
-    --ai-badge-bg: rgba(255, 255, 255, 0.16);
-    --ai-badge-text: #ffffff;
-    --ai-focus-shadow: rgba(255, 255, 255, 0.28);
-    --ai-shadow-md: 0 8px 28px rgba(0, 0, 0, 0.5);
-    --ai-danger: #ff9a9a;
-  }
-}
-
-:root[data-theme="dark"] {
+// The dark palette is written out twice, and it cannot be one selector. The
+// media query applies it to a system that prefers dark unless the page says
+// otherwise; the attribute selector forces it when the page asks for dark on
+// a light system. They match on different conditions, so each needs its own
+// rule, and this mixin keeps their declarations from drifting apart. It is
+// local to this file because _mixins.scss holds structure, never palette.
+@mixin dark-tokens {
   --ai-text: #ededef;
   --ai-text-secondary: #b0b0b3;
   --ai-border: rgba(237, 237, 239, 0.12);
@@ -83,6 +65,16 @@
   --ai-focus-shadow: rgba(255, 255, 255, 0.28);
   --ai-shadow-md: 0 8px 28px rgba(0, 0, 0, 0.5);
   --ai-danger: #ff9a9a;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    @include dark-tokens;
+  }
+}
+
+:root[data-theme="dark"] {
+  @include dark-tokens;
 }
 
 .ai-chat {
@@ -298,10 +290,8 @@
 
 /* The rail scrolls without showing anything: it is a short list beside a
    long one, and a second bar next to the transcript's reads as clutter. */
-.ai-chat-list::-webkit-scrollbar {
-  display: none;
-  width: 0;
-  height: 0;
+.ai-chat-list {
+  @include hidden-scrollbar;
 }
 
 /* An empty list is a quiet band where the rows would be, centred like every
@@ -528,10 +518,8 @@
   -ms-overflow-style: none;
 }
 
-.ai-chat-scroll::-webkit-scrollbar {
-  display: none;
-  width: 0;
-  height: 0;
+.ai-chat-scroll {
+  @include hidden-scrollbar;
 }
 
 /* Switching to another conversation, or starting a new one, swaps every
@@ -2020,9 +2008,7 @@
 .ai-pop-model-sub {
   font-size: 10.5px;
   color: var(--ai-text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  @include ellipsis;
 }
 
 /* --- the effort slider ----------------------------------------------------------- */
