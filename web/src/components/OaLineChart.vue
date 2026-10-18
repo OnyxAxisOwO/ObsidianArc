@@ -220,10 +220,13 @@ const activeInfo = computed(() => {
           stroke-dasharray="2,2"
         />
 
-        <!-- Data point markers and hover targets -->
+        <!-- Data point markers and hover targets. The group's class has no rule:
+             it is how test/linechart.test.ts finds a point to hover, so it is
+             not a dead class to delete. -->
         <g
           v-for="(m, i) in mapped"
           :key="i"
+          class="oa-linechart-point-group"
           @mouseenter="hovered = i"
         >
           <!-- Transparent wider hit target for easier touch/hover -->
