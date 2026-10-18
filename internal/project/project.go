@@ -3,12 +3,12 @@
 //
 // Every read and every write is scoped by owner, and there is no way to
 // reach a project that belongs to somebody else. That is not tidiness. A
-// project's instructions become part of the system prompt of a session that,
-// on the work surface, is holding tools that can change the instance — so a
-// project somebody else wrote is somebody else writing instructions for an
-// agent that runs with the reader's own permissions. There is no sharing in
-// this version, and the owner scope on every query is what keeps it that
-// way until the question is asked deliberately.
+// project's instructions become part of the system prompt of every
+// conversation started in it, and those conversations run with the reader's
+// own permissions. A project somebody else wrote would be somebody else
+// writing instructions for the reader's model. There is no sharing in this
+// version, and the owner scope on every query is what keeps it that way until
+// the question is asked deliberately.
 package project
 
 import (
@@ -197,7 +197,11 @@ func (s *Store) Update(ctx context.Context, userID, projectID string, in Update)
 	if err != nil {
 		return Project{}, fmt.Errorf("project: update: %w", err)
 	}
-	if affected, _ := result.RowsAffected(); affected == 0 {
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return Project{}, fmt.Errorf("project: update rows: %w", err)
+	}
+	if affected == 0 {
 		return Project{}, ErrNotFound
 	}
 	return s.Get(ctx, nil, userID, projectID)
@@ -213,7 +217,11 @@ func (s *Store) Delete(ctx context.Context, userID, projectID string) error {
 	if err != nil {
 		return fmt.Errorf("project: delete: %w", err)
 	}
-	if affected, _ := result.RowsAffected(); affected == 0 {
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("project: delete rows: %w", err)
+	}
+	if affected == 0 {
 		return ErrNotFound
 	}
 	return nil

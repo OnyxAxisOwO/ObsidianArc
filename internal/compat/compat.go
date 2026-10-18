@@ -79,6 +79,12 @@ type Handlers struct {
 	Guard  Guard
 	OnTurn func(context.Context, chat.TurnRecord)
 
+	// The operator's per-picture limit, read per request so a change takes
+	// effect without a restart. The browser reads the same setting, so /v1 and
+	// the browser cannot disagree about how large a picture may be. Nil or zero
+	// means the built-in default.
+	MaxUploadBytes func() int64
+
 	// The two holds the browser's gates apply, with the same predicates they
 	// use, so the two doors cannot disagree about who is held. Those gates
 	// read the session cookie and never see a bearer key, so a key has to be
@@ -311,13 +317,12 @@ func (h *Handlers) authenticate(r *http.Request) (caller, error) {
 		}
 	}
 
-	// No confirmation check here. It used to be a third copy of one — the
-	// gateway's guard has it, and so does the upload path — and it was the
-	// copy that was wrong: it left out whether verification is in force at
-	// all, so an instance with no SMTP server refused every API request from
-	// an account that predated the setting, and refused the resend that would
-	// have fixed it. Guard runs before anything is spent and has the whole
-	// condition; listing what a key may use costs nothing and is the same
+	// No confirmation check here. The gateway's guard owns it, and so does the
+	// upload path: a copy here left out whether verification is in force at
+	// all, and an instance with no SMTP server then refused every API request
+	// from an account that predated the setting, including the resend that
+	// would have fixed it. Guard runs before anything is spent and has the
+	// whole condition; listing what a key may use costs nothing and is the same
 	// thing the browser lets an unconfirmed account do.
 
 	// Administrators bypass the per-group grant, the way they bypass every
@@ -447,12 +452,12 @@ func describeModel(record model.Model, ref string) modelObject {
 // advertise it under: the API name an administrator set, or failing that the
 // model id they entered, which is the name the upstream itself knows it by.
 //
-// It used to be the row id, which is a ULID — permanent, correct, and
-// unusable. Somebody filling in a config file, or reading a dropdown their
-// client built from /v1/models, was handed twenty-six random characters and
-// no way to tell one model from another. The model id is the string people
-// already expect to type into an OpenAI-compatible client, so it is the one
-// this instance answers to.
+// The row id is not used: it is a ULID, permanent and correct but unusable.
+// Someone filling in a config file, or reading a dropdown their client built
+// from /v1/models, would get twenty-six random characters and no way to tell
+// one model from another. The model id is the string people already expect
+// to type into an OpenAI-compatible client, so it is the one this instance
+// answers to.
 //
 // That does mean the listing names the upstream model, and often its vendor
 // with it. An operator who would rather it did not sets an API name on the
@@ -488,7 +493,7 @@ func publicRefs(records []model.Model) map[string]string {
 			// same identifier would make one unreachable, so both are
 			// qualified: both, not the second, because which one is "second"
 			// depends on a sort order an administrator can change.
-			refs[record.ID] = name + "-" + tail(record.ID)
+			refs[record.ID] = name + "-" + model.IDTail(record.ID)
 		default:
 			refs[record.ID] = name
 		}
@@ -502,16 +507,6 @@ func publicName(record model.Model) string {
 		return record.APIName
 	}
 	return record.ModelID
-}
-
-// The last few characters of a ULID: the random tail, so two rows created in
-// the same millisecond still differ here.
-func tail(rowID string) string {
-	lowered := strings.ToLower(rowID)
-	if len(lowered) <= 6 {
-		return lowered
-	}
-	return lowered[len(lowered)-6:]
 }
 
 // findListed resolves a model id against the listing in the order
@@ -603,6 +598,10 @@ func (h *Handlers) resolveModel(ctx context.Context, who caller, wanted string) 
 	return modelID, nil
 }
 
+// keyModelIDs is the set of models a key may use; nil means any model. A key
+// that names one model in ModelID alone must stay limited to it. The key store
+// fills the list whenever it sets ModelID, so this branch is not reached today,
+// but dropping it would turn such a key into one that may use every model.
 func keyModelIDs(key apikey.Key) []string {
 	if len(key.ModelIDs) > 0 {
 		return key.ModelIDs
@@ -623,6 +622,11 @@ func matchesRestriction(record model.Model, restrictions []string) bool {
 }
 
 // --- errors -------------------------------------------------------------------
+
+// statusClientClosedRequest answers a request the client abandoned before it
+// was served. No standard code names that, and nobody reads the answer, so the
+// value only has to be one the logs can recognise.
+const statusClientClosedRequest = 499
 
 // apiError is a failure in the shape OpenAI clients parse. It is separate
 // from httpx.Error because the two vocabularies differ: this one carries a
@@ -676,11 +680,9 @@ func banned(reason string) apiError {
 
 // One wording for all three protocols, and it carries both numbers.
 //
-// The refusal used to be "Too many tools in one request." and nothing else,
-// which is a dead end for everyone: the person sees no way to act on it, and
-// the operator cannot tell 257 from 5000 without asking them to count. Five
-// different people hit it in a week and not one report said how many they
-// had sent.
+// The refusal names the number, because "Too many tools in one request." alone
+// is a dead end: the person has no way to act on it, and the operator cannot
+// tell 257 from 5000 without asking them to count.
 func tooManyToolsMessage(declared int) string {
 	return "Too many tools in one request: " + strconv.Itoa(declared) +
 		" declared, at most " + strconv.Itoa(maxTools) + "."

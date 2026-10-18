@@ -25,8 +25,6 @@ import (
 // vendor from a list.
 type openAIAdapter struct{}
 
-func (openAIAdapter) Kind() Kind { return KindOpenAI }
-
 type openAIMessage struct {
 	Role string `json:"role"`
 	// Left null on an assistant turn that was nothing but tool calls, which
@@ -890,10 +888,6 @@ func imageExtension(mime string) string {
 	default:
 		return ".png"
 	}
-}
-
-func (anthropicAdapter) ListModels(ctx context.Context, client *http.Client, p Provider) ([]RemoteModel, error) {
-	return listModels(ctx, client, p)
 }
 
 // maxModelPages bounds how far an Anthropic listing is followed. Each page is

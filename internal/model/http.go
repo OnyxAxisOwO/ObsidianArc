@@ -49,11 +49,11 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 // this instance is wired, and nothing in the interface needs it — the client
 // selects by our row id.
 //
-// So is the provider's name. It used to be here, and three screens printed
-// it beside the model, which told every reader which company actually serves
-// the answer — the one fact this indirection exists to keep. Removed rather
-// than hidden at each call site: a field that is not in the struct cannot be
-// printed by the next screen somebody adds.
+// So is the provider's name. It is not carried here: three screens printed it
+// beside the model, which told every reader which company actually serves the
+// answer, the one fact this indirection exists to keep. Keeping it out of the
+// struct, rather than hiding it at each call site, means a screen added later
+// cannot print what it never receives.
 type Public struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"display_name"`

@@ -172,7 +172,10 @@ func (s *Store) DiscardBefore(ctx context.Context, createdBefore int64) (int64, 
 	if err != nil {
 		return 0, fmt.Errorf("conversation: discard before %d: %w", createdBefore, err)
 	}
-	dropped, _ := result.RowsAffected()
+	dropped, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("conversation: discard before rows: %w", err)
+	}
 	return dropped, nil
 }
 

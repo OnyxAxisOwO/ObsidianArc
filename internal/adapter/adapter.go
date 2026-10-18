@@ -3,8 +3,11 @@
 //
 // Everything above it — the chat gateway, the usage ledger, the handlers —
 // speaks one request shape and consumes one event stream. There is no
-// `if kind == "openai"` outside this package, and adding a third protocol is
-// a new file here plus a row in the registry, not a change anywhere else.
+// `if kind == "openai"` outside this package. Inside it, the choices that
+// differ by protocol (endpoints, auth headers, list pagination, the reasoning
+// default) are branches in wire.go and adapter.go rather than methods on
+// Adapter, so a third protocol touches those branches as well as its own file
+// and its registry row. Nothing above this package changes.
 //
 // The shapes below are deliberately smaller than what either provider can
 // express: text, images and tool calls in, text, reasoning and tool calls
@@ -285,17 +288,6 @@ type Usage struct {
 
 func (u Usage) Total() int { return u.InputTokens + u.OutputTokens + u.ReasoningTokens }
 
-// Add sums two separate calls. Merge is for reports about the same call,
-// where a later figure replaces an earlier one; adding those would count the
-// same tokens twice, and merging separate calls would bill only the last.
-func (u Usage) Add(next Usage) Usage {
-	u.InputTokens += next.InputTokens
-	u.OutputTokens += next.OutputTokens
-	u.ReasoningTokens += next.ReasoningTokens
-	u.Estimated = u.Estimated || next.Estimated
-	return u
-}
-
 // Merge folds a later usage report into an earlier one. Anthropic reports
 // input tokens at the start of a stream and output tokens at the end, so a
 // naive overwrite would lose half the numbers.
@@ -376,7 +368,6 @@ type ImageResult struct {
 }
 
 type Adapter interface {
-	Kind() Kind
 	Chat(ctx context.Context, client *http.Client, p Provider, req ChatRequest, sink Sink) (Result, error)
 	ListModels(ctx context.Context, client *http.Client, p Provider) ([]RemoteModel, error)
 	GenerateImage(ctx context.Context, client *http.Client, p Provider, req ImageRequest) (ImageResult, error)
@@ -448,10 +439,10 @@ func NewRegistry(cfg config.Upstream) *Registry {
 // This is also the one place a missing token count is filled in, so every
 // caller — the transcript and all three API shapes — gets the same answer
 // without each re-deciding it. A call that failed or was stopped part-way is
-// estimated from what it streamed before it ended. It used to be left at
-// whatever the provider had reported by then, which is nothing at all for a
-// provider that sends its count last and one output token for one that sends
-// it first — so stopping just before the end made almost any answer free.
+// estimated from what it streamed before it ended. The provider's own figures
+// are not used for that: a provider that sends its count last has sent nothing
+// by then, and one that sends it first has sent a single output token, so
+// stopping just before the end would make almost any answer free.
 func (r *Registry) Chat(ctx context.Context, p Provider, req ChatRequest, sink Sink) (Result, error) {
 	adapter, ok := r.adapters[p.Kind]
 	if !ok {
@@ -515,8 +506,6 @@ func (r *Registry) GenerateImage(ctx context.Context, p Provider, req ImageReque
 	}
 	return adapter.GenerateImage(ctx, r.client, p, req)
 }
-
-func (r *Registry) Client() *http.Client { return r.client }
 
 func (r *Registry) Kinds() []Kind { return []Kind{KindOpenAI, KindAnthropic} }
 

@@ -16,7 +16,6 @@ package compat
 // had been stored.
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -165,6 +164,7 @@ func (h *Handlers) responses(w http.ResponseWriter, r *http.Request, who caller)
 // reports which tool names are custom tools, whose calls must go back to the
 // client as custom_tool_call items rather than function_call ones.
 func (h *Handlers) buildResponsesRequest(body responsesRequest, resolved model.Resolved) (adapter.ChatRequest, map[string]bool, error) {
+	pictureLimit := h.pictureCeiling()
 	items, err := readResponsesInput(body.Input)
 	if err != nil {
 		return adapter.ChatRequest{}, nil, err
@@ -226,7 +226,7 @@ func (h *Handlers) buildResponsesRequest(body responsesRequest, resolved model.R
 				return adapter.ChatRequest{}, nil, badRequest("input",
 					"A "+item.Type+" must name the call it answers in call_id.")
 			}
-			output, err := readResponsesOutput(item.Output)
+			output, err := readResponsesOutput(item.Output, pictureLimit)
 			if err != nil {
 				return adapter.ChatRequest{}, nil, err
 			}
@@ -248,7 +248,7 @@ func (h *Handlers) buildResponsesRequest(body responsesRequest, resolved model.R
 			// Declarations rather than a turn; gathered into the tools above.
 
 		case "message", "":
-			parts, err := readResponsesContent(item.Content)
+			parts, err := readResponsesContent(item.Content, pictureLimit)
 			if err != nil {
 				return adapter.ChatRequest{}, nil, err
 			}
@@ -385,7 +385,7 @@ func readResponsesInput(raw json.RawMessage) ([]responsesItem, error) {
 	return items, nil
 }
 
-func readResponsesContent(raw json.RawMessage) ([]adapter.Part, error) {
+func readResponsesContent(raw json.RawMessage, pictureLimit int64) ([]adapter.Part, error) {
 	trimmed := strings.TrimSpace(string(raw))
 	if trimmed == "" || trimmed == "null" {
 		return nil, nil
@@ -417,7 +417,7 @@ func readResponsesContent(raw json.RawMessage) ([]adapter.Part, error) {
 			if part.ImageURL == "" {
 				continue
 			}
-			image, err := decodeDataURL(part.ImageURL)
+			image, err := decodeDataURL(part.ImageURL, pictureLimit)
 			if err != nil {
 				return nil, err
 			}
@@ -437,7 +437,7 @@ func readResponsesContent(raw json.RawMessage) ([]adapter.Part, error) {
 // below carries. A picture in the array cannot be carried in that string, so it
 // is refused: flattening it away would show the model a result with nothing
 // attached to it.
-func readResponsesOutput(raw json.RawMessage) (string, error) {
+func readResponsesOutput(raw json.RawMessage, pictureLimit int64) (string, error) {
 	trimmed := strings.TrimSpace(string(raw))
 	if trimmed == "" || trimmed == "null" {
 		return "", nil
@@ -453,7 +453,7 @@ func readResponsesOutput(raw json.RawMessage) (string, error) {
 		return "", badRequest("input",
 			"A function_call_output may contain only text: an image cannot travel inside one. Send the picture in a user message instead.")
 	}
-	parts, err := readResponsesContent(raw)
+	parts, err := readResponsesContent(raw, pictureLimit)
 	if err != nil {
 		// Not a refusal: an output this layer cannot read is still an answer
 		// the model should see, and the raw JSON is closer to it than
@@ -688,8 +688,8 @@ func (h *Handlers) responsesStreamed(
 		"response": responseObject(requestID, label, startedAt, "in_progress", nil, nil, adapter.Usage{}),
 	})
 
-	// The model's thinking, which this surface used to drop. It is an
-	// output item like any other and closes before whatever follows it.
+	// The model's thinking. It is an output item like any other, and it closes
+	// before whatever follows it.
 	openReasoning := func() error {
 		if reasoningOpen {
 			return nil
@@ -924,9 +924,7 @@ func (h *Handlers) responsesStreamed(
 	_ = closeReasoning()
 	_ = closeText()
 
-	gone := abandoned(clientGone, r, chatErr)
-	h.record(context.WithoutCancel(r.Context()), who, resolved, requestID, usage, startedAt,
-		abortedWhenGone(chatErr, gone))
+	gone := h.settleStream(r, who, resolved, requestID, usage, startedAt, chatErr, clientGone)
 
 	if chatErr != nil {
 		if gone {

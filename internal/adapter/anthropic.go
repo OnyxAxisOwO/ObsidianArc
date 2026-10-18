@@ -27,7 +27,9 @@ const (
 
 type anthropicAdapter struct{}
 
-func (anthropicAdapter) Kind() Kind { return KindAnthropic }
+func (anthropicAdapter) ListModels(ctx context.Context, client *http.Client, p Provider) ([]RemoteModel, error) {
+	return listModels(ctx, client, p)
+}
 
 type anthropicMessage struct {
 	Role    string `json:"role"`
@@ -478,8 +480,9 @@ func (anthropicAdapter) readStream(ctx context.Context, response *http.Response,
 	var sinkErr error
 
 	// Accumulated in builders rather than by appending to the strings on
-	// result: every delta used to copy the whole answer so far, so a long
-	// generation spent time and garbage in proportion to its length squared.
+	// result: appending copies the whole answer so far on every delta, so a
+	// long generation would spend time and garbage in proportion to its
+	// length squared.
 	// The strings on result are refreshed as they grow, because a sink error
 	// returns result as the partial answer and it has to hold what the reader
 	// actually saw.

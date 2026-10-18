@@ -341,6 +341,30 @@ func (h *Handlers) chat(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
+// clientIP is the address the challenge checks and the security log record. It
+// is empty when the server cannot read one, and the checks accept that.
+func (h *Handlers) clientIP(r *http.Request) string {
+	if h.ClientIP == nil {
+		return ""
+	}
+	return h.ClientIP(r)
+}
+
+// challengeFailure answers a verification that did not pass. Both gates use
+// it, so a browser sees the same code and sentence whichever one asked.
+func challengeFailure(err error) error {
+	switch {
+	case errors.Is(err, turnstile.ErrFailed):
+		return httpx.ForbiddenCode("challenge_failed",
+			"The verification could not be completed. Try again.")
+	case errors.Is(err, turnstile.ErrUnavailable):
+		return httpx.UnavailableCode("challenge_unavailable",
+			"Verification is unavailable right now. Try again shortly.")
+	default:
+		return httpx.Internal(err)
+	}
+}
+
 func (h *Handlers) requireChatChallenge(r *http.Request, account user.User, token string) error {
 	if account.IsAdmin() || h.Security == nil || h.ChatChallengePolicy == nil {
 		return nil
@@ -355,10 +379,7 @@ func (h *Handlers) requireChatChallenge(r *http.Request, account user.User, toke
 		return nil
 	}
 
-	ip := ""
-	if h.ClientIP != nil {
-		ip = h.ClientIP(r)
-	}
+	ip := h.clientIP(r)
 	record := func(decision, reason string, severity securityevents.Severity) {
 		recordCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
 		defer cancel()
@@ -384,16 +405,7 @@ func (h *Handlers) requireChatChallenge(r *http.Request, account user.User, toke
 		if state.Attempt <= policy.Requests+2 {
 			record("failed", err.Error(), securityevents.SeverityWarning)
 		}
-		switch {
-		case errors.Is(err, turnstile.ErrFailed):
-			return httpx.ForbiddenCode("challenge_failed",
-				"The verification could not be completed. Try again.")
-		case errors.Is(err, turnstile.ErrUnavailable):
-			return httpx.UnavailableCode("challenge_unavailable",
-				"Verification is unavailable right now. Try again shortly.")
-		default:
-			return httpx.Internal(err)
-		}
+		return challengeFailure(err)
 	}
 	clearance := policy.Clearance
 	if clearance <= 0 {
@@ -413,10 +425,7 @@ func (h *Handlers) requireChatChallenge(r *http.Request, account user.User, toke
 // plugin guards are calls to somebody's service. Each is a one-shot token, so
 // the browser asks for a fresh one per picture.
 func (h *Handlers) requireImageChallenge(r *http.Request, account user.User, body imageGenRequest) error {
-	ip := ""
-	if h.ClientIP != nil {
-		ip = h.ClientIP(r)
-	}
+	ip := h.clientIP(r)
 
 	if h.ImagePoW != nil && h.ImagePoWEnabled != nil && h.ImagePoWEnabled() {
 		if body.PoW == nil {
@@ -432,16 +441,7 @@ func (h *Handlers) requireImageChallenge(r *http.Request, account user.User, bod
 	}
 
 	if err := h.ImageChallenge.Check(r.Context(), body.Turnstile, ip); err != nil {
-		switch {
-		case errors.Is(err, turnstile.ErrFailed):
-			return httpx.ForbiddenCode("challenge_failed",
-				"The verification could not be completed. Try again.")
-		case errors.Is(err, turnstile.ErrUnavailable):
-			return httpx.UnavailableCode("challenge_unavailable",
-				"Verification is unavailable right now. Try again shortly.")
-		default:
-			return httpx.Internal(err)
-		}
+		return challengeFailure(err)
 	}
 
 	if h.ImageGuards != nil {
@@ -929,6 +929,11 @@ func imageFailure(code, friendly string) error {
 // take to arrive. A picture sent inline never waits on it.
 const pictureFetchBudget = 8 * time.Second
 
+// imageDeliveryBudget is how long the library writes for one generation may
+// take, measured from when the reads have finished. It is separate from the
+// save budget, which the reads share: one stalled link can spend most of that.
+const imageDeliveryBudget = 15 * time.Second
+
 // fetchedPicture is one picture read from a provider's answer.
 type fetchedPicture struct {
 	data []byte
@@ -937,9 +942,9 @@ type fetchedPicture struct {
 }
 
 // readPictures reads every picture the provider returned, each on its own
-// goroutine with its own budget. The budget used to be one deadline shared by
-// the whole loop, so a single stalled URL left the others nothing: they were
-// dropped while still billed. Read together, a stall costs only itself.
+// goroutine with its own budget. One deadline shared by the whole loop would
+// let a single stalled URL leave the others nothing, and they would be dropped
+// while still billed. Read together, a stall costs only itself.
 func readPictures(
 	ctx context.Context, items []adapter.GeneratedImage, ceiling int64, budget time.Duration,
 	read func(context.Context, adapter.GeneratedImage, int64) ([]byte, string, error),
@@ -988,7 +993,7 @@ func (h *Handlers) generateImage(w http.ResponseWriter, r *http.Request) error {
 	// A prompt on its own is a few hundred bytes and needs no protection. A
 	// request that carries pictures can be tens of megabytes of base64, which
 	// is then decoded and sniffed below — the same cost as an upload, from an
-	// endpoint that used to have no bound on how many ran at once. Those share
+	// endpoint that has to bound how many run at once. Those share
 	// the upload endpoint's slots, claimed before the body is read for the
 	// reason given there. An unknown length (chunked) is treated as large.
 	releaseDecode := func() {}
@@ -1146,6 +1151,13 @@ func (h *Handlers) generateImage(w http.ResponseWriter, r *http.Request) error {
 
 	fetched := readPictures(saveCtx, result.Data, ceiling, pictureFetchBudget, generatedImageBytes)
 
+	// Derived from the request, not saveCtx, for the same reason saveCtx is: the
+	// generation is billed whether or not the browser is still there, so the
+	// library rows it is owed must be written either way. The writes run one
+	// after another, so one budget has to cover every picture's write.
+	deliverCtx, cancelDeliver := context.WithTimeout(context.WithoutCancel(r.Context()), imageDeliveryBudget)
+	defer cancelDeliver()
+
 	delivery := imageDelivery{
 		account:     account,
 		modelID:     resolved.Model.ID,
@@ -1155,7 +1167,7 @@ func (h *Handlers) generateImage(w http.ResponseWriter, r *http.Request) error {
 		ceiling:     ceiling,
 		keepHistory: h.ImageHistoryEnabled == nil || h.ImageHistoryEnabled(),
 	}
-	images, undelivered, lastFailure := h.deliverImages(saveCtx, delivery, result.Data, fetched)
+	images, undelivered, lastFailure := h.deliverImages(deliverCtx, delivery, result.Data, fetched)
 
 	// Every picture failing is a failure, not an empty success: the account
 	// has been charged and has nothing to show, and the panel would otherwise
@@ -1333,12 +1345,12 @@ func (h *Handlers) listImageGenerations(w http.ResponseWriter, r *http.Request) 
 func (h *Handlers) deleteImageGeneration(w http.ResponseWriter, r *http.Request) error {
 	account := auth.MustUser(r.Context())
 
-	id := r.PathValue("id")
-	if id == "" {
+	generationID := r.PathValue("id")
+	if generationID == "" {
 		return httpx.BadRequest("Generation ID is required.")
 	}
 
-	if err := h.conversations.DeleteImageGeneration(r.Context(), account.ID, id); err != nil {
+	if err := h.conversations.DeleteImageGeneration(r.Context(), account.ID, generationID); err != nil {
 		return err
 	}
 	return httpx.NoContent(w)

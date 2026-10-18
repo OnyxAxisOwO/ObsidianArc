@@ -31,7 +31,7 @@ func TestBareIDOfUnnamedDuplicatesIsNotAnswered(t *testing.T) {
 		t.Fatalf("bare shared id resolved to %q (err %v), want ErrNotFound", got, err)
 	}
 	for _, record := range []Model{first, second} {
-		ref := "shared-id-" + modelIDTail(record.ID)
+		ref := "shared-id-" + IDTail(record.ID)
 		got, err := f.models.FindAPIModel(ctx, "", true, nil, ref)
 		if err != nil {
 			t.Fatalf("qualified ref %q: %v", ref, err)

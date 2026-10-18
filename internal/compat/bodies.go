@@ -58,7 +58,7 @@ func (h *Handlers) claimBody(w http.ResponseWriter, r *http.Request, who caller)
 		// The request's context ended while it waited, so nobody is left to read
 		// the answer.
 		return nil, apiError{
-			status:  499,
+			status:  statusClientClosedRequest,
 			kind:    "invalid_request_error",
 			code:    "cancelled",
 			message: "The request was cancelled.",

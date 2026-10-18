@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 	"unicode"
@@ -39,7 +40,7 @@ type Capabilities struct {
 	SupportsTools        bool `json:"supports_tools"`
 	// The image lab may generate with it. Says nothing about conversations:
 	// a model that draws is very often a model that also talks, and marking
-	// it for the lab used to take it out of the composer's picker entirely.
+	// it for the lab must not take it out of the composer's picker.
 	SupportsImageGen bool `json:"supports_image_gen"`
 	// It generates pictures inside a conversation, which is what makes the
 	// chat surface show it as an image generator. Off by default and off for
@@ -150,6 +151,7 @@ func (m Model) Extra() map[string]any {
 	}
 	var out map[string]any
 	if err := json.Unmarshal([]byte(trimmed), &out); err != nil {
+		slog.Warn("model request override does not decode, so it is dropped", "model", m.ID, "error", err)
 		return nil
 	}
 	return out
@@ -398,7 +400,7 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Model, error) {
 		return err
 	})
 	if err != nil {
-		if isUnique(err) {
+		if database.IsUnique(err) {
 			return Model{}, s.whichDuplicate(ctx, record.APIName, record.ID)
 		}
 		return Model{}, fmt.Errorf("model: create: %w", err)
@@ -483,9 +485,9 @@ func (s *Store) Update(ctx context.Context, modelID string, in Update) (Model, e
 			if second < first {
 				first, second = second, first
 			}
-			for _, id := range []string{first, second} {
+			for _, lockedID := range []string{first, second} {
 				if _, err := tx.Exec(ctx,
-					`UPDATE models SET updated_at = updated_at WHERE id = ?`, id); err != nil {
+					`UPDATE models SET updated_at = updated_at WHERE id = ?`, lockedID); err != nil {
 					return fmt.Errorf("model: lock route: %w", err)
 				}
 			}
@@ -599,7 +601,7 @@ func (s *Store) Update(ctx context.Context, modelID string, in Update) (Model, e
 		return err
 	})
 	if err != nil {
-		if isUnique(err) {
+		if database.IsUnique(err) {
 			return Model{}, s.whichDuplicate(ctx, next.APIName, modelID)
 		}
 		return Model{}, fmt.Errorf("model: update: %w", err)
@@ -618,7 +620,7 @@ func (s *Store) Update(ctx context.Context, modelID string, in Update) (Model, e
 // its own copy, and two instances sharing a database can read the same
 // enabled model and both decide to disable it. An unconditional UPDATE would
 // have both writes succeed and both callers believe they were the one that
-// changed something, which is what used to double the notice. The guard is
+// changed something, which would double the notice. The guard is
 // the WHERE clause itself rather than a separate read-then-write: the
 // condition is checked and applied by the database as one statement, so the
 // second instance's write finds the row no longer enabled and changes
@@ -855,7 +857,7 @@ func (s *Store) FindAPIModel(
 			if ref == "" {
 				ref = candidate.ID
 			} else if candidate.Claims > 1 {
-				ref += "-" + modelIDTail(candidate.ID)
+				ref += "-" + IDTail(candidate.ID)
 			}
 		}
 		// An unnamed row's display name defaults to its upstream id. Where several
@@ -897,8 +899,12 @@ func splitQualifiedAPIRef(wanted string) (string, string, bool) {
 	return wanted[:separator], wanted[separator+1:], true
 }
 
-func modelIDTail(id string) string {
-	lowered := strings.ToLower(id)
+// IDTail is the qualifier a row's id adds to a shared upstream id: its last six
+// characters, which are random in a ULID, so two rows created in the same
+// millisecond still differ. The listing and the lookup both call it, because
+// they have to agree on the spelling.
+func IDTail(rowID string) string {
+	lowered := strings.ToLower(rowID)
 	if len(lowered) <= 6 {
 		return lowered
 	}
@@ -1026,11 +1032,10 @@ func (s *Store) readCallable(
 		headerJSON string
 	)
 	// The model's own columns go through scan(), the one list every other read
-	// uses; only the provider's columns are added here. This used to be a
-	// second hand-written copy of that list, and it drifted twice: once
-	// without api_name (every completion a 500) and once without decoding
-	// the reasoning tiers (every chat request on the adapter's built-in
-	// budgets).
+	// uses, so a column added there reaches this read too. Only the provider's
+	// columns are added here: a second hand-written list is where a column goes
+	// missing, and a missing column shows up as a failed completion or as ignored
+	// reasoning tiers.
 	record, err := scan(s.db.QueryRow(ctx, query, args...), true, false,
 		&upstream.BaseURL, &sealed, &headerJSON, &upstream.AnthropicVersion, &upstream.ReasoningStyle,
 		&upstream.TimeoutSeconds, &upstream.SortOrder, &upstream.Enabled,
@@ -1042,7 +1047,7 @@ func (s *Store) readCallable(
 		}
 		return Model{}, provider.Provider{}, nil, fmt.Errorf("model: read callable: %w", err)
 	}
-	upstream.Headers = decodeHeaders(headerJSON)
+	upstream.Headers = provider.DecodeHeaders(record.ProviderID, headerJSON)
 	return record, upstream, sealed, nil
 }
 
@@ -1070,7 +1075,11 @@ func (s *Store) Reorder(ctx context.Context, modelIDs []string) error {
 			// An id that names no model matches nothing and fails silently. The
 			// order is then wrong for the row the caller meant to move, so the
 			// whole batch is refused and rolled back rather than half applied.
-			if n, _ := res.RowsAffected(); n == 0 {
+			n, err := res.RowsAffected()
+			if err != nil {
+				return fmt.Errorf("model: reorder rows: %w", err)
+			}
+			if n == 0 {
 				return ErrNotFound
 			}
 		}
@@ -1213,20 +1222,6 @@ func (s *Store) AllGroupGrants(ctx context.Context, q database.Queryer) (map[str
 	return out, rows.Err()
 }
 
-func (s *Store) GroupModelIDs(ctx context.Context, groupID string) ([]string, error) {
-	grants, err := s.GroupModelGrants(ctx, groupID)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]string, 0, len(grants))
-	for _, g := range grants {
-		if g.Access == AccessUse {
-			out = append(out, g.ModelID)
-		}
-	}
-	return out, nil
-}
-
 // SetGroupModels replaces a group's grants wholesale. A nil q runs it in its
 // own transaction; a caller that has just written the group passes its
 // transaction, so the group and its grants commit or roll back together. A
@@ -1276,8 +1271,8 @@ func (s *Store) SetGroupModels(ctx context.Context, q database.Queryer, groupID 
 // SetGroupModelIDs is a convenience wrapper for callers specifying only IDs.
 func (s *Store) SetGroupModelIDs(ctx context.Context, q database.Queryer, groupID string, modelIDs []string) error {
 	grants := make([]GroupGrant, len(modelIDs))
-	for i, id := range modelIDs {
-		grants[i] = GroupGrant{ModelID: id, Access: AccessUse}
+	for i, modelID := range modelIDs {
+		grants[i] = GroupGrant{ModelID: modelID, Access: AccessUse}
 	}
 	return s.SetGroupModels(ctx, q, groupID, grants)
 }
@@ -1362,8 +1357,8 @@ func (s *Store) AllModelGrants(ctx context.Context) (map[string][]ModelGroupGran
 
 // normalizeAccess maps an administrator's word for a grant onto the stored
 // level. "none" and "" mean no grant. Anything else that is not a level is
-// refused rather than read as full use: a typo such as "viwe" used to grant
-// far more than was asked for, and nothing reported it.
+// refused rather than read as full use: a typo such as "viwe" must not grant
+// far more than was asked for, so it is refused with an error the administrator sees.
 func normalizeAccess(access string) (string, error) {
 	switch strings.TrimSpace(strings.ToLower(access)) {
 	case AccessView:
@@ -1515,7 +1510,7 @@ func normalizeTiers(in []ReasoningTier) []ReasoningTier {
 	return out
 }
 
-// The column holds ” for a model using the built-in three, so a row written
+// The column holds an empty string for a model using the built-in three, so a row written
 // before tiers existed decodes to the same nil the editor writes back when
 // the list is emptied.
 func encodeTiers(tiers []ReasoningTier) string {
@@ -1529,12 +1524,16 @@ func encodeTiers(tiers []ReasoningTier) string {
 	return string(encoded)
 }
 
-func decodeTiers(raw string) []ReasoningTier {
+// decodeTiers reads a model's reasoning tiers. A row that does not decode gives
+// none, so the model falls back to its adapter's own budget. The warning names
+// the model because that is the only trace of why its tiers stopped applying.
+func decodeTiers(modelID, raw string) []ReasoningTier {
 	if raw == "" {
 		return nil
 	}
 	var out []ReasoningTier
 	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		slog.Warn("model reasoning tiers do not decode; the adapter default applies", "model", modelID, "error", err)
 		return nil
 	}
 	return out
@@ -1556,7 +1555,7 @@ func assign[T any](target *T, value *T) {
 	}
 }
 
-type rowScanner interface{ Scan(dest ...any) error }
+type rowScanner = database.RowScanner
 
 // scan reads the model's columns, then the joined provider name and kind, then
 // Usable, then whatever extra targets a query selects after those.
@@ -1592,7 +1591,7 @@ func scan(row rowScanner, joined bool, withUsable bool, extra ...any) (Model, er
 		return Model{}, fmt.Errorf("model: scan: %w", err)
 	}
 	record.RouteToID = route.String
-	record.ReasoningTiers = decodeTiers(tiers)
+	record.ReasoningTiers = decodeTiers(record.ID, tiers)
 	return record, nil
 }
 
@@ -1612,18 +1611,4 @@ func collect(rows rowsScanner, joined bool, withUsable bool) ([]Model, error) {
 		out = append(out, record)
 	}
 	return out, rows.Err()
-}
-
-func decodeHeaders(raw string) map[string]string {
-	out := map[string]string{}
-	if raw == "" {
-		return out
-	}
-	_ = json.Unmarshal([]byte(raw), &out)
-	return out
-}
-
-func isUnique(err error) bool {
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "unique") || strings.Contains(message, "duplicate")
 }

@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand/v2"
 	"slices"
 	"strings"
@@ -376,7 +377,7 @@ func (s *Store) Create(ctx context.Context, in CreateInput, superAdmin bool) (Pr
 		return Provider{}, fmt.Errorf("provider: encode headers: %w", err)
 	}
 
-	const columns = `INSERT INTO providers
+	const insertColumns = `INSERT INTO providers
 		(id, name, kind, base_url, allow_insecure, api_key_enc, api_key_hint, headers_json,
 		 anthropic_version, reasoning_style, timeout_seconds, enabled, sort_order, created_at, updated_at,
 		 key_rotation)`
@@ -396,7 +397,7 @@ func (s *Store) Create(ctx context.Context, in CreateInput, superAdmin bool) (Pr
 		// never anywhere. Everything else is what the caller asked for.
 		// The base URL is matched again here, so a source repointed between
 		// the check above and this insert copies nothing.
-		query = columns + `
+		query = insertColumns + `
 		SELECT ?, ?, ?, ?, ?, api_key_enc, api_key_hint, ?, ?, ?, ?, ?, ?, ?, ?, ?
 		FROM providers WHERE id = ? AND base_url = ?`
 		args = append(append(identity, rest...), in.CopyKeyFrom, record.BaseURL)
@@ -406,21 +407,25 @@ func (s *Store) Create(ctx context.Context, in CreateInput, superAdmin bool) (Pr
 			return Provider{}, sealErr
 		}
 		record.setHints(hints)
-		query = columns + `
+		query = insertColumns + `
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 		args = append(append(identity, sealed, hints), rest...)
 	}
 
 	result, err := s.db.Exec(ctx, query, args...)
 	if err != nil {
-		if isUnique(err) {
+		if database.IsUnique(err) {
 			return Provider{}, ErrNameTaken
 		}
 		return Provider{}, fmt.Errorf("provider: create: %w", err)
 	}
 	if copying {
 		// A SELECT that matched nothing inserts nothing and reports no error.
-		if written, _ := result.RowsAffected(); written == 0 {
+		written, err := result.RowsAffected()
+		if err != nil {
+			return Provider{}, fmt.Errorf("provider: create rows: %w", err)
+		}
+		if written == 0 {
 			return Provider{}, ErrNotFound
 		}
 		// The hints travelled with the keys, so they have to be read back
@@ -554,7 +559,7 @@ func (s *Store) Update(ctx context.Context, providerID string, in Update, superA
 
 		args = append(args, providerID)
 		if _, err := tx.Exec(ctx, `UPDATE providers SET `+sets+` WHERE id = ?`, args...); err != nil {
-			if isUnique(err) {
+			if database.IsUnique(err) {
 				return ErrNameTaken
 			}
 			return fmt.Errorf("provider: update: %w", err)
@@ -571,14 +576,16 @@ func (s *Store) Update(ctx context.Context, providerID string, in Update, superA
 	return next, err
 }
 
-// nextKeys works out the list an Update leaves behind, and whether it
-// touches the keys at all. allTyped says every key in it was typed in this
-// request, the one condition under which they may follow a new base URL.
+// keySet is the key list an Update leaves behind. allTyped says every key in it
+// was typed in this request, the one condition under which the keys may follow a
+// new base URL.
 type keySet struct {
 	list     []string
 	allTyped bool
 }
 
+// nextKeys works out the list an Update leaves behind, and whether it touches
+// the keys at all.
 func (s *Store) nextKeys(
 	ctx context.Context, tx *database.Tx, providerID string, current Provider, in Update,
 ) (keySet, bool, error) {
@@ -709,7 +716,7 @@ func (s *Store) Resolve(ctx context.Context, providerID string) (adapter.Provide
 		}
 		return adapter.Provider{}, fmt.Errorf("provider: resolve: %w", err)
 	}
-	record.Headers = decodeHeaders(headers)
+	record.Headers = DecodeHeaders(record.ID, headers)
 	return s.ResolveFrom(record, sealed)
 }
 
@@ -978,18 +985,25 @@ func validHeaderName(name string) bool {
 	return name != ""
 }
 
-func decodeHeaders(raw string) map[string]string {
+// DecodeHeaders reads a provider's stored extra headers. The save path validates
+// the JSON, so a row that does not decode was written outside the server. It is
+// still read as no headers rather than failing the request, and the warning
+// names the provider because the symptom is an upstream 401 or 403 with nothing
+// else to say why.
+func DecodeHeaders(providerID, raw string) map[string]string {
 	out := map[string]string{}
 	if raw == "" {
 		return out
 	}
-	_ = json.Unmarshal([]byte(raw), &out)
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		slog.Warn("provider headers do not decode, so they are not sent", "provider", providerID, "error", err)
+	}
 	return out
 }
 
 // --- scanning ----------------------------------------------------------------
 
-type rowScanner interface{ Scan(dest ...any) error }
+type rowScanner = database.RowScanner
 
 func scan(row rowScanner) (Provider, error) {
 	var (
@@ -1007,7 +1021,7 @@ func scan(row rowScanner) (Provider, error) {
 		}
 		return Provider{}, fmt.Errorf("provider: scan: %w", err)
 	}
-	record.Headers = decodeHeaders(headers)
+	record.Headers = DecodeHeaders(record.ID, headers)
 	record.setHints(hints)
 	return record, nil
 }
@@ -1029,12 +1043,7 @@ func scanWithCount(row rowScanner) (Provider, int, error) {
 		}
 		return Provider{}, 0, fmt.Errorf("provider: scan: %w", err)
 	}
-	record.Headers = decodeHeaders(headers)
+	record.Headers = DecodeHeaders(record.ID, headers)
 	record.setHints(hints)
 	return record, count, nil
-}
-
-func isUnique(err error) bool {
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "unique") || strings.Contains(message, "duplicate")
 }
