@@ -411,6 +411,14 @@ async function saveRetention(value: string): Promise<void> {
 // Read through a computed so the template never sees the store's ref itself.
 const superAdmin = computed(() => isSuperAdmin.value);
 
+// Computed so a render does not hand the select a new array, and so the
+// labels follow a change of language.
+const outcomeChoices = computed(() => [
+  { value: '', label: t('logAnyOutcome') },
+  { value: 'ok', label: t('logSucceeded') },
+  { value: 'failed', label: t('logFailed') },
+]);
+
 onMounted(reload);
 </script>
 
@@ -447,11 +455,7 @@ onMounted(reload);
         <OaSelectField
           v-model="query.outcome"
           :label="t('logOutcome')"
-          :options="[
-            { value: '', label: t('logAnyOutcome') },
-            { value: 'ok', label: t('logSucceeded') },
-            { value: 'failed', label: t('logFailed') },
-          ]"
+          :options="outcomeChoices"
           @update:model-value="filterMoved"
         />
       </div>

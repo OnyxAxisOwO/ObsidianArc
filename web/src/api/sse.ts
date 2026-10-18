@@ -6,7 +6,7 @@
 // differ in how they joined a multi-line data field. One copy now; what each
 // stream does with an event stays with the stream.
 
-import { ApiError, noteSessionEnded } from '@/api/client';
+import { ApiError, noteBackofficeRefusal, noteSessionEnded, readErrorBody } from '@/api/client';
 import { t } from '@/composables/useI18n';
 
 export interface SSEEvent {
@@ -74,23 +74,12 @@ export async function readSSE(
  * status, read the way the JSON client reads one.
  */
 export async function streamRefusal(response: Response): Promise<ApiError> {
-  const text = await response.text();
-  let code = 'error';
-  let message = t('failed');
-  let details: Record<string, unknown> = {};
-  try {
-    const body = JSON.parse(text) as { error?: { code?: string; message?: string } & Record<string, unknown> };
-    if (body.error) {
-      const { code: bodyCode, message: bodyMessage, ...rest } = body.error;
-      code = bodyCode ?? code;
-      message = bodyMessage ?? message;
-      details = rest;
-    }
-  } catch {
-    // A non-JSON body (a proxy's error page) leaves the defaults.
-  }
+  const body = await readErrorBody(response);
+  const code = body.code ?? 'error';
   // A stream is a request like any other: a session that ended while the page
-  // was open must sign this tab out too, not only the JSON calls.
+  // was open must sign this tab out too, not only the JSON calls, and a
+  // backoffice visit that ran out must offer the code here as well.
+  noteBackofficeRefusal(code);
   noteSessionEnded(code);
-  return new ApiError(response.status, code, message, details);
+  return new ApiError(response.status, code, body.message ?? t('failed'), body.details);
 }

@@ -593,6 +593,14 @@ onBeforeUnmount(() => {
   window.clearTimeout(saveLabelTimer);
   cancelCopyFlash();
 });
+
+// Computed so a render does not hand the select a new array, and so the
+// labels follow a change of language.
+const registrationModeChoices = computed(() => [
+  { value: 'open', label: t('registrationModeOpen') },
+  { value: 'invite', label: t('registrationModeInvite') },
+  { value: 'closed', label: t('registrationModeClosed') },
+]);
 </script>
 
 <template>
@@ -619,11 +627,7 @@ onBeforeUnmount(() => {
             v-model="form.mode"
             :label="t('registrationMode')"
             :hint="t('registrationModeHint')"
-            :options="[
-              { value: 'open', label: t('registrationModeOpen') },
-              { value: 'invite', label: t('registrationModeInvite') },
-              { value: 'closed', label: t('registrationModeClosed') },
-            ]"
+            :options="registrationModeChoices"
           />
           <OaSwitchField v-model="form.userEnabled" :label="t('userInvitesEnabled')" :hint="t('userInvitesEnabledHint')" />
           <template v-if="form.userEnabled">

@@ -727,11 +727,3 @@ function buildMath(latex: string, display: boolean): HTMLElement {
 
   return container;
 }
-
-export function renderMathInline(latex: string, display = false): HTMLElement {
-  return renderMath(latex, display);
-}
-
-export function renderMathBlock(latex: string): HTMLElement {
-  return renderMath(latex, true);
-}

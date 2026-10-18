@@ -19,6 +19,12 @@ const props = defineProps<{
   /** Extra class on the positioning wrapper, for alignment overrides. */
   groupClass?: string;
   menuClass?: string;
+  /**
+   * Opens upwards, for a caller whose own class does the placing. The shared
+   * `oa-menu-up` is recognised without it; a caller's own class name is not
+   * this component's to know.
+   */
+  up?: boolean;
 }>();
 
 // Long enough for the transition in the stylesheet; a few ms over, so the
@@ -66,7 +72,7 @@ function fit(): void {
   const effectiveWidth = Math.min(el.offsetWidth, room);
   const g = group.value;
   const isLeft = el.classList.contains('oa-menu-left');
-  const isUp = el.classList.contains('oa-menu-up') || el.classList.contains('open-up');
+  const isUp = props.up || el.classList.contains('oa-menu-up');
   const originY = isUp ? 'bottom' : 'top';
   let shift = 0;
 

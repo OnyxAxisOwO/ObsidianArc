@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { renderMath, renderMathInline, renderMathBlock } from '../src/chat/math';
+import { renderMath } from '../src/chat/math';
 
 describe('LaTeX MathML renderer', () => {
   describe('malformed LaTeX fault tolerance', () => {
@@ -79,10 +79,10 @@ describe('LaTeX MathML renderer', () => {
     });
 
     it('sets display mode correctly for inline vs block rendering', () => {
-      const inlineEl = renderMathInline('x');
+      const inlineEl = renderMath('x');
       expect(inlineEl.querySelector('math')?.getAttribute('display')).toBe('inline');
 
-      const blockEl = renderMathBlock('x');
+      const blockEl = renderMath('x', true);
       expect(blockEl.querySelector('math')?.getAttribute('display')).toBe('block');
     });
   });

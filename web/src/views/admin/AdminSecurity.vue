@@ -245,6 +245,34 @@ const trial = ref({
 const trialFields = computed(() => allFields(site.value ?? ({ fields: {} } as unknown as SiteInfo)));
 
 const enabledModels = computed(() => models.value.filter((entry) => entry.enabled));
+
+// The selects' choices, computed so a render does not hand each select a new
+// array, and so the labels follow a change of language.
+const defaultGroupChoices = computed(() => [
+  { value: '', label: t('theDefaultGroup') },
+  ...groups.value.map((group) => ({ value: group.id, label: group.name })),
+]);
+const reviewModelChoices = computed(() => [
+  { value: '', label: t('signupReviewNoModel') },
+  ...enabledModels.value.map((entry) => ({ value: entry.id, label: entry.display_name })),
+]);
+const reviewModeChoices = computed(() => [
+  { value: 'loose', label: t('reviewModeLoose') },
+  { value: 'normal', label: t('reviewModeNormal') },
+  { value: 'strict', label: t('reviewModeStrict') },
+]);
+const twoFactorPolicyChoices = computed(() => [
+  { value: 'optional', label: t('twoFactorPolicyOptional') },
+  { value: 'backoffice', label: t('twoFactorPolicyBackoffice') },
+  { value: 'admins', label: t('twoFactorPolicyAdmins') },
+  { value: 'everyone', label: t('twoFactorPolicyEveryone') },
+]);
+const backofficeModeChoices = computed(() => [
+  { value: 'off', label: t('backofficeVerifyOff') },
+  { value: 'visit', label: t('backofficeVerifyVisit') },
+  { value: 'idle', label: t('backofficeVerifyIdle') },
+  { value: 'interval', label: t('backofficeVerifyInterval') },
+]);
 const reviewPromptIsDefault = computed(() =>
   form.value.reviewPrompt.trim() === defaultReviewPrompt.value.trim());
 
@@ -658,10 +686,7 @@ onMounted(load);
         <OaSelectField
           v-model="form.defaultGroup"
           :label="t('newAccountsJoin')"
-          :options="[
-            { value: '', label: t('theDefaultGroup') },
-            ...groups.map((group) => ({ value: group.id, label: group.name })),
-          ]"
+          :options="defaultGroupChoices"
         />
       </AdminControlCard>
       <AdminControlCard id="secRegistrationLimits" v-show="visible('secRegistrationLimits')" :title="t('controlRegistrationLimits')" :icon="IconSliders" :hint="t('controlRegistrationLimitsHint')">
@@ -729,20 +754,13 @@ onMounted(load);
           v-model="form.reviewModel"
           :label="t('signupReviewModel')"
           :hint="t('signupReviewModelHint')"
-          :options="[
-            { value: '', label: t('signupReviewNoModel') },
-            ...enabledModels.map((entry) => ({ value: entry.id, label: entry.display_name })),
-          ]"
+          :options="reviewModelChoices"
         />
         <OaSelectField
           v-model="form.reviewMode"
           :label="t('signupReviewMode')"
           :hint="t('signupReviewModeHint')"
-          :options="[
-            { value: 'loose', label: t('reviewModeLoose') },
-            { value: 'normal', label: t('reviewModeNormal') },
-            { value: 'strict', label: t('reviewModeStrict') },
-          ]"
+          :options="reviewModeChoices"
         />
         <OaNumberField
           v-model="form.reviewRestrictHours"
@@ -778,12 +796,7 @@ onMounted(load);
           v-model="form.twoFactorPolicy"
           :label="t('twoFactorPolicyLabel')"
           :hint="policyHint"
-          :options="[
-            { value: 'optional', label: t('twoFactorPolicyOptional') },
-            { value: 'backoffice', label: t('twoFactorPolicyBackoffice') },
-            { value: 'admins', label: t('twoFactorPolicyAdmins') },
-            { value: 'everyone', label: t('twoFactorPolicyEveryone') },
-          ]"
+          :options="twoFactorPolicyChoices"
         />
         <!-- Said before the save rather than after it: the server refuses a
              policy that would shut its author out of this screen. -->
@@ -825,12 +838,7 @@ onMounted(load);
           v-model="form.backofficeMode"
           :label="t('backofficeVerifyMode')"
           :hint="backofficeHint"
-          :options="[
-            { value: 'off', label: t('backofficeVerifyOff') },
-            { value: 'visit', label: t('backofficeVerifyVisit') },
-            { value: 'idle', label: t('backofficeVerifyIdle') },
-            { value: 'interval', label: t('backofficeVerifyInterval') },
-          ]"
+          :options="backofficeModeChoices"
         />
         <OaNumberField
           v-if="form.backofficeMode !== 'off'"

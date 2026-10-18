@@ -135,6 +135,14 @@ const categories: WorkbenchGroup[] = [
   { id: 'contents', label: 'controlBoardContents', hint: 'controlBoardContentsHint', icon: IconSliders, sections: ['secBoardContents'] },
 ];
 
+// Computed so a render does not hand the select a new array, and so the
+// labels follow a change of language.
+const identityChoices = computed(() => [
+  { value: 'nickname' as const, label: t('boardIdentityNickname') },
+  { value: 'anonymous' as const, label: t('boardIdentityAnonymous') },
+  { value: 'handle' as const, label: t('boardIdentityHandle') },
+]);
+
 onMounted(load);
 onBeforeUnmount(() => window.clearTimeout(saveLabelTimer));
 </script>
@@ -200,11 +208,7 @@ onBeforeUnmount(() => window.clearTimeout(saveLabelTimer));
         :label="t('boardIdentity')"
         :hint="t('boardIdentityHint')"
         :searchable="false"
-        :options="[
-          { value: 'nickname', label: t('boardIdentityNickname') },
-          { value: 'anonymous', label: t('boardIdentityAnonymous') },
-          { value: 'handle', label: t('boardIdentityHandle') },
-        ]"
+        :options="identityChoices"
       />
     </AdminControlCard>
 

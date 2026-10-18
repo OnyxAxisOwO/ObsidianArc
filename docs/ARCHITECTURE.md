@@ -226,9 +226,22 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
 | Binary (SQLite + embedded SPA) | < 30 MB | 27.10 MB (23.40 MB `-tags nosqlite`, Linux amd64, Go 1.27.2); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 205.82 kB to open the chat (179.41 JS + 26.41 CSS), sent by the server at gzip's best level; the build's gzip column reads 206.59 kB (179.74 JS + 26.85 CSS) |
+| Frontend, on the wire | < 135 kB | 206.11 kB to open the chat (179.70 JS + 26.41 CSS), sent by the server at gzip's best level; the build's gzip column reads 206.79 kB (179.94 JS + 26.85 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-10-18 (UTC), after a round of interface review fixes. A
+refused request and a refused stream now read their error body through one
+reader in `api/client.ts`, and a refused stream raises the backoffice's code
+prompt as a refused request does; the two policy redirects in the router are
+one ordered table; a report's kind, priority and status are named by
+`lib/feedback.ts` for the reader's panel and the backoffice alike; and the
+settings sections and the selects that offer translated choices work them
+out once per change instead of on every render. 206.11 kB to open the chat
+(179.70 JS + 26.41 CSS), up 0.29 kB; the build's estimate is 206.79 kB, 0.21
+kB under the bundle test's 207 kB. The backoffice is 167.32 kB plus 15.24 kB
+of stylesheet, the terminal 8.06 kB and the LaTeX renderer 3.76 kB, which
+lost two aliases nothing called; the other lazy chunks are unchanged.
 
 Remeasured on 2026-10-18 (UTC), after a round of chat review fixes. A
 conversation is renamed in its row now rather than through the browser's

@@ -75,3 +75,26 @@ export function stubLocation(): { assign: ReturnType<typeof vi.fn>; restore: () 
     restore: () => Object.defineProperty(window, 'location', { ...stub, value: original }),
   };
 }
+
+/**
+ * Every line a terminal session can recall, oldest first, read the way a
+ * reader reaches them: pressing up until the oldest stops moving. History
+ * collapses an immediate repeat, so two neighbours are never the same line and
+ * an up that changes nothing is the top. The session's draft is put back.
+ */
+export function recallHistory(session: { draft: { value: string }; recall(direction: 'up' | 'down'): void }): string[] {
+  const draft = session.draft.value;
+  // Not a line history can hold: run() trims what it keeps.
+  const marker = ' recall-marker ';
+  session.draft.value = marker;
+  const lines: string[] = [];
+  for (;;) {
+    session.recall('up');
+    const line = session.draft.value;
+    if (line === marker || line === lines[0]) break;
+    lines.unshift(line);
+  }
+  for (let i = 0; i <= lines.length; i += 1) session.recall('down');
+  session.draft.value = draft;
+  return lines;
+}

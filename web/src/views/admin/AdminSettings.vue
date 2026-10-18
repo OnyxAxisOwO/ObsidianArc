@@ -227,6 +227,28 @@ const form = ref({
 
 const enabledModels = computed(() => models.value.filter((entry) => entry.enabled));
 
+// The selects' choices, computed so a render does not hand each select a new
+// array, and so the labels follow a change of language.
+const landingModeChoices = computed(() => [
+  { value: 'login', label: t('landingLogin') },
+  { value: 'site', label: t('landingSite') },
+  { value: 'intro', label: t('landingIntro') },
+  { value: 'chat', label: t('landingChat') },
+]);
+const trialModelChoices = computed(() => [
+  { value: '', label: t('trialFirstAvailable') },
+  ...enabledModels.value.map((entry) => ({ value: entry.id, label: entry.display_name })),
+]);
+const noticeToneChoices = computed(() => [
+  { value: 'info', label: t('homeNoticeToneInfo') },
+  { value: 'warning', label: t('homeNoticeToneWarning') },
+]);
+const usageDisplayChoices = computed(() => [
+  { value: 'absolute', label: t('usageDisplayAbsolute') },
+  { value: 'remaining', label: t('usageDisplayRemaining') },
+  { value: 'used', label: t('usageDisplayUsed') },
+]);
+
 // The three landing modes want different fields, and showing all of them at
 // once invites setting a trial on a front door that is a sign-in card.
 const showIntro = computed(() => form.value.landingMode === 'intro');
@@ -868,12 +890,7 @@ onMounted(load);
           v-model="form.landingMode"
           :label="t('landingMode')"
           :hint="t('landingModeHint')"
-          :options="[
-            { value: 'login', label: t('landingLogin') },
-            { value: 'site', label: t('landingSite') },
-            { value: 'intro', label: t('landingIntro') },
-            { value: 'chat', label: t('landingChat') },
-          ]"
+          :options="landingModeChoices"
         />
         <OaTextArea
           v-if="showIntro"
@@ -901,10 +918,7 @@ onMounted(load);
           v-if="showTrialDetail"
           v-model="form.trialModel"
           :label="t('trialModel')"
-          :options="[
-            { value: '', label: t('trialFirstAvailable') },
-            ...enabledModels.map((entry) => ({ value: entry.id, label: entry.display_name })),
-          ]"
+          :options="trialModelChoices"
         />
       </AdminControlCard>
       <AdminControlCard id="secHomeNotice" v-show="visible('secHomeNotice')" :title="t('homeNotice')" :icon="IconBell" :hint="t('controlNoticeHint')">
@@ -915,10 +929,7 @@ onMounted(load);
           :label="t('homeNoticeTone')"
           :hint="t('homeNoticeToneHint')"
           :searchable="false"
-          :options="[
-            { value: 'info', label: t('homeNoticeToneInfo') },
-            { value: 'warning', label: t('homeNoticeToneWarning') },
-          ]"
+          :options="noticeToneChoices"
         />
         <OaSwitchField
           v-model="form.homeNoticeDismissible"
@@ -950,11 +961,7 @@ onMounted(load);
           v-model="form.usageDisplay"
           :label="t('usageDisplay')"
           :hint="t('usageDisplayHint')"
-          :options="[
-            { value: 'absolute', label: t('usageDisplayAbsolute') },
-            { value: 'remaining', label: t('usageDisplayRemaining') },
-            { value: 'used', label: t('usageDisplayUsed') },
-          ]"
+          :options="usageDisplayChoices"
         />
       </AdminControlCard>
       <AdminControlCard id="secCleanup" v-show="visible('secCleanup')" :title="t('secCleanup')" :icon="IconTrash" :hint="t('cleanupHint')">

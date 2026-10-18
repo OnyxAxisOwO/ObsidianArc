@@ -63,27 +63,8 @@ async function request<T>(method: string, path: string, options: RequestOptions 
 
   if (response.status === 204) return undefined as T;
 
-  // The body can break off after the headers arrived, which is the same lost
-  // connection fetchApi words for the reader, not the engine's TypeError.
-  let text: string;
-  try {
-    text = await response.text();
-  } catch (error) {
-    if (init.signal?.aborted) throw error;
-    throw new ApiError(0, 'network', t('connectionFailed'), { detail: networkDetail(error) });
-  }
-  let payload: unknown = null;
-  if (text) {
-    try {
-      payload = JSON.parse(text);
-    } catch {
-      payload = null;
-    }
-  }
-
   if (!response.ok) {
-    const body = (payload ?? {}) as ErrorBody;
-    const { code, message, ...details } = body.error ?? {};
+    const { code, message, details } = await readOrLost(() => readErrorBody(response), init.signal);
     noteBackofficeRefusal(code);
     noteSessionEnded(code);
     throw new ApiError(
@@ -94,7 +75,48 @@ async function request<T>(method: string, path: string, options: RequestOptions 
     );
   }
 
-  return payload as T;
+  const text = await readOrLost(() => response.text(), init.signal);
+  return parseJSON(text) as T;
+}
+
+// The body can break off after the headers arrived, which is the same lost
+// connection fetchApi words for the reader, not the engine's TypeError.
+async function readOrLost<R>(read: () => Promise<R>, signal: AbortSignal | null | undefined): Promise<R> {
+  try {
+    return await read();
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    throw new ApiError(0, 'network', t('connectionFailed'), { detail: networkDetail(error) });
+  }
+}
+
+function parseJSON(text: string): unknown {
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+interface ErrorBodyParts {
+  code?: string | undefined;
+  message?: string | undefined;
+  details: Record<string, unknown>;
+}
+
+/**
+ * The parts of a refusal's `{"error": {...}}` body. No defaults and no
+ * notices: each caller words a missing code its own way, and decides which of
+ * the refusal notices it owes. A non-JSON body (a proxy's error page) reads as
+ * nothing at all. Rejects only when the body itself cannot be read.
+ */
+export async function readErrorBody(response: Response): Promise<ErrorBodyParts> {
+  const body = parseJSON(await response.text()) as ErrorBody | null;
+  const error = body?.error;
+  if (typeof error !== 'object' || error === null) return { details: {} };
+  const { code, message, ...details } = error;
+  return { code, message, details };
 }
 
 /**

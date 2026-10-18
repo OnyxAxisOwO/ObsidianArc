@@ -645,6 +645,13 @@ async function savePolicy(): Promise<void> {
 
 const resetOpen = ref(false);
 const resetScope = ref<'all' | 'group' | 'user'>('all');
+// Computed so a render does not hand the select a new array, and so the
+// labels follow a change of language.
+const resetScopeChoices = computed(() => [
+  { value: 'all' as const, label: t('resetScopeAll') },
+  { value: 'group' as const, label: t('resetScopeGroup') },
+  { value: 'user' as const, label: t('resetScopeUser') },
+]);
 const resetGroup = ref('');
 const resetAccount = ref('');
 const resetGroups = ref<Pick<Group, 'id' | 'name'>[]>([]);
@@ -1172,11 +1179,7 @@ let savedCustomUntil = 0;
     <OaSelectField
       v-model="resetScope"
       :label="t('resetScope')"
-      :options="[
-        { value: 'all', label: t('resetScopeAll') },
-        { value: 'group', label: t('resetScopeGroup') },
-        { value: 'user', label: t('resetScopeUser') },
-      ]"
+      :options="resetScopeChoices"
     />
     <OaSelectField
       v-if="resetScope === 'group'"

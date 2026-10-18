@@ -187,11 +187,6 @@ watch(
   { immediate: true, flush: 'sync' },
 );
 
-/** Read-only view for anything that wants to list history without a tab (the `history` command's local echo, if a screen ever wants one). */
-export function terminalHistorySnapshot(): readonly string[] {
-  return sharedHistory.value;
-}
-
 /** Appends one submitted line, collapsing an immediate repeat and capping the length — the shape every shell's history file uses, and why two tabs running the same command back to back do not double it. */
 function pushHistory(line: string): void {
   const trimmed = line.trim();

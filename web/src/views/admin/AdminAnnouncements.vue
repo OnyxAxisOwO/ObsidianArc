@@ -184,6 +184,14 @@ watch(() => route.hash, () => {
   }
 });
 
+// Computed so a render does not hand the select a new array, and so the
+// labels follow a change of language.
+const displayModeChoices = computed(() => [
+  { value: 'always' as DisplayMode, label: t('displayAlways') },
+  { value: 'once' as DisplayMode, label: t('displayOnce') },
+  { value: 'silent' as DisplayMode, label: t('displaySilent') },
+]);
+
 onMounted(load);
 </script>
 
@@ -262,11 +270,7 @@ onMounted(load);
       v-model="form.display_mode"
       :label="t('displayMode')"
       :hint="t('displayModeHint')"
-      :options="[
-        { value: 'always', label: t('displayAlways') },
-        { value: 'once', label: t('displayOnce') },
-        { value: 'silent', label: t('displaySilent') },
-      ]"
+      :options="displayModeChoices"
     />
     <OaNumberField
       v-model="form.dismiss_after_seconds"

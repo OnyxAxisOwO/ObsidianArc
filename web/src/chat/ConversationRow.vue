@@ -96,6 +96,7 @@ onBeforeUnmount(() => {
     <OaMenu
       group-class="ai-chat-item-menu"
       :menu-class="'ai-chat-context-menu' + (props.menu.openUp.value[props.conversation.id] ? ' open-up' : '')"
+      :up="!!props.menu.openUp.value[props.conversation.id]"
     >
       <template #trigger="{ open: menuOpen, toggle }">
         <OaIconButton

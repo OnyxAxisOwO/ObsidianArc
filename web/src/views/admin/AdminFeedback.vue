@@ -40,6 +40,7 @@ import type { PageState } from '@/components/table-types';
 import { t } from '@/composables/useI18n';
 import { useLatestRequest } from '@/composables/useLatestRequest';
 import { IconRefresh } from '@/icons';
+import { kindKey, priorityKey, priorityTone, statusKey, statusTone } from '@/lib/feedback';
 import { absoluteTime, relativeTime } from '@/lib/format';
 import { rememberedPageSize } from '@/lib/page-size';
 import { maskUser } from '@/admin/safeMode';
@@ -349,25 +350,35 @@ async function remove(): Promise<void> {
 }
 
 function kindLabel(row: Feedback): string {
-  return t(row.kind === 'bug' ? 'feedbackKindBug' : 'feedbackKindIdea');
+  return t(kindKey(row.kind));
 }
 
 function priorityLabel(row: Feedback): string {
-  switch (row.priority) {
-    case 'high': return t('feedbackPriorityHigh');
-    case 'low': return t('feedbackPriorityLow');
-    default: return t('feedbackPriorityMedium');
-  }
-}
-
-/** High is the only priority worth colouring: the rest are the normal case. */
-function priorityTone(row: Feedback): 'muted' | 'warning' {
-  return row.priority === 'high' ? 'warning' : 'muted';
+  return t(priorityKey(row.priority));
 }
 
 function statusLabel(row: Feedback): string {
-  return t(row.status === 'resolved' ? 'feedbackStatusResolved' : 'feedbackStatusOpen');
+  return t(statusKey(row.status));
 }
+
+// The filters' choices, computed so a render does not hand each select a new
+// array, and so the labels follow a change of language.
+const statusChoices = computed(() => [
+  { value: '', label: t('feedbackAnyStatus') },
+  { value: 'open', label: t('feedbackStatusOpen') },
+  { value: 'resolved', label: t('feedbackStatusResolved') },
+]);
+const kindChoices = computed(() => [
+  { value: '', label: t('feedbackAnyKind') },
+  { value: 'bug', label: t('feedbackKindBug') },
+  { value: 'idea', label: t('feedbackKindIdea') },
+]);
+const priorityChoices = computed(() => [
+  { value: '', label: t('feedbackAnyPriority') },
+  { value: 'high', label: t('feedbackPriorityHigh') },
+  { value: 'medium', label: t('feedbackPriorityMedium') },
+  { value: 'low', label: t('feedbackPriorityLow') },
+]);
 
 /** The first line or so of the body, for the second line of a card. */
 function preview(body: string): string {
@@ -403,34 +414,21 @@ onMounted(load);
           v-model="status"
           :label="t('colStatus')"
           :searchable="false"
-          :options="[
-            { value: '', label: t('feedbackAnyStatus') },
-            { value: 'open', label: t('feedbackStatusOpen') },
-            { value: 'resolved', label: t('feedbackStatusResolved') },
-          ]"
+          :options="statusChoices"
           @update:model-value="narrow"
         />
         <OaSelectField
           v-model="kind"
           :label="t('feedbackKind')"
           :searchable="false"
-          :options="[
-            { value: '', label: t('feedbackAnyKind') },
-            { value: 'bug', label: t('feedbackKindBug') },
-            { value: 'idea', label: t('feedbackKindIdea') },
-          ]"
+          :options="kindChoices"
           @update:model-value="narrow"
         />
         <OaSelectField
           v-model="priority"
           :label="t('feedbackPriority')"
           :searchable="false"
-          :options="[
-            { value: '', label: t('feedbackAnyPriority') },
-            { value: 'high', label: t('feedbackPriorityHigh') },
-            { value: 'medium', label: t('feedbackPriorityMedium') },
-            { value: 'low', label: t('feedbackPriorityLow') },
-          ]"
+          :options="priorityChoices"
           @update:model-value="narrow"
         />
         <OaSearchField v-model="search" :label="t('feedbackSearch')" />
@@ -460,14 +458,14 @@ onMounted(load);
               <!-- The reader spoke last. The one thing on this screen an
                    operator is supposed to act on, so it is said in words. -->
               <OaBadge v-if="row.operator_unread" tone="danger">{{ t('feedbackAwaiting') }}</OaBadge>
-              <OaBadge :tone="row.status === 'resolved' ? 'muted' : 'default'">
+              <OaBadge :tone="statusTone(row.status)">
                 {{ statusLabel(row) }}
               </OaBadge>
             </span>
             <span class="oa-feedback-card-body">{{ preview(row.body) }}</span>
             <span class="oa-feedback-card-meta">
               <OaBadge tone="muted">{{ kindLabel(row) }}</OaBadge>
-              <OaBadge :tone="priorityTone(row)">{{ priorityLabel(row) }}</OaBadge>
+              <OaBadge :tone="priorityTone(row.priority)">{{ priorityLabel(row) }}</OaBadge>
               <span>{{ t('feedbackFrom', { name: authorOf(row) }) }}</span>
               <span v-if="row.replies">{{ t('feedbackReplyCount', { count: row.replies }) }}</span>
               <span>{{ relativeTime(row.created_at) }}</span>
@@ -502,8 +500,8 @@ onMounted(load);
   >
     <div class="oa-feedback-detail-badges">
       <OaBadge tone="muted">{{ kindLabel(opened) }}</OaBadge>
-      <OaBadge :tone="priorityTone(opened)">{{ priorityLabel(opened) }}</OaBadge>
-      <OaBadge :tone="opened.status === 'resolved' ? 'muted' : 'default'">{{ statusLabel(opened) }}</OaBadge>
+      <OaBadge :tone="priorityTone(opened.priority)">{{ priorityLabel(opened) }}</OaBadge>
+      <OaBadge :tone="statusTone(opened.status)">{{ statusLabel(opened) }}</OaBadge>
     </div>
 
     <dl class="oa-log-facts">

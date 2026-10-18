@@ -34,6 +34,13 @@ import TwoFactorWizard from './TwoFactorWizard.vue';
 
 const props = withDefaults(defineProps<{ query?: string }>(), { query: '' });
 
+// Once per change of the query or the language, not per group per render;
+// see AccountSection for why it stays a computed.
+const shown = computed(() => ({
+  twofactor: matchesSettings(props.query, 'twofactor'),
+  devices: matchesSettings(props.query, 'devices'),
+}));
+
 const status = ref<TwoFactorStatus | null>(null);
 const flash = ref('');
 const notice = ref('');
@@ -195,7 +202,7 @@ async function signOutOthers(): Promise<void> {
 </script>
 
 <template>
-  <div v-show="matchesSettings(props.query, 'twofactor')" class="oa-settings-panel">
+  <div v-show="shown.twofactor" class="oa-settings-panel">
     <h2 class="oa-admin-section-title">{{ t('secTwoFactor') }}</h2>
 
     <section v-if="status" class="oa-2fa-panel">
@@ -323,7 +330,7 @@ async function signOutOthers(): Promise<void> {
     <p v-else-if="flash" class="oa-drawer-flash visible" role="alert">{{ flash }}</p>
   </div>
 
-  <div v-show="matchesSettings(props.query, 'devices')" class="oa-settings-panel">
+  <div v-show="shown.devices" class="oa-settings-panel">
     <h2 class="oa-admin-section-title">{{ t('secDevices') }}</h2>
 
     <section class="oa-2fa-panel">

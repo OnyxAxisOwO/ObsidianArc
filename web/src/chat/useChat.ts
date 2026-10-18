@@ -471,7 +471,6 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
   // and this function still has to read its signal afterwards.
   const turnController = new AbortController();
   controller.value = turnController;
-  let failed = false;
   // Set once the server has taken the turn. After that the user message exists
   // on the server, so a failure must not hand the text back to the composer.
   let accepted = false;
@@ -518,7 +517,6 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
           else if (payload.stopped) setFlash(t('stopped'));
         },
         onError: (payload) => {
-          failed = true;
           // An error before `start` can only be the server rolling back its own
           // opening transaction, so nothing was saved and the text can go back
           // to the composer, as a refused request does.
@@ -537,7 +535,6 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
       if (error instanceof ApiError &&
           (error.code === 'chat_challenge_required' || error.code === 'challenge_failed' ||
            error.code === 'challenge_unavailable')) {
-        failed = true;
         // The server rejects before creating a turn. Remove the optimistic
         // copy so solving or cancelling the challenge cannot duplicate text.
         const last = messages.value[messages.value.length - 1];
@@ -547,7 +544,6 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
         chatChallenge.value = { ...turn, conversationID };
         chatChallengeError.value = error.code === 'chat_challenge_required' ? '' : error.message;
       } else {
-        failed = true;
         // The server commits the user's message before it sends `start`, so a
         // dropped connection or an abort in between leaves the message on the
         // server. Only a refusal answered with a status, before the stream
@@ -586,7 +582,6 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
     pending.value = null;
     pendingID.value = '';
   }
-  if (!failed) setFlash(flash.value);
   void refreshList();
   if (chatChallenge.value) return 'challenge';
   if (unsent) {

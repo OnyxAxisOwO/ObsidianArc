@@ -73,6 +73,12 @@ const form = ref({
 });
 
 const creating = computed(() => existing.value === null);
+// Computed so a render does not hand the select a new array, and so the
+// labels follow a change of language.
+const keyRotationChoices = computed(() => [
+  { value: 'sequential' as KeyRotation, label: t('keyRotationSequential') },
+  { value: 'random' as KeyRotation, label: t('keyRotationRandom') },
+]);
 
 // --- keys ---------------------------------------------------------------------------
 
@@ -481,10 +487,7 @@ onMounted(load);
         v-model="form.keyRotation"
         :label="t('keyRotation')"
         :hint="t('keyRotationHint')"
-        :options="[
-          { value: 'sequential', label: t('keyRotationSequential') },
-          { value: 'random', label: t('keyRotationRandom') },
-        ]"
+        :options="keyRotationChoices"
       />
     </AdminControlCard>
 

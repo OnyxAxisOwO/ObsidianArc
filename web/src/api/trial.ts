@@ -5,7 +5,7 @@
 // trusting a number from here. There is no conversation id to keep and no
 // account to keep it against.
 
-import { ApiError, fetchApi } from './client';
+import { ApiError, fetchApi, readErrorBody } from './client';
 import { readSSE, type SSEEvent } from './sse';
 import { t } from '@/composables/useI18n';
 
@@ -45,14 +45,15 @@ export async function streamTrial(
   });
 
   if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as
-      | { error?: { code?: string; message?: string } }
-      | null;
-    const code = body?.error?.code ?? 'trial';
+    // A body that breaks off reads as no body, as an unparseable one does:
+    // the visitor still gets the trial's own sentence rather than a lost
+    // connection, which is what this page has always shown.
+    const body = await readErrorBody(response).catch(() => null);
+    const code = body?.code ?? 'trial';
     throw new ApiError(
       response.status,
       code,
-      trialErrorMessage(code, body?.error?.message ?? t('trialFailed')),
+      trialErrorMessage(code, body?.message ?? t('trialFailed')),
     );
   }
   if (!response.body) throw new ApiError(0, 'stream', t('streamMissing'));

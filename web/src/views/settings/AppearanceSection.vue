@@ -45,6 +45,12 @@ function chooseBackground(value: AccentName | ''): void {
   syncPreferences({ background_accent: value });
 }
 function onTheme(mode: ThemeMode): void { persistTheme(mode); }
+// Each language named in itself, so the list reads the same in either one
+// and needs nothing recomputed when the language changes.
+const LANGUAGES: ReadonlyArray<{ value: Language; label: string }> = [
+  { value: 'en', label: 'English' },
+  { value: 'zh', label: '中文' },
+];
 const languageFlash = ref('');
 async function onLanguage(next: Language): Promise<void> {
   languageFlash.value = '';
@@ -117,7 +123,7 @@ async function onLanguage(next: Language): Promise<void> {
       </div>
     </section>
     <OaSelectField :model-value="currentLanguage()" :label="t('languageLabel')" :hint="t('languageHint')"
-      :options="[{ value: 'en', label: 'English' }, { value: 'zh', label: '中文' }]" @update:model-value="onLanguage" />
+      :options="LANGUAGES" @update:model-value="onLanguage" />
     <p v-if="languageFlash" class="oa-field-hint" role="alert">{{ languageFlash }}</p>
   </div>
 </template>

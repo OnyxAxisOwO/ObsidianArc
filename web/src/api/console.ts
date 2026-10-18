@@ -186,19 +186,28 @@ function dispatch({ event, data }: SSEEvent, handlers: ConsoleExecHandlers): voi
     return;
   }
 
-  switch (event) {
+  // The one place the frame's shape is asserted; the server writes each
+  // payload from a struct. Not narrowed to an object first, unlike the chat's.
+  const frame = { event, payload } as ConsoleFrame;
+  switch (frame.event) {
     // Destructuring still throws for a null frame, as reading .text always did:
     // the terminal's stream test relies on a failing handler closing the stream.
     case 'out': {
-      const { text } = payload as { text?: unknown };
+      const { text } = frame.payload;
       if (typeof text === 'string') handlers.onOut?.(text);
       break;
     }
     case 'done':
-      handlers.onDone?.(payload as ConsoleExecDone);
+      handlers.onDone?.(frame.payload);
       break;
     case 'error':
-      handlers.onError?.(payload as ConsoleExecError);
+      handlers.onError?.(frame.payload);
       break;
   }
 }
+
+// Each event the console stream sends, with the payload that event carries.
+type ConsoleFrame =
+  | { event: 'out'; payload: { text?: unknown } }
+  | { event: 'done'; payload: ConsoleExecDone }
+  | { event: 'error'; payload: ConsoleExecError };

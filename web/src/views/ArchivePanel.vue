@@ -167,16 +167,14 @@ onMounted(() => {
             </button>
 
             <div class="oa-archive-item-actions">
-              <button
-                type="button"
+              <OaIconButton
                 class="oa-icon-btn"
-                :title="t('unarchive')"
-                :aria-label="t('unarchive')"
+                :label="t('unarchive')"
                 :disabled="loading"
                 @click.stop="restore(conv)"
               >
                 <IconArchive :size="15" />
-              </button>
+              </OaIconButton>
               <OaConfirmButton
                 v-if="canDelete"
                 class="oa-icon-btn danger"

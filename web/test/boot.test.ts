@@ -691,6 +691,15 @@ describe('the screens the mounted application draws', () => {
     expect(router.currentRoute.value.query['next']).toBe('/settings');
   });
 
+  // The gates run in order, so the connect page asked for by address still
+  // waits behind an unfinished second step rather than claiming the account.
+  it('holds an account still owing a factor at the factor page when it asks for the connect page', async () => {
+    adopt({ ...ACCOUNT, two_factor_enrol: true, oidc_binding_required: true });
+    await mountAt('/bind-oidc');
+    expect(router.currentRoute.value.path).toBe('/two-factor');
+    expect(router.currentRoute.value.query['next']).toBe('/bind-oidc');
+  });
+
   // An object location drops the query of a path that carries one, so a deep
   // link into a tab used to land on the panel without its tab.
   it('keeps the query of a destination carried through the sign-in page', async () => {

@@ -93,6 +93,13 @@ function setImageGen(on: boolean): void {
   if (on && !form.value.requestWeight) form.value.requestWeight = 1;
 }
 
+// Computed so a render does not hand the select a new array, and so the
+// labels follow a change of language.
+const reasoningStyleChoices = computed(() => [
+  { value: '', label: t('styleInherit') },
+  ...props.meta.reasoning_styles.map((value) => ({ value, label: reasoningLabel(value) })),
+]);
+
 // The page's panel slot closes this through `close`, as it would the panel
 // itself, and focuses the first field when it opens one.
 defineExpose({
@@ -302,10 +309,7 @@ defineExpose({
         v-model="form.reasoningStyle"
         :label="t('reasoningStyleModel')"
         :hint="t('reasoningStyleModelHint')"
-        :options="[
-          { value: '', label: t('styleInherit') },
-          ...meta.reasoning_styles.map((value) => ({ value, label: reasoningLabel(value) })),
-        ]"
+        :options="reasoningStyleChoices"
       />
       <ReasoningTiers v-model="form.tiers" />
     </AdminControlCard>

@@ -10,11 +10,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Account } from '../src/api/auth';
 import type { ConsoleExecHandlers } from '../src/api/console';
 import { adopt, forget } from '../src/stores/session';
+import { recallHistory } from './helpers';
 import {
   TERMINAL_HISTORY_KEY_PREFIX,
   createTerminalSession,
   isSensitiveTerminalLine,
-  terminalHistorySnapshot,
 } from '../src/terminal/session';
 
 vi.mock('../src/api/console', () => ({
@@ -32,6 +32,12 @@ function account(id: string): Account {
 async function type(...lines: string[]): Promise<void> {
   const session = createTerminalSession({ id: 'history', scrollbackCap: 100, getColumns: () => 100 });
   for (const line of lines) await session.run(line);
+}
+
+// What a fresh tab's prompt recalls: history is shared by every tab, so this
+// is the list itself.
+function recalled(): string[] {
+  return recallHistory(createTerminalSession({ id: 'recall', scrollbackCap: 100, getColumns: () => 100 }));
 }
 
 function storedKeys(): string[] {
@@ -106,7 +112,7 @@ describe('the history a signed-in tab keeps', () => {
     adopt(account('u-ada'));
     await type('user list', 'user create bob --password hunter22', '2fa backoffice 123456', 'setting set site.name Arc');
 
-    expect(terminalHistorySnapshot()).toEqual(['user list', 'setting set site.name Arc']);
+    expect(recalled()).toEqual(['user list', 'setting set site.name Arc']);
     const stored = localStorage.getItem(`${TERMINAL_HISTORY_KEY_PREFIX}:u-ada`) ?? '';
     expect(JSON.parse(stored)).toEqual(['user list', 'setting set site.name Arc']);
     expect(stored).not.toContain('hunter22');
@@ -118,12 +124,12 @@ describe('the history a signed-in tab keeps', () => {
     await type('ada-only-command');
 
     adopt(account('u-bob'));
-    expect(terminalHistorySnapshot()).toEqual([]);
+    expect(recalled()).toEqual([]);
     await type('bob-only-command');
-    expect(terminalHistorySnapshot()).toEqual(['bob-only-command']);
+    expect(recalled()).toEqual(['bob-only-command']);
 
     adopt(account('u-ada'));
-    expect(terminalHistorySnapshot()).toEqual(['ada-only-command']);
+    expect(recalled()).toEqual(['ada-only-command']);
   });
 
   it('drops a credential that an earlier version already stored', async () => {
@@ -133,7 +139,7 @@ describe('the history a signed-in tab keeps', () => {
     );
     adopt(account('u-ada'));
 
-    expect(terminalHistorySnapshot()).toEqual(['user list', 'help']);
+    expect(recalled()).toEqual(['user list', 'help']);
   });
 
   it('sweeps the list every account used to share', async () => {
@@ -180,7 +186,7 @@ describe('signing out', () => {
     forget();
 
     expect(storedKeys()).toEqual(['obsidian-arc-terminal-prefs']);
-    expect(terminalHistorySnapshot()).toEqual([]);
+    expect(recalled()).toEqual([]);
   });
 
   it('leaves the next account to sign in an empty prompt', async () => {
@@ -189,7 +195,7 @@ describe('signing out', () => {
     forget();
 
     adopt(account('u-bob'));
-    expect(terminalHistorySnapshot()).toEqual([]);
+    expect(recalled()).toEqual([]);
   });
 
   it('survives a localStorage that throws', () => {

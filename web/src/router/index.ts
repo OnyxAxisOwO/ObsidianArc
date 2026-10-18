@@ -168,6 +168,39 @@ function holdAt(path: string, to: RouteLocationNormalized): RouteLocationRaw {
   return { path, query: next ? { next } : {}, replace: true };
 }
 
+// A page an operator's policy holds a signed-in account at until it is done.
+// Holding and releasing are separate tests rather than one and its negation:
+// the OIDC gate stands aside for an account still owing a factor, but that
+// account has not cleared it, so it is not sent on from /bind-oidc either.
+interface PolicyGate {
+  path: string;
+  hold: (to: RouteLocationNormalized) => boolean;
+  release: () => boolean;
+}
+
+// Checked in this order, each gate's hold before its release: the first gate
+// an account still owes is the one it is held at.
+const POLICY_GATES: readonly PolicyGate[] = [
+  // The operator's policy wants a second step on this account before it does
+  // anything else. The server refuses the rest regardless; this only saves
+  // drawing a screen made of refusals.
+  {
+    path: '/two-factor',
+    hold: (to) => !!currentUser.value?.two_factor_enrol && to.path !== '/two-factor',
+    release: () => !currentUser.value?.two_factor_enrol,
+  },
+  // The operator's OIDC policy wants every account to link an identity
+  // before it does anything else. An account still owing a factor is left to
+  // the two-step redirect above: this one must not claim it, or the two would
+  // send each other back and forth. See oauth.Service.BindingGate for why the
+  // server holds the same order.
+  {
+    path: '/bind-oidc',
+    hold: (to) => !!currentUser.value?.oidc_binding_required && !currentUser.value?.two_factor_enrol && to.path !== '/bind-oidc',
+    release: () => !currentUser.value?.oidc_binding_required,
+  },
+];
+
 router.beforeEach((to) => {
   const signedIn = !!currentUser.value;
   const needsSession = to.matched.some((record) => record.meta['auth']);
@@ -186,26 +219,9 @@ router.beforeEach((to) => {
     return { path: '/login', replace: true };
   }
 
-  // The operator's policy wants a second step on this account before it does
-  // anything else. The server refuses the rest regardless; this only saves
-  // drawing a screen made of refusals.
-  if (signedIn && currentUser.value?.two_factor_enrol && to.path !== '/two-factor') {
-    return holdAt('/two-factor', to);
-  }
-  if (to.path === '/two-factor' && signedIn && !currentUser.value?.two_factor_enrol) {
-    return goOn(to);
-  }
-
-  // The operator's OIDC policy wants every account to link an identity
-  // before it does anything else. An account still owing a factor is left to
-  // the two-step redirect above: this one must not claim it, or the two would
-  // send each other back and forth. See oauth.Service.BindingGate for why the
-  // server holds the same order.
-  if (signedIn && currentUser.value?.oidc_binding_required && !currentUser.value?.two_factor_enrol && to.path !== '/bind-oidc') {
-    return holdAt('/bind-oidc', to);
-  }
-  if (to.path === '/bind-oidc' && signedIn && !currentUser.value?.oidc_binding_required) {
-    return goOn(to);
+  for (const gate of POLICY_GATES) {
+    if (signedIn && gate.hold(to)) return holdAt(gate.path, to);
+    if (to.path === gate.path && signedIn && gate.release()) return goOn(to);
   }
 
   // The address itself. Signed in it is the chat; signed out it is whatever

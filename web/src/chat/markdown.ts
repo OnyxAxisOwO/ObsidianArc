@@ -615,7 +615,7 @@ function renderInline(nodes: Inline[], parent: Node): void {
       case 'math': {
         const renderer = mathRenderer();
         parent.appendChild(renderer
-          ? renderer.renderMathInline(node.value, node.display)
+          ? renderer.renderMath(node.value, node.display)
           : mathSource(node.value, node.display));
         break;
       }
@@ -735,7 +735,7 @@ function renderBlock(block: Block): Node {
 
     case 'math': {
       const renderer = mathRenderer();
-      return renderer ? renderer.renderMathBlock(block.text) : mathSource(block.text, true);
+      return renderer ? renderer.renderMath(block.text, true) : mathSource(block.text, true);
     }
 
     case 'heading': {

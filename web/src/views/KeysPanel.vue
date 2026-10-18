@@ -130,6 +130,22 @@ const apiWarning = computed(() => {
   return t('apiDisabledForYou');
 });
 const lifetimeChoices = computed(() => LIFETIMES.map((entry) => ({ value: String(entry.days), label: t(entry.label) })));
+// The selects' choices are computed rather than written inline in the
+// template, where each render built a new array and handed the select a prop
+// that had changed when nothing had. Computed rather than module constants,
+// so a change of language redraws their labels.
+const statusChoices = computed(() => [
+  { value: 'active', label: t('keyStatusActive') },
+  { value: 'paused', label: t('keyStatusPaused') },
+]);
+const editLifetimeChoices = computed(() => [
+  ...(editing.value ? [{ value: 'keep', label: t('keyKeepExpiry', { when: expiryLabel(editing.value) }) }] : []),
+  ...lifetimeChoices.value,
+]);
+const importAppChoices = computed(() => [
+  { value: 'claude', label: t('keyCCSwitchClaude') },
+  { value: 'codex', label: t('keyCCSwitchCodex') },
+]);
 const endpoint = `${window.location.origin}/v1`;
 
 const usableModels = computed(() => models.value.filter((model) => model.usable !== false));
@@ -495,20 +511,14 @@ onMounted(() => {
         <OaSelectField
           v-model="editStatus"
           :label="t('keyStatus')"
-          :options="[
-            { value: 'active', label: t('keyStatusActive') },
-            { value: 'paused', label: t('keyStatusPaused') },
-          ]"
+          :options="statusChoices"
         />
         <!-- "Leave as it is" is a real choice here, and the only one that does
              not silently move an expiry the owner set deliberately. -->
         <OaSelectField
           v-model="editLifetime"
           :label="t('keyExpires')"
-          :options="[
-            { value: 'keep', label: t('keyKeepExpiry', { when: expiryLabel(editing) }) },
-            ...lifetimeChoices,
-          ]"
+          :options="editLifetimeChoices"
         />
         <OaCheckList
           v-model="editModels"
@@ -540,10 +550,7 @@ onMounted(() => {
           v-model="importApp"
           :label="t('keyCCSwitchClient')"
           :searchable="false"
-          :options="[
-            { value: 'claude', label: t('keyCCSwitchClaude') },
-            { value: 'codex', label: t('keyCCSwitchCodex') },
-          ]"
+          :options="importAppChoices"
         />
         <OaSelectField
           v-if="importChoices.length"

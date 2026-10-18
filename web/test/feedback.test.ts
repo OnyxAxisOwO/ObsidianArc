@@ -220,6 +220,21 @@ describe('the feedback panel somebody writes in', () => {
     expect(panels.textContent).toContain(t('feedbackRemaining', { count: 9 }));
   });
 
+  // A priority a newer server added used to throw while the list was drawn,
+  // which left the panel empty; the backoffice already read it as medium.
+  it('reads a priority it does not know as medium rather than failing to draw', async () => {
+    const unknown = 'urgent' as Feedback['priority'];
+    vi.spyOn(feedbackApi, 'listFeedback').mockResolvedValue({
+      feedback: [record({ priority: unknown, title: 'From a newer server' })],
+      remaining: 9, max_per_day: 10,
+    });
+    await mount(FeedbackPanel);
+
+    const meta = panels.querySelector('.oa-feedback-item-meta')!.textContent ?? '';
+    expect(panels.textContent).toContain('From a newer server');
+    expect(meta).toContain(t('feedbackPriorityMedium'));
+  });
+
   it('will not take a body longer than the server keeps', async () => {
     vi.spyOn(feedbackApi, 'listFeedback').mockResolvedValue({ feedback: [], remaining: 10, max_per_day: 10 });
     await mount(FeedbackPanel);

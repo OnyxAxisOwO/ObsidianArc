@@ -27,6 +27,12 @@ const props = defineProps<{ group: Group; groups: Group[] }>();
 const emit = defineEmits<{ (event: 'saved'): void }>();
 const search = ref('');
 const scope = ref('members');
+// Computed so a render does not hand the select a new array, and so the
+// labels follow a change of language.
+const scopeChoices = computed(() => [
+  { value: 'members', label: t('currentMembers') },
+  { value: 'all', label: t('allAccounts') },
+]);
 const offset = ref(0);
 const accounts = ref<Account[]>([]);
 const total = ref(0);
@@ -126,10 +132,7 @@ onBeforeUnmount(() => {
     <OaSelectField
       v-model="scope"
       :label="t('memberScope')"
-      :options="[
-        { value: 'members', label: t('currentMembers') },
-        { value: 'all', label: t('allAccounts') },
-      ]"
+      :options="scopeChoices"
     />
     <OaSearchField v-model="search" :label="t('searchUsers')" />
     <p v-if="loading" class="oa-field-hint">{{ t('loading') }}</p>

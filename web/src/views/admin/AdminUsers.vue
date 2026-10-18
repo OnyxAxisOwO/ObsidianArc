@@ -336,6 +336,13 @@ const unlimitedQuota = computed({
 });
 
 const self = computed(() => currentUser.value?.id === account.value?.id);
+// Computed so a render does not hand the select a new array, and so the
+// labels follow a change of language.
+const roleChoices = computed(() => [
+  { value: 'user' as const, label: t('roleUser') },
+  { value: 'admin' as const, label: t('roleAdmin') },
+  ...(isSuperAdmin.value ? [{ value: 'super_admin' as const, label: t('superAdmin') }] : []),
+]);
 const twoFactorFlash = ref('');
 
 function apiRestrictionActive(row: Account): boolean {
@@ -1389,11 +1396,7 @@ const state = { q: '', role: '', status: '', group: '' };
           v-model="form.role"
           :label="t('role')"
           :hint="self ? t('cannotDemoteSelf') : undefined"
-          :options="[
-            { value: 'user', label: t('roleUser') },
-            { value: 'admin', label: t('roleAdmin') },
-            ...(isSuperAdmin ? [{ value: 'super_admin' as const, label: t('superAdmin') }] : []),
-          ]"
+          :options="roleChoices"
         />
         <OaCheckList
           v-if="canAdmin('administrators') && form.role === 'admin'"

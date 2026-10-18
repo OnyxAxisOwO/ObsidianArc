@@ -21,10 +21,10 @@ import {
 } from '../src/terminal/prefs';
 import {
   createTerminalSession,
-  terminalHistorySnapshot,
   type TerminalSession,
 } from '../src/terminal/session';
 import { changeLanguage } from '../src/composables/useI18n';
+import { recallHistory } from './helpers';
 
 const PREFS_KEY = 'obsidian-arc-terminal-prefs';
 
@@ -453,7 +453,7 @@ describe('terminal session', () => {
     await session.run('terminal-plumbing-dup-check');
     await session.run('terminal-plumbing-dup-check');
 
-    const snapshot = terminalHistorySnapshot();
+    const snapshot = recallHistory(session);
     expect(snapshot.filter((line) => line === 'terminal-plumbing-dup-check')).toHaveLength(1);
     expect(snapshot[snapshot.length - 1]).toBe('terminal-plumbing-dup-check');
   });
@@ -467,7 +467,7 @@ describe('terminal session', () => {
       await session.run(`cap-test-${String(i).padStart(4, '0')}`);
     }
 
-    const snapshot = terminalHistorySnapshot();
+    const snapshot = recallHistory(session);
     expect(snapshot.length).toBe(500);
     // The first 5 of this test's own pushes were evicted; nothing before
     // this test's run survives once 500 of its own distinct lines exist.

@@ -36,6 +36,7 @@ import OaTurnstile from '@/components/OaTurnstile.vue';
 import { t, type StringKey } from '@/composables/useI18n';
 import { usePanelExit } from '@/composables/usePanelExit';
 import { IconClose, IconLock } from '@/icons';
+import { kindKey, priorityKey, priorityTone, statusKey, statusTone } from '@/lib/feedback';
 import { absoluteTime, relativeTime } from '@/lib/format';
 import { refreshFeedbackUnread } from '@/stores/feedback';
 import { siteInfo } from '@/stores/session';
@@ -282,14 +283,6 @@ async function submitReply(token: string): Promise<void> {
   }
 }
 
-function kindLabel(record: Feedback): string {
-  return t(record.kind === 'bug' ? 'feedbackKindBug' : 'feedbackKindIdea');
-}
-
-function priorityLabel(value: FeedbackPriority): string {
-  return t(PRIORITIES.find((entry) => entry.value === value)!.label);
-}
-
 /**
  * Who said it.
  *
@@ -303,10 +296,6 @@ function turnWho(turn: { from_staff: boolean; username?: string; nickname?: stri
   if (!turn.from_staff) return t('feedbackYou');
   const name = turn.nickname || turn.username;
   return name ? `${t('feedbackFromStaff')} · ${name}` : t('feedbackFromStaff');
-}
-
-function statusLabel(record: Feedback): string {
-  return t(record.status === 'resolved' ? 'feedbackStatusResolved' : 'feedbackStatusOpen');
 }
 
 onMounted(() => void refresh());
@@ -330,12 +319,12 @@ onMounted(() => void refresh());
   >
     <template v-if="thread">
       <div class="oa-feedback-detail-badges">
-        <OaBadge tone="muted">{{ kindLabel(thread.feedback) }}</OaBadge>
-        <OaBadge :tone="thread.feedback.priority === 'high' ? 'warning' : 'muted'">
-          {{ priorityLabel(thread.feedback.priority) }}
+        <OaBadge tone="muted">{{ t(kindKey(thread.feedback.kind)) }}</OaBadge>
+        <OaBadge :tone="priorityTone(thread.feedback.priority)">
+          {{ t(priorityKey(thread.feedback.priority)) }}
         </OaBadge>
-        <OaBadge :tone="thread.feedback.status === 'resolved' ? 'muted' : 'default'">
-          {{ statusLabel(thread.feedback) }}
+        <OaBadge :tone="statusTone(thread.feedback.status)">
+          {{ t(statusKey(thread.feedback.status)) }}
         </OaBadge>
       </div>
 
@@ -453,13 +442,13 @@ onMounted(() => void refresh());
               <span class="oa-feedback-item-head">
                 <span v-if="record.author_unread" class="oa-menu-unread" :title="t('feedbackHasReply')" />
                 <span class="oa-feedback-item-title">{{ record.title }}</span>
-                <OaBadge :tone="record.status === 'resolved' ? 'muted' : 'default'">
-                  {{ statusLabel(record) }}
+                <OaBadge :tone="statusTone(record.status)">
+                  {{ t(statusKey(record.status)) }}
                 </OaBadge>
               </span>
               <span class="oa-feedback-item-meta">
-                <span>{{ kindLabel(record) }}</span>
-                <span>{{ priorityLabel(record.priority) }}</span>
+                <span>{{ t(kindKey(record.kind)) }}</span>
+                <span>{{ t(priorityKey(record.priority)) }}</span>
                 <span v-if="record.replies">{{ t('feedbackReplyCount', { count: record.replies }) }}</span>
                 <span>{{ relativeTime(record.created_at) }}</span>
               </span>

@@ -70,6 +70,19 @@ function parseRouteQuery() {
 
 const query = ref(parseRouteQuery());
 
+// The selects' choices, computed so a render does not hand each select a new
+// array, and so the labels follow a change of language.
+const outcomeChoices = computed(() => [
+  { value: '', label: t('logAnyOutcome') },
+  { value: 'ok', label: t('logSucceeded') },
+  { value: 'failed', label: t('logFailed') },
+]);
+const channelChoices = computed(() => [
+  { value: '', label: t('logAnyChannel') },
+  { value: 'web', label: t('logChannelWeb') },
+  { value: 'api', label: t('logChannelAPI') },
+]);
+
 // Only the filters are read from the address. A panel opened beside this page
 // is named in the address too, and it must neither reset the filters set here
 // nor make the log be fetched again.
@@ -259,11 +272,7 @@ onMounted(reload);
         <OaSelectField
           v-model="query.outcome"
           :label="t('logOutcome')"
-          :options="[
-            { value: '', label: t('logAnyOutcome') },
-            { value: 'ok', label: t('logSucceeded') },
-            { value: 'failed', label: t('logFailed') },
-          ]"
+          :options="outcomeChoices"
           @update:model-value="narrow"
         />
         <OaSelectField
@@ -295,11 +304,7 @@ onMounted(reload);
         <OaSelectField
           v-model="query.channel"
           :label="t('logChannel')"
-          :options="[
-            { value: '', label: t('logAnyChannel') },
-            { value: 'web', label: t('logChannelWeb') },
-            { value: 'api', label: t('logChannelAPI') },
-          ]"
+          :options="channelChoices"
           @update:model-value="narrow"
         />
         <OaTextField v-model="query.path" :label="t('logPath')" placeholder="/api/chat" />
