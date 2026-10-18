@@ -803,20 +803,30 @@ export const renamingID = ref('');
  * Saves the title typed into a row. Ending the edit comes first: the field
  * goes as it is submitted, and a blur from its going must find nothing left to
  * submit. An emptied field or an unchanged title is a cancel, not a request.
+ * The new title shows at once, since the field it was typed into has already
+ * closed; a refusal puts the old one back and says why.
  */
 export async function rename(conversation: Conversation, next: string): Promise<void> {
   if (renamingID.value !== conversation.id) return;
   renamingID.value = '';
   const title = next.trim();
   if (!title || title === conversation.title) return;
+  // The rail and the header read their own copies, which are not the objects
+  // a project row was given, so the rail's entry is renamed as well.
+  const listed = conversations.value.find((entry) => entry.id === conversation.id);
+  const before = conversation.title;
+  const listedBefore = listed?.title;
+  conversation.title = title;
+  if (listed) listed.title = title;
   try {
     const { conversation: updated } = await renameConversation(conversation.id, title);
     conversation.title = updated.title;
-    // The rail and the header read their own copies, which are not the objects
-    // a project row was given, so the rail's entry is renamed as well.
-    const listed = conversations.value.find((entry) => entry.id === conversation.id);
     if (listed) listed.title = updated.title;
   } catch (error) {
+    // Only undo what this rename wrote: a later rename made while this one
+    // was in flight owns the title now, and its own outcome decides it.
+    if (conversation.title === title) conversation.title = before;
+    if (listed && listedBefore !== undefined && listed.title === title) listed.title = listedBefore;
     setFlash(failureText(error));
   }
 }

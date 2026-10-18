@@ -308,6 +308,52 @@ func TestAcceptEncodingIsReadCorrectly(t *testing.T) {
 	}
 }
 
+// The same rule for any coding: br is what the embedded frontend asks about.
+func TestAcceptsEncodingReadsOtherCodingsTheSameWay(t *testing.T) {
+	for header, want := range map[string]bool{
+		"br":                   true,
+		"gzip, deflate, br":    true,
+		"BR":                   true,
+		"gzip":                 false,
+		"br;q=0, gzip":         false,
+		"*":                    true,
+		"*;q=0, br":            true,
+		"*, br;q=0":            false,
+		"br;q=0.001":           true,
+		"brotli":               false,
+		"":                     false,
+		"identity, br;q=0.0":   false,
+		"gzip;q=1.0, br;q=0.5": true,
+	} {
+		if got := AcceptsEncoding(header, "br"); got != want {
+			t.Errorf("AcceptsEncoding(%q, br) = %v, want %v", header, got, want)
+		}
+	}
+}
+
+// A body that arrives already encoded, the way the embedded frontend sends
+// its precompressed copies, passes through byte for byte: the compressor
+// neither re-encodes it nor adds a second label.
+func TestAnEncodedBodyIsNotCompressedAgain(t *testing.T) {
+	for _, encoding := range []string{"br", "gzip"} {
+		t.Run(encoding, func(t *testing.T) {
+			body := strings.Repeat("already encoded bytes ", 100)
+			response := compressed(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+				w.Header().Set("Content-Encoding", encoding)
+				_, _ = io.WriteString(w, body)
+			}), "gzip, br")
+
+			if got := response.Header().Values("Content-Encoding"); len(got) != 1 || got[0] != encoding {
+				t.Fatalf("Content-Encoding = %q, want only %q", got, encoding)
+			}
+			if response.Body.String() != body {
+				t.Error("the encoded body was rewritten on its way out")
+			}
+		})
+	}
+}
+
 // A handler may flush before it has written a status or a byte. Net/http
 // sends 200 at that point, so the compression decision has to be taken then:
 // otherwise the headers leave without Content-Encoding and the gzip body that

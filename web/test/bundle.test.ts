@@ -4,16 +4,19 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { createHash } from 'node:crypto';
 import { enAdmin } from '../src/i18n.admin';
+import { zhAdmin } from '../src/i18n.admin.zh';
 
 // Asserts code-splitting invariants across build artifacts.
 //
 // The main entry bundle must not pull in the lazy-loaded chunks: the admin
-// shell, the terminal, the Chinese dictionary, the LaTeX renderer, the public
-// front page and the landing page. Those six are the only splits this project
-// has, and each is deliberate — a quarter of the code most accounts can never
-// reach, a panel every account may open and few ever will, a dictionary only
-// half the readers need, a renderer only a maths answer wakes, a marketing
-// page and a landing page only an instance that has chosen one ever draws.
+// shell, the terminal, the Chinese dictionary and the backoffice's half of it,
+// the LaTeX renderer, the public front page and the landing page. Those seven
+// are the only splits this project has, and each is deliberate — a quarter of
+// the code most accounts can never reach, a panel every account may open and
+// few ever will, a dictionary only half the readers need and a part of it only
+// the Chinese-reading administrators do, a renderer only a maths answer wakes,
+// a marketing page and a landing page only an instance that has chosen one
+// ever draws.
 describe('code splitting invariants in production bundle', () => {
   const assetsDir = path.resolve(__dirname, '../../internal/web/dist/assets');
 
@@ -34,6 +37,26 @@ describe('code splitting invariants in production bundle', () => {
     return fs.readdirSync(assetsDir);
   }
 
+  // The build's compressed copies live in precompressed/assets/, under each
+  // asset's name with .br or .gz added (vite.config.ts), so assets/ stays the
+  // bundler's output alone and the counts below are about the splits.
+  it('writes a brotli and a gzip copy of every asset, and no others', () => {
+    const copiesDir = path.resolve(assetsDir, '../precompressed/assets');
+    const originals = builtAssets();
+    for (const name of originals) {
+      const body = fs.readFileSync(path.join(assetsDir, name));
+      const br = fs.readFileSync(path.join(copiesDir, name + '.br'));
+      const gz = fs.readFileSync(path.join(copiesDir, name + '.gz'));
+      expect(zlib.brotliDecompressSync(br).equals(body), `${name}.br`).toBe(true);
+      expect(zlib.gunzipSync(gz).equals(body), `${name}.gz`).toBe(true);
+    }
+    // A copy whose original is gone would be served by nothing and embedded
+    // in the binary all the same.
+    for (const copy of fs.readdirSync(copiesDir)) {
+      expect(originals, `${copy} has no original`).toContain(copy.replace(/\.(br|gz)$/, ''));
+    }
+  });
+
   // Every plugin's browser half is a chunk of its own, named for its entry
   // (src/plugins/<name>/<name>.plugin.ts), and nothing else: see
   // src/plugins/registry.ts. They are counted from the source tree, so adding
@@ -49,8 +72,8 @@ describe('code splitting invariants in production bundle', () => {
     expect(pluginFiles, `plugin chunks: ${pluginFiles.join(', ')}`).toHaveLength(pluginNames.length);
     const core = files.filter((f) => !pluginFiles.includes(f));
 
-    // Exactly twelve besides the plugins', and deliberately exact: the project ships no fonts, no
-    // images and no other chunks, so a thirteenth file is either a split that
+    // Exactly thirteen besides the plugins', and deliberately exact: the project ships no fonts, no
+    // images and no other chunks, so a fourteenth file is either a split that
     // was not meant to happen or an asset nobody decided to ship. Route-level
     // splitting in particular produces a dozen of these on its own and is
     // switched off for everything but the backoffice and the terminal — see
@@ -63,15 +86,21 @@ describe('code splitting invariants in production bundle', () => {
     // terminal's followed it: TerminalPanel-*.css, imported by that view.
     // Eleven since the front page's followed it: FrontPage-*.css. Twelve
     // since the landing page's did too: LandingView-*.css.
+    // Thirteen since the backoffice's Chinese moved out of i18n.zh-*.js into
+    // i18n.admin.zh-*.js: it was most of that chunk, which every Chinese
+    // reader fetches to open a conversation, and a chunk of its own rather
+    // than a part of the backoffice's, so an English-reading administrator
+    // does not fetch it either (see src/i18n.admin.zh.ts).
     // A chunk shared between two plugins — a helper both import — shows up
-    // here as a thirteenth file: keep such helpers in the entry instead.
-    expect(core, `unexpected build output: ${core.join(', ')}`).toHaveLength(12);
+    // here as a fourteenth file: keep such helpers in the entry instead.
+    expect(core, `unexpected build output: ${core.join(', ')}`).toHaveLength(13);
 
     const indexJs = files.filter((f) => /^index-[^.]+\.js$/.test(f));
     const indexCss = files.filter((f) => /^index-[^.]+\.css$/.test(f));
     const adminJs = files.filter((f) => /^AdminPage-[^.]+\.js$/.test(f));
     const adminCss = files.filter((f) => /^AdminPage-[^.]+\.css$/.test(f));
     const zhJs = files.filter((f) => /^i18n\.zh-[^.]+\.js$/.test(f));
+    const adminZhJs = files.filter((f) => /^i18n\.admin\.zh-[^.]+\.js$/.test(f));
     const mathJs = files.filter((f) => /^math-[^.]+\.js$/.test(f));
     const terminalJs = files.filter((f) => /^TerminalPanel-[^.]+\.js$/.test(f));
     const terminalCss = files.filter((f) => /^TerminalPanel-[^.]+\.css$/.test(f));
@@ -85,6 +114,7 @@ describe('code splitting invariants in production bundle', () => {
     expect(adminJs.length).toBe(1);
     expect(adminCss.length).toBe(1);
     expect(zhJs.length).toBe(1);
+    expect(adminZhJs.length).toBe(1);
     expect(mathJs.length).toBe(1);
     expect(terminalJs.length).toBe(1);
     expect(terminalCss.length).toBe(1);
@@ -296,7 +326,7 @@ describe('code splitting invariants in production bundle', () => {
 
     const keys = Object.keys(enAdmin);
     expect(keys.length).toBeGreaterThan(1000);
-    for (const file of files.filter((f) => f !== adminJsFile && !/^i18n\.zh-/.test(f))) {
+    for (const file of files.filter((f) => f !== adminJsFile && !/^i18n\.(admin\.)?zh-/.test(f))) {
       const text = read(file);
       const named = keys.filter((key) => quotes(text, key));
       expect(named, `${file} names backoffice-only keys`).toEqual([]);
@@ -304,6 +334,34 @@ describe('code splitting invariants in production bundle', () => {
 
     expect(read(adminJsFile)).toContain(enAdmin.navAudit);
     expect(read(files.find((f) => /^index-[^.]+\.js$/.test(f))!)).not.toContain(enAdmin.auditSubtitle);
+  });
+
+  // The backoffice's Chinese is a chunk of its own: not in the Chinese
+  // dictionary every Chinese reader fetches, not in the backoffice's chunk an
+  // English-reading administrator fetches, and reached only through the
+  // loader in the entry, never a static import that would fetch it with
+  // whatever imported it.
+  it('keeps the backoffice’s Chinese out of the Chinese dictionary and out of the backoffice', () => {
+    const files = builtAssets().filter((f) => f.endsWith('.js'));
+    const read = (re: RegExp) => fs.readFileSync(path.join(assetsDir, files.find((f) => re.test(f))!), 'utf8');
+    const adminZhFile = files.find((f) => /^i18n\.admin\.zh-[^.]+\.js$/.test(f))!;
+    const adminZh = read(/^i18n\.admin\.zh-/);
+    const zh = read(/^i18n\.zh-/);
+    const admin = read(/^AdminPage-[^.]+\.js$/);
+    const index = read(/^index-[^.]+\.js$/);
+
+    expect(adminZh).toContain(zhAdmin.auditSubtitle);
+    expect(adminZh).toContain(zhAdmin.controlSettingsSubtitle);
+    for (const text of [zh, admin, index]) {
+      expect(text).not.toContain(zhAdmin.auditSubtitle);
+      expect(text).not.toContain(zhAdmin.controlSettingsSubtitle);
+    }
+    // The core dictionary stayed whole.
+    expect(zh).toContain('对话列表');
+
+    expect(index).toContain(`import("./${adminZhFile}")`);
+    expect(admin).not.toContain(adminZhFile);
+    expect(zh).not.toContain(adminZhFile);
   });
 
   // The proof-of-work Worker is given the solver's hash function by its source

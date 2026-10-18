@@ -12,7 +12,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, h, type App } from 'vue';
 import { createMemoryHistory, createRouter, type Router } from 'vue-router';
-import type { Account } from '@/api/auth';
 import { api, ApiError } from '@/api/client';
 import { changeLanguage, t } from '@/composables/useI18n';
 import { forget, site, siteInfo } from '@/stores/session';

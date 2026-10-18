@@ -227,8 +227,8 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 28.44 MB (24.74 MB `-tags nosqlite`, Linux amd64, Go 1.27.2); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 205.67 kB to open the chat (179.16 JS + 26.52 CSS), counted as gzip: the build's level-9 copy, which the server sends as it is; 172.70 kB as brotli; the build's gzip column reads 206.43 kB (179.58 JS + 26.85 CSS) |
+| Binary (SQLite + embedded SPA) | < 30 MB | 27.96 MB (24.26 MB `-tags nosqlite`, Linux amd64, Go 1.27.2), 0.86 MB of it the frontend's precompressed copies; this repository ships no plugin |
+| Frontend, on the wire | < 135 kB | 173.06 kB to open the chat with brotli (150.83 JS + 22.23 CSS); 206.03 kB with gzip (179.51 JS + 26.52 CSS), which the budget holds; both are copies compressed at build time; the build's gzip column reads 206.79 kB (179.94 JS + 26.85 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
 
@@ -371,6 +371,22 @@ down 0.13 kB; the build's estimate is 206.17 kB, 0.83 kB under the bundle
 test's 207 kB. Backoffice 170.54 kB plus 15.23 kB of stylesheet, terminal
 8.05 kB plus 1.65 kB, Chinese dictionary 51.60 kB, the other lazy chunks
 unchanged. The binary was not rebuilt for this; its figure is the one below.
+
+Remeasured on 2026-10-18 (UTC), with the backoffice's Chinese split out of
+the Chinese dictionary. The 1658 keys only the backoffice says had their
+English moved into the backoffice's chunk already, but their Chinese still
+travelled in `i18n.zh`, so every Chinese reader fetched the backoffice's
+words to open a conversation. They are now `i18n.admin.zh.ts`, a chunk of its
+own rather than a part of the backoffice's, so an English-reading
+administrator does not fetch them either: the Chinese dictionary is 20.30 kB
+(from 51.60 kB) and the backoffice's Chinese 33.13 kB, fetched before the
+backoffice's first render for a Chinese reader and before the switch for an
+administrator who picks Chinese inside it. The loader that does this is in
+the entry: 205.74 kB to open the chat (179.32 JS + 26.41 CSS), up 0.15 kB;
+the build's estimate is 206.46 kB, 0.54 kB under the bundle test's 207 kB.
+Backoffice 170.56 kB plus 15.24 kB of stylesheet, the other lazy chunks
+unchanged. The build emits eleven files besides the plugins'. The binary is
+27.10 MB (23.40 MB without SQLite), built the same way as below.
 
 Remeasured on 2026-10-18 (UTC), after the billing and operations review
 fixes were merged. Refusals from feedback, announcements, backup and import
@@ -861,15 +877,15 @@ page, and the landing page (the intro or trial a signed-out visitor sees on an
 instance that chose one), each of those last two with its stylesheet.
 What each reader actually downloads, as the server sends it (2026-10-18):
 
-| | gzipped |
-| --- | --- |
-| English, not an administrator | 202.10 kB |
-| Chinese, not an administrator | 253.70 kB |
-| …and a conversation containing a formula | 257.49 kB |
-| Chinese administrator, backoffice open | 439.45 kB |
-| Anybody, once they open the terminal | +9.72 kB |
-| A visitor to an instance whose front door is the front page | +8.02 kB |
-| A signed-out visitor to an instance whose front door is the intro or trial | +3.74 kB |
+| | gzip | brotli |
+| --- | --- | --- |
+| English, not an administrator | 205.71 kB | 172.74 kB |
+| Chinese, not an administrator | 225.71 kB | 189.61 kB |
+| …and a conversation containing a formula | 229.48 kB | 192.89 kB |
+| Chinese administrator, backoffice open | 443.98 kB | 366.17 kB |
+| Anybody, once they open the terminal | +9.69 kB | +8.70 kB |
+| A visitor to an instance whose front door is the front page | +4.11 kB | +3.65 kB |
+| A signed-out visitor to an instance whose front door is the intro or trial | +3.11 kB | +2.74 kB |
 
 Route-level splitting would shave the first paint further and is deliberately
 switched off for everything but the backoffice and the terminal: /settings, /keys, /usage and
@@ -896,7 +912,10 @@ chunk can reach the other's stylesheet.
 These are transferred sizes. The server compresses its own responses, because
 the deployment this document assumes has nothing in front of it to do that
 instead: 136 kB of JavaScript leaves as 47, and 70 kB of CSS as 13. The
-allowlist in `httpx.Compress` is what keeps the event stream out of it — a
+frontend's scripts, stylesheets and shell were compressed when they were built
+and are sent as they are, with `Content-Encoding`, `Vary: Accept-Encoding` and
+a tag per coding, and the compressor leaves an encoded body alone; it still
+handles everything else. The allowlist in `httpx.Compress` is what keeps the event stream out of it — a
 streamed answer pushed through a compressor arrives when the buffer fills
 rather than when the model produced a word, and nothing in any log would say
 so.

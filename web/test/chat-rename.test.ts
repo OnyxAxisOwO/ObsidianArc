@@ -87,4 +87,49 @@ describe('renaming a conversation', () => {
     expect(renameConversation).toHaveBeenCalledTimes(1);
     expect(renameConversation).toHaveBeenCalledWith('c1', 'New');
   });
+
+  it('shows the new title before the server answers', async () => {
+    let answer: (value: { conversation: Conversation }) => void = () => {};
+    vi.mocked(renameConversation).mockImplementation(() => new Promise((resolve) => { answer = resolve; }));
+
+    renamingID.value = 'c1';
+    const pending = rename(conversations.value[0]!, 'New');
+    expect(conversations.value[0]?.title).toBe('New');
+
+    answer({ conversation: conversation('c1', 'New') });
+    await pending;
+    expect(conversations.value[0]?.title).toBe('New');
+  });
+
+  it('puts the old title back on both copies when the server refuses', async () => {
+    const projectRow = conversation('c1', 'Old');
+    let refuse: (reason: unknown) => void = () => {};
+    vi.mocked(renameConversation).mockImplementation(() => new Promise((_, reject) => { refuse = reject; }));
+
+    renamingID.value = 'c1';
+    const pending = rename(projectRow, 'New');
+    expect(projectRow.title).toBe('New');
+    expect(conversations.value[0]?.title).toBe('New');
+
+    refuse(new TypeError('Failed to fetch'));
+    await pending;
+    expect(projectRow.title).toBe('Old');
+    expect(conversations.value[0]?.title).toBe('Old');
+    expect(flash.value).toBe(t('failed'));
+  });
+
+  it('leaves a later rename alone when an earlier one is refused', async () => {
+    const refusals: Array<(reason: unknown) => void> = [];
+    vi.mocked(renameConversation).mockImplementation(() => new Promise((_, reject) => { refusals.push(reject); }));
+    const row = conversations.value[0]!;
+
+    renamingID.value = 'c1';
+    const first = rename(row, 'First');
+    renamingID.value = 'c1';
+    void rename(row, 'Second');
+
+    refusals[0]!(new TypeError('Failed to fetch'));
+    await first;
+    expect(row.title).toBe('Second');
+  });
 });

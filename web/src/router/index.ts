@@ -28,6 +28,7 @@ import {
 } from 'vue-router';
 import { safeNext, serverOwned } from '@/lib/next';
 import { BACKOFFICE_PANEL_PARAM } from '@/composables/usePanelExit';
+import { primeBackofficeLanguage } from '@/composables/useI18n';
 import { SESSION_LOST } from '@/api/session-ended';
 import { currentUser, pendingSecondFactor, siteInfo } from '@/stores/session';
 import AboutPanel from '@/views/AboutPanel.vue';
@@ -113,7 +114,14 @@ const routes: RouteRecordRaw[] = [
   // a round trip for.
   {
     path: '/admin/:section(.*)*',
-    component: () => import('@/views/admin/AdminPage.vue'),
+    //
+    // Its Chinese is a chunk of its own, fetched beside it for a Chinese
+    // reader and awaited before the page resolves, so the first render is
+    // already translated: a reload of /admin/... draws no English first.
+    component: async () => {
+      const [page] = await Promise.all([import('@/views/admin/AdminPage.vue'), primeBackofficeLanguage()]);
+      return page;
+    },
     meta: { auth: true, admin: true },
   },
 
