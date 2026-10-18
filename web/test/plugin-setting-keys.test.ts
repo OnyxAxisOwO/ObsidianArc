@@ -23,7 +23,7 @@ afterEach(() => {
 });
 
 function mountControls(section: SettingsSection, draft: Record<string, string>): void {
-  app = createApp({ render: () => h(PluginSettingControls, { section, draft, hints: {} }) });
+  app = createApp({ render: () => h(PluginSettingControls, { controls: section.controls, draft, storedMasks: {} }) });
   app.mount(host);
 }
 

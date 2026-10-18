@@ -1064,7 +1064,7 @@ onMounted(load);
         :key="section.id"
         :section="section"
         :draft="pluginSettings.draft"
-        :hints="pluginSettings.hints"
+        :stored-masks="pluginSettings.storedMasks"
       />
       <AdminControlCard id="secAccounts" v-show="visible('secAccounts')" :title="t('secAccounts')" :icon="IconUsers">
         <OaSwitchField
@@ -1274,7 +1274,7 @@ onMounted(load);
         :key="section.id"
         :section="section"
         :draft="pluginSettings.draft"
-        :hints="pluginSettings.hints"
+        :stored-masks="pluginSettings.storedMasks"
       />
       <AdminControlCard id="secRegistration" v-show="visible('secRegistration')" :title="t('secRegistration')" :icon="IconUsers">
         <OaSwitchField v-model="form.requireEmail" :label="t('requireEmail')" :hint="t('requireEmailHint')" />

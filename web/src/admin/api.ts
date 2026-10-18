@@ -1,9 +1,9 @@
 // The administrative API, typed.
 //
 // Kept apart from the rest of the client so the shape of what an
-// administrator can do is one file. Note what is not here: no provider API
-// key, in either direction beyond writing a new one. The server never sends
-// one back, and there is no field on these types that could carry it.
+// administrator can do is one file. Provider and service keys go one way: a
+// request body may carry a new one, and the server answers with a flag or a
+// masked hint, so no response type on these pages can hold a key.
 
 import {
   api,
@@ -13,6 +13,12 @@ import {
   noteSessionEnded,
   type RequestOptions,
 } from '../api/client';
+import type { Account, Role, AccountStatus } from '../api/auth';
+import type { Announcement, DisplayMode } from '../api/announcements';
+import type { Conversation, Message } from '../api/chat';
+import type {
+  Feedback, FeedbackKind, FeedbackPriority, FeedbackReply, FeedbackStatus, FeedbackThread,
+} from '../api/feedback';
 import type { ApiKey } from '../api/keys';
 import type { SiteBackground } from '../theme/theme';
 import type { UsageDisplay, UsageSummary, UsageWindow } from '../api/usage';
@@ -22,9 +28,10 @@ import { t } from '../composables/useI18n';
 // shape on this surface already does.
 export type { ApiKey };
 
-/** A session on the operator's side of the same list `DeviceSession` is for
- *  an account's own screen — no "current" flag, since nothing about the
- *  operator's own browser belongs in somebody else's device list. */
+/** A device session as an operator sees an account's list of them. Unlike
+ *  `DeviceSession`, which is an account's own screen, there is no "current"
+ *  flag: nothing about the operator's own browser belongs in somebody else's
+ *  device list. */
 export interface AdminSession {
   id: string;
   created_at: number;
@@ -32,8 +39,6 @@ export interface AdminSession {
   ip: string;
   user_agent: string;
 }
-import type { Account, Role, AccountStatus } from '../api/auth';
-import type { Conversation, Message } from '../api/chat';
 
 export type ProviderKind = 'openai' | 'anthropic';
 export type ReasoningStyle = 'auto' | 'none' | 'anthropic' | 'openai_effort' | 'openrouter' | 'qwen';
@@ -512,11 +517,6 @@ export interface UpdateStatus {
 
 // The reader's client already describes this shape, and one row of JSON
 // should not have two declarations that can drift apart.
-import type { Announcement, DisplayMode } from '../api/announcements';
-import type {
-  Feedback, FeedbackKind, FeedbackPriority, FeedbackReply, FeedbackStatus, FeedbackThread,
-} from '../api/feedback';
-
 export type { Announcement, DisplayMode };
 export type { Feedback, FeedbackKind, FeedbackPriority, FeedbackReply, FeedbackStatus, FeedbackThread };
 
@@ -1027,8 +1027,8 @@ export const adminApi = {
         reset_at?: number;
       };
     }>(`/api/admin/health?hours=${hours}`),
-  probeAllModels: (onProgress: (progress: ProbeProgress) => void) =>
-    streamProbeAllModels(onProgress),
+  probeAllModels: (onProgress: (progress: ProbeProgress) => void, options?: { signal?: AbortSignal }) =>
+    streamProbeAllModels(onProgress, options?.signal),
   resetHealth: () =>
     api.post<{ reset_at: number; probes_cleared: number; models_reenabled: number }>(
       '/api/admin/health/reset',
@@ -1156,8 +1156,6 @@ export const adminApi = {
       `/api/admin/logs${query}`,
     ),
   logFacets: (query: string) => api.get<LogFacets>(`/api/admin/logs/facets${query}`),
-  pruneLogs: (days: number) =>
-    api.post<{ removed: number }>('/api/admin/logs/prune', { days }),
 
   audit: (query: string) =>
     api.get<{ entries: AuditEntry[]; total: number; limit: number; offset: number }>(
@@ -1183,8 +1181,6 @@ export const adminApi = {
   policies: () => api.get<{ policies: QuotaPolicy[] }>('/api/admin/quota/policies'),
   savePolicy: (policy: Record<string, unknown>) =>
     api.put<{ policy: QuotaPolicy }>('/api/admin/quota/policies', policy),
-  deletePolicy: (scope: string, scopeID: string) =>
-    api.delete<void>(`/api/admin/quota/policies/${encodeURIComponent(scope)}?scope_id=${encodeURIComponent(scopeID)}`),
 
   settings: () =>
     api.get<{
@@ -1255,11 +1251,15 @@ export const adminApi = {
 
 async function streamProbeAllModels(
   onProgress: (progress: ProbeProgress) => void,
+  signal?: AbortSignal,
 ): Promise<ProbeProgress> {
+  // Aborting the request closes the connection, and the server stops probing
+  // the models it has not reached yet: the browser's disconnect is its cancel.
   const response = await fetchApi('/api/admin/health/probe', {
     method: 'POST',
     credentials: 'same-origin',
     headers: { Accept: 'text/event-stream' },
+    ...(signal ? { signal } : {}),
   });
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as
@@ -1280,18 +1280,25 @@ async function streamProbeAllModels(
   let buffer = '';
   let finished: ProbeProgress | null = null;
 
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
 
-    let boundary = /\r?\n\r?\n/.exec(buffer);
-    while (boundary) {
-      const result = probeFrame(buffer.slice(0, boundary.index), onProgress);
-      if (result) finished = result;
-      buffer = buffer.slice(boundary.index + boundary[0].length);
-      boundary = /\r?\n\r?\n/.exec(buffer);
+      let boundary = /\r?\n\r?\n/.exec(buffer);
+      while (boundary) {
+        const result = probeFrame(buffer.slice(0, boundary.index), onProgress);
+        if (result) finished = result;
+        buffer = buffer.slice(boundary.index + boundary[0].length);
+        boundary = /\r?\n\r?\n/.exec(buffer);
+      }
     }
+  } catch (failure) {
+    // A frame that threw, or an abort, would otherwise leave the body held
+    // until the garbage collector reached it. Cancelling is what closes it now.
+    void reader.cancel().catch(() => undefined);
+    throw failure;
   }
   if (!finished) throw new ApiError(0, 'stream', t('probeAllModelsFailed'));
   return finished;
@@ -1302,16 +1309,18 @@ function probeFrame(
   onProgress: (progress: ProbeProgress) => void,
 ): ProbeProgress | null {
   let event = '';
-  let data = '';
+  // A frame can carry several data lines; the spec joins them with newlines,
+  // not by running them together.
+  const data: string[] = [];
   for (const line of frame.split(/\r?\n/)) {
     if (line.startsWith('event:')) event = line.slice(6).trim();
-    else if (line.startsWith('data:')) data += line.slice(5).trim();
+    else if (line.startsWith('data:')) data.push(line.slice(5).trim());
   }
-  if (!data) return null;
+  if (!data.length) return null;
 
   let payload: ProbeProgress;
   try {
-    payload = JSON.parse(data) as ProbeProgress;
+    payload = JSON.parse(data.join('\n')) as ProbeProgress;
   } catch {
     return null;
   }

@@ -22,7 +22,14 @@ import ExpiryPresets from './ExpiryPresets.vue';
 const props = defineProps<{ control: ActionControl; draft: ActionDraft }>();
 const emit = defineEmits<{ (event: 'set', key: string, value: string): void }>();
 
+// Past this many options a plain list is too long to scan, so the select
+// offers a search box.
+const SEARCHABLE_FROM = 8;
+
 const value = computed(() => props.draft[props.control.key] ?? '');
+// Every kind but the rows one draws the same caption, so it is read once here
+// rather than in each branch of the template.
+const caption = computed(() => ({ label: props.control.label(), hint: props.control.hint?.() }));
 
 function set(next: string): void {
   emit('set', props.control.key, next);
@@ -91,8 +98,7 @@ const canRemove = computed(() => props.control.kind === 'rows' && rows.value.len
   <OaTextField
     v-if="control.kind === 'text'"
     :model-value="value"
-    :label="control.label()"
-    :hint="control.hint?.()"
+    v-bind="caption"
     :placeholder="control.placeholder"
     :required="Boolean(control.required)"
     @update:model-value="set"
@@ -100,8 +106,7 @@ const canRemove = computed(() => props.control.kind === 'rows' && rows.value.len
   <OaTextArea
     v-else-if="control.kind === 'textarea'"
     :model-value="value"
-    :label="control.label()"
-    :hint="control.hint?.()"
+    v-bind="caption"
     :placeholder="control.placeholder"
     :rows="control.rows ?? 4"
     @update:model-value="set"
@@ -109,8 +114,7 @@ const canRemove = computed(() => props.control.kind === 'rows' && rows.value.len
   <OaTextField
     v-else-if="control.kind === 'number'"
     :model-value="value"
-    :label="control.label()"
-    :hint="control.hint?.()"
+    v-bind="caption"
     type="number"
     :required="Boolean(control.required)"
     @update:model-value="set"
@@ -118,24 +122,21 @@ const canRemove = computed(() => props.control.kind === 'rows' && rows.value.len
   <OaSwitchField
     v-else-if="control.kind === 'switch'"
     :model-value="value === 'true'"
-    :label="control.label()"
-    :hint="control.hint?.()"
+    v-bind="caption"
     @update:model-value="set($event ? 'true' : 'false')"
   />
   <OaSelectField
     v-else-if="control.kind === 'select'"
     :model-value="value"
-    :label="control.label()"
-    :hint="control.hint?.()"
-    :searchable="options.length > 8"
+    v-bind="caption"
+    :searchable="options.length > SEARCHABLE_FROM"
     :options="options"
     @update:model-value="set"
   />
   <template v-else-if="control.kind === 'datetime'">
     <OaTextField
       :model-value="value"
-      :label="control.label()"
-      :hint="control.hint?.()"
+      v-bind="caption"
       type="datetime-local"
       :required="Boolean(control.required)"
       @update:model-value="set"

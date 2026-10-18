@@ -1,4 +1,4 @@
-import type { StringKey } from '@/i18n';
+import type { StringKey } from '@/composables/useI18n';
 
 export const ADMIN_PERMISSIONS: Array<{ value: string; label: StringKey }> = [
   { value: 'dashboard', label: 'navDashboard' },

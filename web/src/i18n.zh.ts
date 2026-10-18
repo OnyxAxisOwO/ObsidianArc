@@ -965,7 +965,6 @@ export const zh: Record<StringKey, string> = {
   secTotals: '合计',
   secOverTime: '趋势',
   secByModel: '按模型',
-  secByProvider: '按服务商',
   secRequestsN: '请求记录（{count}）',
   defaultLimitsHint: '适用于用户组和账户都没有覆盖的所有人。',
   adminsExemptHint: '除非在「设置」里关掉，否则管理员不受这些限制。',

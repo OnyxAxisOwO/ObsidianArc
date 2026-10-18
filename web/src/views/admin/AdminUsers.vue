@@ -55,6 +55,7 @@ import CreditsField from './CreditsField.vue';
 import ExpiryPresets from './ExpiryPresets.vue';
 import UsageBoard from './usage/UsageBoard.vue';
 import { useAdminView } from './adminView';
+import { toLocalInput } from './localTime';
 
 const WINDOWS: QuotaWindowKind[] = ['5h', '1w', '1m'];
 
@@ -72,7 +73,7 @@ const total = ref(0);
 const paging = ref<PageState>({ page: 1, pageSize: rememberedPageSize() });
 let request = 0;
 function changePage(next: PageState): void { paging.value = next; void list(); }
-function filterList(): void { paging.value.page = 1; ++request; void list(); }
+function filterList(): void { paging.value.page = 1; void list(); }
 const error = ref('');
 const listError = ref('');
 const loaded = ref(false);
@@ -270,8 +271,7 @@ function cardSubtitle(card: { name?: string; windows?: string[]; source: string;
 const movableCards = computed(() => (cards.value?.available ?? 0) + (cards.value?.expired ?? 0));
 
 function dateTimeLocal(at: number): string {
-  const date = new Date(at);
-  return new Date(at - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+  return toLocalInput(new Date(at));
 }
 
 function defaultGrantExpiry(): string {

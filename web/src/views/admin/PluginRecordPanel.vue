@@ -9,16 +9,16 @@
 // they are one.
 
 import { computed, ref } from 'vue';
-import { ApiError } from '@/api/client';
 import { maskUser } from '@/admin/safeMode';
 import OaBadge from '@/components/OaBadge.vue';
-import OaConfirmButton from '@/components/OaConfirmButton.vue';
 import OaImageLightbox from '@/components/OaImageLightbox.vue';
 import OaPanel from '@/components/OaPanel.vue';
 import { t } from '@/composables/useI18n';
 import type { RecordAction, RecordDetail } from '@/plugins/types';
 import PluginActionControl from './PluginActionControl.vue';
+import PluginRunButton from './PluginRunButton.vue';
 import { missingRequired, visibleControls } from './pluginControls';
+import { failureText } from './shared';
 
 const props = defineProps<{ detail: RecordDetail }>();
 
@@ -39,6 +39,14 @@ const fields = computed(() => props.detail.fields.map((field) => ({
   href: field.link && !field.mask && /^https?:\/\//i.test(field.value) ? field.value : '',
 })));
 
+// What each action shows and whether it may run, worked out once per change to
+// the drafts rather than each time the template reads it.
+const actions = computed(() => (props.detail.actions ?? []).map((action) => {
+  const draft = drafts.value[action.id] ?? {};
+  const shown = visibleControls(action.controls ?? [], draft);
+  return { action, draft, shown, missing: missingRequired(shown, draft) };
+}));
+
 function set(action: string, key: string, value: string): void {
   drafts.value[action] = { ...drafts.value[action], [key]: value };
 }
@@ -51,7 +59,7 @@ async function run(action: RecordAction): Promise<void> {
     result.value = { message: await action.run(drafts.value[action.id] ?? {}), failed: false };
     emit('done');
   } catch (failure) {
-    result.value = { message: failure instanceof ApiError ? failure.message : String(failure), failed: true };
+    result.value = { message: failureText(failure), failed: true };
   } finally {
     busy.value = '';
   }
@@ -88,35 +96,26 @@ async function run(action: RecordAction): Promise<void> {
       </span>
     </div>
 
-    <section v-for="action in detail.actions ?? []" :key="action.id" class="oa-plugin-controls">
+    <section v-for="{ action, draft, shown, missing } in actions" :key="action.id" class="oa-plugin-controls">
       <PluginActionControl
-        v-for="control in visibleControls(action.controls ?? [], drafts[action.id] ?? {})"
+        v-for="control in shown"
         :key="control.key"
         :control="control"
-        :draft="drafts[action.id] ?? {}"
+        :draft="draft"
         @set="(key, value) => set(action.id, key, value)"
       />
       <div class="oa-card-actions">
         <!-- A destructive action is asked in place even when the plugin wrote no
              question for it: the core draws the danger, so it confirms too. -->
-        <OaConfirmButton
-          v-if="action.confirm || action.danger"
-          class="oa-btn"
-          :class="action.danger ? 'oa-btn-danger' : 'primary'"
-          :disabled="!!busy || missingRequired(visibleControls(action.controls ?? [], drafts[action.id] ?? {}), drafts[action.id] ?? {})"
+        <PluginRunButton
           :label="busy === action.id ? t('loading') : action.label"
           :armed-label="action.label"
-          :armed-title="action.confirm ? action.confirm(drafts[action.id] ?? {}) : action.label"
-          @confirm="run(action)"
+          :armed-title="action.confirm ? action.confirm(draft) : action.label"
+          :asks="!!(action.confirm || action.danger)"
+          :danger="!!action.danger"
+          :disabled="!!busy || missing"
+          @run="run(action)"
         />
-        <button
-          v-else
-          type="button"
-          class="oa-btn"
-          :class="action.danger ? 'oa-btn-danger' : 'primary'"
-          :disabled="!!busy || missingRequired(visibleControls(action.controls ?? [], drafts[action.id] ?? {}), drafts[action.id] ?? {})"
-          @click="run(action)"
-        >{{ busy === action.id ? t('loading') : action.label }}</button>
       </div>
     </section>
 

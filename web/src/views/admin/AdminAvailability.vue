@@ -37,6 +37,8 @@ const saveLabel = ref('');
 const busy = ref(false);
 const resetting = ref(false);
 const probing = ref(false);
+// Lives for one run: stopping aborts the stream, and the server stops probing.
+let probeAbort: AbortController | null = null;
 const probeCompleted = ref(0);
 const probeTotal = ref(0);
 
@@ -118,11 +120,13 @@ async function probeAllModels(): Promise<void> {
   probeTotal.value = 0;
   flash.value = '';
   flashSuccess.value = '';
+  const abort = new AbortController();
+  probeAbort = abort;
   try {
     const result = await adminApi.probeAllModels((progress) => {
       probeCompleted.value = progress.completed;
       probeTotal.value = progress.total;
-    });
+    }, { signal: abort.signal });
     flashSuccess.value = t('probeAllModelsDone', {
       succeeded: result.succeeded,
       total: result.total,
@@ -132,10 +136,16 @@ async function probeAllModels(): Promise<void> {
     window.setTimeout(() => { flashSuccess.value = ''; }, 5000);
     await Promise.all([refreshHealth(), loadModels()]);
   } catch (failure) {
-    flash.value = failure instanceof ApiError ? failure.message : String(failure);
+    if (abort.signal.aborted) flash.value = t('stopped');
+    else flash.value = failure instanceof ApiError ? failure.message : String(failure);
   } finally {
     probing.value = false;
+    probeAbort = null;
   }
+}
+
+function stopProbe(): void {
+  probeAbort?.abort();
 }
 
 // A health refresh must not reload settings and discard a policy draft.
@@ -208,6 +218,7 @@ onMounted(load);
         <button type="button" class="oa-btn" :disabled="probing || resetting" @click="probeAllModels">
           {{ probing ? probeTotal > 0 ? t('probeAllModelsProgress', { completed: probeCompleted, total: probeTotal }) : t('probeAllModelsRunning') : t('probeAllModels') }}
         </button>
+        <button v-if="probing" type="button" class="oa-btn" @click="stopProbe">{{ t('stop') }}</button>
         <a href="/uptime" target="_blank" rel="noopener" class="oa-btn">{{ t('viewUptimePage') }}</a>
       </div></template>
       <OaSearchField v-model="modelQuery" :label="t('controlHealthSearch')" />

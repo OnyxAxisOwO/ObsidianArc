@@ -4,12 +4,12 @@
 // window.confirm().
 
 import { ref } from 'vue';
-import { ApiError } from '@/api/client';
 import { maskUser } from '@/admin/safeMode';
 import OaConfirmButton from '@/components/OaConfirmButton.vue';
 import OaRow from '@/components/OaRow.vue';
 import { t } from '@/composables/useI18n';
 import AdminControlCard from './AdminControlCard.vue';
+import { failureText } from './shared';
 import type { UserActionSpec } from '@/plugins/types';
 
 const props = defineProps<{
@@ -33,7 +33,7 @@ async function run(button: UserActionSpec['buttons'][number]): Promise<void> {
     flash.value = await button.run(props.userId);
     emit('done', !!button.closesPanel);
   } catch (failure) {
-    emit('failed', failure instanceof ApiError ? failure.message : String(failure));
+    emit('failed', failureText(failure));
   } finally {
     busy.value = false;
   }

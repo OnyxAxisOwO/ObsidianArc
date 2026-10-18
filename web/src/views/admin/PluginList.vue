@@ -7,7 +7,6 @@
 
 import { computed, onMounted, ref, watch } from 'vue';
 import { rememberedPageSize } from '@/lib/page-size';
-import { ApiError } from '@/api/client';
 import { maskUser } from '@/admin/safeMode';
 import OaBadge from '@/components/OaBadge.vue';
 import OaCellStack from '@/components/OaCellStack.vue';
@@ -19,6 +18,7 @@ import type { AdminListSpec, ListCell, RecordDetail } from '@/plugins/types';
 import AdminControlCard from './AdminControlCard.vue';
 import PluginRecordPanel from './PluginRecordPanel.vue';
 import { useOpenRecord } from './openRecord';
+import { failureText } from './shared';
 
 type Row = Record<string, unknown>;
 
@@ -55,7 +55,7 @@ async function load(): Promise<void> {
     total.value = result.total;
   } catch (failure) {
     if (ticket !== pageRequest) return;
-    listError.value = failure instanceof ApiError ? failure.message : String(failure);
+    listError.value = failureText(failure);
   }
 }
 
@@ -113,7 +113,7 @@ async function open(row: Row): Promise<void> {
     openedKey.value = ticket;
   } catch (failure) {
     if (ticket !== openRequest) return;
-    openError.value = failure instanceof ApiError ? failure.message : String(failure);
+    openError.value = failureText(failure);
   }
 }
 
@@ -158,10 +158,12 @@ onMounted(load);
       @select="open"
     >
       <template v-for="column in spec.columns" :key="column.key" #[`cell-${column.key}`]="{ row }">
-        <OaBadge v-if="cell(column.key, row).badge" :tone="cell(column.key, row).badge!.tone">
-          {{ cell(column.key, row).title }}
-        </OaBadge>
-        <OaCellStack v-else :title="cell(column.key, row).title" :sub="cell(column.key, row).sub" />
+        <!-- One call per cell: the plugin's cell() runs each time it is read, and
+             a cell can be read for its badge, its text and its sub-line. -->
+        <template v-for="value in [cell(column.key, row)]" :key="column.key">
+          <OaBadge v-if="value.badge" :tone="value.badge.tone">{{ value.title }}</OaBadge>
+          <OaCellStack v-else :title="value.title" :sub="value.sub" />
+        </template>
       </template>
     </OaTable>
   </AdminControlCard>

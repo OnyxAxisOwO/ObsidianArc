@@ -18,7 +18,6 @@ import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useEventListener } from '@vueuse/core';
 import { adminApi, type AdminPlugin, type PluginChange, type PluginPreview, type PluginText } from '@/admin/api';
-import { ApiError } from '@/api/client';
 import OaBadge from '@/components/OaBadge.vue';
 import OaGroup from '@/components/OaGroup.vue';
 import OaPanel from '@/components/OaPanel.vue';
@@ -34,6 +33,7 @@ import { canAdmin, currentUser, isSuperAdmin, refreshSite } from '@/stores/sessi
 import AdminFailure from './AdminFailure.vue';
 import PluginAdminPage from './PluginAdminPage.vue';
 import PluginInstallPackage from './PluginInstallPackage.vue';
+import { failureText } from './shared';
 import PluginSettingControls from './PluginSettingControls.vue';
 import { useAdminView } from './adminView';
 import { permissionsOf } from './pluginPermissions';
@@ -127,7 +127,7 @@ const canRemove = computed(() => canAdmin('plugins_remove'));
 const hasTwoFactor = computed(() => !!currentUser.value?.two_factor_at);
 
 function message(failure: unknown): string {
-  return failure instanceof ApiError ? failure.message : String(failure);
+  return failureText(failure);
 }
 
 function text(value: PluginText | undefined): string {
@@ -351,7 +351,6 @@ const contributionGroups = computed<ContributionGroup[]>(() => {
 const installing = ref<AdminPlugin | null>(null);
 const enableNow = ref(true);
 const draft = reactive<Record<string, string>>({});
-const noHints: Record<string, string> = {};
 const busy = ref(false);
 const panelError = ref('');
 const needCode = computed(() => twoFactorRequired.value);
@@ -828,7 +827,7 @@ onMounted(load);
     <p class="oa-field-hint">{{ installSectionsOf(installing).length ? t('pluginInitialSettingsHint') : t('pluginNoSettings') }}</p>
     <template v-for="section in installSectionsOf(installing)" :key="section.id">
       <h4 class="oa-field-label">{{ section.title() }}</h4>
-      <PluginSettingControls :section="section" :draft="draft" :hints="noHints" />
+      <PluginSettingControls :controls="section.controls" :draft="draft" />
     </template>
     <template v-if="needCode">
       <p v-if="!hasTwoFactor" class="oa-field-hint" role="alert">{{ t('pluginInstallTwoFactorMissing') }}</p>

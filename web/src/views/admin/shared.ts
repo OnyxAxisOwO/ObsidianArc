@@ -1,8 +1,30 @@
 // The pieces more than one administration screen needs.
 
 import { adminApi, type AdminModel } from '@/admin/api';
+import { ApiError } from '@/api/client';
 import { t } from '@/composables/useI18n';
+import { codeText } from '@/lib/api-error';
 import { onSignOut } from '@/stores/session';
+
+/**
+ * The line an administration screen shows for a failed request.
+ *
+ * An ApiError shows the server's own sentence, as these screens always have,
+ * and a plugin's 4xx-5xx explanation is passed through on purpose
+ * (internal/plugin/routes.go). A code with a reader's sentence is translated
+ * first, so the English behind a known code does not reach a Chinese screen.
+ *
+ * An Error shows its message as written: it was written by the code that threw
+ * it, which on these pages is a plugin or the backoffice itself. Anything that
+ * is not an Error at all has no sentence to show, so it goes to the console and
+ * the screen gets the generic line.
+ */
+export function failureText(failure: unknown): string {
+  if (failure instanceof ApiError) return codeText(failure.code) ?? failure.message;
+  if (failure instanceof Error) return failure.message;
+  console.warn('request failed', failure);
+  return t('failed');
+}
 
 /**
  * The models an allowance is actually spent on. Fetched once and shared by
