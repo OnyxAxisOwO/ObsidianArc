@@ -44,6 +44,11 @@ import (
 // check cannot drift apart on spelling.
 const Permission = "leaderboard"
 
+// fallbackSize is the board's length when the stored size does not parse or is
+// out of range. It matches the registered default for leaderboard.size, so a
+// broken value draws the board an untouched instance would.
+const fallbackSize = 20
+
 // Periods a reader may choose, as how far back from now they reach. A fixed
 // set rather than any duration a caller sends, so a request cannot ask for an
 // aggregate over the whole ledger on every page load.
@@ -187,9 +192,9 @@ func (h *Handlers) board(w http.ResponseWriter, r *http.Request) error {
 		return httpx.BadRequest("Unknown metric %q.", metricName)
 	}
 
-	size := h.settings.Int(settings.LeaderboardSize, 20)
+	size := h.settings.Int(settings.LeaderboardSize, fallbackSize)
 	if size < 1 || size > settings.MaxLeaderboardSize {
-		size = 20
+		size = fallbackSize
 	}
 	identity := h.settings.Get(settings.LeaderboardIdentity)
 	if !settings.ValidLeaderboardIdentity(identity) {
@@ -248,15 +253,7 @@ func (h *Handlers) board(w http.ResponseWriter, r *http.Request) error {
 
 			requestsSorted := make([]usage.Breakdown, len(userRows))
 			copy(requestsSorted, userRows)
-			sort.SliceStable(requestsSorted, func(i, j int) bool {
-				if requestsSorted[i].Requests != requestsSorted[j].Requests {
-					return requestsSorted[i].Requests > requestsSorted[j].Requests
-				}
-				if requestsSorted[i].TotalTokens != requestsSorted[j].TotalTokens {
-					return requestsSorted[i].TotalTokens > requestsSorted[j].TotalTokens
-				}
-				return requestsSorted[i].Key < requestsSorted[j].Key
-			})
+			sortByRequests(requestsSorted)
 			requestsLimit := maxFetch
 			if requestsLimit > len(requestsSorted) {
 				requestsLimit = len(requestsSorted)
@@ -328,20 +325,27 @@ func valueOf(row usage.Breakdown, metric string) int64 {
 	return row.TotalTokens
 }
 
+// sortByRequests is the requests board's order. The profiles collected for the
+// cached board and the board drawn from it must agree on who is in the top N,
+// or a ranked account is drawn without its profile, so both sort through here.
+func sortByRequests(rows []usage.Breakdown) {
+	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].Requests != rows[j].Requests {
+			return rows[i].Requests > rows[j].Requests
+		}
+		if rows[i].TotalTokens != rows[j].TotalTokens {
+			return rows[i].TotalTokens > rows[j].TotalTokens
+		}
+		return rows[i].Key < rows[j].Key
+	})
+}
+
 func (h *Handlers) projectAccounts(b *cachedBoard, self, metric string, size int, identity string) ([]Entry, Standing) {
 	sorted := make([]usage.Breakdown, len(b.userRows))
 	copy(sorted, b.userRows)
 
 	if metric == usage.MetricRequests {
-		sort.SliceStable(sorted, func(i, j int) bool {
-			if sorted[i].Requests != sorted[j].Requests {
-				return sorted[i].Requests > sorted[j].Requests
-			}
-			if sorted[i].TotalTokens != sorted[j].TotalTokens {
-				return sorted[i].TotalTokens > sorted[j].TotalTokens
-			}
-			return sorted[i].Key < sorted[j].Key
-		})
+		sortByRequests(sorted)
 	} else {
 		sort.SliceStable(sorted, func(i, j int) bool {
 			if sorted[i].TotalTokens != sorted[j].TotalTokens {

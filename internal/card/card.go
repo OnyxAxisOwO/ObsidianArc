@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"time"
 
@@ -55,7 +56,9 @@ var (
 	ErrBatchTooLarge = errors.New("card: a batch holds at most MaxBatch codes")
 )
 
-// ValidWindows are the quota allowance windows that a card can target.
+// ValidWindows are the quota allowance windows that a card can target. It is
+// this package's own list rather than quota's, since it does not import quota;
+// TestCardWindowsAreQuotaWindows holds the two to the same names.
 var ValidWindows = []string{"5h", "1w", "1m"}
 
 func validateWindows(windows []string) error {
@@ -64,7 +67,7 @@ func validateWindows(windows []string) error {
 		if w == "" || w == "full" {
 			continue
 		}
-		if w != "5h" && w != "1w" && w != "1m" {
+		if !slices.Contains(ValidWindows, w) {
 			return ErrInvalidWindow
 		}
 	}
@@ -86,7 +89,7 @@ func normalizeWindows(windows []string) string {
 		if w == "full" {
 			return ""
 		}
-		if w == "5h" || w == "1w" || w == "1m" {
+		if slices.Contains(ValidWindows, w) {
 			seen[w] = true
 		}
 	}

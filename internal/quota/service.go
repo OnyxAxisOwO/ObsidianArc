@@ -129,6 +129,12 @@ type AutoReset func(ctx context.Context, q database.Queryer, needed Window) (win
 // chunks, so a reservation waiting on that row is not held behind the whole table.
 var counterKinds = []Window{WindowRPM, WindowTPM, Window5H, WindowWeek, WindowMonth}
 
+// tokenWindows are the counters a turn's tokens and credits land in: the
+// minute, then every allowance window, which is the lock order above. Settle
+// and Release walk this one list rather than spelling it out, because a window
+// Reserve charges and one of them forgets would keep the estimate for ever.
+var tokenWindows = append([]Window{WindowTPM}, AllowanceWindows...)
+
 // Reserve claims one request and the turn's worst case against every window
 // that applies, and fails if any of them is already spent.
 //
@@ -695,7 +701,7 @@ func settleCounters(
 			return err
 		}
 	}
-	for _, window := range []Window{WindowTPM, Window5H, WindowWeek, WindowMonth} {
+	for _, window := range tokenWindows {
 		if _, err := bump(ctx, q, key, window, bucketStart(window, now, anchor), 0, tokens, credits); err != nil {
 			return err
 		}
@@ -789,7 +795,7 @@ func (s *Service) Release(ctx context.Context, userID string, reserved Reservati
 			return nil
 		}
 		// The minute, then the windows: the order the lock order above gives them.
-		for _, window := range []Window{WindowTPM, Window5H, WindowWeek, WindowMonth} {
+		for _, window := range tokenWindows {
 			if _, err := bump(ctx, tx, key, window, bucketStart(window, reserved.at, reserved.anchor),
 				0, -reserved.estimate.Tokens, -reserved.estimate.Credits); err != nil {
 				return err
