@@ -8,6 +8,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/provider"
 )
@@ -62,7 +63,7 @@ func (h *Handlers) createProvider(w http.ResponseWriter, r *http.Request) error 
 	if err := httpx.DecodeJSON(w, r, &body, maxProviderKeysBody); err != nil {
 		return err
 	}
-	if body.CopyKeyFrom != nil && !isValidID(*body.CopyKeyFrom) {
+	if body.CopyKeyFrom != nil && !id.Valid(*body.CopyKeyFrom) {
 		return httpx.BadRequest("Malformed provider id.")
 	}
 
@@ -274,94 +275,12 @@ type modelRequest struct {
 	ReasoningTokenWeight *float64 `json:"reasoning_token_weight"`
 }
 
-func (h *Handlers) listModels(w http.ResponseWriter, r *http.Request) error {
-	providerID := r.URL.Query().Get("provider_id")
-	if providerID != "" && !isValidID(providerID) {
-		return httpx.BadRequest("Malformed provider id.")
-	}
-
-	records, err := h.models.ListAll(r.Context(), providerID)
-	if err != nil {
-		return httpx.Internal(err)
-	}
-
-	allGrants, err := h.models.AllModelGrants(r.Context())
-	if err != nil {
-		return httpx.Internal(err)
-	}
-	for i := range records {
-		records[i].GroupGrants = allGrants[records[i].ID]
-	}
-
-	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"models": records})
-}
-
-func (h *Handlers) createModel(w http.ResponseWriter, r *http.Request) error {
-	var body modelRequest
-	if err := httpx.DecodeJSON(w, r, &body, maxProviderBody); err != nil {
-		return err
-	}
-	if !isValidID(body.ProviderID) {
-		return httpx.BadRequest("A provider is required.")
-	}
-	if _, err := h.providers.ByID(r.Context(), body.ProviderID); err != nil {
-		return translateProviderError(err)
-	}
-	if err := h.checkRoute(r.Context(), "", body); err != nil {
-		return err
-	}
-	if err := checkModelGroupAccess(body.GroupGrants); err != nil {
-		return err
-	}
-
-	in := model.CreateInput{
-		ProviderID: body.ProviderID,
-		Enabled:    true,
-		Hidden:     body.Hidden != nil && *body.Hidden,
-		Capabilities: model.Capabilities{
-			SupportsStreaming:    true,
-			SupportsSystemPrompt: true,
-		},
-		// Neutral by default: one credit per thousand tokens either way, and
-		// nothing charged simply for asking.
-		Weights: model.Weights{InputToken: 1, OutputToken: 1, ReasoningToken: 1},
-	}
-	applyModelFields(&in.ModelID, &in.DisplayName, &in.Description, &in.Avatar,
-		&in.Enabled, &in.SortOrder, &in.Capabilities, &in.Weights, body)
-	setIf(&in.APIName, body.APIName)
-	setIf(&in.SystemPrompt, body.SystemPrompt)
-	setIf(&in.RouteToID, body.RouteToID)
-	setIf(&in.ReasoningStyle, body.ReasoningStyle)
-	setIf(&in.ReasoningTiers, body.ReasoningTiers)
-	setIf(&in.RequestOverride, body.RequestOverride)
-	// Written with the model, so a refused grant leaves no model behind.
-	in.GroupGrants = body.GroupGrants
-
-	record, err := h.models.Create(r.Context(), in)
-	if err != nil {
-		return model.TranslateError(err)
-	}
-	return httpx.WriteJSON(w, http.StatusCreated, map[string]any{"model": record})
-}
-
-func (h *Handlers) updateModel(w http.ResponseWriter, r *http.Request) error {
-	modelID, err := pathID(r, "id")
-	if err != nil {
-		return err
-	}
-
-	var body modelRequest
-	if err := httpx.DecodeJSON(w, r, &body, maxProviderBody); err != nil {
-		return err
-	}
-	if err := h.checkRoute(r.Context(), modelID, body); err != nil {
-		return err
-	}
-	if err := checkModelGroupAccess(body.GroupGrants); err != nil {
-		return err
-	}
-
-	record, err := h.models.Update(r.Context(), modelID, model.Update{
+// update is the edit a request asks for, field for field: nil keeps what the
+// model has. createInput writes the same fields through it, so the two paths
+// share one list, and TestEveryModelFieldReachesTheStore holds that list to the
+// request's own.
+func (body modelRequest) update() model.Update {
+	return model.Update{
 		ModelID:              body.ModelID,
 		APIName:              body.APIName,
 		SystemPrompt:         body.SystemPrompt,
@@ -391,7 +310,124 @@ func (h *Handlers) updateModel(w http.ResponseWriter, r *http.Request) error {
 		ReasoningTiers:       body.ReasoningTiers,
 		RequestOverride:      body.RequestOverride,
 		GroupGrants:          body.GroupGrants,
-	})
+	}
+}
+
+// createInput is a new model: the defaults one created here takes, with what
+// the request sent written over them.
+func (body modelRequest) createInput() model.CreateInput {
+	in := model.CreateInput{
+		ProviderID: body.ProviderID,
+		Enabled:    true,
+		Capabilities: model.Capabilities{
+			SupportsStreaming:    true,
+			SupportsSystemPrompt: true,
+		},
+		// Neutral by default: one credit per thousand tokens either way, and
+		// nothing charged simply for asking.
+		Weights: model.Weights{InputToken: 1, OutputToken: 1, ReasoningToken: 1},
+	}
+	u := body.update()
+	setIf(&in.ModelID, u.ModelID)
+	setIf(&in.APIName, u.APIName)
+	setIf(&in.SystemPrompt, u.SystemPrompt)
+	setIf(&in.DisplayName, u.DisplayName)
+	setIf(&in.Description, u.Description)
+	setIf(&in.Avatar, u.Avatar)
+	setIf(&in.Enabled, u.Enabled)
+	setIf(&in.Hidden, u.Hidden)
+	setIf(&in.SortOrder, u.SortOrder)
+	setIf(&in.RouteToID, u.RouteToID)
+	setIf(&in.ReasoningStyle, u.ReasoningStyle)
+	setIf(&in.ReasoningTiers, u.ReasoningTiers)
+	setIf(&in.RequestOverride, u.RequestOverride)
+	// Written with the model, so a refused grant leaves no model behind.
+	in.GroupGrants = u.GroupGrants
+
+	setIf(&in.SupportsReasoning, u.SupportsReasoning)
+	setIf(&in.SupportsImages, u.SupportsImages)
+	setIf(&in.SupportsVision, u.SupportsVision)
+	setIf(&in.SupportsStreaming, u.SupportsStreaming)
+	setIf(&in.SupportsSystemPrompt, u.SupportsSystemPrompt)
+	setIf(&in.SupportsTools, u.SupportsTools)
+	setIf(&in.SupportsImageGen, u.SupportsImageGen)
+	setIf(&in.SupportsChatImageGen, u.SupportsChatImageGen)
+	setIf(&in.EmulateTools, u.EmulateTools)
+	setIf(&in.ContextWindow, u.ContextWindow)
+	setIf(&in.MaxOutputTokens, u.MaxOutputTokens)
+
+	setIf(&in.Weights.Request, u.RequestWeight)
+	setIf(&in.Weights.InputToken, u.InputTokenWeight)
+	setIf(&in.Weights.OutputToken, u.OutputTokenWeight)
+	setIf(&in.Weights.ReasoningToken, u.ReasoningTokenWeight)
+	return in
+}
+
+func (h *Handlers) listModels(w http.ResponseWriter, r *http.Request) error {
+	providerID := r.URL.Query().Get("provider_id")
+	if providerID != "" && !id.Valid(providerID) {
+		return httpx.BadRequest("Malformed provider id.")
+	}
+
+	records, err := h.models.ListAll(r.Context(), providerID)
+	if err != nil {
+		return httpx.Internal(err)
+	}
+
+	allGrants, err := h.models.AllModelGrants(r.Context())
+	if err != nil {
+		return httpx.Internal(err)
+	}
+	for i := range records {
+		records[i].GroupGrants = allGrants[records[i].ID]
+	}
+
+	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"models": records})
+}
+
+func (h *Handlers) createModel(w http.ResponseWriter, r *http.Request) error {
+	var body modelRequest
+	if err := httpx.DecodeJSON(w, r, &body, maxProviderBody); err != nil {
+		return err
+	}
+	if !id.Valid(body.ProviderID) {
+		return httpx.BadRequest("A provider is required.")
+	}
+	if _, err := h.providers.ByID(r.Context(), body.ProviderID); err != nil {
+		return translateProviderError(err)
+	}
+	if err := h.checkRoute(r.Context(), "", body); err != nil {
+		return err
+	}
+	if err := checkModelGroupAccess(body.GroupGrants); err != nil {
+		return err
+	}
+
+	record, err := h.models.Create(r.Context(), body.createInput())
+	if err != nil {
+		return model.TranslateError(err)
+	}
+	return httpx.WriteJSON(w, http.StatusCreated, map[string]any{"model": record})
+}
+
+func (h *Handlers) updateModel(w http.ResponseWriter, r *http.Request) error {
+	modelID, err := pathID(r, "id")
+	if err != nil {
+		return err
+	}
+
+	var body modelRequest
+	if err := httpx.DecodeJSON(w, r, &body, maxProviderBody); err != nil {
+		return err
+	}
+	if err := h.checkRoute(r.Context(), modelID, body); err != nil {
+		return err
+	}
+	if err := checkModelGroupAccess(body.GroupGrants); err != nil {
+		return err
+	}
+
+	record, err := h.models.Update(r.Context(), modelID, body.update())
 	if err != nil {
 		return model.TranslateError(err)
 	}
@@ -425,7 +461,7 @@ func (h *Handlers) checkRoute(ctx context.Context, modelID string, body modelReq
 		return nil
 	}
 	targetID := *body.RouteToID
-	if !isValidID(targetID) {
+	if !id.Valid(targetID) {
 		return httpx.BadRequest("Malformed model id.")
 	}
 	if targetID == modelID {
@@ -461,7 +497,7 @@ func (h *Handlers) reorderModels(w http.ResponseWriter, r *http.Request) error {
 	}
 	seen := make(map[string]bool, len(body.IDs))
 	for _, modelID := range body.IDs {
-		if !isValidID(modelID) {
+		if !id.Valid(modelID) {
 			return httpx.BadRequest("Malformed model id.")
 		}
 		if seen[modelID] {
@@ -487,45 +523,10 @@ func (h *Handlers) deleteModel(w http.ResponseWriter, r *http.Request) error {
 	return httpx.NoContent(w)
 }
 
-func applyModelFields(
-	modelID, displayName, description, avatar *string,
-	enabled *bool, sortOrder *int,
-	capabilities *model.Capabilities, weights *model.Weights,
-	body modelRequest,
-) {
-	setIf(modelID, body.ModelID)
-	setIf(displayName, body.DisplayName)
-	setIf(description, body.Description)
-	setIf(avatar, body.Avatar)
-	setIf(enabled, body.Enabled)
-	setIf(sortOrder, body.SortOrder)
-
-	setIf(&capabilities.SupportsReasoning, body.SupportsReasoning)
-	setIf(&capabilities.SupportsImages, body.SupportsImages)
-	setIf(&capabilities.SupportsVision, body.SupportsVision)
-	setIf(&capabilities.SupportsStreaming, body.SupportsStreaming)
-	setIf(&capabilities.SupportsSystemPrompt, body.SupportsSystemPrompt)
-	setIf(&capabilities.SupportsTools, body.SupportsTools)
-	setIf(&capabilities.SupportsImageGen, body.SupportsImageGen)
-	setIf(&capabilities.SupportsChatImageGen, body.SupportsChatImageGen)
-	setIf(&capabilities.EmulateTools, body.EmulateTools)
-	setIf(&capabilities.ContextWindow, body.ContextWindow)
-	setIf(&capabilities.MaxOutputTokens, body.MaxOutputTokens)
-
-	setIf(&weights.Request, body.RequestWeight)
-	setIf(&weights.InputToken, body.InputTokenWeight)
-	setIf(&weights.OutputToken, body.OutputTokenWeight)
-	setIf(&weights.ReasoningToken, body.ReasoningTokenWeight)
-}
-
 func setIf[T any](target *T, value *T) {
 	if value != nil {
 		*target = *value
 	}
-}
-
-func isValidID(value string) bool {
-	return value != "" && len(value) == 26
 }
 
 // translateAdapterError turns an upstream failure into a response. The
@@ -533,7 +534,7 @@ func isValidID(value string) bool {
 // handler parses a provider's error text.
 func translateAdapterError(err error) error {
 	var upstream *adapter.Error
-	if !asAdapter(err, &upstream) {
+	if !errors.As(err, &upstream) {
 		return httpx.Internal(err)
 	}
 

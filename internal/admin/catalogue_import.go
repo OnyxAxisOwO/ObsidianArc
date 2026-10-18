@@ -114,6 +114,24 @@ func (e modelImport) createWeights() model.Weights {
 	return weights
 }
 
+// createDefaults is the rest of what a new model gets from an entry: a switch
+// or capability the file leaves out takes the value createModel gives it, so
+// a hand-written entry that omits "enabled" makes the same model the editor
+// would rather than a disabled one that cannot stream.
+func (e modelImport) createDefaults() (enabled bool, capabilities model.Capabilities) {
+	enabled, capabilities = e.Enabled, e.Capabilities
+	if !e.carries("enabled") {
+		enabled = true
+	}
+	if !e.carries("supports_streaming") {
+		capabilities.SupportsStreaming = true
+	}
+	if !e.carries("supports_system_prompt") {
+		capabilities.SupportsSystemPrompt = true
+	}
+	return enabled, capabilities
+}
+
 type importRequest struct {
 	Models []modelImport `json:"models"`
 }
@@ -241,6 +259,7 @@ func (h *Handlers) importModels(w http.ResponseWriter, r *http.Request) error {
 		if present {
 			saved, err = h.models.Update(ctx, record.ID, updateFromImport(entry, grants))
 		} else {
+			enabled, capabilities := entry.createDefaults()
 			saved, err = h.models.Create(ctx, model.CreateInput{
 				ProviderID:      providerID,
 				ModelID:         entry.ModelID,
@@ -249,13 +268,13 @@ func (h *Handlers) importModels(w http.ResponseWriter, r *http.Request) error {
 				DisplayName:     entry.DisplayName,
 				Description:     entry.Description,
 				Avatar:          entry.Avatar,
-				Enabled:         entry.Enabled,
+				Enabled:         enabled,
 				Hidden:          entry.Hidden,
 				SortOrder:       entry.SortOrder,
 				ReasoningStyle:  entry.ReasoningStyle,
 				ReasoningTiers:  entry.ReasoningTiers,
 				RequestOverride: entry.RequestOverride,
-				Capabilities:    entry.Capabilities,
+				Capabilities:    capabilities,
 				Weights:         entry.createWeights(),
 				GroupGrants:     grants,
 			})
@@ -361,6 +380,13 @@ func updateFromImport(entry modelImport, grants *[]model.ModelGroupGrant) model.
 		none := ""
 		routeToID = &none
 	}
+	// The backoffice's export does not carry the override, so a file it wrote
+	// says nothing about one. Written as empty, every round trip through a
+	// file cleared the override of each model in it.
+	var requestOverride *string
+	if entry.carries("request_override") {
+		requestOverride = &entry.RequestOverride
+	}
 	return model.Update{
 		RouteToID:            routeToID,
 		GroupGrants:          grants,
@@ -375,7 +401,7 @@ func updateFromImport(entry modelImport, grants *[]model.ModelGroupGrant) model.
 		SortOrder:            &entry.SortOrder,
 		ReasoningStyle:       &entry.ReasoningStyle,
 		ReasoningTiers:       &entry.ReasoningTiers,
-		RequestOverride:      &entry.RequestOverride,
+		RequestOverride:      requestOverride,
 		SupportsReasoning:    &capabilities.SupportsReasoning,
 		SupportsImages:       &capabilities.SupportsImages,
 		SupportsVision:       &capabilities.SupportsVision,

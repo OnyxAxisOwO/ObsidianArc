@@ -17,6 +17,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/audit"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
@@ -33,6 +34,10 @@ var sensitiveReads = map[string]bool{
 // The largest JSON body read back for the trail. A settings import, the
 // largest the backoffice accepts, fits; anything above it is described.
 const maxAuditedBody = 256 * 1024
+
+// How long the trail's write may take once the handler is done. A variable so
+// a test can wait less than the real five seconds.
+var auditRecordTimeout = 5 * time.Second
 
 var wildcardRE = regexp.MustCompile(`\{([A-Za-z_][A-Za-z0-9_]*)(?:\.\.\.)?\}`)
 
@@ -89,7 +94,16 @@ func (h *Handlers) audited(next http.Handler) http.Handler {
 			if label != "" {
 				entry.TargetLabel = label
 			}
-			if err := h.Audit.Record(context.WithoutCancel(r.Context()), nil, entry); err != nil {
+			// Bounded as the other detached writes are: the response is not
+			// finished until this returns, so a database that stopped answering
+			// would hold the administrator's request open with it. The price is
+			// that a write slower than the bound is dropped and only logged here.
+			// That is the one case in which the trail does not keep a write it
+			// was asked to record, and the logs-and-auditing guide has to say so.
+			recordCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), auditRecordTimeout)
+			err := h.Audit.Record(recordCtx, nil, entry)
+			cancel()
+			if err != nil {
 				slog.ErrorContext(r.Context(), "could not record an administrative action",
 					"error", err, "actor", actor.Username, "route", entry.Method+" "+entry.Route)
 			}
@@ -122,7 +136,7 @@ func routeOf(r *http.Request) (route, target string) {
 // for the routes whose first wildcard is one of those. A lookup that fails
 // leaves the id to speak for itself.
 func (h *Handlers) targetLabel(ctx context.Context, route, targetID string) string {
-	if targetID == "" || !isValidID(targetID) {
+	if targetID == "" || !id.Valid(targetID) {
 		return ""
 	}
 	switch {
@@ -295,7 +309,7 @@ func (h *Handlers) auditFilter(r *http.Request) (audit.Filter, error) {
 		Outcome: strings.TrimSpace(query.Get("outcome")),
 		Via:     strings.TrimSpace(query.Get("via")),
 		Limit:   intParam(query.Get("limit"), 50),
-		Offset:  max(0, intParam(query.Get("offset"), 0)),
+		Offset:  intParam(query.Get("offset"), 0),
 	}
 	if filter.Limit <= 0 || filter.Limit > audit.MaxPageSize {
 		filter.Limit = 50
@@ -304,7 +318,7 @@ func (h *Handlers) auditFilter(r *http.Request) (audit.Filter, error) {
 		return filter, httpx.BadRequest("Outcome must be ok or failed.")
 	}
 	if value := strings.TrimSpace(query.Get("actor_id")); value != "" {
-		if !isValidID(value) {
+		if !id.Valid(value) {
 			return filter, httpx.BadRequest("Malformed actor id.")
 		}
 		filter.ActorID = value

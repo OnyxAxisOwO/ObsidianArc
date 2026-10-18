@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/quota"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
@@ -34,6 +34,16 @@ const allowanceLow = 0.8
 // general bound on the map would let a burst of searches hold all of them for
 // the whole 15-second window.
 const allowanceRankingsCached = 4
+
+// Rankings live in the usage summary's map under this prefix. The prefix is what
+// forgetAllowanceRankings and the eviction in capAllowanceRankingsLocked use to
+// tell a ranking from a summary, so every ranking key is built by
+// allowanceRankingKey and never spelled out at a call site.
+const allowanceRankingPrefix = "allowances:"
+
+func allowanceRankingKey(groupID, search string) string {
+	return allowanceRankingPrefix + groupID + ":" + search
+}
 
 type allowanceRow struct {
 	ID           string `json:"id"`
@@ -60,18 +70,13 @@ type rankedAllowances struct {
 }
 
 func (h *Handlers) usageAllowances(w http.ResponseWriter, r *http.Request) error {
-	actor := auth.MustUser(r.Context())
-	clientIP := r.RemoteAddr
-	if h.ClientIP != nil {
-		clientIP = h.ClientIP(r)
-	}
-	if h.UsageLimiter != nil && !h.UsageLimiter.Allow(clientIP+":"+actor.ID) {
-		return httpx.TooManyRequests("rate_limited", "Too many usage requests. Please try again later.")
+	if err := h.allowUsageRead(r); err != nil {
+		return err
 	}
 
 	query := r.URL.Query()
 	groupID := query.Get("group_id")
-	if groupID != "" && !isValidID(groupID) {
+	if groupID != "" && !id.Valid(groupID) {
 		return httpx.BadRequest("Malformed group id.")
 	}
 	state := query.Get("state")
@@ -135,7 +140,7 @@ func (h *Handlers) usageAllowances(w http.ResponseWriter, r *http.Request) error
 // and singleflight keeps a page scroll that arrives while the ranking is being
 // built from starting a second build.
 func (h *Handlers) rankedAllowances(ctx context.Context, search, groupID string) (rankedAllowances, error) {
-	key := "allowances:" + groupID + ":" + search
+	key := allowanceRankingKey(groupID, search)
 	if ranked, ok := cachedRanking(h.getSummaryCache(key)); ok {
 		return ranked, nil
 	}
@@ -174,7 +179,7 @@ func (h *Handlers) forgetAllowanceRankings() {
 	h.usageCacheMu.Lock()
 	defer h.usageCacheMu.Unlock()
 	for key := range h.usageSummaryCache {
-		if strings.HasPrefix(key, "allowances:") {
+		if strings.HasPrefix(key, allowanceRankingPrefix) {
 			delete(h.usageSummaryCache, key)
 		}
 	}
@@ -208,7 +213,7 @@ func (h *Handlers) capAllowanceRankingsLocked(key string) {
 	var oldest time.Time
 	cached := 0
 	for k, entry := range h.usageSummaryCache {
-		if k == key || !strings.HasPrefix(k, "allowances:") {
+		if k == key || !strings.HasPrefix(k, allowanceRankingPrefix) {
 			continue
 		}
 		cached++

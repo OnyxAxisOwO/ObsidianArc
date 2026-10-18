@@ -15,6 +15,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/quota"
 	securityevents "github.com/OnyxAxisOwO/ObsidianArc/internal/security"
@@ -94,7 +95,7 @@ func (h *Handlers) listUsers(w http.ResponseWriter, r *http.Request) error {
 		Limit:    intParam(query.Get("limit"), 50),
 		Offset:   intParam(query.Get("offset"), 0),
 	}
-	if filter.GroupID != "" && !isValidID(filter.GroupID) {
+	if filter.GroupID != "" && !id.Valid(filter.GroupID) {
 		return httpx.BadRequest("Malformed group id.")
 	}
 	switch filter.Role {
@@ -249,7 +250,7 @@ func (h *Handlers) createUser(w http.ResponseWriter, r *http.Request) error {
 		body.AdminPermissions = nil
 	}
 	if body.GroupID != "" {
-		if !isValidID(body.GroupID) {
+		if !id.Valid(body.GroupID) {
 			return httpx.BadRequest("Malformed group id.")
 		}
 		if _, err := h.groups.ByID(r.Context(), nil, body.GroupID); err != nil {
@@ -401,7 +402,7 @@ func (h *Handlers) updateUser(w http.ResponseWriter, r *http.Request) error {
 		return httpx.BadRequest("API restriction hours require an API restriction choice.")
 	}
 	if body.GroupID != nil && *body.GroupID != "" {
-		if !isValidID(*body.GroupID) {
+		if !id.Valid(*body.GroupID) {
 			return httpx.BadRequest("Malformed group id.")
 		}
 		if _, err := h.groups.ByID(r.Context(), nil, *body.GroupID); err != nil {
@@ -488,15 +489,16 @@ func (h *Handlers) updateUser(w http.ResponseWriter, r *http.Request) error {
 		// after the last-administrator rule, so the lone super administrator still
 		// gets the answer that explains their whole situation.
 		if body.Status != nil && *body.Status == user.StatusDisabled && userID == actor.ID {
-			return httpx.BadRequest("You cannot ban your own account.")
+			return httpx.BadRequestCode("cannot_ban_self", "You cannot ban your own account.")
 		}
 
 		// An address an administrator typed is not one its owner proved. The
 		// owner's own form withdraws the confirmation and drops whatever links
-		// are outstanding when the address moves; this one reaches the store
-		// directly and used to do neither, so an administrator could hand any
-		// account a confirmed address it had never seen, and a link issued for
-		// the address being left stayed open behind it.
+		// are outstanding when the address moves. This one used to do neither,
+		// so an administrator could hand any account a confirmed address it had
+		// never seen, and a link issued for the address being left stayed open
+		// behind it. Both now settle the move through auth.SettleAddressChange,
+		// the one place that writes the confirmation for it.
 		//
 		// Folded the same way the store folds it — see the note in
 		// auth.Service.UpdateProfile about why EqualFold is the wrong
@@ -511,13 +513,7 @@ func (h *Handlers) updateUser(w http.ResponseWriter, r *http.Request) error {
 			// Nothing to confirm and nothing to hold back when there is no
 			// address, which is the rule user.Store.Create keeps.
 			confirmed := strings.TrimSpace(*body.Email) == "" || !h.auth.VerificationRequired()
-			if _, err := tx.Exec(r.Context(),
-				`UPDATE users SET email_verified = ?, updated_at = ? WHERE id = ?`,
-				confirmed, time.Now().UnixMilli(), userID); err != nil {
-				return httpx.Internal(err)
-			}
-			if _, err := tx.Exec(r.Context(),
-				`DELETE FROM email_verifications WHERE user_id = ?`, userID); err != nil {
+			if err := h.auth.SettleAddressChange(r.Context(), tx, userID, confirmed); err != nil {
 				return httpx.Internal(err)
 			}
 		}
@@ -676,7 +672,7 @@ func (h *Handlers) deleteUser(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	if userID == actor.ID {
-		return httpx.BadRequest("You cannot delete your own account.")
+		return httpx.BadRequestCode("cannot_delete_self", "You cannot delete your own account.")
 	}
 
 	var removed user.User
@@ -742,7 +738,7 @@ func (h *Handlers) userConversations(w http.ResponseWriter, r *http.Request) err
 		return err
 	}
 
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	limit := intParam(r.URL.Query().Get("limit"), 0)
 	records, total, err := h.conversations.ListPage(r.Context(), userID, limit, intParam(r.URL.Query().Get("offset"), 0))
 	if err != nil {
 		return httpx.Internal(err)

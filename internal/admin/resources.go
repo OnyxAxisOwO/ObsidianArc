@@ -7,7 +7,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 )
@@ -27,31 +26,61 @@ type storageTotals struct {
 	byUser    []conversation.UserStorage
 }
 
-// storage returns the cached totals, or reads them. The lock is held across
-// the reads on purpose: a second request arriving while the first is scanning
-// waits for that scan instead of starting its own.
-func (h *Handlers) storage(ctx context.Context) (storageTotals, error) {
+// How long the shared scan may run. It belongs to no one request, so it needs
+// a deadline of its own; a variable so a test can shorten it.
+var storageScanTimeout = 30 * time.Second
+
+func (h *Handlers) cachedStorage() (storageTotals, bool) {
 	h.storageMu.Lock()
 	defer h.storageMu.Unlock()
 	if h.storageCache != nil && time.Since(h.storageCache.at) < storageCacheTTL {
-		return *h.storageCache, nil
+		return *h.storageCache, true
 	}
+	return storageTotals{}, false
+}
 
-	// One scan for all three figures: the table has no index on discarded_at,
-	// so each separate read was a full pass over it.
-	totals, err := h.conversations.Storage(ctx)
-	if err != nil {
-		return storageTotals{}, err
+// storage returns the cached totals, or reads them. A request arriving while
+// another is scanning waits for that scan instead of starting its own, and
+// stops waiting when its own browser goes away. The scan runs on a context no
+// request owns: bound to the first caller's, it failed for everyone waiting
+// whenever that one tab was closed, and the next caller scanned again.
+func (h *Handlers) storage(ctx context.Context) (storageTotals, error) {
+	if cached, ok := h.cachedStorage(); ok {
+		return cached, nil
 	}
-	fresh := storageTotals{
-		heldCount: totals.HeldCount,
-		heldBytes: totals.HeldBytes,
-		discarded: totals.Discarded,
-		byUser:    totals.ByUser,
+	result := h.storageSF.DoChan("storage", func() (any, error) {
+		if cached, ok := h.cachedStorage(); ok {
+			return cached, nil
+		}
+		scanCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), storageScanTimeout)
+		defer cancel()
+		// One scan for all three figures: the table has no index on
+		// discarded_at, so each separate read was a full pass over it.
+		totals, err := h.conversations.Storage(scanCtx)
+		if err != nil {
+			return storageTotals{}, err
+		}
+		fresh := storageTotals{
+			at:        time.Now(),
+			heldCount: totals.HeldCount,
+			heldBytes: totals.HeldBytes,
+			discarded: totals.Discarded,
+			byUser:    totals.ByUser,
+		}
+		h.storageMu.Lock()
+		h.storageCache = &fresh
+		h.storageMu.Unlock()
+		return fresh, nil
+	})
+	select {
+	case done := <-result:
+		if done.Err != nil {
+			return storageTotals{}, done.Err
+		}
+		return done.Val.(storageTotals), nil
+	case <-ctx.Done():
+		return storageTotals{}, ctx.Err()
 	}
-	fresh.at = time.Now()
-	h.storageCache = &fresh
-	return fresh, nil
 }
 
 // What this instance is costing the machine it runs on: the files its users
@@ -105,12 +134,8 @@ func (h *Handlers) resources(w http.ResponseWriter, r *http.Request) error {
 	// The same budget the usage reads take. Each poll is a full scan of the
 	// attachments table, so a caller polling in a loop should meet the limit
 	// rather than the database.
-	clientIP := r.RemoteAddr
-	if h.ClientIP != nil {
-		clientIP = h.ClientIP(r)
-	}
-	if h.UsageLimiter != nil && !h.UsageLimiter.Allow(clientIP+":"+auth.MustUser(ctx).ID) {
-		return httpx.TooManyRequests("rate_limited", "Too many usage requests. Please try again later.")
+	if err := h.allowUsageRead(r); err != nil {
+		return err
 	}
 
 	totals, err := h.storage(ctx)

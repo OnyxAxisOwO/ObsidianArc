@@ -19,8 +19,9 @@ func TestNoResponseCarriesTheSecret(t *testing.T) {
 		settings.TurnstileSiteKey:   "0x4AAAAAAApublic",
 		settings.TurnstileSecretKey: secret,
 	}
+	h := &Handlers{settings: settings.New(nil)}
 
-	out := redacted(live)
+	out := redactedWith(live, h.secretKeys())
 	if out[settings.TurnstileSecretKey] == secret {
 		t.Error("the secret came back unmasked")
 	}
@@ -43,7 +44,27 @@ func TestNoResponseCarriesTheSecret(t *testing.T) {
 	// An unset secret stays empty rather than becoming a mask, so the form
 	// can tell "nothing saved" from "something saved".
 	live[settings.TurnstileSecretKey] = ""
-	if redacted(live)[settings.TurnstileSecretKey] != "" {
+	if redactedWith(live, h.secretKeys())[settings.TurnstileSecretKey] != "" {
 		t.Error("an unset secret was masked, which reads as one being stored")
+	}
+}
+
+// A credential a plugin installed while the server runs is masked as well. The
+// process-wide registry does not see such a plugin, so a mask built from it would
+// leave the credential in the clear; the server's own list is the one the
+// response is redacted with.
+func TestRedactionCoversSecretsOfPluginsInstalledAtRunTime(t *testing.T) {
+	const key = "zeta.api_token"
+	set := settings.New(nil)
+	if err := set.AddPluginDefinitions("zeta", []settings.Definition{
+		{Key: key, Secret: true, Permission: "security"},
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	h := &Handlers{settings: set}
+	live := map[string]string{key: "a-live-token-value"}
+	if got := redactedWith(live, h.secretKeys())[key]; got != secretMask {
+		t.Errorf("an installed plugin's credential was returned as %q, want the mask", got)
 	}
 }

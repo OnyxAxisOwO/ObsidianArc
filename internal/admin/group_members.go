@@ -8,6 +8,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
@@ -38,7 +39,7 @@ func (h *Handlers) assignGroupMembers(w http.ResponseWriter, r *http.Request) er
 	}
 	seen := make(map[string]bool, len(body.UserIDs))
 	for _, userID := range body.UserIDs {
-		if !isValidID(userID) || seen[userID] {
+		if !id.Valid(userID) || seen[userID] {
 			return httpx.BadRequest("Account identifiers must be valid and distinct.")
 		}
 		seen[userID] = true

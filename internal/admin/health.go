@@ -61,12 +61,19 @@ func (h *Handlers) modelHealth(w http.ResponseWriter, r *http.Request) error {
 
 	entries := make([]map[string]any, 0, len(models))
 	for _, record := range models {
-		samples, err := h.health.Samples(ctx, record.ID, since, healthSampleCap)
-		if err != nil {
-			return httpx.Internal(err)
+		rate := rates[record.ID]
+		// Rates counts exactly the rows Samples reads for a model: the same window
+		// and the same statuses. A model it has none for has no samples either, so
+		// the per-model query is skipped for idle models rather than run to find
+		// nothing.
+		samples := []health.Sample{}
+		if rate.Total > 0 {
+			samples, err = h.health.Samples(ctx, record.ID, since, healthSampleCap)
+			if err != nil {
+				return httpx.Internal(err)
+			}
 		}
 		status := health.Summarise(record.ID, samples)
-		rate := rates[record.ID]
 		status.Samples = rate.Total
 		status.Uptime = rate.Share()
 		entries = append(entries, map[string]any{
@@ -270,9 +277,9 @@ func (h *Handlers) resetHealth(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	now := time.Now().UnixMilli()
 
-	// Record when uptime was reset so that readers and administrators alike
-	// measure from this moment rather than from server start.
-	if err := h.settings.Set(ctx, settings.HealthResetAt, strconv.FormatInt(now, 10)); err != nil {
+	// Read first, so a failure here changes nothing at all.
+	models, err := h.models.ListAll(ctx, "")
+	if err != nil {
 		return httpx.Internal(err)
 	}
 
@@ -285,11 +292,16 @@ func (h *Handlers) resetHealth(w http.ResponseWriter, r *http.Request) error {
 
 	// Re-enable any models the checker auto-disabled for past failures, so
 	// that a reset gives them a clean start.
-	models, err := h.models.ListAll(ctx, "")
-	if err != nil {
+	reenabled, refused := reenableAutoDisabled(ctx, models, h.models.Update)
+
+	// Record when uptime was reset so that readers and administrators alike
+	// measure from this moment rather than from server start. Written last: until
+	// it lands the page still measures from the old baseline, so a failure before
+	// this point leaves the baseline where it was, and a retry runs the reset
+	// through again.
+	if err := h.settings.Set(ctx, settings.HealthResetAt, strconv.FormatInt(now, 10)); err != nil {
 		return httpx.Internal(err)
 	}
-	reenabled, refused := reenableAutoDisabled(ctx, models, h.models.Update)
 
 	response := map[string]any{
 		"reset_at":         now,

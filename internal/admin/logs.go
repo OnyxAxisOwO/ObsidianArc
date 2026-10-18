@@ -175,8 +175,8 @@ func logFilterFrom(r *http.Request) (reqlog.Filter, error) {
 		return filter, err
 	}
 
-	filter.Limit, _ = strconv.Atoi(query.Get("limit"))
-	filter.Offset, _ = strconv.Atoi(query.Get("offset"))
+	filter.Limit = intParam(query.Get("limit"), 0)
+	filter.Offset = intParam(query.Get("offset"), 0)
 	return filter, nil
 }
 
