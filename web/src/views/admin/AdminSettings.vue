@@ -111,7 +111,7 @@ const dragOverLogo = ref(false);
 
 // The accent pickers offer the presets by name; the empty value is "the
 // built-in one", which is what an instance that never sets this gets.
-const ACCENT_LABELS: Record<string, StringKey> = {
+const ACCENT_LABELS: Record<AccentName, StringKey> = {
   violet: 'accentViolet', neutral: 'accentNeutral', red: 'accentRed', pink: 'accentPink',
   indigo: 'accentIndigo', blue: 'accentBlue', cyan: 'accentCyan', teal: 'accentTeal',
   green: 'accentGreen', orange: 'accentOrange',
@@ -143,7 +143,7 @@ const accentName = computed(() => {
   if (accent === 'custom') return form.value.themeCustomAccent.toUpperCase() || t('customColour');
   // Own keys only: the stored name is whatever the server accepted, and an
   // inherited one such as "constructor" would otherwise label the row with a function.
-  const label = Object.hasOwn(ACCENT_LABELS, accent) ? ACCENT_LABELS[accent] : undefined;
+  const label = Object.hasOwn(ACCENT_LABELS, accent) ? ACCENT_LABELS[accent as AccentName] : undefined;
   return t(label ?? 'siteThemeDefault');
 });
 
@@ -169,6 +169,15 @@ function tintSwatch(tint: AccentName | ''): string {
   return accentPalette(base, pageTheme.dark())['--ai-field-bg'] ?? '';
 }
 
+// The values the server seeds (internal/settings Defaults). The form starts from
+// them, and a key that was never saved reads the same here as it does there.
+const PWA_DEFAULT_COLOR = '#18181b';
+const TRIAL_TURNS_DEFAULT = 3;
+const MAX_TURNS_DEFAULT = 40;
+const MAX_CONCURRENT_DEFAULT = 4;
+// The largest logo the picker sends; bigger files are refused before they are read.
+const LOGO_MAX_BYTES = 4 * 1024 * 1024;
+
 const form = ref({
   siteName: '',
   description: '',
@@ -177,8 +186,8 @@ const form = ref({
   pwaName: '',
   pwaShortName: '',
   pwaDescription: '',
-  pwaThemeColor: '#18181b',
-  pwaBackgroundColor: '#18181b',
+  pwaThemeColor: PWA_DEFAULT_COLOR,
+  pwaBackgroundColor: PWA_DEFAULT_COLOR,
   pwaIconUrl: '',
   aboutHeading: '',
   aboutText: '',
@@ -192,13 +201,13 @@ const form = ref({
   landingMode: 'login',
   landingIntro: '',
   trialEnabled: false,
-  trialTurns: 3 as number | null,
+  trialTurns: TRIAL_TURNS_DEFAULT as number | null,
   trialModel: '',
   systemPrompt: '',
-  maxTurns: 40 as number | null,
+  maxTurns: MAX_TURNS_DEFAULT as number | null,
   allowArchive: true,
   adminBypass: false,
-  maxConcurrent: 4 as number | null,
+  maxConcurrent: MAX_CONCURRENT_DEFAULT as number | null,
   usageDisplay: 'absolute',
   attachmentMaxMB: 6 as number | null,
   attachmentRetain: false,
@@ -258,13 +267,13 @@ function collect(): Record<string, string> {
     'landing.mode': form.value.landingMode,
     'landing.intro': form.value.landingIntro.trim(),
     'landing.trial_enabled': String(form.value.trialEnabled),
-    'landing.trial_turns': String(form.value.trialTurns ?? 3),
+    'landing.trial_turns': String(form.value.trialTurns ?? TRIAL_TURNS_DEFAULT),
     'landing.trial_model': form.value.trialModel,
     'quota.admins_bypass': String(form.value.adminBypass),
     'quota.max_concurrent': String(form.value.maxConcurrent ?? 4),
     'quota.usage_display': form.value.usageDisplay,
     'chat.default_system_prompt': form.value.systemPrompt.trim(),
-    'chat.max_turns': String(form.value.maxTurns ?? 40),
+    'chat.max_turns': String(form.value.maxTurns ?? MAX_TURNS_DEFAULT),
     'chat.allow_archive': String(form.value.allowArchive),
     'api.enabled': String(form.value.apiEnabled),
     'attachments.max_mb': String(form.value.attachmentMaxMB ?? 6),
@@ -442,7 +451,7 @@ async function uploadLogoFile(file: File): Promise<void> {
     flash.value = t('siteLogoFormats');
     return;
   }
-  if (file.size > 4 * 1024 * 1024) {
+  if (file.size > LOGO_MAX_BYTES) {
     flashOK.value = false;
     flash.value = t('siteLogoFormats');
     return;
@@ -458,12 +467,14 @@ async function uploadLogoFile(file: File): Promise<void> {
         const comma = res.indexOf(',');
         resolve(comma !== -1 ? res.slice(comma + 1) : res);
       };
-      reader.onerror = () => reject(new Error('Failed to read file'));
+      reader.onerror = () => reject(new Error(t('imageFailed')));
       reader.readAsDataURL(file);
     });
 
     const res = await adminApi.uploadSiteLogo(mime, base64);
     siteLogoUrl.value = res.url;
+    // Only the logo changed, so the shared site copy takes that one field
+    // rather than being read again the way a background change is.
     if (site.value) {
       site.value = {
         ...site.value,
@@ -474,7 +485,8 @@ async function uploadLogoFile(file: File): Promise<void> {
     flash.value = t('siteLogoUploaded');
   } catch (failure) {
     flashOK.value = false;
-    flash.value = failure instanceof ApiError ? failure.message : String(failure);
+    // An Error's own message is the text to show; String() would prefix its class.
+    flash.value = failure instanceof Error ? failure.message : String(failure);
   } finally {
     uploadingLogo.value = false;
     dragOverLogo.value = false;
@@ -520,7 +532,8 @@ async function clearSiteLogo(): Promise<void> {
     flash.value = t('siteLogoDeleted');
   } catch (failure) {
     flashOK.value = false;
-    flash.value = failure instanceof ApiError ? failure.message : String(failure);
+    // An Error's own message is the text to show; String() would prefix its class.
+    flash.value = failure instanceof Error ? failure.message : String(failure);
   } finally {
     uploadingLogo.value = false;
   }
@@ -570,8 +583,8 @@ async function load(): Promise<void> {
       pwaName: values['pwa.name'] ?? '',
       pwaShortName: values['pwa.short_name'] ?? '',
       pwaDescription: values['pwa.description'] ?? '',
-      pwaThemeColor: values['pwa.theme_color'] ?? '#18181b',
-      pwaBackgroundColor: values['pwa.background_color'] ?? '#18181b',
+      pwaThemeColor: values['pwa.theme_color'] ?? PWA_DEFAULT_COLOR,
+      pwaBackgroundColor: values['pwa.background_color'] ?? PWA_DEFAULT_COLOR,
       pwaIconUrl: values['pwa.icon_url'] ?? '',
       aboutHeading: values['about.title'] ?? '',
       aboutText: values['about.body'] ?? '',
@@ -585,13 +598,13 @@ async function load(): Promise<void> {
       landingMode: values['landing.mode'] ?? 'login',
       landingIntro: values['landing.intro'] ?? '',
       trialEnabled: values['landing.trial_enabled'] === 'true',
-      trialTurns: Number(values['landing.trial_turns'] ?? 3),
+      trialTurns: Number(values['landing.trial_turns'] ?? TRIAL_TURNS_DEFAULT),
       trialModel: values['landing.trial_model'] ?? '',
       systemPrompt: values['chat.default_system_prompt'] ?? '',
-      maxTurns: Number(values['chat.max_turns'] ?? 40),
+      maxTurns: Number(values['chat.max_turns'] ?? MAX_TURNS_DEFAULT),
       allowArchive: values['chat.allow_archive'] !== 'false',
       adminBypass: values['quota.admins_bypass'] === 'true',
-      maxConcurrent: values['quota.max_concurrent'] !== undefined ? Number(values['quota.max_concurrent']) : 4,
+      maxConcurrent: values['quota.max_concurrent'] !== undefined ? Number(values['quota.max_concurrent']) : MAX_CONCURRENT_DEFAULT,
       usageDisplay: values['quota.usage_display'] ?? 'absolute',
       attachmentMaxMB: Number(values['attachments.max_mb'] ?? 6),
       attachmentRetain: values['attachments.retain'] === 'true',
@@ -653,7 +666,7 @@ onMounted(load);
           <div class="oa-logo-setting-row">
             <div
               class="oa-logo-preview"
-              :class="{ empty: !siteLogoUrl, dragover: dragOverLogo }"
+              :class="{ dragover: dragOverLogo }"
               tabindex="0"
               role="button"
               :aria-label="t('siteLogo')"
@@ -666,7 +679,7 @@ onMounted(load);
             >
               <img v-if="siteLogoUrl" :src="siteLogoUrl" class="oa-logo-preview-img" alt="" />
               <div v-else class="oa-logo-empty">
-                <IconSpark :size="20" class="oa-logo-empty-icon" />
+                <IconSpark :size="20" />
               </div>
             </div>
             <div class="oa-logo-actions">
@@ -811,7 +824,7 @@ onMounted(load);
           v-model="form.pwaThemeColor"
           :label="t('pwaThemeColor')"
           :hint="t('pwaThemeColorHint')"
-          placeholder="#18181b"
+          :placeholder="PWA_DEFAULT_COLOR"
           monospace
           :max-length="7"
         />
@@ -819,7 +832,7 @@ onMounted(load);
           v-model="form.pwaBackgroundColor"
           :label="t('pwaBackgroundColor')"
           :hint="t('pwaBackgroundColorHint')"
-          placeholder="#18181b"
+          :placeholder="PWA_DEFAULT_COLOR"
           monospace
           :max-length="7"
         />

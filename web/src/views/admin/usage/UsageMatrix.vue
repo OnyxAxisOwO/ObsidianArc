@@ -27,41 +27,37 @@ const emit = defineEmits<{
   (event: 'model', key: string): void;
 }>();
 
+// Looked up by key for every cell and every header: a search through the rows
+// each time made the table cost rows times columns times rows.
 const cells = computed(() => {
   const out = new Map<string, UsageCell>();
   for (const cell of props.matrix.cells) out.set(`${cell.row}\u0000${cell.col}`, cell);
   return out;
 });
+const usersByKey = computed(() => new Map(props.users.map((row) => [row.key, row] as const)));
+const modelsByKey = computed(() => new Map(props.models.map((row) => [row.key, row] as const)));
 const peak = computed(() => Math.max(0, ...props.matrix.cells.map((cell) => cell[props.metric])));
 
-function byKey(list: readonly UsageBreakdown[], key: string): UsageBreakdown | undefined {
-  return list.find((row) => row.key === key);
-}
-function label(list: readonly UsageBreakdown[], key: string): string {
-  const row = byKey(list, key);
-  return row?.label || key;
-}
 function cell(user: string, model: string): number {
   return cells.value.get(`${user}\u0000${model}`)?.[props.metric] ?? 0;
 }
-function level(user: string, model: string): number {
-  return intensity(cell(user, model), peak.value);
+function modelLabel(key: string): string {
+  return modelsByKey.value.get(key)?.label || key;
 }
-function fill(user: string, model: string): string | undefined {
-  const amount = level(user, model);
-  return amount > 0 ? `${Math.round(12 + amount * 88)}%` : undefined;
+function userLabel(key: string): string {
+  return usersByKey.value.get(key)?.label || key;
 }
 // Safe mode, applied to everything this table prints, the tooltips too: a
 // cell's title is read by hovering, and hovering is what a screen recording
 // catches. The fill stays — it shows where the weight is, not what it is.
 function userName(key: string): string {
-  return maskUser(label(props.users, key));
+  return maskUser(userLabel(key));
 }
 function userMark(key: string): string {
-  return isMasked('users') ? '*' : Array.from(label(props.users, key))[0]?.toLocaleUpperCase() ?? '·';
+  return isMasked('users') ? '*' : Array.from(userLabel(key))[0]?.toLocaleUpperCase() ?? '·';
 }
 function modelDetail(key: string): string {
-  return maskProvider(byKey(props.models, key)?.detail ?? '');
+  return maskProvider(modelsByKey.value.get(key)?.detail ?? '');
 }
 /** A request count is not spending; tokens and credits are. */
 function figure(value: number): string {
@@ -71,10 +67,33 @@ function figure(value: number): string {
 
 /** The row's total over every model, not only the ones shown across the top. */
 function rowTotal(user: string): number {
-  const row = byKey(props.users, user);
+  const row = usersByKey.value.get(user);
   if (!row) return 0;
   return props.metric === 'requests' ? row.requests : props.metric === 'total_tokens' ? row.total_tokens : row.credits;
 }
+
+// Each cell's figures are worked out once per render, here, rather than asked
+// for again by the template for every attribute it sets.
+const grid = computed(() => props.matrix.rows.map((user) => {
+  const name = userName(user);
+  return {
+    key: user,
+    name,
+    mark: userMark(user),
+    total: figure(rowTotal(user)),
+    cells: props.matrix.cols.map((model) => {
+      const value = cell(user, model);
+      const amount = intensity(value, peak.value);
+      return {
+        key: model,
+        heat: amount > 0 ? `${Math.round(12 + amount * 88)}%` : undefined,
+        strong: amount > 0.6,
+        title: `${name} · ${modelLabel(model)} · ${figure(value)}`,
+        text: value ? figure(value) : '·',
+      };
+    }),
+  };
+}));
 </script>
 
 <template>
@@ -84,8 +103,8 @@ function rowTotal(user: string): number {
         <tr>
           <th scope="col" class="oa-matrix-corner">{{ t('colUser') }}</th>
           <th v-for="model in props.matrix.cols" :key="model" scope="col">
-            <button type="button" class="oa-matrix-head" :title="t('boardDrill', { name: label(props.models, model) })" @click="emit('model', model)">
-              <span>{{ label(props.models, model) }}</span>
+            <button type="button" class="oa-matrix-head" :title="t('boardDrill', { name: modelLabel(model) })" @click="emit('model', model)">
+              <span>{{ modelLabel(model) }}</span>
               <small>{{ modelDetail(model) }}</small>
             </button>
           </th>
@@ -93,21 +112,21 @@ function rowTotal(user: string): number {
         </tr>
       </thead>
       <tbody>
-        <tr v-for="user in props.matrix.rows" :key="user">
+        <tr v-for="row in grid" :key="row.key">
           <th scope="row">
-            <button type="button" class="oa-matrix-user" :title="t('boardDrill', { name: userName(user) })" @click="emit('user', user)">
-              <span class="oa-board-mark" aria-hidden="true">{{ userMark(user) }}</span>
-              <span>{{ userName(user) }}</span>
+            <button type="button" class="oa-matrix-user" :title="t('boardDrill', { name: row.name })" @click="emit('user', row.key)">
+              <span class="oa-board-mark" aria-hidden="true">{{ row.mark }}</span>
+              <span>{{ row.name }}</span>
             </button>
           </th>
           <td
-            v-for="model in props.matrix.cols"
-            :key="model"
-            :class="{ filled: !!fill(user, model), strong: level(user, model) > 0.6 }"
-            :style="fill(user, model) ? { '--oa-heat': fill(user, model) } : undefined"
-            :title="`${userName(user)} · ${label(props.models, model)} · ${figure(cell(user, model))}`"
-          >{{ cell(user, model) ? figure(cell(user, model)) : '·' }}</td>
-          <td class="oa-matrix-total">{{ figure(rowTotal(user)) }}</td>
+            v-for="c in row.cells"
+            :key="c.key"
+            :class="{ filled: !!c.heat, strong: c.strong }"
+            :style="c.heat ? { '--oa-heat': c.heat } : undefined"
+            :title="c.title"
+          >{{ c.text }}</td>
+          <td class="oa-matrix-total">{{ row.total }}</td>
         </tr>
       </tbody>
     </table>

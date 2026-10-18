@@ -375,8 +375,8 @@ onMounted(reload);
 
   <AdminFailure v-if="error" :message="error" @retry="reload" />
 
-  <div v-else class="oa-log-page oa-audit-page">
-    <div v-if="facets" id="auditFilter" class="oa-viz-card oa-log-filters">
+  <div v-else class="oa-log-page">
+    <div v-if="facets" id="auditFilter" class="oa-viz-card">
       <div class="oa-log-filter-grid">
         <OaSelectField
           v-model="query.window"
@@ -411,7 +411,7 @@ onMounted(reload);
       </div>
 
       <div class="oa-log-filter-actions">
-        <div class="oa-segment oa-audit-vias" role="group" :aria-label="at('via')">
+        <div class="oa-segment" role="group" :aria-label="at('via')">
           <button
             v-for="via in ['', 'web', 'console:web', 'console:ssh']"
             :key="via"
@@ -449,13 +449,13 @@ onMounted(reload);
       </div>
     </div>
 
-    <div id="auditTrail" class="oa-viz-card oa-audit-results">
+    <div id="auditTrail" class="oa-viz-card">
       <p v-if="loading && !entries.length" class="oa-table-empty">{{ t('loading') }}</p>
       <p v-else-if="listError" class="oa-table-empty">{{ listError }}</p>
       <p v-else-if="!entries.length" class="oa-table-empty">{{ at('empty') }}</p>
 
       <div v-else class="oa-audit-days" :aria-busy="loading" :class="{ busy: loading }">
-        <section v-for="day in days" :key="day.key" class="oa-audit-day">
+        <section v-for="day in days" :key="day.key">
           <h3 class="oa-audit-day-label">{{ day.label }}</h3>
           <ol class="oa-audit-list">
             <li v-for="entry in day.entries" :key="entry.id">

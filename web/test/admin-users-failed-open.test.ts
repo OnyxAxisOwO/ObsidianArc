@@ -49,8 +49,11 @@ describe('AdminUsers, when an account detail fails to load', () => {
   let host: HTMLElement;
   let panels: HTMLElement;
 
-  async function mount(rows: Account[], failing: string): Promise<void> {
-    vi.spyOn(adminApi, 'groupOptions').mockResolvedValue({ groups: [] });
+  async function mount(rows: Account[], failing: string, namesFail = false): Promise<void> {
+    vi.spyOn(adminApi, 'groupOptions').mockImplementation(async () => {
+      if (namesFail) throw new Error('names unavailable');
+      return { groups: [] };
+    });
     vi.spyOn(adminApi, 'users').mockResolvedValue({ users: rows, total: rows.length });
     vi.spyOn(adminApi, 'user').mockImplementation(async (id: string) => {
       if (id === failing) throw new Error('detail unavailable');
@@ -227,5 +230,64 @@ describe('AdminUsers, when an account detail fails to load', () => {
 
     expect(panels.textContent).toContain('conversations unavailable');
     expect(panels.textContent).not.toContain(t('loading'));
+  });
+
+  // A keys request that failed is not an account without keys: the panel must
+  // say the keys could not be read, where the empty line would say there are none.
+  it('says the keys could not be read, rather than that there are none', async () => {
+    await mount([account('a')], '');
+    vi.mocked(adminApi.userKeys).mockRejectedValue(new Error('keys unavailable'));
+
+    rowOf('a').click();
+    await settle();
+
+    expect(panels.textContent).toContain('keys unavailable');
+    expect(panels.textContent).not.toContain(t('keysEmpty'));
+  });
+
+  // The keys need only the id, so with the row already listed they are asked for
+  // while the detail is still on its way. The panel can match the answer to the
+  // account only because the list supplied it.
+  it('asks for the keys while the detail is still loading, when the list has the row', async () => {
+    await mount([account('a')], '');
+    const detail = deferred<Detail>();
+    vi.mocked(adminApi.user).mockImplementation(() => detail.promise);
+
+    rowOf('a').click();
+    await settle();
+
+    expect(adminApi.userKeys).toHaveBeenCalledWith('a');
+    detail.resolve(detailOf(account('a')));
+    await settle();
+    expect(panels.textContent).toContain(t('keysEmpty'));
+  });
+
+  // Once the panel has moved on, a card change that lands must not read the
+  // account it left again: no card list on screen can show the answer.
+  it('does not re-read an account the panel has left when its card grant lands', async () => {
+    await mount([account('a'), account('b')], '');
+    rowOf('a').click();
+    await settle();
+    const grant = deferred<void>();
+    vi.spyOn(adminApi, 'grantCards').mockImplementation(() => grant.promise);
+
+    buttonNamed(t('grantCards')).click();
+    await settle();
+    rowOf('b').click();
+    await settle();
+    vi.mocked(adminApi.user).mockClear();
+    grant.resolve();
+    await settle();
+
+    expect(adminApi.user).not.toHaveBeenCalledWith('a');
+  });
+
+  // The group names only label the rows. When they fail, the accounts still
+  // load and the failure is reported above them rather than in place of them.
+  it('still lists the accounts when the group names fail to load', async () => {
+    await mount([account('a')], '', true);
+
+    expect(rowOf('a')).toBeDefined();
+    expect(host.textContent).toContain('names unavailable');
   });
 });

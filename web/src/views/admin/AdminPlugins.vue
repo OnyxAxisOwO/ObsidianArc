@@ -41,14 +41,10 @@ import { permissionsOf } from './pluginPermissions';
 const view = useAdminView();
 view.setTitle(() => t('navPlugins'), () => t('pluginsSubtitle'));
 
-let route: ReturnType<typeof useRoute> | undefined;
-let router: ReturnType<typeof useRouter> | undefined;
-try {
-  route = useRoute();
-  router = useRouter();
-} catch {
-  // Unit tests mount without a router.
-}
+// The tab is kept in the query, so a reload or Back lands on the same tab. The
+// screen always runs under the app router; tests that mount it install one too.
+const route = useRoute();
+const router = useRouter();
 
 const list = ref<AdminPlugin[]>([]);
 const loaded = ref(false);
@@ -78,11 +74,9 @@ const currentPage = computed(() => {
 function switchTab(slug: string): void {
   activeTab.value = slug;
   closePanels();
-  if (router && route) {
-    void router.replace({
-      query: slug === 'manage' ? { ...route.query, tab: undefined } : { ...route.query, tab: slug },
-    });
-  }
+  void router.replace({
+    query: slug === 'manage' ? { ...route.query, tab: undefined } : { ...route.query, tab: slug },
+  });
   updateTitle();
 }
 
@@ -98,7 +92,7 @@ function updateTitle(): void {
 }
 
 watch(
-  () => route?.query?.tab,
+  () => route.query.tab,
   (tab) => {
     if (typeof tab === 'string' && enabledPages.value.some((p) => p.slug === tab)) {
       activeTab.value = tab;
@@ -188,10 +182,22 @@ function sectionsOf(name: string) {
   return browserHalf(name)?.settings ?? [];
 }
 
+/**
+ * The controls of the plugin's settings this administrator may write, each with
+ * its section. The install form draws, defaults and sends only these: a key
+ * the administrator may not write is neither shown nor sent.
+ */
+function writableControls(plugin: AdminPlugin) {
+  const writable = new Set(plugin.writable_settings);
+  return sectionsOf(plugin.name).flatMap((section) => section.controls
+    .filter((control) => writable.has(control.key))
+    .map((control) => ({ section, control })));
+}
+
 /** The install's sections that hold a key this administrator may write. */
 function installSectionsOf(plugin: AdminPlugin) {
-  const writable = new Set(plugin.writable_settings);
-  return sectionsOf(plugin.name).filter((section) => section.controls.some((control) => writable.has(control.key)));
+  const drawn = new Set(writableControls(plugin).map(({ section }) => section));
+  return sectionsOf(plugin.name).filter((section) => drawn.has(section));
 }
 
 async function applied(change: PluginChange): Promise<void> {
@@ -258,90 +264,31 @@ const contributionGroups = computed<ContributionGroup[]>(() => {
   if (!plugin) return [];
   const c = plugin.contributions;
   const groups: ContributionGroup[] = [];
+  // One rule for every section: it is listed only when it holds something, and
+  // its count is what it holds, so the sections below only say what they hold.
+  const add = (key: string, label: string, items: ContributionItem[]): void => {
+    if (items.length) groups.push({ key, label, count: items.length, items });
+  };
 
   const pages = browserHalf(plugin.name)?.adminPages ?? [];
-  if (pages.length) {
-    groups.push({
-      key: 'pages',
-      label: t('pluginPages'),
-      count: pages.length,
-      items: pages.map((page) => ({
-        text: page.title(),
-        slug: page.slug,
-        to: `/admin/${page.slug}`,
-      })),
-    });
-  }
-
-  if (c.settings.length) {
-    groups.push({
-      key: 'settings',
-      label: t('pluginSettingsKeys'),
-      count: c.settings.length,
-      items: c.settings.map((s) => ({
-        text: s.key,
-        secret: !!s.secret,
-      })),
-    });
-  }
-
-  if (c.fields.length) {
-    groups.push({
-      key: 'fields',
-      label: t('pluginFields'),
-      count: c.fields.length,
-      items: c.fields.map((f) => ({ text: f })),
-    });
-  }
-
-  if (c.guards.length) {
-    groups.push({
-      key: 'guards',
-      label: t('pluginGuards'),
-      count: c.guards.length,
-      items: c.guards.map((g) => ({ text: g })),
-    });
-  }
-
-  if (c.captcha_modes.length) {
-    groups.push({
-      key: 'captcha',
-      label: t('pluginCaptchaModes'),
-      count: c.captcha_modes.length,
-      items: c.captcha_modes.map((m) => ({ text: m })),
-    });
-  }
-
-  const routes: ContributionItem[] = [
+  add('pages', t('pluginPages'), pages.map((page) => ({
+    text: page.title(),
+    slug: page.slug,
+    to: `/admin/${page.slug}`,
+  })));
+  add('settings', t('pluginSettingsKeys'), c.settings.map((s) => ({
+    text: s.key,
+    secret: !!s.secret,
+  })));
+  add('fields', t('pluginFields'), c.fields.map((f) => ({ text: f })));
+  add('guards', t('pluginGuards'), c.guards.map((g) => ({ text: g })));
+  add('captcha', t('pluginCaptchaModes'), c.captcha_modes.map((m) => ({ text: m })));
+  add('routes', t('pluginRoutes'), [
     ...c.admin_routes.map((r) => ({ text: r.pattern, method: 'ADMIN' })),
     ...c.public_routes.map((p) => ({ text: p, method: 'API' })),
-  ];
-  if (routes.length) {
-    groups.push({
-      key: 'routes',
-      label: t('pluginRoutes'),
-      count: routes.length,
-      items: routes,
-    });
-  }
-
-  if (c.migrations.length) {
-    groups.push({
-      key: 'migrations',
-      label: t('pluginMigrations'),
-      count: c.migrations.length,
-      items: c.migrations.map((m) => ({ text: m })),
-    });
-  }
-
-  if (c.commands.length) {
-    groups.push({
-      key: 'commands',
-      label: t('pluginCommands'),
-      count: c.commands.length,
-      items: c.commands.map((cmd) => ({ text: cmd })),
-    });
-  }
+  ]);
+  add('migrations', t('pluginMigrations'), c.migrations.map((m) => ({ text: m })));
+  add('commands', t('pluginCommands'), c.commands.map((cmd) => ({ text: cmd })));
 
   return groups;
 });
@@ -473,14 +420,10 @@ function openInstall(plugin: AdminPlugin): void {
   closePanels();
   code.value = '';
   for (const key of Object.keys(draft)) delete draft[key];
-  // Only the keys this administrator may write get a field. The form draws the
-  // controls it holds a value for, so a restricted key is neither shown nor sent.
-  const writable = new Set(plugin.writable_settings);
-  for (const section of sectionsOf(plugin.name)) {
-    for (const control of section.controls) {
-      if (!writable.has(control.key)) continue;
-      draft[control.key] = control.kind === 'secret' ? '' : section.defaults[control.key] ?? '';
-    }
+  // Only the keys this administrator may write get a field, with the defaults of
+  // the section they sit in.
+  for (const { section, control } of writableControls(plugin)) {
+    draft[control.key] = control.kind === 'secret' ? '' : section.defaults[control.key] ?? '';
   }
   enableNow.value = true;
   panelError.value = '';
@@ -496,15 +439,11 @@ async function install(): Promise<void> {
   // whole install for one, and the install does not need it. An untouched
   // secret is not sent either: empty is "none", and the install writes nothing
   // it was not given.
-  const writable = new Set(plugin.writable_settings);
   const settings: Record<string, string> = {};
-  for (const section of sectionsOf(plugin.name)) {
-    for (const control of section.controls) {
-      if (!writable.has(control.key)) continue;
-      const value = (draft[control.key] ?? '').trim();
-      if (control.kind === 'secret' && !value) continue;
-      settings[control.key] = value;
-    }
+  for (const { control } of writableControls(plugin)) {
+    const value = (draft[control.key] ?? '').trim();
+    if (control.kind === 'secret' && !value) continue;
+    settings[control.key] = value;
   }
   try {
     await applied(await adminApi.installPlugin(plugin.name, enableNow.value, settings, code.value.trim()));

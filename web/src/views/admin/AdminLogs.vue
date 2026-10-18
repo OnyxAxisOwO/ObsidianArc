@@ -238,7 +238,7 @@ onMounted(reload);
   <AdminFailure v-if="error" :message="error" @retry="reload" />
 
   <div v-else class="oa-log-page">
-    <div v-if="facets" id="logsFilter" class="oa-viz-card oa-log-filters">
+    <div v-if="facets" id="logsFilter" class="oa-viz-card">
       <div class="oa-log-filter-grid">
         <OaSelectField
           v-model="query.window"
@@ -312,7 +312,7 @@ onMounted(reload);
          a log — which ones failed, whose, how slow — are asked down a column,
          and a column is only readable when every row puts the same thing in
          the same place. -->
-    <div id="logsTable" class="oa-viz-card oa-log-results">
+    <div id="logsTable" class="oa-viz-card">
       <p v-if="loading && !entries.length" class="oa-table-empty">{{ t('loading') }}</p>
       <p v-else-if="listError" class="oa-table-empty">{{ listError }}</p>
       <p v-else-if="!entries.length" class="oa-table-empty">{{ t('logEmpty') }}</p>

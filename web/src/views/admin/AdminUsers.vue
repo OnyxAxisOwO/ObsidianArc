@@ -35,7 +35,10 @@ import OaTextField from '@/components/OaTextField.vue';
 import OaUsageWindow from '@/components/OaUsageWindow.vue';
 import type { Column } from '@/components/table-types';
 import type { Stat } from '@/components/stat';
-import { t, tn, type StringKey } from '@/composables/useI18n';
+import { t, tn } from '@/composables/useI18n';
+import { cardTitle, formatCardScope, windowChoices } from '@/lib/card-scope';
+import { DAY, HOUR } from './usage/scale';
+import { toDateTimeLocal } from './shared';
 import { useBulk } from '@/composables/useBulk';
 import { usePanelSlot } from '@/composables/usePanelSlot';
 import { IconTrash } from '@/icons';
@@ -50,7 +53,6 @@ import AdminControlCard from './AdminControlCard.vue';
 import PluginUserActions from './PluginUserActions.vue';
 import { isMasked, maskUser, maskLog, maskBilling, maskCredential } from '@/admin/safeMode';
 import { QUOTA_WINDOWS as WINDOWS, windowFigure } from '@/admin/quota';
-import AdminFailure from './AdminFailure.vue';
 import CreditsField from './CreditsField.vue';
 import ExpiryPresets from './ExpiryPresets.vue';
 import UsageBoard from './usage/UsageBoard.vue';
@@ -71,7 +73,6 @@ const paging = ref<PageState>({ page: 1, pageSize: rememberedPageSize() });
 let request = 0;
 function changePage(next: PageState): void { paging.value = next; void list(); }
 function filterList(): void { paging.value.page = 1; ++request; void list(); }
-const error = ref('');
 const listError = ref('');
 const loaded = ref(false);
 const listing = ref(false);
@@ -129,7 +130,7 @@ async function list(): Promise<void> {
     listedTotal.value = result.total;
   } catch (failure) {
     if (ticket !== request) return;
-    listError.value = failure instanceof ApiError ? failure.message : String(failure);
+    listError.value = failureText(failure);
   } finally {
     if (ticket === request) listing.value = false;
   }
@@ -143,8 +144,22 @@ async function list(): Promise<void> {
  */
 function failedForAccount(row: Account, failure: unknown): void {
   void list();
-  const message = failure instanceof ApiError ? failure.message : String(failure);
+  const message = failureText(failure);
   listError.value = t('accountChangeFailed', { name: maskUser(row.nickname || row.username), error: message });
+}
+
+/**
+ * A change made to one account that failed: into the panel while it still
+ * shows that account, otherwise to the list as failedForAccount does. Reads
+ * keep their own handling, since a failed read has nothing to route to the list.
+ */
+function panelFailure(row: Account, failure: unknown): void {
+  if (panelShows(row.id)) panelError.value = failureText(failure);
+  else failedForAccount(row, failure);
+}
+
+function failureText(failure: unknown): string {
+  return failure instanceof ApiError ? failure.message : String(failure);
 }
 
 // --- the account panel ------------------------------------------------------------
@@ -178,6 +193,10 @@ const cards = ref<CardHolding | null>(null);
 const models = ref<UsageBreakdown[]>([]);
 const keys = ref<ApiKey[] | null>(null);
 const sessions = ref<AdminSession[] | null>(null);
+// Kept apart from `keys` and `sessions` staying null: null-forever would read as
+// "still loading" and an empty array would read as "none", and a failed read is
+// neither. The same holds for keys, which used to be cleared to [] on failure.
+const keysError = ref('');
 // Kept apart from `sessions` staying null: null-forever would read as "still
 // loading" and an empty array would read as "signed in nowhere", and a 403 on
 // a restricted operator is neither.
@@ -239,37 +258,10 @@ function grantSelectedWindows(): string[] {
   return [grantScopePreset.value];
 }
 
-// Two wordings of each window on purpose: one that stands alone as a card's
-// whole scope ("5-hour reset"), and one that reads inside a list of several
-// ("Reset 5 hours + 1 week").
-const CARD_SCOPE_ALONE: Record<string, StringKey> = { '5h': 'cardScope5H', '1w': 'cardScope1W', '1m': 'cardScope1M' };
-const CARD_SCOPE_PART: Record<string, StringKey> = { '5h': 'cardScopeLabel5H', '1w': 'cardScopeLabel1W', '1m': 'cardScopeLabel1M' };
-
-function formatCardScope(card: { windows?: string[] }): string {
-  const wins = card.windows ?? [];
-  if (wins.length === 0 || wins.includes('full')) {
-    return t('cardFullReset');
-  }
-  const order: readonly string[] = WINDOWS;
-  const sorted = [...wins].sort((a, b) => order.indexOf(a) - order.indexOf(b));
-  const alone = sorted.length === 1 && Object.hasOwn(CARD_SCOPE_ALONE, sorted[0]!) ? CARD_SCOPE_ALONE[sorted[0]!] : undefined;
-  if (alone) return t(alone);
-  // A window this build has no name for is shown as the server spelled it.
-  const labels = sorted.map((w) => (Object.hasOwn(CARD_SCOPE_PART, w) ? t(CARD_SCOPE_PART[w]!) : w));
-  return t('cardScopeCombined', { windows: labels.join(' + ') });
-}
-
-function cardTitle(card: { name?: string; windows?: string[] }): string {
-  if (card.name && card.name.trim()) {
-    return card.name.trim();
-  }
-  return formatCardScope(card);
-}
-
 function cardSubtitle(card: { name?: string; windows?: string[]; source: string; expires_at: number }): string {
   const sourceText = card.source === 'grant' ? t('cardFromAdmin') : t('cardFromCode');
   const expiryText = card.expires_at > 0 ? t('cardExpires', { when: relativeTime(card.expires_at) }) : t('noLimit');
-  const scope = formatCardScope(card);
+  const scope = formatCardScope(card.windows);
   if (card.name && card.name.trim() && card.name.trim() !== scope) {
     return `${scope} · ${sourceText} · ${expiryText}`;
   }
@@ -281,13 +273,8 @@ function cardSubtitle(card: { name?: string; windows?: string[]; source: string;
 // or the operator will read the result as a failure.
 const movableCards = computed(() => (cards.value?.available ?? 0) + (cards.value?.expired ?? 0));
 
-function dateTimeLocal(at: number): string {
-  const date = new Date(at);
-  return new Date(at - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
-}
-
 function defaultGrantExpiry(): string {
-  return dateTimeLocal(Date.now() + 30 * 24 * 3_600_000);
+  return toDateTimeLocal(Date.now() + 30 * DAY);
 }
 
 
@@ -414,6 +401,7 @@ async function open(id: string): Promise<void> {
   mode.value = 'account';
   conversationPage.value.page = 1;
   keys.value = null;
+  keysError.value = '';
   sessions.value = null;
   sessionsError.value = '';
   grantLabel.value = '';
@@ -446,6 +434,11 @@ async function open(id: string): Promise<void> {
   // Saving leaves this set while the panel slides out.
   busy.value = false;
   showPanel();
+  // The keys and devices need only the id, so they start with the detail
+  // instead of after it. That is safe only when the list already has the row:
+  // then the panel shows this account and can match their answers to it. With
+  // no listed row they wait for the detail, which sets the account.
+  if (listed) loadAccess(id);
 
   let detail;
   try {
@@ -453,7 +446,7 @@ async function open(id: string): Promise<void> {
   } catch (failure) {
     if (ticket !== opening) return;
     loadingDetail.value = false;
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    panelError.value = failureText(failure);
     // Without a row to show there is no panel to put the error in.
     if (!account.value) { listError.value = panelError.value; panelOpen.value = false; }
     return;
@@ -487,7 +480,7 @@ async function open(id: string): Promise<void> {
   apiRestrictionTouched.value = false;
   const restrictionActive = apiRestrictionActive(row);
   const restrictionHours = restrictionActive && row.api_restricted_until > 0
-    ? Math.max(1, Math.ceil((row.api_restricted_until - Date.now()) / 3_600_000))
+    ? Math.max(1, Math.ceil((row.api_restricted_until - Date.now()) / HOUR))
     : 0;
   form.value = {
     nickname: row.nickname,
@@ -498,7 +491,7 @@ async function open(id: string): Promise<void> {
     role: row.role,
     permissions: [...(row.admin_permissions ?? [])],
     group: row.group_id,
-    groupExpiresAt: row.group_expires_at ? dateTimeLocal(row.group_expires_at) : '',
+    groupExpiresAt: row.group_expires_at ? toDateTimeLocal(row.group_expires_at) : '',
     apiRestricted: restrictionActive,
     apiRestrictionHours: restrictionActive ? restrictionHours : 24,
     newPassword: '',
@@ -509,7 +502,7 @@ async function open(id: string): Promise<void> {
   limitsEdited = false;
   detailReady.value = true;
 
-  loadAccess(id);
+  if (!listed) loadAccess(id);
 }
 
 /**
@@ -522,8 +515,14 @@ function loadAccess(id: string): void {
   // to show and no endpoint that could produce one. What an operator needs
   // here is to see that a key exists and to be able to revoke it.
   void adminApi.userKeys(id)
-    .then(({ keys: list }) => { if (panelShows(id)) keys.value = list; })
-    .catch(() => { if (panelShows(id)) keys.value = []; });
+    .then(({ keys: list }) => {
+      if (!panelShows(id)) return;
+      keys.value = list;
+      keysError.value = '';
+    })
+    .catch((failure: unknown) => {
+      if (panelShows(id)) keysError.value = failureText(failure);
+    });
   void adminApi.userSessions(id)
     .then(({ sessions: list }) => {
       if (!panelShows(id)) return;
@@ -531,7 +530,7 @@ function loadAccess(id: string): void {
       sessionsError.value = '';
     })
     .catch((failure: unknown) => {
-      if (panelShows(id)) sessionsError.value = failure instanceof ApiError ? failure.message : String(failure);
+      if (panelShows(id)) sessionsError.value = failureText(failure);
     });
 }
 
@@ -617,7 +616,7 @@ async function save(): Promise<void> {
     }
     // Only send a membership change when the operator edited it. A profile
     // panel left open across expiry must not silently renew the old group.
-    const originalExpiry = row.group_expires_at ? dateTimeLocal(row.group_expires_at) : '';
+    const originalExpiry = row.group_expires_at ? toDateTimeLocal(row.group_expires_at) : '';
     if (draft.group !== row.group_id || draft.groupExpiresAt !== originalExpiry) {
       const expiry = draft.groupExpiresAt ? new Date(draft.groupExpiresAt).getTime() : 0;
       if (draft.groupExpiresAt && (!Number.isFinite(expiry) || expiry <= Date.now())) {
@@ -666,7 +665,7 @@ async function save(): Promise<void> {
     // written to the list instead.
     if (!panelShows(row.id)) { failedForAccount(row, failure); return; }
     busy.value = false;
-    const message = failure instanceof ApiError ? failure.message : String(failure);
+    const message = failureText(failure);
     panelError.value = saved ? t('savedBeforeError', { error: message }) : message;
   }
 }
@@ -709,8 +708,7 @@ async function resetTwoFactor(): Promise<void> {
     applyAccount(row.id, user);
     if (panelShows(row.id)) twoFactorFlash.value = t('twoFactorResetDone');
   } catch (failure) {
-    if (panelShows(row.id)) panelError.value = failure instanceof ApiError ? failure.message : String(failure);
-    else failedForAccount(row, failure);
+    panelFailure(row, failure);
   }
 }
 
@@ -733,8 +731,7 @@ async function ban(): Promise<void> {
     // the panel shows are none.
     sessions.value = [];
   } catch (failure) {
-    if (panelShows(row.id)) panelError.value = failure instanceof ApiError ? failure.message : String(failure);
-    else failedForAccount(row, failure);
+    panelFailure(row, failure);
   } finally {
     banBusy.value = false;
   }
@@ -749,8 +746,7 @@ async function unban(): Promise<void> {
     const { user } = await adminApi.updateUser(row.id, { status: 'active' });
     applyAccount(row.id, user);
   } catch (failure) {
-    if (panelShows(row.id)) panelError.value = failure instanceof ApiError ? failure.message : String(failure);
-    else failedForAccount(row, failure);
+    panelFailure(row, failure);
   } finally {
     banBusy.value = false;
   }
@@ -780,7 +776,7 @@ async function remove(): Promise<void> {
   } catch (failure) {
     if (!panelShows(row.id)) { failedForAccount(row, failure); return; }
     busy.value = false;
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    panelError.value = failureText(failure);
   }
 }
 
@@ -829,7 +825,7 @@ async function refreshFacts(id: string): Promise<void> {
     models.value = detail.models ?? [];
     cards.value = detail.cards;
   } catch (failure) {
-    if (panelShows(id)) panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    if (panelShows(id)) panelError.value = failureText(failure);
   }
 }
 
@@ -878,8 +874,7 @@ async function grant(): Promise<void> {
     if (panelShows(row.id)) grantLabel.value = t('granted', { count });
     await refreshCards(row.id);
   } catch (failure) {
-    if (panelShows(row.id)) panelError.value = failure instanceof ApiError ? failure.message : String(failure);
-    else failedForAccount(row, failure);
+    panelFailure(row, failure);
   } finally {
     if (panelShows(row.id)) granting.value = false;
   }
@@ -892,6 +887,9 @@ async function grant(): Promise<void> {
  * them again.
  */
 async function refreshCards(id: string): Promise<void> {
+  // Once the panel has moved on, no card list on screen can show the answer,
+  // and the detail behind it is the expensive read on the server.
+  if (!panelShows(id)) return;
   try {
     const detail = await adminApi.user(id);
     if (panelShows(id)) cards.value = detail.cards;
@@ -926,8 +924,7 @@ async function reschedule(cardIDs?: string[]): Promise<void> {
     // moved forward is spendable again, and the counts above it move with it.
     await refreshCards(row.id);
   } catch (failure) {
-    if (panelShows(row.id)) panelError.value = failure instanceof ApiError ? failure.message : String(failure);
-    else failedForAccount(row, failure);
+    panelFailure(row, failure);
   } finally {
     // A request for an account the panel has left must not clear the flag of
     // the one running for the account it shows now.
@@ -954,8 +951,7 @@ async function revoke(cardID: string): Promise<void> {
     await adminApi.revokeCard(row.id, cardID);
     await refreshCards(row.id);
   } catch (failure) {
-    if (panelShows(row.id)) panelError.value = failure instanceof ApiError ? failure.message : String(failure);
-    else failedForAccount(row, failure);
+    panelFailure(row, failure);
   } finally {
     if (panelShows(row.id)) rescheduling.value = false;
   }
@@ -967,8 +963,7 @@ function revokeKey(key: ApiKey): void {
   void adminApi.revokeUserKey(row.id, key.id)
     .then(() => { if (panelShows(row.id)) keys.value = (keys.value ?? []).filter((entry) => entry.id !== key.id); })
     .catch((failure: unknown) => {
-      if (panelShows(row.id)) panelError.value = failure instanceof ApiError ? failure.message : String(failure);
-      else failedForAccount(row, failure);
+      panelFailure(row, failure);
     });
 }
 
@@ -979,8 +974,7 @@ function revokeSession(session: AdminSession): void {
   adminApi.revokeUserSession(row.id, session.id)
     .then(() => { if (panelShows(row.id)) sessions.value = (sessions.value ?? []).filter((entry) => entry.id !== session.id); })
     .catch((failure: unknown) => {
-      if (panelShows(row.id)) panelError.value = failure instanceof ApiError ? failure.message : String(failure);
-      else failedForAccount(row, failure);
+      panelFailure(row, failure);
     })
     .finally(() => { revokingSession.value = ''; });
 }
@@ -992,8 +986,7 @@ function signOutEverywhere(): void {
   adminApi.revokeAllUserSessions(row.id)
     .then(() => { if (panelShows(row.id)) sessions.value = []; })
     .catch((failure: unknown) => {
-      if (panelShows(row.id)) panelError.value = failure instanceof ApiError ? failure.message : String(failure);
-      else failedForAccount(row, failure);
+      panelFailure(row, failure);
     })
     .finally(() => { signOutAllBusy.value = false; });
 }
@@ -1012,7 +1005,7 @@ async function openConversations(): Promise<void> {
     conversations.value = result.conversations;
     conversationTotal.value = result.total;
   } catch (failure) {
-    if (panelShows(row.id)) panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    if (panelShows(row.id)) panelError.value = failureText(failure);
   }
 }
 
@@ -1029,7 +1022,7 @@ async function openTranscript(conversation: Conversation): Promise<void> {
     // account's title: the answer is shown only while its account is.
     if (panelShows(row.id)) transcript.value = messages;
   } catch (failure) {
-    if (panelShows(row.id)) panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    if (panelShows(row.id)) panelError.value = failureText(failure);
   }
 }
 
@@ -1051,16 +1044,18 @@ const panelTitle = computed(() => {
 });
 
 async function load(): Promise<void> {
-  error.value = '';
+  // The group names only label rows, so their failure must not stand in for the
+  // whole table. It is reported above the rows, where a list failure goes, and
+  // the rows still load. list() clears listError as it starts, hence the order.
+  let namesFailure = '';
   try {
     ({ groups: groups.value } = await adminApi.groupOptions());
   } catch (failure) {
-    error.value = failure instanceof Error ? failure.message : String(failure);
-    loaded.value = true;
-    return;
+    namesFailure = failure instanceof Error ? failure.message : String(failure);
   }
   loaded.value = true;
   await list();
+  if (namesFailure && !listError.value) listError.value = namesFailure;
 }
 
 onMounted(load);
@@ -1071,8 +1066,7 @@ const state = { q: '', role: '', status: '', group: '' };
 </script>
 
 <template>
-  <AdminFailure v-if="error" :message="error" @retry="load" />
-  <p v-else-if="!loaded" class="oa-table-empty">{{ t('loading') }}</p>
+  <p v-if="!loaded" class="oa-table-empty">{{ t('loading') }}</p>
 
   <template v-else>
     <div id="usersList" class="oa-filters">
@@ -1342,11 +1336,7 @@ const state = { q: '', role: '', status: '', group: '' };
           v-model="grantCustomWindows"
           :label="t('cardResetScope')"
           :empty-text="t('nothingYet')"
-          :items="[
-            { value: '5h', label: t('cardScopeLabel5H') },
-            { value: '1w', label: t('cardScopeLabel1W') },
-            { value: '1m', label: t('cardScopeLabel1M') },
-          ]"
+          :items="windowChoices()"
         />
         <OaNumberField
           v-model="grantCount"
@@ -1529,7 +1519,8 @@ const state = { q: '', role: '', status: '', group: '' };
       </AdminControlCard>
 
       <AdminControlCard :title="t('apiKeys')" :hint="t('adminKeysHint')">
-        <OaRow v-if="keys === null" :meta="t('loading')" />
+        <OaRow v-if="keysError" :meta="keysError" />
+        <OaRow v-else-if="keys === null" :meta="t('loading')" />
         <OaRow v-else-if="!keys.length" :meta="t('keysEmpty')" />
         <OaRow v-for="key in keys ?? []" v-else :key="key.id">
           <template #text>

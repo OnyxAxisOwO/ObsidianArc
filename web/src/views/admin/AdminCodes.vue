@@ -23,6 +23,7 @@ import OaTable from '@/components/OaTable.vue';
 import OaTextField from '@/components/OaTextField.vue';
 import type { Column } from '@/components/table-types';
 import { t } from '@/composables/useI18n';
+import { formatCardScope, windowChoices } from '@/lib/card-scope';
 import { useBulk } from '@/composables/useBulk';
 import { usePanelSlot } from '@/composables/usePanelSlot';
 import { relativeTime } from '@/lib/format';
@@ -91,27 +92,6 @@ const form = ref({
   cardDays: 30 as number | null,
   expiresDays: null as number | null,
 });
-
-function formatCodeScope(windows?: string[]): string {
-  const wins = windows ?? [];
-  if (wins.length === 0 || wins.includes('full')) {
-    return t('cardFullReset');
-  }
-  const order = ['5h', '1w', '1m'];
-  const sorted = [...wins].sort((a, b) => order.indexOf(a) - order.indexOf(b));
-  if (sorted.length === 1) {
-    if (sorted[0] === '5h') return t('cardScope5H');
-    if (sorted[0] === '1w') return t('cardScope1W');
-    if (sorted[0] === '1m') return t('cardScope1M');
-  }
-  const labels = sorted.map((w) => {
-    if (w === '5h') return t('cardScopeLabel5H');
-    if (w === '1w') return t('cardScopeLabel1W');
-    if (w === '1m') return t('cardScopeLabel1M');
-    return w;
-  });
-  return t('cardScopeCombined', { windows: labels.join(' + ') });
-}
 
 function selectedWindows(): string[] {
   if (form.value.scopePreset === 'custom') {
@@ -282,7 +262,7 @@ onMounted(load);
            raw: they are what the operator asked for. -->
       <OaCellStack
         :title="maskCredential(row.code)"
-        :sub="Array.from(new Set([row.name || undefined, formatCodeScope(row.windows), row.note || undefined].filter(Boolean))).join(' · ')"
+        :sub="Array.from(new Set([row.name || undefined, formatCardScope(row.windows), row.note || undefined].filter(Boolean))).join(' · ')"
         monospace
       />
     </template>
@@ -356,8 +336,8 @@ onMounted(load);
       <div v-if="existing!.name || (existing!.windows && existing!.windows.length)" class="oa-card-list" style="margin-bottom: 12px;">
         <div class="oa-card-row">
           <div>
-            <span class="oa-card-title">{{ existing!.name || formatCodeScope(existing!.windows) }}</span>
-            <span v-if="existing!.name" class="oa-card-sub">{{ formatCodeScope(existing!.windows) }}</span>
+            <span class="oa-card-title">{{ existing!.name || formatCardScope(existing!.windows) }}</span>
+            <span v-if="existing!.name" class="oa-card-sub">{{ formatCardScope(existing!.windows) }}</span>
           </div>
         </div>
       </div>
@@ -419,11 +399,7 @@ onMounted(load);
         v-model="form.customWindows"
         :label="t('cardResetScope')"
         :empty-text="t('nothingYet')"
-        :items="[
-          { value: '5h', label: t('cardScopeLabel5H') },
-          { value: '1w', label: t('cardScopeLabel1W') },
-          { value: '1m', label: t('cardScopeLabel1M') },
-        ]"
+        :items="windowChoices()"
       />
       <OaNumberField v-model="form.cards" :label="t('codeCards')" :min="1" :hint="t('codeCardsHint')" />
       <OaNumberField

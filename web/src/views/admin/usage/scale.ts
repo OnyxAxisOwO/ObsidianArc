@@ -119,8 +119,8 @@ export function smoothPath(points: ReadonlyArray<readonly [number, number]>): st
   return path;
 }
 
-const HOUR = 3_600_000;
-const DAY = 24 * HOUR;
+export const HOUR = 3_600_000;
+export const DAY = 24 * HOUR;
 const TICK_STEPS = [HOUR, 2 * HOUR, 3 * HOUR, 4 * HOUR, 6 * HOUR, 12 * HOUR, DAY, 2 * DAY, 7 * DAY, 14 * DAY, 30 * DAY, 91 * DAY, 182 * DAY, 365 * DAY];
 
 /**

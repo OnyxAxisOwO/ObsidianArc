@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, h, nextTick, shallowRef, type App, type Component } from 'vue';
+import { createMemoryHistory, createRouter } from 'vue-router';
 import { adminApi, type AdminPlugin, type PluginChange, type PluginPreview } from '../src/admin/api';
 import * as authApi from '../src/api/auth';
 import type { Account, SiteInfo } from '../src/api/auth';
@@ -66,11 +67,14 @@ async function settle(): Promise<void> {
 }
 
 async function mount(component: Component, props: Record<string, unknown> = {}): Promise<void> {
+  // The plugins screen keeps its tab in the query, so it needs the app router.
+  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { render: () => null } }] });
   app = createApp({ setup() {
     providePanelHost(shallowRef(panels));
     provideAdminView({ actionsHost: actions, setTitle() {}, reload() {}, params: [] });
     return () => h(component, props);
   } });
+  app.use(router);
   app.mount(host);
   await settle();
 }
