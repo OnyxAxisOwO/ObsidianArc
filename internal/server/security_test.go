@@ -23,6 +23,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/pow"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/server/testconfig"
 )
 
 // The authorization surface, exercised as HTTP rather than as function calls.
@@ -64,21 +65,7 @@ func newInstanceAt(t *testing.T, version, feed string, tweak ...func(*config.Con
 	t.Helper()
 	dir := t.TempDir()
 
-	cfg := config.Config{
-		Addr:     ":0",
-		DataDir:  dir,
-		LogLevel: "error",
-		Database: config.Database{
-			Driver: "sqlite", DSN: filepath.Join(dir, "server.db"),
-			MaxOpenConns: 4, MaxIdleConns: 2,
-		},
-		Session: config.Session{TTL: time.Hour, CookieName: "obsidian_session", TouchInterval: time.Hour},
-		// Deliberately cheap: these tests hash a password on nearly every
-		// case, and the cost function is not what is under test.
-		Password:  config.Password{Memory: 8 * 1024, Iterations: 1, Parallelism: 1, SaltLength: 16, KeyLength: 32, MaxParallel: 4},
-		Upstream:  config.Upstream{DialTimeout: time.Second, ResponseHeaderTimeout: 2 * time.Second, MaxIdleConns: 2, IdleConnTimeout: time.Second},
-		SecretKey: []byte("a-test-instance-secret-value-here"),
-	}
+	cfg := testconfig.Config(dir)
 
 	for _, apply := range tweak {
 		apply(&cfg)

@@ -10,7 +10,8 @@
 //
 // internal/server's own tests keep their own harness. It predates this one,
 // and they build servers with no plugins, which is the other half of the
-// claim: the core works without any of them.
+// claim: the core works without any of them. Both take their configuration
+// from testconfig, so the two cannot drift apart in what they build.
 package servertest
 
 import (
@@ -23,7 +24,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -32,6 +32,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin/wasm"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/server"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/server/testconfig"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/totp"
 )
 
@@ -115,21 +116,7 @@ func buildWith(t *testing.T, mode install, seed map[string]string, tweak []func(
 	t.Helper()
 	dir := t.TempDir()
 
-	cfg := config.Config{
-		Addr:     ":0",
-		DataDir:  dir,
-		LogLevel: "error",
-		Database: config.Database{
-			Driver: "sqlite", DSN: filepath.Join(dir, "server.db"),
-			MaxOpenConns: 4, MaxIdleConns: 4,
-		},
-		Session: config.Session{TTL: time.Hour, CookieName: "obsidian_session", TouchInterval: time.Hour},
-		// Deliberately cheap: nearly every case hashes a password, and the
-		// cost function is not what is under test.
-		Password:  config.Password{Memory: 8 * 1024, Iterations: 1, Parallelism: 1, SaltLength: 16, KeyLength: 32, MaxParallel: 4},
-		Upstream:  config.Upstream{DialTimeout: time.Second, ResponseHeaderTimeout: 2 * time.Second, MaxIdleConns: 2, IdleConnTimeout: time.Second},
-		SecretKey: []byte("a-test-instance-secret-value-here"),
-	}
+	cfg := testconfig.Config(dir)
 	for _, apply := range tweak {
 		apply(&cfg)
 	}

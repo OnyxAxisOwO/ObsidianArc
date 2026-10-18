@@ -15,7 +15,6 @@ import (
 	"log/slog"
 	"net/http"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -359,7 +358,10 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	if cfg.TrustCloudflare {
 		proxyTrust = proxyTrust.WithCloudflare()
 	}
-	authService.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
+	// Every handler that limits or logs by address asks this one function, so
+	// none of them can read the forwarded headers under a different trust.
+	clientIP := func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
+	authService.ClientIP = clientIP
 	if cfg.TrustProxy && len(cfg.TrustedProxies) == 0 {
 		slog.WarnContext(ctx, "trusting forwarded headers from any private address; "+
 			"set OBSIDIAN_TRUSTED_PROXIES to the proxy's address if it is reachable directly")
@@ -446,155 +448,22 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	}
 	modelHandlers.Routes(mux)
 
-	mux.HandleFunc("GET /api/uptime", httpx.Wrap(func(w http.ResponseWriter, r *http.Request) error {
-		account, ok := auth.UserFrom(r.Context())
-		if !ok {
-			return httpx.Unauthorized("Sign in to view uptime.")
-		}
-		show := settingsService.Bool(settings.HealthShowUsers)
-		if !account.CanAdmin("availability") && !show {
-			return httpx.Forbidden("Uptime is not visible to users.")
-		}
-
-		resetAt := int64(settingsService.Int(settings.HealthResetAt, 0))
-		// The card compares the last hour with a fixed day of history, so
-		// changing the probe policy must not change either displayed window.
-		now := time.Now()
-		windowStart := now.Add(-24 * time.Hour).UnixMilli()
-		since := windowStart
-		if resetAt > since {
-			since = resetAt
-		}
-		rates, err := healthStore.Rates(r.Context(), since)
-		if err != nil {
-			return httpx.Internal(err)
-		}
-		hourSince := max(now.Add(-time.Hour).UnixMilli(), resetAt)
-		hourRates, err := healthStore.Rates(r.Context(), hourSince)
-		if err != nil {
-			return httpx.Internal(err)
-		}
-		timeline, err := healthStore.Timeline(r.Context(), windowStart, resetAt, 24)
-		if err != nil {
-			return httpx.Internal(err)
-		}
-
-		var (
-			modelList []model.Model
-		)
-		if account.CanAdmin("availability") {
-			modelList, err = models.ListAll(r.Context(), "")
-		} else {
-			modelList, err = models.ListForUser(r.Context(), account.GroupID, false)
-		}
-		if err != nil {
-			return httpx.Internal(err)
-		}
-
-		type modelUptimeItem struct {
-			ID          string             `json:"id"`
-			DisplayName string             `json:"display_name"`
-			Provider    string             `json:"provider_name,omitempty"`
-			Enabled     bool               `json:"enabled"`
-			Uptime      *float64           `json:"uptime,omitempty"`
-			UptimeHour  *float64           `json:"uptime_hour,omitempty"`
-			State       string             `json:"state"`
-			Total       int                `json:"total"`
-			History     []health.TimePoint `json:"history"`
-		}
-
-		warnBelow := settingsService.Int(settings.HealthWarnBelow, 0)
-		result := make([]modelUptimeItem, 0, len(modelList))
-		for _, m := range modelList {
-			if account.CanAdmin("availability") && !m.Enabled && !m.AutoDisabled {
-				continue
-			}
-			// A model marked hidden is withdrawn from the people using the
-			// site; the card is what they read, and an administrator looking
-			// at it would otherwise see rows the model list never shows.
-			if m.Hidden {
-				continue
-			}
-			rate, hasRate := rates[m.ID]
-			item := modelUptimeItem{
-				ID:          m.ID,
-				DisplayName: m.DisplayName,
-				Enabled:     m.Enabled,
-				State:       "unknown",
-			}
-			if account.CanAdmin("availability") {
-				item.Provider = m.ProviderName
-			}
-			if m.AutoDisabled {
-				item.State = "down"
-			}
-			if hasRate && rate.Total > 0 {
-				share := rate.Share()
-				item.Uptime = &share
-				item.Total = rate.Total
-			}
-			// The card's status badge ("operational", "degraded", "outage")
-			// evaluates against the recent one-hour window matching the hourly
-			// percentage shown beside it, rather than the 24-hour aggregate.
-			if hourRate, hasHour := hourRates[m.ID]; hasHour && hourRate.Total > 0 {
-				share := hourRate.Share()
-				item.UptimeHour = &share
-				if m.AutoDisabled {
-					item.State = "down"
-				} else if hourRate.OK == 0 {
-					// With recent evidence present, zero answers is an outage rather
-					// than degraded service.
-					item.State = "down"
-				} else if share >= 0.99 {
-					item.State = "up"
-				} else if (warnBelow > 0 && share*100 < float64(warnBelow)) || (warnBelow <= 0 && share < 0.95) {
-					item.State = "degraded"
-				} else {
-					item.State = "up"
-				}
-			}
-
-			pts, hasPts := timeline[m.ID]
-			if !hasPts || len(pts) == 0 {
-				span := (now.UnixMilli() - windowStart) / 24
-				if span <= 0 {
-					span = 1
-				}
-				pts = make([]health.TimePoint, 24)
-				for i := 0; i < 24; i++ {
-					pts[i] = health.TimePoint{At: windowStart + int64(i)*span + span/2, Total: 0}
-				}
-			}
-			item.History = pts
-
-			result = append(result, item)
-		}
-
-		uptimeStart := deps.Started
-		if resetAt > 0 && resetAt > uptimeStart.UnixMilli() {
-			uptimeStart = time.UnixMilli(resetAt)
-		}
-		sec := int64(time.Since(uptimeStart).Seconds())
-		if sec < 0 {
-			sec = 0
-		}
-
-		resp := map[string]any{
-			"models": result,
-		}
-		if account.CanAdmin("availability") || settingsService.Bool(settings.AboutShowSoftwareInfo) {
-			resp["uptime_sec"] = sec
-		} else {
-			resp["uptime_sec"] = 0
-		}
-
-		return httpx.WriteJSON(w, http.StatusOK, resp)
-	}))
+	mux.HandleFunc("GET /api/uptime", uptimeHandler(settingsService, healthStore, models, deps.Started))
 	// One client for every Turnstile check, so registration, key creation and
 	// a burst challenge reuse connections to Cloudflare.
 	challengeClient := &http.Client{}
+	// Every gate checks against the one secret, read per request so a rotated
+	// key takes effect without a restart; only what switches each gate on
+	// differs.
+	challengeGate := func(enabled func() bool) turnstile.Gate {
+		return turnstile.Gate{
+			Client:  challengeClient,
+			Enabled: enabled,
+			Secret:  func() string { return settingsService.Get(settings.TurnstileSecretKey) },
+		}
+	}
 	chatHandlers := chat.NewHandlers(chatService, conversations)
-	// Scoped by owner, so somebody else'''s project is reported as absent
+	// Scoped by owner, so somebody else's project is reported as absent
 	// rather than as forbidden — which is also all the query knows.
 	chatHandlers.ProjectAllowed = func(ctx context.Context, actor user.User, projectID string) error {
 		if _, err := projects.Get(ctx, nil, actor.ID, projectID); err != nil {
@@ -623,19 +492,11 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		return int64(settingsService.Int(settings.AttachmentMaxMB, 6)) * 1024 * 1024
 	}
 	chatHandlers.Security = securityLog
-	chatHandlers.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
-	chatHandlers.ChatChallenge = turnstile.Gate{
-		Client: challengeClient,
-		Enabled: func() bool {
-			return settingsService.Int(settings.ChatChallengeRequests, 0) > 0
-		},
-		Secret: func() string { return settingsService.Get(settings.TurnstileSecretKey) },
-	}
-	chatHandlers.ImageChallenge = turnstile.Gate{
-		Client:  challengeClient,
-		Enabled: func() bool { return settingsService.Bool(settings.TurnstileOnImages) },
-		Secret:  func() string { return settingsService.Get(settings.TurnstileSecretKey) },
-	}
+	chatHandlers.ClientIP = clientIP
+	chatHandlers.ChatChallenge = challengeGate(func() bool {
+		return settingsService.Int(settings.ChatChallengeRequests, 0) > 0
+	})
+	chatHandlers.ImageChallenge = challengeGate(func() bool { return settingsService.Bool(settings.TurnstileOnImages) })
 	chatHandlers.ImageHistoryEnabled = func() bool { return settingsService.Bool(settings.ImageHistory) }
 	chatHandlers.ImagePoWEnabled = func() bool { return settingsService.Bool(settings.PoWOnImages) }
 	chatHandlers.ImageGuards = func(ctx context.Context, tokens map[string]string, ip, username string) error {
@@ -656,7 +517,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	usageHandlers := usage.NewHandlers(usageStore)
 	usageHandlers.Routes(mux)
 	leaderboardHandlers := leaderboard.NewHandlers(settingsService, usageStore, users, models)
-	leaderboardHandlers.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
+	leaderboardHandlers.ClientIP = clientIP
 	leaderboardHandlers.Routes(mux)
 
 	cardHandlers := card.NewHandlers(cards)
@@ -668,12 +529,8 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	cardHandlers.LockReset = quota.LockAllowanceBoundary
 	// So the limit on guessing at redemption codes counts one host's attempts
 	// together, not just one account's.
-	cardHandlers.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
-	cardHandlers.Challenge = turnstile.Gate{
-		Client:  challengeClient,
-		Enabled: func() bool { return settingsService.Bool(settings.TurnstileOnRedeem) },
-		Secret:  func() string { return settingsService.Get(settings.TurnstileSecretKey) },
-	}
+	cardHandlers.ClientIP = clientIP
+	cardHandlers.Challenge = challengeGate(func() bool { return settingsService.Bool(settings.TurnstileOnRedeem) })
 	cardHandlers.Routes(mux)
 	bonusHandlers := bonus.NewHandlers(bonusStore)
 	bonusHandlers.Display = settingsService.UsageDisplay
@@ -686,24 +543,12 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// auth.RequireUser alone, like notify's and card's own account-facing
 	// routes — see internal/invite/http.go.
 	inviteHandlers := invite.NewHandlers(invites)
-	inviteHandlers.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
+	inviteHandlers.ClientIP = clientIP
 	inviteHandlers.ReserveGuess = authService.ReserveInviteGuess
 	inviteHandlers.Routes(mux)
 
-	// Programmatic access. The key store is what an account manages from the
-	// interface; the compatibility surface is what the key is then presented
-	// to, and the two are separate because one is a browser screen and the
-	// other is not a browser at all.
-	authService.Challenge = turnstile.Gate{
-		Client:  challengeClient,
-		Enabled: settingsService.SignupTurnstileOn,
-		Secret:  func() string { return settingsService.Get(settings.TurnstileSecretKey) },
-	}
-	authService.LoginChallenge = turnstile.Gate{
-		Client:  challengeClient,
-		Enabled: func() bool { return settingsService.Bool(settings.TurnstileOnLogin) },
-		Secret:  func() string { return settingsService.Get(settings.TurnstileSecretKey) },
-	}
+	authService.Challenge = challengeGate(settingsService.SignupTurnstileOn)
+	authService.LoginChallenge = challengeGate(func() bool { return settingsService.Bool(settings.TurnstileOnLogin) })
 	powKey, err := secret.DeriveKey(cfg.SecretKey, "obsidian-arc/pow-challenge")
 	if err != nil {
 		powKey = cfg.SecretKey
@@ -892,58 +737,8 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			slog.ErrorContext(ctx, "could not resolve an invite reward", "error", err, "user", userID)
 		}
 	}
-	// Long enough to span a bot wave's burst, short enough that a flagged sign-up
-	// an hour later still gets its own entry.
-	const flaggedSignupNoticeWindow = 10 * time.Minute
 	authService.OnSignupReview = func(ctx context.Context, in auth.RegisterInput, account *user.User, review auth.SignupReview) {
-		event := securityevents.Event{
-			Event: securityevents.EventSignupReview, Severity: securityevents.SeverityInfo,
-			Username: in.Username, IP: in.IP, Source: "ai", Decision: string(review.Decision),
-			Reason: review.Reason,
-		}
-		if account != nil {
-			event.UserID = account.ID
-		}
-		if review.Decision == auth.SignupRestrict {
-			event.Severity = securityevents.SeverityWarning
-		} else if review.Decision == auth.SignupRefuse {
-			event.Severity = securityevents.SeverityDanger
-		}
-		if err := securityLog.Record(ctx, nil, event); err != nil {
-			slog.ErrorContext(ctx, "could not record signup review", "error", err)
-		}
-		// Only what the reviewer held back: a notice for every approval
-		// would be a notice per sign-up, and nobody reads those.
-		if review.Decision == auth.SignupRestrict || review.Decision == auth.SignupRefuse {
-			// A bot wave refuses sign-ups one after another, and the bell would
-			// fill with an entry per bot. One entry per window is what a reader
-			// can act on; the security log above keeps every event. The check
-			// and the push share a transaction under the instance lock, so two
-			// refusals landing together cannot both find the window empty.
-			// A failed lock or check means nothing is pushed; the security
-			// log still keeps the event.
-			since := time.Now().Add(-flaggedSignupNoticeWindow).UnixMilli()
-			err := db.Tx(ctx, func(tx *database.Tx) error {
-				if err := settings.Lock(ctx, tx); err != nil {
-					return err
-				}
-				waiting, err := notifyStore.HasAdminNoticeSince(ctx, tx, "signup_flagged", "security", since)
-				if err != nil {
-					return err
-				}
-				if waiting {
-					return nil
-				}
-				return notifyStore.Push(ctx, tx, notify.Notification{
-					Audience: notify.AudienceAdmins, Permission: "security",
-					Kind: "signup_flagged", Params: map[string]any{"username": in.Username},
-					Link: "/admin/security",
-				})
-			})
-			if err != nil {
-				slog.ErrorContext(ctx, "could not notify a flagged signup", "error", err)
-			}
-		}
+		recordSignupReview(ctx, db, securityLog, notifyStore, in, account, review)
 	}
 
 	adminTryReview := func(ctx context.Context, in admin.ReviewTrial) (string, string, error) {
@@ -960,13 +755,13 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		return string(verdict.Decision), verdict.Reason, err
 	}
 
+	// Programmatic access. The key store is what an account manages from the
+	// interface; the compatibility surface is what the key is then presented
+	// to, and the two are separate because one is a browser screen and the
+	// other is not a browser at all.
 	apiKeyHandlers := apikey.NewHandlers(keys)
-	apiKeyHandlers.Challenge = turnstile.Gate{
-		Client:  challengeClient,
-		Enabled: func() bool { return settingsService.Bool(settings.TurnstileOnAPIKey) },
-		Secret:  func() string { return settingsService.Get(settings.TurnstileSecretKey) },
-	}
-	apiKeyHandlers.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
+	apiKeyHandlers.Challenge = challengeGate(func() bool { return settingsService.Bool(settings.TurnstileOnAPIKey) })
+	apiKeyHandlers.ClientIP = clientIP
 	apiKeyHandlers.Allowed = func(r *http.Request) error {
 		account, ok := auth.UserFrom(r.Context())
 		if !ok {
@@ -1019,12 +814,8 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	feedbackHandlers := feedback.NewHandlers(feedbackStore)
 	// Signed in and spending nothing, so this is the one challenge an
 	// operator switches on after being spammed rather than before.
-	feedbackHandlers.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
-	feedbackHandlers.Challenge = turnstile.Gate{
-		Client:  challengeClient,
-		Enabled: func() bool { return settingsService.Bool(settings.TurnstileOnFeedback) },
-		Secret:  func() string { return settingsService.Get(settings.TurnstileSecretKey) },
-	}
+	feedbackHandlers.ClientIP = clientIP
+	feedbackHandlers.Challenge = challengeGate(func() bool { return settingsService.Bool(settings.TurnstileOnFeedback) })
 	// Read per request rather than captured, so turning it off takes effect
 	// on the next thread somebody opens rather than on the next restart.
 	feedbackHandlers.ShowStaffName = func() bool {
@@ -1056,7 +847,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		return httpx.PublicOrigin(r, proxyTrust, mailer.PublicURL())
 	}
 	oauthHandlers.Origin = publicOrigin
-	oauthHandlers.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
+	oauthHandlers.ClientIP = clientIP
 	oauthHandlers.Challenge = authService.Challenge
 	oauthHandlers.SignupChallenge = authService.Challenge
 	oauthHandlers.LoginChallenge = authService.LoginChallenge
@@ -1128,7 +919,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	adminHandlers.UserCheck = userCheckManager
 	adminHandlers.TryReview = adminTryReview
 	adminHandlers.Origin = publicOrigin
-	adminHandlers.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
+	adminHandlers.ClientIP = clientIP
 	adminHandlers.Notify = notifyStore
 	adminHandlers.Bonus = bonusStore
 	adminHandlers.Audit = auditTrail
@@ -1152,7 +943,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		Invites: invites, InviteHandlers: inviteHandlers,
 		Admin:     adminHandlers,
 		Mux:       mux,
-		ClientIP:  func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) },
+		ClientIP:  clientIP,
 		PublicURL: mailer.PublicURL,
 		Gate:      pluginGate,
 		Challenge: pluginChallenge(settingsService, powManager, authService.RequiredPoWMax, challengeClient, turnstileDrawn),
@@ -1162,9 +953,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	}
 	plugins.Attach(host)
 	adminHandlers.SetFallback(plugins.ServePlugins)
-	plugin.NewHandlers(plugins, authService, settingsService, func(r *http.Request) string {
-		return httpx.ClientIP(r, proxyTrust)
-	}).Mount(adminHandlers)
+	plugin.NewHandlers(plugins, authService, settingsService, clientIP).Mount(adminHandlers)
 	for _, name := range plugin.Names() {
 		authHandlers.Advertise(name)
 	}
@@ -1265,47 +1054,13 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// as they arrive and leave.
 	plugins.AttachConsole(consoleEngine)
 
-	// Who may hold a console at all. SSH asks it at the handshake and before
-	// each command, and the web terminal asks it before each run of a watch, so
-	// the two doors cannot disagree about who is let in. It is the terminal's
-	// own rule (any account whose group allows it, and every administrator)
-	// plus the two gates an ordinary web request meets before a handler sees it.
-	//
-	// Those two gates are held here too. Enrolling a second factor needs a
-	// screen to scan from, and connecting an OpenID Connect identity is a
-	// browser redirect, so neither can be done over SSH. Both doors ask again as
-	// a session goes on, so a policy switched on reaches one already open.
-	//
-	// A failed binding lookup lets the account through, as oauth.BindingGate
-	// does: a database hiccup is not a reason to lock everyone out.
+	// Who may hold a console at all; see consoleAdmits for the rule.
 	consoleAllowed := func(ctx context.Context, account user.User) (bool, error) {
-		// terminalAllowed folds a failed group lookup into the refusal a missing
-		// permission gets. An open SSH session would then report a database outage
-		// as a revocation, so the lookup is made here and its error is kept.
-		if !account.IsAdmin() {
-			membership, err := groups.ByID(ctx, nil, account.GroupID)
-			switch {
-			case errors.Is(err, group.ErrNotFound):
-				return false, nil
-			case err != nil:
-				return false, err
-			case !membership.AllowTerminal:
-				return false, nil
-			}
-		}
-		if authService.MustEnrolTwoFactor(account) {
-			return false, nil
-		}
-		mustBind, err := oauthService.MustBindOIDC(ctx, account)
-		if err != nil {
-			slog.ErrorContext(ctx, "could not check the OIDC binding requirement for a console", "error", err)
-			return true, nil
-		}
-		return !mustBind, nil
+		return consoleAdmits(ctx, groups, authService, oauthService, account)
 	}
 
 	consoleHandlers := console.NewHandlers(consoleEngine)
-	consoleHandlers.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
+	consoleHandlers.ClientIP = clientIP
 	consoleHandlers.Allowed = func(ctx context.Context, account user.User) error {
 		return terminalAllowed(ctx, groups, account)
 	}
@@ -1485,7 +1240,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		// answer and a request refused before any handler is still recorded;
 		// inside the request id so both records name the same request.
 		requestLog.Middleware(
-			func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) },
+			clientIP,
 			skipFromLog,
 		),
 		// Inside the log, so the redirect is recorded. Ahead of compression and
@@ -1817,29 +1572,28 @@ func (s *Server) sweepAttachments(ctx context.Context) {
 		DailyAt:   s.settings.Get(settings.AttachmentPurgeDaily),
 		OrphanTTL: time.Duration(s.settings.Int(settings.AttachmentOrphanMins, 60)) * time.Minute,
 	}
-	lastRun := int64(s.settings.Int(settings.AttachmentPurgeLast, 0))
-
-	// Configured but never run: record the time and purge nothing this pass.
-	// An operator who sets a 03:00 cleanup at three in the afternoon did not
-	// ask for everything to vanish right then.
-	if conversation.DecidePurge(policy.DailyAt, time.Now(), lastRun) == conversation.DecisionSeed {
-		if err := s.settings.Set(ctx, settings.AttachmentPurgeLast,
-			strconv.FormatInt(time.Now().UnixMilli(), 10)); err != nil {
-			slog.ErrorContext(ctx, "could not record the attachment purge time", "error", err)
-		}
+	claim, err := s.claimDailyPurge(ctx, policy.DailyAt, time.Now())
+	if err != nil {
+		slog.ErrorContext(ctx, "could not record the attachment purge time", "error", err)
+	}
+	// Only a claimed run reaches the purge. Seed is "configured but never
+	// run": the time is recorded and nothing is purged this pass, because an
+	// operator who sets a 03:00 cleanup at three in the afternoon did not ask
+	// for everything to vanish right then.
+	lastRun := claim.previous
+	if claim.decision != conversation.DecisionRun {
 		policy.DailyAt = ""
 	}
 
 	result, err := s.conversations.Sweep(ctx, policy, lastRun)
+	if claim.decision == conversation.DecisionRun && !result.RanDaily {
+		// Today's purge was claimed and did not happen, so the claim is handed
+		// back and the next tick, here or on another instance, tries again.
+		s.releaseDailyPurge(ctx, claim)
+	}
 	if err != nil {
 		slog.ErrorContext(ctx, "attachment sweep failed", "error", err)
 		return
-	}
-	if result.RanDaily {
-		if err := s.settings.Set(ctx, settings.AttachmentPurgeLast,
-			strconv.FormatInt(time.Now().UnixMilli(), 10)); err != nil {
-			slog.ErrorContext(ctx, "could not record the attachment purge time", "error", err)
-		}
 	}
 	// Worth a line in the log: this is the one background task that destroys
 	// something, and an operator should be able to see that it is working.

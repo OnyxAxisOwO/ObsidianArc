@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -25,7 +26,10 @@ func (in *instance) doFrom(ip, userAgent, method, path string, body any, as *ses
 		}
 	}
 	request := httptest.NewRequest(method, path, &buffer)
-	request.RemoteAddr = ip + ":40000"
+	// JoinHostPort brackets an IPv6 address; a bare concatenation leaves
+	// colons that net.SplitHostPort refuses, so per-address code reads the
+	// client wrong.
+	request.RemoteAddr = net.JoinHostPort(ip, "40000")
 	request.Header.Set("User-Agent", userAgent)
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
@@ -39,6 +43,25 @@ func (in *instance) doFrom(ip, userAgent, method, path string, body any, as *ses
 	recorder := httptest.NewRecorder()
 	in.handler.ServeHTTP(recorder, request)
 	return recorder
+}
+
+// The same check servertest holds its own DoFrom to: an IPv6 client must
+// arrive with an address that splits, or per-address code reads it wrong.
+func TestDoFromGivesAnIPv6ClientAnAddressThatSplits(t *testing.T) {
+	var seen string
+	in := &instance{t: t, handler: http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		seen = r.RemoteAddr
+	})}
+	for _, ip := range []string{"2001:db8::1", "203.0.113.7"} {
+		in.doFrom(ip, "test", http.MethodGet, "/", nil, nil)
+		host, port, err := net.SplitHostPort(seen)
+		if err != nil {
+			t.Fatalf("doFrom(%q) gave RemoteAddr %q, which does not split: %v", ip, seen, err)
+		}
+		if host != ip || port != "40000" {
+			t.Errorf("doFrom(%q) gave RemoteAddr %q, want host %q port 40000", ip, seen, ip)
+		}
+	}
 }
 
 // A code typed into the web terminal arrives at the backoffice's door as a
