@@ -106,17 +106,25 @@ export interface SendAnimationOptions {
   onFinish?: () => void;
 }
 
+/** How much larger the bubble is as it leaves the composer than where it lands. */
+const EMERGE_SCALE = 1.18;
+
 export async function playSendAnimation(options: SendAnimationOptions): Promise<void> {
   const { messageID, mainEl, transcriptEl, composerInputEl, scrollToBottom, onFinish } = options;
 
+  // Every way out lands the bubble in place and tells the caller, whether it
+  // flew or not; one helper, so no early exit can forget half of that.
+  const done = () => {
+    removeFlying(messageID);
+    onFinish?.();
+  };
+
   // 1. Accessibility: respect prefers-reduced-motion
   if (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+    // Consumed here as step 5 would have: left behind, a stale rect from this
+    // send would be where the next one flies from.
     lastComposerRect.value = null;
-    if (!flownIDs.value.includes(messageID)) {
-      flownIDs.value = [...flownIDs.value, messageID];
-    }
-    flyingIDs.value = flyingIDs.value.filter((item) => item !== messageID);
-    onFinish?.();
+    done();
     return;
   }
 
@@ -130,8 +138,7 @@ export async function playSendAnimation(options: SendAnimationOptions): Promise<
   // 4. Locate target element
   const messageRow = transcriptEl.querySelector<HTMLElement>(`[data-message-id="${messageID}"]`);
   if (!messageRow) {
-    removeFlying(messageID);
-    onFinish?.();
+    done();
     return;
   }
 
@@ -141,8 +148,7 @@ export async function playSendAnimation(options: SendAnimationOptions): Promise<
   const targetEl = isCompound ? messageRow : (bubbleEl || attachmentsEl || messageRow);
 
   if (typeof targetEl.animate !== 'function' || typeof mainEl.getBoundingClientRect !== 'function') {
-    removeFlying(messageID);
-    onFinish?.();
+    done();
     return;
   }
 
@@ -176,15 +182,13 @@ export async function playSendAnimation(options: SendAnimationOptions): Promise<
 
   // Guard against zero-size or unrendered elements (e.g. headless tests)
   if (!sourceRect || targetRect.width <= 0 || targetRect.height <= 0 || sourceRect.width <= 0) {
-    removeFlying(messageID);
-    onFinish?.();
+    done();
     return;
   }
 
   // Guard against targets completely outside visible area
   if (targetRect.bottom < mainRect.top || targetRect.top > mainRect.bottom + 100) {
-    removeFlying(messageID);
-    onFinish?.();
+    done();
     return;
   }
 
@@ -217,8 +221,7 @@ export async function playSendAnimation(options: SendAnimationOptions): Promise<
 
   // If already at destination, finish immediately
   if (Math.hypot(deltaX, deltaY) < 4) {
-    removeFlying(messageID);
-    onFinish?.();
+    done();
     return;
   }
 
@@ -251,23 +254,26 @@ export async function playSendAnimation(options: SendAnimationOptions): Promise<
   clone.style.transformOrigin = 'center center';
   clone.style.willChange = 'transform, opacity, border-radius, box-shadow';
 
+  // 8. Keyframes: emerge enlarged from composer and shrink down into target bubble (1.0x)
+  const emerge = {
+    transform: `translate3d(${deltaX}px, ${deltaY}px, 0) scale(${EMERGE_SCALE})`,
+    borderRadius: '22px',
+    boxShadow: '0 12px 30px rgba(0, 0, 0, 0.22), 0 2px 6px rgba(0, 0, 0, 0.12)',
+    opacity: 0.95,
+  };
+
   // Apply initial keyframe 0 values before DOM insertion so the clone emerges
   // directly from the composer, preventing any single-frame flash at destination.
-  clone.style.transform = `translate3d(${deltaX}px, ${deltaY}px, 0) scale(1.18)`;
-  clone.style.borderRadius = '22px';
-  clone.style.boxShadow = '0 12px 30px rgba(0, 0, 0, 0.22), 0 2px 6px rgba(0, 0, 0, 0.12)';
-  clone.style.opacity = '0.95';
+  // Read from the keyframe itself, so the two cannot disagree by a frame.
+  clone.style.transform = emerge.transform;
+  clone.style.borderRadius = emerge.borderRadius;
+  clone.style.boxShadow = emerge.boxShadow;
+  clone.style.opacity = String(emerge.opacity);
 
   mainEl.appendChild(clone);
 
-  // 8. Keyframes: emerge enlarged from composer (1.18x) and shrink down into target bubble (1.0x)
   const keyframes: Keyframe[] = [
-    {
-      transform: `translate3d(${deltaX}px, ${deltaY}px, 0) scale(1.18)`,
-      borderRadius: '22px',
-      boxShadow: '0 12px 30px rgba(0, 0, 0, 0.22), 0 2px 6px rgba(0, 0, 0, 0.12)',
-      opacity: 0.95,
-    },
+    emerge,
     {
       transform: `translate3d(${deltaX * 0.35}px, ${deltaY * 0.28}px, 0) scale(1.08)`,
       borderRadius: '18px 18px 10px 18px',
@@ -292,17 +298,11 @@ export async function playSendAnimation(options: SendAnimationOptions): Promise<
     });
   } catch {
     clone.remove();
-    removeFlying(messageID);
-    onFinish?.();
+    done();
     return;
   }
 
   activeAnimations.set(messageID, { animation: anim, clone });
-
-  const done = () => {
-    removeFlying(messageID);
-    onFinish?.();
-  };
 
   anim.onfinish = done;
   anim.oncancel = done;

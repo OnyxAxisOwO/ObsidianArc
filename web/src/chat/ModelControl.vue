@@ -103,12 +103,16 @@ async function morph(to: 'effort' | 'models'): Promise<void> {
 useEventListener(document, 'click', () => {
   if (open.value) toggle(false);
 });
+// Capture, and the default prevented, as OaMenu does: the chip sits under the
+// composer beside a side panel that also closes on Escape, and that panel only
+// yields to a key that has already been handled. Without this one press closed
+// both.
 useEventListener(document, 'keydown', (event: KeyboardEvent) => {
-  if (open.value && event.key === 'Escape') {
-    toggle(false);
-    chip.value?.focus();
-  }
-});
+  if (!open.value || event.key !== 'Escape') return;
+  event.preventDefault();
+  toggle(false);
+  chip.value?.focus();
+}, { capture: true });
 
 /**
  * Settles on a stop and tells the rest of the app.

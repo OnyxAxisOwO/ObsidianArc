@@ -130,6 +130,7 @@ export const zh: Record<StringKey, string> = {
   membersSaved: '已保存 {count} 个用户的分组和期限。',
   clearSearch: '清空搜索',
   noSearchResults: '没有匹配结果，试试其他关键词。',
+  searchRecentOnly: '只搜索最近的 {count} 个对话。',
   administration: '管理后台',
   account: '账户',
   signOut: '退出登录',

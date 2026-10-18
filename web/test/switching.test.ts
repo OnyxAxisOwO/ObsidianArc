@@ -24,7 +24,8 @@ vi.mock('@/api/chat', () => ({
     messages: [{ id: `${id}-row`, seq: 1, role: 'assistant', content: id, created_at: 0 }],
   })),
   renameConversation: vi.fn(),
-  deleteConversation: vi.fn(),
+  archiveConversation: vi.fn(async () => {}),
+  deleteConversation: vi.fn(async () => {}),
   deleteAllConversations: vi.fn(),
   uploadAttachment: vi.fn(),
   sendTurn: vi.fn((_request: unknown, handlers: TurnHandlers) => {
@@ -33,8 +34,9 @@ vi.mock('@/api/chat', () => ({
   }),
 }));
 
-const { activeID, busy, flash, flushDeltas, justSentID, messages, openConversation, pending, pendingID,
-  recentReasoningID, resetChat, runTurn, showPending, stoppable } =
+const { activeID, archiveConversation, busy, conversations, flash, flushDeltas, justSentID, messages,
+  openConversation, pending, pendingID, recentReasoningID, removeConversation, resetChat, runTurn, showPending,
+  stoppable } =
   await import('../src/chat/useChat');
 const { models, selectedID } = await import('../src/chat/useModels');
 
@@ -205,4 +207,29 @@ describe('switching conversations while a turn runs', () => {
     expect(flash.value).toBe(t('failed'));
     warn.mockRestore();
   });
+
+  // Archiving or deleting the open conversation used to clear only its id and
+  // rows, so the block still streaming into it kept drawing on the blank
+  // screen left behind until the turn ended.
+  for (const [name, drop] of [['archiving', archiveConversation], ['deleting', removeConversation]] as const) {
+    it(`stops drawing the streamed block after ${name} the conversation it streams into`, async () => {
+      const running = runTurn({ content: 'hi' });
+      start();
+      expect(showPending.value).toBe(true);
+
+      const entry = conversations.value.find((conversation) => conversation.id === 'A')!;
+      expect(await drop(entry)).toBe(true);
+
+      expect(activeID.value).toBe('');
+      expect(messages.value).toEqual([]);
+      expect(showPending.value).toBe(false);
+      // The turn itself is not cut off: the server still saves it.
+      expect(busy.value).toBe(true);
+
+      turn.finish?.();
+      await running;
+      expect(busy.value).toBe(false);
+      expect(messages.value).toEqual([]);
+    });
+  }
 });

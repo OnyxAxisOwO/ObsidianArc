@@ -277,6 +277,47 @@ describe('markdown renderer', () => {
 
   // ESCAPABLE is a string, and every string includes the empty one, so a
   // backslash at the end of a block used to append `undefined` to the text.
+  // The table branch had no test at all, and the list's continuation rule is
+  // deliberately narrower than a paragraph's: these hold both in place.
+  describe('tables and list continuations', () => {
+    it('renders a header, aligned cells and body rows', () => {
+      const table = render('| a | b | c |\n|:--|:-:|--:|\n| 1 | **2** | 3 |\n| 4 | 5 | 6 |').firstChild as HTMLTableElement;
+      expect(table.tagName).toBe('TABLE');
+      const heads = [...table.querySelectorAll('thead th')] as HTMLElement[];
+      expect(heads.map((cell) => cell.textContent)).toEqual(['a', 'b', 'c']);
+      expect(heads.map((cell) => cell.style.textAlign)).toEqual(['left', 'center', 'right']);
+      const rows = [...table.querySelectorAll('tbody tr')];
+      expect(rows).toHaveLength(2);
+      const cells = [...rows[0]!.querySelectorAll('td')] as HTMLElement[];
+      expect(cells.map((cell) => cell.style.textAlign)).toEqual(['left', 'center', 'right']);
+      expect(cells[1]!.querySelector('strong')?.textContent).toBe('2');
+    });
+
+    it('keeps pipes in a paragraph when the next line is not a divider', () => {
+      const blocks = parse('a | b\nc | d');
+      expect(blocks).toHaveLength(1);
+      expect(blocks[0]).toMatchObject({ type: 'paragraph' });
+      expect(render('a | b\nc | d').querySelector('table')).toBeNull();
+    });
+
+    it('nests a heading or quote written under a list item rather than ending the list', () => {
+      const blocks = parse('- item\n  # inner\n  > quoted\n- next');
+      expect(blocks).toHaveLength(1);
+      const list = blocks[0] as { type: string; items: Array<Array<{ type: string }>> };
+      expect(list.type).toBe('list');
+      expect(list.items).toHaveLength(2);
+      expect(list.items[0]!.map((block) => block.type)).toEqual(['paragraph', 'heading', 'blockquote']);
+    });
+
+    it('ends a paragraph at a heading, a rule, a quote, an item or a fence', () => {
+      for (const start of ['# h', '---', '> q', '- i', '```', '$$x$$']) {
+        const blocks = parse(`text\n${start}`);
+        expect(blocks[0], start).toMatchObject({ type: 'paragraph' });
+        expect(blocks.length, start).toBeGreaterThan(1);
+      }
+    });
+  });
+
   describe('a backslash at the end of a block', () => {
     it('stays a literal backslash rather than rendering the word undefined', () => {
       expect(render('C:\\Users\\').textContent).toBe('C:\\Users\\');

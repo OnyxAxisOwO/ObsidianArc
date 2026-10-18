@@ -106,4 +106,23 @@ describe('ModelControl effort drag', () => {
 
     expect(setReasoning).not.toHaveBeenCalled();
   });
+
+  // A side panel beside the composer also closes on Escape, and yields only to
+  // a key already handled. The chip's popover answered in the bubble phase
+  // without saying so, and one press closed both.
+  it('takes Escape before a panel beneath it, and marks it handled', async () => {
+    app = createApp(ModelControl);
+    app.mount(host);
+    await openSlider();
+
+    let seenByPanel: boolean | null = null;
+    const panel = (event: KeyboardEvent) => { seenByPanel = event.defaultPrevented; };
+    document.addEventListener('keydown', panel);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    document.removeEventListener('keydown', panel);
+
+    expect(seenByPanel).toBe(true);
+    await nextTick();
+    expect(host.querySelector('.ai-model-chip')!.getAttribute('aria-expanded')).not.toBe('true');
+  });
 });
