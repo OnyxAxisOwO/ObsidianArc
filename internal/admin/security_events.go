@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	securityevents "github.com/OnyxAxisOwO/ObsidianArc/internal/security"
 )
 
@@ -27,7 +28,7 @@ func (h *Handlers) listSecurityEvents(w http.ResponseWriter, r *http.Request) er
 	}
 	filter.Offset = max(0, filter.Offset)
 	if value := strings.TrimSpace(query.Get("user_id")); value != "" {
-		if !isValidID(value) {
+		if !id.Valid(value) {
 			return httpx.BadRequest("Malformed user id.")
 		}
 		filter.UserID = value

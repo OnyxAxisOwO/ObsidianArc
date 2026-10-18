@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
@@ -278,8 +277,8 @@ func (h *Handlers) grantBonus(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (h *Handlers) bonusGrants(w http.ResponseWriter, r *http.Request) error {
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	limit := intParam(r.URL.Query().Get("limit"), 0)
+	offset := intParam(r.URL.Query().Get("offset"), 0)
 	rows, total, err := h.Bonus.GrantsInBar(r.Context(), r.PathValue("id"), limit, offset)
 	if err != nil {
 		return httpx.Internal(err)

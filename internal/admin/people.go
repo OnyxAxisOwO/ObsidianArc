@@ -15,6 +15,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/quota"
 	securityevents "github.com/OnyxAxisOwO/ObsidianArc/internal/security"
@@ -94,7 +95,7 @@ func (h *Handlers) listUsers(w http.ResponseWriter, r *http.Request) error {
 		Limit:    intParam(query.Get("limit"), 50),
 		Offset:   intParam(query.Get("offset"), 0),
 	}
-	if filter.GroupID != "" && !isValidID(filter.GroupID) {
+	if filter.GroupID != "" && !id.Valid(filter.GroupID) {
 		return httpx.BadRequest("Malformed group id.")
 	}
 	switch filter.Role {
@@ -249,7 +250,7 @@ func (h *Handlers) createUser(w http.ResponseWriter, r *http.Request) error {
 		body.AdminPermissions = nil
 	}
 	if body.GroupID != "" {
-		if !isValidID(body.GroupID) {
+		if !id.Valid(body.GroupID) {
 			return httpx.BadRequest("Malformed group id.")
 		}
 		if _, err := h.groups.ByID(r.Context(), nil, body.GroupID); err != nil {
@@ -401,7 +402,7 @@ func (h *Handlers) updateUser(w http.ResponseWriter, r *http.Request) error {
 		return httpx.BadRequest("API restriction hours require an API restriction choice.")
 	}
 	if body.GroupID != nil && *body.GroupID != "" {
-		if !isValidID(*body.GroupID) {
+		if !id.Valid(*body.GroupID) {
 			return httpx.BadRequest("Malformed group id.")
 		}
 		if _, err := h.groups.ByID(r.Context(), nil, *body.GroupID); err != nil {
@@ -742,7 +743,7 @@ func (h *Handlers) userConversations(w http.ResponseWriter, r *http.Request) err
 		return err
 	}
 
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	limit := intParam(r.URL.Query().Get("limit"), 0)
 	records, total, err := h.conversations.ListPage(r.Context(), userID, limit, intParam(r.URL.Query().Get("offset"), 0))
 	if err != nil {
 		return httpx.Internal(err)

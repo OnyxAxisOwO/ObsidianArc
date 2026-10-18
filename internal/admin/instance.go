@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -15,7 +16,9 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/screening"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
@@ -402,6 +405,139 @@ var numericBounds = map[string][2]int{
 	settings.HealthResetAt: {0, math.MaxInt},
 }
 
+// valueRule is a check that needs nothing but the key and its value, written
+// once for the save, which answers with its error, and the import, which drops
+// the key and names it. Each rule used to be written in both functions, and an
+// import once stored a value the save refused because only one copy changed.
+type valueRule struct {
+	keys  []string
+	check func(key, value string) error
+}
+
+var valueRules = []valueRule{
+	{[]string{settings.LandingMode}, func(_, value string) error {
+		if !settings.ValidLandingMode(value) {
+			return httpx.BadRequest("Unknown landing mode %q.", value)
+		}
+		return nil
+	}},
+	{[]string{settings.SiteAuthCardPosition}, func(_, value string) error {
+		if !settings.ValidAuthCardPosition(value) {
+			return httpx.BadRequest("Unknown auth card position %q.", value)
+		}
+		return nil
+	}},
+	// Empty is allowed for both — it means "no override", not "black" — so
+	// only a non-empty value that fails the format is refused.
+	{[]string{settings.PWAThemeColor, settings.PWABackgroundColor}, func(key, value string) error {
+		if value != "" && !settings.ValidHexColor(value) {
+			return httpx.BadRequest("Setting %q must be a #rrggbb colour.", key)
+		}
+		return nil
+	}},
+	// A manifest icon on another host is silently dropped by the image
+	// policy anyway; refusing it here says so instead of leaving an operator
+	// to wonder why the install prompt has no icon.
+	{[]string{settings.PWAIconURL}, func(_, value string) error {
+		if !settings.ValidPWAIconURL(value) {
+			return httpx.BadRequest("The PWA icon must be a path on this server or a data URI.")
+		}
+		return nil
+	}},
+	// An unparseable schedule would read as "off" and quietly never run, so
+	// it is refused here rather than discovered by an operator wondering why
+	// nothing is being cleaned up.
+	{[]string{settings.AttachmentPurgeDaily}, func(_, value string) error {
+		if strings.TrimSpace(value) == "" {
+			return nil
+		}
+		if _, _, ok := conversation.ParseDailyTime(value); !ok {
+			return httpx.BadRequest("The daily cleanup time must be HH:MM, or empty for never.")
+		}
+		return nil
+	}},
+	// An unknown display mode would leave every user's allowance rendered as
+	// nothing at all, so it is checked here rather than guessed at in the
+	// browser.
+	{[]string{settings.UsageDisplay}, func(_, value string) error {
+		if !settings.ValidUsageDisplay(value) {
+			return httpx.BadRequest("Unknown usage display %q.", value)
+		}
+		return nil
+	}},
+	{[]string{settings.HomeNoticeTone}, func(_, value string) error {
+		if !settings.ValidHomeNoticeTone(value) {
+			return httpx.BadRequest("Unknown notice tone %q.", value)
+		}
+		return nil
+	}},
+	{[]string{settings.LeaderboardIdentity}, func(_, value string) error {
+		if !settings.ValidLeaderboardIdentity(value) {
+			return httpx.BadRequest("Unknown leaderboard identity %q.", value)
+		}
+		return nil
+	}},
+}
+
+// checkValues is the save's side of valueRules: the first refusal in the
+// table's order, so the same body is always answered with the same error.
+func checkValues(body map[string]string) error {
+	for _, rule := range valueRules {
+		for _, key := range rule.keys {
+			if value, present := body[key]; present {
+				if err := rule.check(key, value); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// The settings that name a row. A trial model that does not exist would make
+// the front door offer a conversation it cannot hold, a missing sign-up
+// reviewer model would point the reviewer at nothing, and a registration group
+// that does not exist would send every new account into no group at all, which
+// quietly means no models. The save refuses one of these; the import clears it.
+var referenceKeys = []string{settings.TrialModel, settings.SignupReviewModel, settings.RegistrationGroup}
+
+// referenceRefused checks a value for one of referenceKeys. refusal is what the
+// save answers and what the import clears the key for; err is a lookup that
+// failed for some reason other than the row being absent, which says nothing
+// about the row and so is reported rather than taken for an answer. Empty
+// means "none" and is always allowed.
+func (h *Handlers) referenceRefused(ctx context.Context, key, value string) (refusal, err error) {
+	if value == "" {
+		return nil, nil
+	}
+	if key == settings.RegistrationGroup {
+		if !id.Valid(value) {
+			return httpx.BadRequest("Malformed group id."), nil
+		}
+		if _, err := h.groups.ByID(ctx, nil, value); err != nil {
+			if errors.Is(err, group.ErrNotFound) {
+				return translateGroupError(err), nil
+			}
+			return nil, err
+		}
+		return nil, nil
+	}
+	if !id.Valid(value) {
+		return httpx.BadRequest("Malformed model id."), nil
+	}
+	if _, err := h.models.ByID(ctx, value); err != nil {
+		if errors.Is(err, model.ErrNotFound) {
+			return model.TranslateError(err), nil
+		}
+		return nil, err
+	}
+	return nil, nil
+}
+
+// The second-step settings, which the import checks one at a time: once
+// against the request's account and again against the row the write reads.
+var twoFactorKeys = []string{settings.TwoFactorPolicy, settings.TwoFactorIssuer, settings.TwoFactorBackofficeMode}
+
 // overlongNotice lists the home-notice keys holding more characters than they
 // may, in the order the save reports them. The notice is served to people who
 // have not signed in, so the save and the import both measure it here rather
@@ -463,11 +599,8 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 		}
 	}
 
-	if mode, present := body[settings.LandingMode]; present && !settings.ValidLandingMode(mode) {
-		return httpx.BadRequest("Unknown landing mode %q.", mode)
-	}
-	if pos, present := body[settings.SiteAuthCardPosition]; present && !settings.ValidAuthCardPosition(pos) {
-		return httpx.BadRequest("Unknown auth card position %q.", pos)
+	if err := checkValues(body); err != nil {
+		return err
 	}
 	if err := checkThemeSettings(body); err != nil {
 		return err
@@ -495,52 +628,16 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 			}
 		}
 	}
-	// Empty is allowed for both — it means "no override", not "black" — so
-	// only a non-empty value that fails the format is refused.
-	for _, key := range []string{settings.PWAThemeColor, settings.PWABackgroundColor} {
-		if value, present := body[key]; present && value != "" && !settings.ValidHexColor(value) {
-			return httpx.BadRequest("Setting %q must be a #rrggbb colour.", key)
-		}
-	}
-	// A manifest icon on another host is silently dropped by the image
-	// policy anyway; refusing it here says so instead of leaving an operator
-	// to wonder why the install prompt has no icon.
-	if url, present := body[settings.PWAIconURL]; present && !settings.ValidPWAIconURL(url) {
-		return httpx.BadRequest("The PWA icon must be a path on this server or a data URI.")
-	}
-	// A trial model that does not exist would make the front door offer a
-	// conversation it cannot hold, and a missing sign-up reviewer model would
-	// point the reviewer at nothing. The import checks the same two keys and
-	// clears what it cannot use; a save names the problem instead.
-	for _, key := range []string{settings.TrialModel, settings.SignupReviewModel} {
-		modelID, present := body[key]
-		if !present || modelID == "" {
+	for _, key := range referenceKeys {
+		if _, present := body[key]; !present {
 			continue
 		}
-		if !isValidID(modelID) {
-			return httpx.BadRequest("Malformed model id.")
+		refusal, err := h.referenceRefused(r.Context(), key, body[key])
+		if err != nil {
+			return httpx.Internal(err)
 		}
-		if _, err := h.models.ByID(r.Context(), modelID); err != nil {
-			return model.TranslateError(err)
-		}
-	}
-
-	// An unknown display mode would leave every user's allowance rendered as
-	// nothing at all, so it is checked here rather than guessed at in the
-	// browser.
-	if raw, present := body[settings.AttachmentMaxMB]; present {
-		size, err := strconv.Atoi(strings.TrimSpace(raw))
-		if err != nil || size < 1 || size > settings.MaxAttachmentCeilingMB {
-			return httpx.BadRequest("The attachment limit must be between 1 and %d MB.",
-				settings.MaxAttachmentCeilingMB)
-		}
-	}
-	// An unparseable schedule would read as "off" and quietly never run, so
-	// it is refused here rather than discovered by an operator wondering why
-	// nothing is being cleaned up.
-	if raw, present := body[settings.AttachmentPurgeDaily]; present && strings.TrimSpace(raw) != "" {
-		if _, _, ok := conversation.ParseDailyTime(raw); !ok {
-			return httpx.BadRequest("The daily cleanup time must be HH:MM, or empty for never.")
+		if refusal != nil {
+			return refusal
 		}
 	}
 	for key, bounds := range numericBounds {
@@ -553,34 +650,14 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 		}
 	}
 
-	if display, present := body[settings.UsageDisplay]; present && !settings.ValidUsageDisplay(display) {
-		return httpx.BadRequest("Unknown usage display %q.", display)
-	}
 	// The notice is served to people who have not signed in, so how much of it
 	// there can be is decided here and not by whatever the form happened to send.
-	if tone, present := body[settings.HomeNoticeTone]; present && !settings.ValidHomeNoticeTone(tone) {
-		return httpx.BadRequest("Unknown notice tone %q.", tone)
-	}
 	if over := overlongNotice(body); len(over) > 0 {
 		if over[0] == settings.HomeNotice {
 			return httpx.BadRequest("The notice line is at most %d characters; put the rest in the text that opens from it.",
 				settings.MaxHomeNoticeTitleChars)
 		}
 		return httpx.BadRequest("The notice text is at most %d characters.", settings.MaxHomeNoticeBodyChars)
-	}
-	if identity, present := body[settings.LeaderboardIdentity]; present && !settings.ValidLeaderboardIdentity(identity) {
-		return httpx.BadRequest("Unknown leaderboard identity %q.", identity)
-	}
-
-	// A registration group that does not exist would send every new account
-	// into no group at all, which quietly means no models.
-	if groupID, present := body[settings.RegistrationGroup]; present && groupID != "" {
-		if !isValidID(groupID) {
-			return httpx.BadRequest("Malformed group id.")
-		}
-		if _, err := h.groups.ByID(r.Context(), nil, groupID); err != nil {
-			return translateGroupError(err)
-		}
 	}
 
 	if err := h.validateDefined(body); err != nil {
@@ -668,41 +745,19 @@ func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error 
 		}
 	}
 
-	if mode, present := applied[settings.LandingMode]; present && !settings.ValidLandingMode(mode) {
-		delete(applied, settings.LandingMode)
-		skipped = append(skipped, settings.LandingMode)
-	}
-	if pos, present := applied[settings.SiteAuthCardPosition]; present && !settings.ValidAuthCardPosition(pos) {
-		delete(applied, settings.SiteAuthCardPosition)
-		skipped = append(skipped, settings.SiteAuthCardPosition)
+	for _, rule := range valueRules {
+		for _, key := range rule.keys {
+			if value, present := applied[key]; present && rule.check(key, value) != nil {
+				delete(applied, key)
+				skipped = append(skipped, key)
+			}
+		}
 	}
 	for _, key := range themeChecked {
 		if value, present := applied[key]; present && checkThemeSettings(map[string]string{key: value}) != nil {
 			delete(applied, key)
 			skipped = append(skipped, key)
 		}
-	}
-	if display, present := applied[settings.UsageDisplay]; present && !settings.ValidUsageDisplay(display) {
-		delete(applied, settings.UsageDisplay)
-		skipped = append(skipped, settings.UsageDisplay)
-	}
-	if tone, present := applied[settings.HomeNoticeTone]; present && !settings.ValidHomeNoticeTone(tone) {
-		delete(applied, settings.HomeNoticeTone)
-		skipped = append(skipped, settings.HomeNoticeTone)
-	}
-	if identity, present := applied[settings.LeaderboardIdentity]; present && !settings.ValidLeaderboardIdentity(identity) {
-		delete(applied, settings.LeaderboardIdentity)
-		skipped = append(skipped, settings.LeaderboardIdentity)
-	}
-	for _, key := range []string{settings.PWAThemeColor, settings.PWABackgroundColor} {
-		if value, present := applied[key]; present && value != "" && !settings.ValidHexColor(value) {
-			delete(applied, key)
-			skipped = append(skipped, key)
-		}
-	}
-	if url, present := applied[settings.PWAIconURL]; present && !settings.ValidPWAIconURL(url) {
-		delete(applied, settings.PWAIconURL)
-		skipped = append(skipped, settings.PWAIconURL)
 	}
 	// Dropped and named, like the rest of this document, rather than failing the
 	// whole import: a file exported before this check existed can carry one.
@@ -715,7 +770,7 @@ func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error 
 	// Dropped rather than refused, like everything else here — and for the
 	// importer's own sake: a file from an instance that requires the second
 	// step must not shut out an operator who has not switched it on yet.
-	for _, key := range []string{settings.TwoFactorPolicy, settings.TwoFactorIssuer, settings.TwoFactorBackofficeMode} {
+	for _, key := range twoFactorKeys {
 		if value, present := applied[key]; present {
 			if checkTwoFactorSettings(auth.MustUser(r.Context()), map[string]string{key: value}) != nil {
 				delete(applied, key)
@@ -729,19 +784,6 @@ func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error 
 			h.auth.VerifyTwoFactorCode(r.Context(), actor, strings.TrimSpace(twoFactorCode), h.clientIP(r)) != nil {
 			delete(applied, settings.SignupReviewPrompt)
 			skipped = append(skipped, settings.SignupReviewPrompt)
-		}
-	}
-	if raw, present := applied[settings.AttachmentPurgeDaily]; present && strings.TrimSpace(raw) != "" {
-		if _, _, ok := conversation.ParseDailyTime(raw); !ok {
-			delete(applied, settings.AttachmentPurgeDaily)
-			skipped = append(skipped, settings.AttachmentPurgeDaily)
-		}
-	}
-	if raw, present := applied[settings.AttachmentMaxMB]; present {
-		size, err := strconv.Atoi(strings.TrimSpace(raw))
-		if err != nil || size < 1 || size > settings.MaxAttachmentCeilingMB {
-			delete(applied, settings.AttachmentMaxMB)
-			skipped = append(skipped, settings.AttachmentMaxMB)
 		}
 	}
 	for key, bounds := range numericBounds {
@@ -761,33 +803,23 @@ func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error 
 		skipped = append(skipped, key)
 	}
 
-	// The identifiers that name a model, and the one that names a group. A
-	// dangling one is cleared rather than carried, so the instance ends up in
-	// a state it can describe: "no default group" beats "a default group that
-	// does not exist". The list is a loop rather than a block each so that a
-	// fourth identifier is added in one place.
-	for _, key := range []string{settings.TrialModel, settings.SignupReviewModel} {
-		modelID, present := applied[key]
-		if !present || modelID == "" {
+	// A dangling identifier is cleared rather than carried, so the instance
+	// ends up in a state it can describe: "no default group" beats "a default
+	// group that does not exist". A lookup that failed says nothing about the
+	// row, so it fails the import instead: clearing on it used to wipe a
+	// working trial model or registration group whenever the database blinked.
+	for _, key := range referenceKeys {
+		value, present := applied[key]
+		if !present {
 			continue
 		}
-		if !isValidID(modelID) {
+		refusal, err := h.referenceRefused(r.Context(), key, value)
+		if err != nil {
+			return httpx.Internal(err)
+		}
+		if refusal != nil {
 			applied[key] = ""
 			skipped = append(skipped, key)
-			continue
-		}
-		if _, err := h.models.ByID(r.Context(), modelID); err != nil {
-			applied[key] = ""
-			skipped = append(skipped, key)
-		}
-	}
-	if groupID, present := applied[settings.RegistrationGroup]; present && groupID != "" {
-		if !isValidID(groupID) {
-			applied[settings.RegistrationGroup] = ""
-			skipped = append(skipped, settings.RegistrationGroup)
-		} else if _, err := h.groups.ByID(r.Context(), nil, groupID); err != nil {
-			applied[settings.RegistrationGroup] = ""
-			skipped = append(skipped, settings.RegistrationGroup)
 		}
 	}
 
@@ -806,7 +838,7 @@ func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error 
 		if err != nil {
 			return translateUserError(err)
 		}
-		for _, key := range []string{settings.TwoFactorPolicy, settings.TwoFactorIssuer, settings.TwoFactorBackofficeMode} {
+		for _, key := range twoFactorKeys {
 			if value, present := applied[key]; present && checkTwoFactorSettings(fresh, map[string]string{key: value}) != nil {
 				delete(applied, key)
 				skipped = append(skipped, key)

@@ -6,6 +6,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/invite"
 )
 
@@ -83,7 +84,7 @@ func (h *Handlers) createInvites(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	if body.GroupID != "" {
-		if !isValidID(body.GroupID) {
+		if !id.Valid(body.GroupID) {
 			return httpx.BadRequest("Malformed group id.")
 		}
 		if _, err := h.groups.ByID(r.Context(), nil, body.GroupID); err != nil {

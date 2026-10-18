@@ -10,6 +10,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/quota"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
@@ -71,7 +72,7 @@ func (h *Handlers) usageAllowances(w http.ResponseWriter, r *http.Request) error
 
 	query := r.URL.Query()
 	groupID := query.Get("group_id")
-	if groupID != "" && !isValidID(groupID) {
+	if groupID != "" && !id.Valid(groupID) {
 		return httpx.BadRequest("Malformed group id.")
 	}
 	state := query.Get("state")

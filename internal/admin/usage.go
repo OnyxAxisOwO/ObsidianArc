@@ -59,7 +59,7 @@ func (h *Handlers) resetQuota(w http.ResponseWriter, r *http.Request) error {
 		return httpx.WriteJSON(w, http.StatusOK, map[string]any{"accounts": total})
 
 	case "group":
-		if !isValidID(body.ID) {
+		if !id.Valid(body.ID) {
 			return httpx.BadRequest("A group is required.")
 		}
 		// The count is for the answer only. Naming every member to reset them
@@ -80,7 +80,7 @@ func (h *Handlers) resetQuota(w http.ResponseWriter, r *http.Request) error {
 		return httpx.WriteJSON(w, http.StatusOK, map[string]any{"accounts": total})
 
 	case "user":
-		if !isValidID(body.ID) {
+		if !id.Valid(body.ID) {
 			return httpx.BadRequest("An account is required.")
 		}
 		if err := h.authorisePolicyScope(r, quota.ScopeUser, body.ID, false); err != nil {
@@ -193,14 +193,16 @@ func filterFrom(r *http.Request) (usage.Filter, error) {
 		Status:     usage.Status(query.Get("status")),
 	}
 
-	for name, value := range map[string]string{
-		"user_id":     filter.UserID,
-		"group_id":    filter.GroupID,
-		"model_id":    filter.ModelID,
-		"provider_id": filter.ProviderID,
+	// A list, not a map: with several malformed, a map's order named a
+	// different one from one request to the next.
+	for _, param := range []struct{ name, value string }{
+		{"user_id", filter.UserID},
+		{"group_id", filter.GroupID},
+		{"model_id", filter.ModelID},
+		{"provider_id", filter.ProviderID},
 	} {
-		if value != "" && !id.Valid(value) {
-			return usage.Filter{}, httpx.BadRequest("Malformed %s.", name)
+		if param.value != "" && !id.Valid(param.value) {
+			return usage.Filter{}, httpx.BadRequest("Malformed %s.", param.name)
 		}
 	}
 	switch filter.Status {
@@ -330,24 +332,7 @@ func (h *Handlers) usageSummary(w http.ResponseWriter, r *http.Request) error {
 		}
 		defer release()
 
-		// Hourly for a short range, daily for a long one: a month of hourly
-		// buckets is seven hundred points nobody can read.
-		bucket := time.Hour
-		span := time.Duration(0)
-		if filter.Since > 0 {
-			if filter.Until > filter.Since {
-				span = time.Duration(filter.Until-filter.Since) * time.Millisecond
-			} else {
-				span = time.Since(time.UnixMilli(filter.Since))
-			}
-		} else {
-			// Since <= 0 represents all time, which is unbounded.
-			// Use daily buckets to avoid hundreds of unreadable hourly buckets.
-			span = 4 * 24 * time.Hour
-		}
-		if span > 3*24*time.Hour {
-			bucket = 24 * time.Hour
-		}
+		span, bucket := summarySpan(filter, time.Now())
 
 		var (
 			totals   usage.Totals
@@ -423,6 +408,28 @@ func (h *Handlers) usageSummary(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	return httpx.WriteJSON(w, http.StatusOK, res)
+}
+
+// summarySpan is how long the window is, which also sizes the comparison
+// window before it, and the bucket its series is drawn in. Hourly for a short
+// range, daily for a long one: a month of hourly buckets is seven hundred
+// points nobody can read.
+func summarySpan(filter usage.Filter, now time.Time) (span, bucket time.Duration) {
+	switch {
+	case filter.Since <= 0:
+		// All time is unbounded; daily buckets keep it to points a reader
+		// can tell apart.
+		span = 4 * 24 * time.Hour
+	case filter.Until > filter.Since:
+		span = time.Duration(filter.Until-filter.Since) * time.Millisecond
+	default:
+		span = now.Sub(time.UnixMilli(filter.Since))
+	}
+	bucket = time.Hour
+	if span > 3*24*time.Hour {
+		bucket = 24 * time.Hour
+	}
+	return span, bucket
 }
 
 // keysOf is the first n keys of a ranked breakdown, skipping the empty one a

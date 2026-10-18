@@ -138,6 +138,7 @@ type Handlers struct {
 	// storageCacheTTL; see resources.go.
 	storageMu    sync.Mutex
 	storageCache *storageTotals
+	storageSF    singleflight.Group
 
 	// Not injected: it is two fields of state that only the resources page
 	// has any use for, and it is meaningless before the first request.
@@ -536,12 +537,6 @@ func translateProviderError(err error) error {
 		}
 		return httpx.Internal(err)
 	}
-}
-
-// asAdapter is errors.As with the adapter error type, named so the call sites
-// above read as a question rather than as plumbing.
-func asAdapter(err error, target **adapter.Error) bool {
-	return errors.As(err, target)
 }
 
 // headerNameFrom returns the name sanitizeHeaders appended to a header refusal,
