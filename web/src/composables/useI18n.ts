@@ -1,7 +1,8 @@
 // The dictionary, made reactive.
 //
-// `i18n.ts` is the source of truth: one `en` object, `StringKey` derived from
-// it, and a `zh` map the compiler forces to be complete. It has no notion of a
+// `i18n.ts` is the source of truth: one `en` object (with the backoffice's
+// half in i18n.admin.ts), `StringKey` derived from them, and a `zh` map the
+// compiler forces to be complete. It has no notion of a
 // render, which is why the reactive layer lives here rather than in it.
 //
 // This is the whole adaptation: a version counter that every translated

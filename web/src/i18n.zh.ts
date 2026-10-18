@@ -2,7 +2,14 @@
 // someone reading Chinese. English stays in the main bundle because it is
 // also the fallback: t() renders the English sentence for any key this file
 // has not supplied, which is what makes loading it late harmless rather than
-// a screen full of key names.
+// a screen full of key names. The backoffice's English is the one part that
+// is not in the main bundle (i18n.admin.ts), and the screens that read it are
+// in the same chunk, so where it is needed it is there.
+//
+// This file is not split the same way, and keeps the backoffice's Chinese:
+// moving it into the backoffice's chunk would make every English-reading
+// administrator download it, and a chunk of its own is a split nobody has
+// decided on (test/bundle.test.ts counts them).
 //
 // The type is what keeps it complete. `Record<StringKey, string>` over the
 // keys derived from the English source means a key added there and forgotten

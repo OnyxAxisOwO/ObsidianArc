@@ -1,23 +1,23 @@
 import type { PoWChallenge, PoWSolution } from '@/api/auth';
 
-// Pure synchronous SHA-256 implementation suitable for running inside Web Workers
-// or in-thread fallback without external dependencies.
-const SHA256_SRC = `
-function sha256(ascii) {
-  function rightRotate(value, amount) {
-    return (value >>> amount) | (value << (32 - amount));
-  }
-  var i, j;
-  var result = '';
-  var words = [];
-  var asciiBitLength = ascii.length * 8;
-  
-  var hash = [
-    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
-    0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
-  ];
+// SHA-256 written out rather than taken from crypto.subtle, which is
+// asynchronous: a search over thousands of nonces would await each one. It is
+// a real function rather than source text, so the jsdom fallback below calls
+// it without eval and the Worker is handed the same function by its source —
+// one copy in the bundle, not a function and a string of it. That is also
+// why it must not reach anything outside its own body: in the Worker there
+// is nothing else.
+function sha256(ascii: string): string {
+  const rotr = (value: number, amount: number): number => (value >>> amount) | (value << (32 - amount));
+  // Every read below is in bounds or a hole the message padding leaves; `?? 0`
+  // is what JavaScript's `undefined | 0` made of a hole, said so tsc sees it.
+  const at = (list: number[], index: number): number => list[index] ?? 0;
 
-  var k = [
+  const hash = [
+    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+    0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+  ];
+  const k = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
     0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
     0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
@@ -25,31 +25,35 @@ function sha256(ascii) {
     0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
     0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
     0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
   ];
 
-  words[asciiBitLength >> 5] |= 0x80 << (24 - (asciiBitLength % 32));
-  words[(((asciiBitLength + 64) >> 9) << 4) + 15] = asciiBitLength;
-
-  for (i = 0; i < ascii.length; i++) {
-    words[i >> 2] |= ascii.charCodeAt(i) << (24 - (i % 4) * 8);
+  const bits = ascii.length * 8;
+  const words: number[] = [];
+  words[bits >> 5] = at(words, bits >> 5) | (0x80 << (24 - (bits % 32)));
+  words[(((bits + 64) >> 9) << 4) + 15] = bits;
+  for (let i = 0; i < ascii.length; i++) {
+    words[i >> 2] = at(words, i >> 2) | (ascii.charCodeAt(i) << (24 - (i % 4) * 8));
   }
 
-  var w = new Array(64);
-  for (i = 0; i < words.length; i += 16) {
-    var a = hash[0], b = hash[1], c = hash[2], d = hash[3], e = hash[4], f = hash[5], g = hash[6], h = hash[7];
+  const w: number[] = [];
+  for (let i = 0; i < words.length; i += 16) {
+    let a = at(hash, 0), b = at(hash, 1), c = at(hash, 2), d = at(hash, 3);
+    let e = at(hash, 4), f = at(hash, 5), g = at(hash, 6), h = at(hash, 7);
 
-    for (j = 0; j < 64; j++) {
+    for (let j = 0; j < 64; j++) {
       if (j < 16) {
-        w[j] = words[i + j] | 0;
+        w[j] = at(words, i + j) | 0;
       } else {
-        var s0 = rightRotate(w[j - 15], 7) ^ rightRotate(w[j - 15], 18) ^ (w[j - 15] >>> 3);
-        var s1 = rightRotate(w[j - 2], 17) ^ rightRotate(w[j - 2], 19) ^ (w[j - 2] >>> 10);
-        w[j] = (w[j - 16] + s0 + w[j - 7] + s1) | 0;
+        const w15 = at(w, j - 15);
+        const w2 = at(w, j - 2);
+        const s0 = rotr(w15, 7) ^ rotr(w15, 18) ^ (w15 >>> 3);
+        const s1 = rotr(w2, 17) ^ rotr(w2, 19) ^ (w2 >>> 10);
+        w[j] = (at(w, j - 16) + s0 + at(w, j - 7) + s1) | 0;
       }
 
-      var temp1 = (h + (rightRotate(e, 6) ^ rightRotate(e, 11) ^ rightRotate(e, 25)) + ((e & f) ^ (~e & g)) + k[j] + w[j]) | 0;
-      var temp2 = ((rightRotate(a, 2) ^ rightRotate(a, 13) ^ rightRotate(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) | 0;
+      const temp1 = (h + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + at(k, j) + at(w, j)) | 0;
+      const temp2 = ((rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) | 0;
 
       h = g;
       g = f;
@@ -61,37 +65,28 @@ function sha256(ascii) {
       a = (temp1 + temp2) | 0;
     }
 
-    hash[0] = (hash[0] + a) | 0;
-    hash[1] = (hash[1] + b) | 0;
-    hash[2] = (hash[2] + c) | 0;
-    hash[3] = (hash[3] + d) | 0;
-    hash[4] = (hash[4] + e) | 0;
-    hash[5] = (hash[5] + f) | 0;
-    hash[6] = (hash[6] + g) | 0;
-    hash[7] = (hash[7] + h) | 0;
+    const round = [a, b, c, d, e, f, g, h];
+    for (let n = 0; n < 8; n++) hash[n] = (at(hash, n) + at(round, n)) | 0;
   }
 
-  for (i = 0; i < 8; i++) {
-    for (j = 3; j >= 0; j--) {
-      var byte = (hash[i] >> (j * 8)) & 255;
+  let result = '';
+  for (const word of hash) {
+    for (let j = 3; j >= 0; j--) {
+      const byte = (word >> (j * 8)) & 255;
       result += (byte < 16 ? '0' : '') + byte.toString(16);
     }
   }
   return result;
 }
-`;
 
 // Used only where Web Workers and Blobs do not exist at all (the jsdom tests).
-// It is an eval of the same source, which a production page's CSP refuses, so
-// it is deliberately not a fallback for a Worker that fails to start.
+// It is deliberately not a fallback for a Worker that fails to start: a search
+// on the page's own thread would freeze the very screen it runs for.
 function solveDirectly(challenge: PoWChallenge): number {
-  const fn = new Function('challenge', 'salt', 'maxNumber', `${SHA256_SRC}
-    for (var n = 0; n <= maxNumber; n++) {
-      if (sha256(salt + n) === challenge) return n;
-    }
-    return -1;
-  `);
-  return fn(challenge.challenge, challenge.salt, challenge.maxNumber) as number;
+  for (let n = 0; n <= challenge.maxNumber; n++) {
+    if (sha256(challenge.salt + n) === challenge.challenge) return n;
+  }
+  return -1;
 }
 
 export interface PoWTask {
@@ -141,7 +136,7 @@ export function solvePoW(challenge: PoWChallenge): PoWTask {
 
     try {
       const code = `
-        ${SHA256_SRC}
+        var sha256 = ${sha256.toString()};
         self.onmessage = function(e) {
           var c = e.data.challenge;
           var s = e.data.salt;
@@ -183,8 +178,8 @@ export function solvePoW(challenge: PoWChallenge): PoWTask {
       });
     } catch (failure) {
       // A Worker that will not start (a CSP that blocks it, say) is not solved
-      // on the page's own thread: that would need eval, which the same policy
-      // refuses, so the failure is reported as the solver's own error.
+      // on the page's own thread, for the reason solveDirectly gives, so the
+      // failure is reported as the solver's own error.
       cleanup();
       reject(new Error('PoW worker could not start', { cause: failure }));
     }

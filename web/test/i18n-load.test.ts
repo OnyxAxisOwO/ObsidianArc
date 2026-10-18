@@ -74,6 +74,20 @@ it('does not switch back to a language the reader has since moved away from', as
   expect(localStorage.getItem(KEY)).toBe('en');
 });
 
+// The backoffice's English is not in the main bundle: it is added when the
+// backoffice's chunk is evaluated, and the shell is what brings it in. The
+// setup file adds it for every other test, so this one starts from a module
+// graph without it to see that the shell alone is enough.
+it('has the backoffice’s English once the backoffice shell is loaded, not before', async () => {
+  vi.resetModules();
+  const i18n = await import('../src/i18n');
+  expect(i18n.t('navAudit')).toBe('navAudit');
+  expect(i18n.t('newChat')).toBe('New chat');
+
+  await import('../src/views/admin/AdminPage.vue');
+  expect(i18n.t('navAudit')).toBe('Audit trail');
+});
+
 it('resolves quietly when the dictionary of an overtaken pick fails', async () => {
   const chunk = gate();
   const i18n = await freshI18n(async () => {

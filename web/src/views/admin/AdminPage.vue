@@ -6,6 +6,10 @@
 // same radius, same surface, same hover tint — so moving between chatting and
 // administering does not feel like moving between two applications.
 
+// For its side effect, and first: it adds the backoffice's English to the
+// dictionary, and every screen below reads it. Imported here rather than by
+// the router so it lands in this chunk instead of a file of its own.
+import '@/i18n.admin';
 import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useMediaQuery } from '@vueuse/core';
 import { useRoute, useRouter, type RouteLocationRaw } from 'vue-router';

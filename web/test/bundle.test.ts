@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
+import { createHash } from 'node:crypto';
+import { enAdmin } from '../src/i18n.admin';
 
 // Asserts code-splitting invariants across build artifacts.
 //
@@ -142,6 +144,56 @@ describe('code splitting invariants in production bundle', () => {
     expect(indexContent).not.toContain('oa-landing-chat');
   });
 
+  // The backoffice's English travels in its chunk (src/i18n.admin.ts), so a
+  // key from there that any other chunk names would render as the key itself
+  // for an English reader who has not opened the backoffice. Typing cannot
+  // catch that — the keys are all StringKeys — so the build does: a key is
+  // named in a chunk as a quoted string, and the main dictionary's own keys
+  // are not quoted, so a quoted key outside the backoffice is a use of it.
+  // A failure here means the key belongs back in src/i18n.ts.
+  it('keeps the backoffice’s English in the backoffice, and every key it holds used only there', () => {
+    const files = builtAssets().filter((f) => f.endsWith('.js'));
+    const adminJsFile = files.find((f) => /^AdminPage-[^.]+\.js$/.test(f))!;
+    const read = (f: string) => fs.readFileSync(path.join(assetsDir, f), 'utf8');
+    const quotes = (text: string, key: string) => ['"', "'", '`'].some((q) => text.includes(q + key + q));
+
+    const keys = Object.keys(enAdmin);
+    expect(keys.length).toBeGreaterThan(1000);
+    for (const file of files.filter((f) => f !== adminJsFile && !/^i18n\.zh-/.test(f))) {
+      const text = read(file);
+      const named = keys.filter((key) => quotes(text, key));
+      expect(named, `${file} names backoffice-only keys`).toEqual([]);
+    }
+
+    expect(read(adminJsFile)).toContain(enAdmin.navAudit);
+    expect(read(files.find((f) => /^index-[^.]+\.js$/.test(f))!)).not.toContain(enAdmin.auditSubtitle);
+  });
+
+  // The proof-of-work Worker is given the solver's hash function by its source
+  // (src/lib/pow.ts), which only works while the minified function still
+  // reaches nothing outside its own body — a bundler helper hoisted out of it
+  // would leave the Worker calling a name it does not have. So the built
+  // function is run on its own, with only the globals, against node's hash.
+  it('builds a hash function the proof-of-work Worker can run on its own', () => {
+    const indexJsFile = builtAssets().find((f) => /^index-[^.]+\.js$/.test(f))!;
+    const source = fs.readFileSync(path.join(assetsDir, indexJsFile), 'utf8');
+    const name = /var sha256 = \$\{([\w$]+)\.toString\(\)\}/.exec(source)?.[1];
+    expect(name, 'the Worker script no longer takes the hash function by its source').toBeTruthy();
+
+    const start = source.indexOf(`function ${name}(`);
+    expect(start).toBeGreaterThanOrEqual(0);
+    let depth = 0;
+    let end = source.indexOf('{', start);
+    for (; end < source.length; end++) {
+      if (source[end] === '{') depth++;
+      else if (source[end] === '}' && --depth === 0) break;
+    }
+    const sha256 = new Function(`return ${source.slice(start, end + 1)};`)() as (text: string) => string;
+    for (const text of ['', 'abc', 'a'.repeat(55), 'a'.repeat(64), 'deadbeef42']) {
+      expect(sha256(text)).toBe(createHash('sha256').update(text).digest('hex'));
+    }
+  });
+
   it('ships one copy of the framework, in the entry', () => {
     const files = builtAssets();
     const indexJsFile = files.find((f) => /^index-[^.]+\.js$/.test(f))!;
@@ -195,7 +247,10 @@ describe('code splitting invariants in production bundle', () => {
   }
 
   it('keeps the first paint within its gzip budget', () => {
-    const FIRST_PAINT_GZIP_BUDGET = 250_000;
+    // 250 kB until the backoffice's English moved into its own chunk and took
+    // about 29 kB off the entry; ratcheted down then, so the room it made is
+    // not quietly spent.
+    const FIRST_PAINT_GZIP_BUDGET = 225_000;
     const gzipped = firstPaintGzipBytes();
     expect(gzipped, `first paint is ${gzipped} bytes gzipped, budget ${FIRST_PAINT_GZIP_BUDGET}`).toBeLessThanOrEqual(
       FIRST_PAINT_GZIP_BUDGET,

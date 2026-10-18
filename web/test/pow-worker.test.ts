@@ -91,6 +91,25 @@ describe('PoW solver through a Worker', () => {
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:pow-test');
   });
 
+  // The script the worker would run is built from the solver's own function by
+  // its source, so it only works if that function needs nothing from the
+  // module around it. Run the script by itself, with nothing but a `self`.
+  it('hands the worker a script that solves the challenge on its own', async () => {
+    solvePoW(challengeFor(7)).cancel();
+    const blob = (createObjectURL.mock.calls[0] as unknown as [Blob])[0];
+    const script = await blob.text();
+
+    const posted: unknown[] = [];
+    const self: { onmessage?: (event: { data: unknown }) => void; postMessage: (data: unknown) => void } = {
+      postMessage: (data) => posted.push(data),
+    };
+    new Function('self', script)(self);
+    const { challenge, salt, maxNumber } = challengeFor(7);
+    self.onmessage!({ data: { challenge, salt, maxNumber } });
+
+    expect(posted).toEqual([{ ok: true, nonce: 7 }]);
+  });
+
   it('cancel stops the worker and releases its URL before it answers', () => {
     const task = solvePoW(challengeFor(7));
     expect(workers).toHaveLength(1);
