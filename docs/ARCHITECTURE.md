@@ -225,10 +225,20 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 27.09 MB (23.39 MB `-tags nosqlite`, Linux amd64, Go 1.27.2); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 204.97 kB to open the chat (178.56 JS + 26.41 CSS), sent by the server at gzip's best level; the build's gzip column reads 205.69 kB (178.84 JS + 26.85 CSS) |
+| Binary (SQLite + embedded SPA) | < 30 MB | 27.10 MB (23.40 MB `-tags nosqlite`, Linux amd64, Go 1.27.2); this repository ships no plugin |
+| Frontend, on the wire | < 135 kB | 205.59 kB to open the chat (179.18 JS + 26.41 CSS), sent by the server at gzip's best level; the build's gzip column reads 206.32 kB (179.48 JS + 26.85 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-10-18 (UTC), after the billing and operations review
+fixes were merged. Refusals from feedback, announcements, backup and import
+now carry codes the interface translates, quoting their limits from the
+answer's details, and the reader's sentences for them sit in the entry's
+dictionary because `lib/api-error.ts` names them. 205.59 kB to open the chat
+(179.18 JS + 26.41 CSS), up 0.62 kB; the build's estimate is 206.32 kB,
+0.68 kB under the bundle test's 207 kB. Backoffice 170.57 kB plus 15.24 kB of
+stylesheet, Chinese dictionary 51.60 kB, the other lazy chunks unchanged. The
+binary is 27.10 MB (23.40 MB without SQLite), built the same way as below.
 
 Remeasured on 2026-10-18 (UTC), after a round of review fixes and three
 splits of the entry. The English only the backoffice says (1658 keys) moved out
