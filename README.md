@@ -171,11 +171,11 @@ Online documentation is hosted on Cloudflare Pages:
 
 | 指标 / Metric | 实测数据 / Measurement |
 | --- | --- |
-| 二进制体积 / Binary size | 27.96 MB（Linux amd64，本仓库不自带插件，其中插件运行时约 2.8 MB，构建时预压缩的 brotli 和 gzip 前端副本约 0.86 MB；使用 `-tags nosqlite` 为 24.26 MB） |
+| 二进制体积 / Binary size | 28.44 MB（Linux amd64，本仓库不自带插件，其中插件运行时约 2.8 MB，构建时预压缩的 brotli 和 gzip 前端副本约 0.86 MB；使用 `-tags nosqlite` 为 24.74 MB） |
 | 冷启动就绪时间 / Cold start | ~28 ms |
 | 空闲内存占用 / Idle RSS | ~16 MB |
 | 20 并发流式峰值 / Peak under 20 concurrency | ~54 MB 内存，11 个 OS 线程 |
-| 首次加载传输体积 / Wire payload | 打开对话界面：支持 brotli 的浏览器传输 173.06 kB（150.83 kB JS + 22.23 kB CSS），只支持 gzip 时传输 206.03 kB（179.51 kB JS + 26.52 kB CSS）——两者都是构建时预压缩、嵌入二进制的副本（brotli 最高质量、gzip 9 级），服务器按 Accept-Encoding 直接发送；首屏预算按 gzip 计，构建产物的 gzip 估算为 206.79 kB。以下按 gzip 计：中文语言包 (20.00 kB；后台独用的中文词条另成一包 32.85 kB，只在中文界面进入后台时加载)、管理后台 (170.13 kB JS + 15.29 kB CSS，后台独用的英文词条和样式随它加载)、终端 (8.05 kB JS + 1.64 kB CSS)、公式渲染器 (3.77 kB)、访客官网首页 (4.11 kB)、访客落地页 (3.11 kB)，以及每个编进二进制的插件各一个小分包，按需加载；以插件包安装的插件，其浏览器端模块只在启用后才取 |
+| 首次加载传输体积 / Wire payload | 打开对话界面：支持 brotli 的浏览器传输 169.17 kB（149.71 kB JS + 19.46 kB CSS），只支持 gzip 时传输 201.33 kB（178.46 kB JS + 22.87 kB CSS）——两者都是构建时预压缩、嵌入二进制的副本（brotli 最高质量、gzip 9 级），服务器按 Accept-Encoding 直接发送；首屏预算按 gzip 计，构建产物的 gzip 估算为 202.02 kB。以下按 gzip 计：中文语言包 (20.06 kB；后台独用的中文词条另成一包 36.94 kB，只在中文界面进入后台时加载)、管理后台 (170.65 kB JS + 15.25 kB CSS，后台独用的英文词条和样式随它加载)、终端 (8.07 kB JS + 1.67 kB CSS)、公式渲染器 (3.73 kB)、访客官网首页 (4.15 kB JS + 3.91 kB CSS)、访客落地页 (3.12 kB JS + 0.62 kB CSS)，以及每个编进二进制的插件各一个小分包，按需加载；以插件包安装的插件，其浏览器端模块只在启用后才取 |
 | 后台常驻协程 / Background goroutines | 3 个（请求日志写入、10 分钟清理、备份调度） |
 | Go 直接依赖 / Direct Go dependencies | 4 个（SQLite 驱动、pgx、x/crypto、wazero——插件包的沙箱） |
 | 前端运行时依赖 / Frontend runtime dependencies | 4 个（`vue`、`vue-router`、`@vueuse/core`、`lucide-vue-next`） |

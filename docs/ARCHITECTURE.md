@@ -227,10 +227,26 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 27.96 MB (24.26 MB `-tags nosqlite`, Linux amd64, Go 1.27.2), 0.86 MB of it the frontend's precompressed copies; this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 173.06 kB to open the chat with brotli (150.83 JS + 22.23 CSS); 206.03 kB with gzip (179.51 JS + 26.52 CSS), which the budget holds; both are copies compressed at build time; the build's gzip column reads 206.79 kB (179.94 JS + 26.85 CSS) |
+| Binary (SQLite + embedded SPA) | < 30 MB | 28.44 MB (24.74 MB `-tags nosqlite`, Linux amd64, Go 1.27.2), 0.86 MB of it the frontend's precompressed copies; this repository ships no plugin |
+| Frontend, on the wire | < 135 kB | 169.17 kB to open the chat with brotli (149.71 JS + 19.46 CSS); 201.33 kB with gzip (178.46 JS + 22.87 CSS), which the budget holds; both are copies compressed at build time; the build's gzip column reads 202.02 kB (178.88 JS + 23.14 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-10-18 (UTC), after the review fixes below were merged
+into one tree: the backoffice's refusals by code, the Options API branch
+compiled out, the front page's and the landing page's stylesheets in their own
+chunks, the backoffice's Chinese in its own, a conversation renamed in its row,
+and the build's brotli and gzip copies of every asset. To open the chat a
+browser that takes brotli receives 169.17 kB (149.71 JS + 19.46 CSS) and one
+that takes only gzip 201.33 kB (178.46 JS + 22.87 CSS); the build's gzip
+column reads 202.02 kB (178.88 JS + 23.14 CSS), 1.98 kB under the bundle
+test's 204 kB. The lazy chunks, gzip then brotli: backoffice 170.65 /
+137.00 kB plus 15.25 / 13.33 kB of stylesheet, Chinese dictionary 20.06 /
+16.92 kB, the backoffice's Chinese 36.94 / 30.87 kB, terminal 8.07 / 7.34 kB
+plus 1.67 / 1.40 kB, math 3.73 / 3.26 kB, front page 4.15 / 3.68 kB plus
+3.91 / 3.40 kB, landing page 3.12 / 2.75 kB plus 0.62 / 0.51 kB. The build
+emits thirteen files besides the plugins'. The binary is 28.44 MB (24.74 MB
+without SQLite), built the same way as below.
 
 Remeasured on 2026-10-18 (UTC), after the zone database was compiled in
 (`internal/checkin/tzdata.go`). A host with no zone files, Windows
@@ -870,22 +886,23 @@ is whether this project's own code grows, not whether the framework does. It
 moved from 130 to 135 kB when the measured bundle reached 131.05 kB rather
 than leaving a target the shipped usage controls no longer met.
 
-The six pieces most people never need are split off: the administration
+The seven pieces most people never need are split off: the administration
 backoffice (with its own English and its own stylesheet), the terminal (with
-its stylesheet), the Chinese dictionary, the LaTeX renderer, the public front
+its stylesheet), the Chinese dictionary, the backoffice's Chinese, the LaTeX
+renderer, the public front
 page, and the landing page (the intro or trial a signed-out visitor sees on an
 instance that chose one), each of those last two with its stylesheet.
 What each reader actually downloads, as the server sends it (2026-10-18):
 
 | | gzip | brotli |
 | --- | --- | --- |
-| English, not an administrator | 205.71 kB | 172.74 kB |
-| Chinese, not an administrator | 225.71 kB | 189.61 kB |
-| …and a conversation containing a formula | 229.48 kB | 192.89 kB |
-| Chinese administrator, backoffice open | 443.98 kB | 366.17 kB |
-| Anybody, once they open the terminal | +9.69 kB | +8.70 kB |
-| A visitor to an instance whose front door is the front page | +4.11 kB | +3.65 kB |
-| A signed-out visitor to an instance whose front door is the intro or trial | +3.11 kB | +2.74 kB |
+| English, not an administrator | 201.33 kB | 169.17 kB |
+| Chinese, not an administrator | 221.39 kB | 186.09 kB |
+| …and a conversation containing a formula | 225.12 kB | 189.35 kB |
+| Chinese administrator, backoffice open | 444.23 kB | 367.29 kB |
+| Anybody, once they open the terminal | +9.74 kB | +8.74 kB |
+| A visitor to an instance whose front door is the front page | +8.05 kB | +7.07 kB |
+| A signed-out visitor to an instance whose front door is the intro or trial | +3.74 kB | +3.25 kB |
 
 Route-level splitting would shave the first paint further and is deliberately
 switched off for everything but the backoffice and the terminal: /settings, /keys, /usage and
