@@ -123,7 +123,7 @@ export function attachmentURL(id: string): string {
 
 // --- the streamed turn ---------------------------------------------------------
 
-export interface TurnRequest {
+interface TurnRequest {
   conversation_id?: string;
   model_id: string;
   content?: string;

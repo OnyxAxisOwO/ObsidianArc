@@ -64,7 +64,7 @@ export function regenerateProfileInvite(): Promise<ProfileInvites> {
   return api.post<ProfileInvites>('/api/profile/invites/regenerate', {});
 }
 
-export interface ClaimResult {
+interface ClaimResult {
   group_id: string;
   group_name: string;
   /** Days the claim added — what the success message names, alongside the

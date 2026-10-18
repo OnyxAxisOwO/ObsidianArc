@@ -60,7 +60,7 @@ export interface AvailableModel extends ModelCapabilities {
  * define its own tiers, so what is valid here is decided per model — by the
  * list the reader was offered, which the gateway checks the value against.
  */
-export type Effort = string;
+type Effort = string;
 
 export interface ReasoningState {
   enabled: boolean;

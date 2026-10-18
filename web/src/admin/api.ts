@@ -184,7 +184,7 @@ export interface GroupModelGrant {
   access: 'use' | 'view';
 }
 
-export interface ModelGroupGrant {
+interface ModelGroupGrant {
   group_id: string;
   access: 'use' | 'view';
 }

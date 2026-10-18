@@ -7,7 +7,7 @@ import { api } from './client';
 
 export type LeaderboardPeriod = 'day' | 'week' | 'month';
 export type LeaderboardMetric = 'tokens' | 'requests';
-export type LeaderboardIdentity = 'nickname' | 'anonymous' | 'handle';
+type LeaderboardIdentity = 'nickname' | 'anonymous' | 'handle';
 
 export interface LeaderboardEntry {
   rank: number;
