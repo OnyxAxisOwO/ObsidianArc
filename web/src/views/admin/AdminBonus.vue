@@ -31,7 +31,6 @@ import OaTextField from '@/components/OaTextField.vue';
 import type { Column, SortState } from '@/components/table-types';
 import { t, tn } from '@/composables/useI18n';
 import { maskProvider, maskUser } from '@/admin/safeMode';
-import { apiErrorText, codeText } from '@/lib/api-error';
 import { absoluteTime, relativeTime } from '@/lib/format';
 import { IconCheck, IconGift } from '@/icons';
 import AdminControlCard from './AdminControlCard.vue';
@@ -40,7 +39,7 @@ import CheckinRewardEditor from './CheckinRewardEditor.vue';
 import ExpiryPresets from './ExpiryPresets.vue';
 import { poolRefusal, poolText as pt } from './pool-text';
 import { useAdminView } from './adminView';
-import { toDateTimeLocal } from './shared';
+import { toDateTimeLocal, failureText } from './shared';
 
 const view = useAdminView();
 view.setTitle(() => t('bonusTitle'), () => t('bonusSubtitle'));
@@ -66,7 +65,7 @@ async function load(): Promise<void> {
     void adminApi.groups().then((r) => { groups.value = r.groups; }).catch(() => undefined);
     await loadCheckin();
   } catch (failure) {
-    error.value = failure instanceof Error ? failure.message : String(failure);
+    error.value = failureText(failure);
   } finally {
     loaded.value = true;
   }
@@ -173,9 +172,7 @@ async function saveBar(): Promise<void> {
   } catch (failure) {
     // Only a code the interface has a sentence for is translated; any other
     // keeps the server's sentence, which an administrator may need verbatim.
-    panelError.value = failure instanceof ApiError
-      ? poolRefusal(failure.code) ?? codeText(failure.code) ?? failure.message
-      : String(failure);
+    panelError.value = (failure instanceof ApiError ? poolRefusal(failure.code) : undefined) ?? failureText(failure);
   } finally {
     busy.value = false;
   }
@@ -188,7 +185,7 @@ async function refreshBars(): Promise<void> {
   try {
     bars.value = (await adminApi.bonusBars()).bars;
   } catch (failure) {
-    pageError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    pageError.value = failureText(failure);
   }
 }
 
@@ -200,7 +197,7 @@ async function removeBar(): Promise<void> {
     panel.value = 'closed';
     await refreshBars();
   } catch (failure) {
-    panelError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    panelError.value = failureText(failure);
   } finally {
     busy.value = false;
   }
@@ -267,7 +264,7 @@ async function adjustPool(): Promise<void> {
     const { pool } = await adminApi.adjustBonusPool(bar.id, adjust.value.op, adjust.value.amount);
     left = Math.max(pool.amount - pool.used, 0);
   } catch (failure) {
-    panelError.value = (failure instanceof ApiError ? poolRefusal(failure.code) : undefined) ?? apiErrorText(failure);
+    panelError.value = (failure instanceof ApiError ? poolRefusal(failure.code) : undefined) ?? failureText(failure);
     return;
   } finally {
     busy.value = false;
@@ -322,7 +319,7 @@ async function loadGrants(barID: string, offset: number): Promise<void> {
     grantsTotal.value = result.total;
   } catch (failure) {
     if (mine !== grantsTicket) return;
-    grantsError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    grantsError.value = failureText(failure);
   } finally {
     if (mine === grantsTicket) grantsLoading.value = false;
   }
@@ -348,7 +345,7 @@ async function revoke(row: BonusGrantRow): Promise<void> {
   try {
     revoked = (await adminApi.revokeBonusGrant(row.id)).revoked;
   } catch (failure) {
-    grantsError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    grantsError.value = failureText(failure);
     return;
   }
   flash.value = t('bonusRevoked', { amount: credits(revoked) });
@@ -392,7 +389,7 @@ async function grant(): Promise<void> {
   } catch (failure) {
     // A grant's refusals carry codes (no such name, bar switched off), which
     // are worded in the reader's language here rather than the server's.
-    panelError.value = apiErrorText(failure);
+    panelError.value = failureText(failure);
     return;
   } finally {
     busy.value = false;
@@ -422,7 +419,7 @@ async function loadCheckin(): Promise<void> {
     const current = await adminApi.checkinSettings();
     checkin.value = { ...current, rules: current.rules ?? [], daily: current.daily?.kind ? current.daily : { kind: '' } };
   } catch (failure) {
-    checkinLoadError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    checkinLoadError.value = failureText(failure);
   }
 }
 
@@ -442,7 +439,7 @@ async function saveCheckin(): Promise<void> {
     checkin.value = await adminApi.saveCheckinSettings(checkin.value);
     checkinFlash.value = t('checkinSaved');
   } catch (failure) {
-    checkinError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    checkinError.value = failureText(failure);
   } finally {
     checkinBusy.value = false;
   }

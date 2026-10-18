@@ -22,6 +22,7 @@ import { isMasked, maskUser } from '@/admin/safeMode';
 import { formatBytes, localeTag } from '@/lib/format';
 import AdminFailure from './AdminFailure.vue';
 import { useAdminView } from './adminView';
+import { failureText } from './shared';
 
 const REFRESH_MS = 5000;
 
@@ -103,7 +104,7 @@ async function load(): Promise<void> {
   try {
     snapshot.value = await adminApi.resources();
   } catch (failure) {
-    error.value = failure instanceof Error ? failure.message : String(failure);
+    error.value = failureText(failure);
   } finally {
     refreshing.value = false;
   }

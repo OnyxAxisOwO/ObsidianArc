@@ -14,8 +14,6 @@ import {
   adminApi, emptyPolicy,
   type AdminModel, type Group, type QuotaLimits, type QuotaPolicy, type QuotaWindowKind,
 } from '@/admin/api';
-import { ApiError } from '@/api/client';
-import { codeText } from '@/lib/api-error';
 import OaBadge from '@/components/OaBadge.vue';
 import OaBadgeRow from '@/components/OaBadgeRow.vue';
 import OaBulkBar from '@/components/OaBulkBar.vue';
@@ -39,6 +37,7 @@ import AdminFailure from './AdminFailure.vue';
 import CreditsField from './CreditsField.vue';
 import GroupMembers from './GroupMembers.vue';
 import { useAdminView } from './adminView';
+import { failureText, runLoad, runRemove } from './shared';
 
 const WINDOWS: QuotaWindowKind[] = ['5h', '1w', '1m'];
 
@@ -273,7 +272,7 @@ async function save(): Promise<void> {
     finish();
   } catch (failure) {
     busy.value = false;
-    panelError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    panelError.value = failureText(failure);
     // A group created before the policy failed is in the table now, and the
     // list should show it rather than wait for the panel to close.
     if (wasCreating && existing.value) void load();
@@ -283,29 +282,17 @@ async function save(): Promise<void> {
 async function remove(): Promise<void> {
   const row = existing.value;
   if (!row) return;
-  busy.value = true;
-  try {
-    await adminApi.deleteGroup(row.id);
-    finish();
-  } catch (failure) {
-    busy.value = false;
-    panelError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
-  }
+  await runRemove(() => adminApi.deleteGroup(row.id), { busy, error: panelError }, finish);
 }
 
 async function load(): Promise<void> {
-  error.value = '';
-  try {
+  await runLoad(async () => {
     const [groupsResult, modelsResult] = await Promise.all([adminApi.groups(), adminApi.modelOptions()]);
     groups.value = groupsResult.groups;
     if (existing.value) existing.value = groupsResult.groups.find((entry) => entry.id === existing.value!.id) ?? existing.value;
     policies.value = groupsResult.policies;
     models.value = modelsResult.models;
-  } catch (failure) {
-    error.value = failure instanceof Error ? failure.message : String(failure);
-  } finally {
-    loaded.value = true;
-  }
+  }, { error, loaded });
 }
 
 onMounted(load);

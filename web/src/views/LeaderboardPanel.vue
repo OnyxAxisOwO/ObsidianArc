@@ -12,6 +12,7 @@
 // shows the top twenty answers the question for twenty people.
 
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { isAbortError } from '@/lib/abort';
 import { apiErrorText } from '@/lib/api-error';
 import {
   fetchLeaderboard,
@@ -87,14 +88,6 @@ function figure(value: number): string {
 function share(value: number): string {
   const top = data.value?.accounts[0]?.value ?? 0;
   return top > 0 ? `${Math.max(2, (value / top) * 100)}%` : '0%';
-}
-
-function isAbortError(err: unknown): boolean {
-  return (
-    (err instanceof DOMException && err.name === 'AbortError') ||
-    (err instanceof Error && err.name === 'AbortError') ||
-    (typeof err === 'object' && err !== null && (err as { name?: string }).name === 'AbortError')
-  );
 }
 
 // The rows are shown in the order the server ranked them. The server ranks and

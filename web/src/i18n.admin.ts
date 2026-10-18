@@ -1220,6 +1220,7 @@ export const enAdmin = {
   securityReasonPoWMaxExceeded: 'PoW nonce exceeded maximum range',
   securityReasonPoWInvalidNonce: 'PoW solution hash mismatch',
   securityReasonPoWReplayed: 'PoW challenge already used',
+  securityReasonPoWTierRaised: 'PoW difficulty was raised; the challenge must be fetched again',
   securityReasonPoWFailed: 'PoW verification failed',
   securityReasonTurnstileFailed: 'Turnstile verification failed',
   captchaMode: 'Bot verification mode',

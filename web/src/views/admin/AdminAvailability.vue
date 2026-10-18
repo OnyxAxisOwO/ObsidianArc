@@ -7,8 +7,6 @@
 
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { adminApi, type ModelHealth } from '@/admin/api';
-import { ApiError } from '@/api/client';
-import { codeText } from '@/lib/api-error';
 import { loadModels } from '@/chat/useModels';
 import OaBadge from '@/components/OaBadge.vue';
 import OaSearchField from '@/components/OaSearchField.vue';
@@ -25,6 +23,8 @@ import { t } from '@/composables/useI18n';
 import { maskProvider } from '@/admin/safeMode';
 import AdminFailure from './AdminFailure.vue';
 import { useAdminView } from './adminView';
+import { failureText, runLoad } from './shared';
+import { FEEDBACK_FLASH_MS } from '@/lib/flash';
 
 const view = useAdminView();
 view.setTitle(() => t('navAvailability'), () => t('availabilitySubtitle'));
@@ -98,9 +98,9 @@ async function save(): Promise<void> {
     accept(values);
     saveLabel.value = t('saved');
     window.clearTimeout(saveLabelTimer);
-    saveLabelTimer = window.setTimeout(() => { saveLabel.value = ''; }, 1500);
+    saveLabelTimer = window.setTimeout(() => { saveLabel.value = ''; }, FEEDBACK_FLASH_MS);
   } catch (failure) {
-    flash.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    flash.value = failureText(failure);
     saveLabel.value = '';
   } finally {
     busy.value = false;
@@ -129,7 +129,7 @@ async function resetUptime(): Promise<void> {
     flashSuccessTimer = window.setTimeout(() => { flashSuccess.value = ''; }, 3000);
     await reloadFigures();
   } catch (failure) {
-    flash.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    flash.value = failureText(failure);
   } finally {
     resetting.value = false;
   }
@@ -161,7 +161,7 @@ async function probeAllModels(): Promise<void> {
     // Only a code the interface has a sentence for is translated; any other
     // keeps the server's sentence, which an administrator may need verbatim.
     if (abort.signal.aborted) flash.value = t('stopped');
-    else flash.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    else flash.value = failureText(failure);
   } finally {
     probing.value = false;
     probeAbort = null;
@@ -183,8 +183,7 @@ const counts = computed(() => ({
 }));
 
 async function load(): Promise<void> {
-  error.value = '';
-  try {
+  await runLoad(async () => {
     const [settingsData, healthData] = await Promise.all([
       adminApi.settings(),
       adminApi.health(),
@@ -201,11 +200,7 @@ async function load(): Promise<void> {
     };
     models.value = healthData.models;
     accept();
-  } catch (failure) {
-    error.value = failure instanceof Error ? failure.message : String(failure);
-  } finally {
-    loaded.value = true;
-  }
+  }, { error, loaded });
 }
 
 const categories: WorkbenchGroup[] = [

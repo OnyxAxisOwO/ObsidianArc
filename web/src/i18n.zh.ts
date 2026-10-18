@@ -1877,6 +1877,7 @@ export const zh: Record<StringKey, string> = {
   securityReasonPoWMaxExceeded: 'PoW 步数超出上限',
   securityReasonPoWInvalidNonce: 'PoW 计算结果不匹配',
   securityReasonPoWReplayed: 'PoW 挑战已被使用',
+  securityReasonPoWTierRaised: 'PoW 难度已提高，挑战需重新获取',
   securityReasonPoWFailed: 'PoW 校验失败',
   securityReasonTurnstileFailed: 'Turnstile 人机验证未通过',
   powSolving: '正在进行安全校验',

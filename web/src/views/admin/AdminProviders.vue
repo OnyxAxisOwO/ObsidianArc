@@ -10,7 +10,6 @@
 import { computed, nextTick, onMounted, ref } from 'vue';
 import { adminApi, type KeyRotation, type Meta, type Provider, type ProviderKind, type ReasoningStyle } from '@/admin/api';
 import { ApiError } from '@/api/client';
-import { apiFailureText } from '@/lib/api-error-text';
 import OaBadge from '@/components/OaBadge.vue';
 import OaBadgeRow from '@/components/OaBadgeRow.vue';
 import OaBulkBar from '@/components/OaBulkBar.vue';
@@ -36,6 +35,7 @@ import AdminDetectModels from './AdminDetectModels.vue';
 import AdminFailure from './AdminFailure.vue';
 import { reasoningLabel } from './reasoning-labels';
 import { useAdminView } from './adminView';
+import { failureText, runLoad, runRemove } from './shared';
 
 const view = useAdminView();
 view.setTitle(() => t('providersTitle'), () => t('providersSubtitle'));
@@ -273,7 +273,7 @@ async function save(): Promise<void> {
     finish();
   } catch (failure) {
     busy.value = false;
-    panelError.value = failure instanceof ApiError ? refusalText(failure) : String(failure);
+    panelError.value = failure instanceof ApiError ? refusalText(failure) : failureText(failure);
   }
 }
 
@@ -294,34 +294,27 @@ function refusalText(failure: ApiError): string {
     case 'header_duplicate':
       return t('providerHeaderDuplicate', { name: String(failure.details['name'] ?? '') });
     case 'header_hidden': return t('providerHeaderHidden');
-    default: return apiFailureText(failure, 'failed');
+    default: return failureText(failure);
   }
 }
 
 async function remove(): Promise<void> {
   const row = existing.value;
   if (!row) return;
-  busy.value = true;
-  try {
-    await adminApi.deleteProvider(row.id);
-    finish();
-  } catch (failure) {
-    busy.value = false;
-    panelError.value = failure instanceof ApiError ? refusalText(failure) : String(failure);
-  }
+  await runRemove(
+    () => adminApi.deleteProvider(row.id),
+    { busy, error: panelError },
+    finish,
+    (failure) => (failure instanceof ApiError ? refusalText(failure) : failureText(failure)),
+  );
 }
 
 async function load(): Promise<void> {
-  error.value = '';
-  try {
+  await runLoad(async () => {
     const [providersResult, metaResult] = await Promise.all([adminApi.providers(), adminApi.meta()]);
     providers.value = providersResult.providers;
     meta.value = metaResult;
-  } catch (failure) {
-    error.value = failure instanceof Error ? failure.message : String(failure);
-  } finally {
-    loaded.value = true;
-  }
+  }, { error, loaded });
 }
 
 onMounted(load);

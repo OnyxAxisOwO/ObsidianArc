@@ -20,6 +20,7 @@ import { useAdminView } from './adminView';
 import UsageDelta from './usage/UsageDelta.vue';
 import UsageHeatmap from './usage/UsageHeatmap.vue';
 import { formatDuration, percent } from './usage/scale';
+import { failureText } from './shared';
 
 const view = useAdminView();
 view.setTitle(() => t('navDashboard'));
@@ -131,7 +132,7 @@ async function load(): Promise<void> {
     data.value = await adminApi.dashboard('tokens');
     updatedAt.value = Date.now();
   } catch (failure) {
-    error.value = failure instanceof Error ? failure.message : String(failure);
+    error.value = failureText(failure);
   } finally {
     busy.value = false;
   }

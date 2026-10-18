@@ -16,7 +16,6 @@ import {
   type Group, type QuotaWindowKind, type UsageBreakdown, type UsagePoint,
   type UsageRecord, type UsageReport, type UsageTotals,
 } from '@/admin/api';
-import { ApiError } from '@/api/client';
 import OaCellStack from '@/components/OaCellStack.vue';
 import OaFormSection from '@/components/OaFormSection.vue';
 import OaHoldButton from '@/components/OaHoldButton.vue';
@@ -37,6 +36,7 @@ import { isAbortError } from '@/lib/abort';
 import { maskUser, maskProvider, maskBilling } from '@/admin/safeMode';
 import { QUOTA_WINDOWS as WINDOWS, windowFigure } from '@/admin/quota';
 import { customUntilBound } from '@/admin/usageRange';
+import { outcomeLabel } from '@/admin/outcome';
 import AdminFailure from './AdminFailure.vue';
 import CreditsField from './CreditsField.vue';
 import StatusBadge from './StatusBadge.vue';
@@ -49,7 +49,8 @@ import UsageMatrix from './usage/UsageMatrix.vue';
 import UsagePlot from './usage/UsagePlot.vue';
 import { DAY, HOUR, fillBuckets, formatDuration, percent } from './usage/scale';
 import type { BoardMetric, PlotPoint } from './usage/shape';
-import { toDateTimeLocal } from './shared';
+import { toDateTimeLocal, failureText } from './shared';
+import { DAY_MS, HOUR_MS } from '@/lib/time';
 
 interface RangePreset {
   key: string;
@@ -242,7 +243,7 @@ async function loadRecords(quiet = false, signal?: AbortSignal): Promise<void> {
   } catch (failure) {
     if (signal?.aborted || isAbortError(failure)) return;
     if (!quiet && ticket === recordRequest) {
-      recordError.value = failure instanceof Error ? failure.message : String(failure);
+      recordError.value = failureText(failure);
     }
   } finally {
     if (ticket === recordRequest) recordsBusy.value = false;
@@ -320,7 +321,7 @@ async function load(): Promise<void> {
     applyReport(summary);
   } catch (failure) {
     if (currentSummaryCtrl.signal.aborted || isAbortError(failure)) return;
-    if (ticket === summaryRequest) error.value = failure instanceof Error ? failure.message : String(failure);
+    if (ticket === summaryRequest) error.value = failureText(failure);
   } finally {
     if (summaryController === currentSummaryCtrl) {
       summaryController = null;
@@ -388,10 +389,7 @@ const providerChoices = computed(() => choicesFor('provider', 'filterAllProvider
 
 const outcomeChoices = computed<Array<{ value: Outcome; label: string }>>(() => [
   { value: '', label: t('filterAllOutcomes') },
-  { value: 'ok', label: t('statusOk') },
-  { value: 'error', label: t('statusFailed') },
-  { value: 'aborted', label: t('statusStopped') },
-  { value: 'rejected', label: t('statusRefused') },
+  ...(['ok', 'error', 'aborted', 'rejected'] as const).map((value) => ({ value, label: t(outcomeLabel(value)) })),
 ]);
 
 /** The one model or account the page has been narrowed to, for the banner. */
@@ -561,8 +559,7 @@ function onSpreadChoice(next: Spread): void { spread.value = next; selectedSprea
 
 const statusRows = computed<UsageBreakdown[]>(() => byStatus.value.map((row) => ({
   ...row,
-  label: row.key === 'ok' ? t('statusOk') : row.key === 'aborted' ? t('statusStopped')
-    : row.key === 'rejected' ? t('statusRefused') : t('statusFailed'),
+  label: t(outcomeLabel(row.key)),
 })));
 const spreadRows = computed(() => spread.value === 'group' ? byGroup.value : spread.value === 'provider' ? byProvider.value : statusRows.value);
 function onSpread(key: string): void {
@@ -606,7 +603,7 @@ async function openPolicy(): Promise<void> {
     // A failed read is not an empty list. The blank form would show no limit
     // anywhere, and Save would write those blanks over the stored instance
     // defaults, so the panel stays shut and the page says what went wrong.
-    policyReadError.value = failure instanceof ApiError ? failure.message : String(failure);
+    policyReadError.value = failureText(failure);
     return;
   }
   const windows = {} as typeof policyForm.value.windows;
@@ -651,7 +648,7 @@ async function savePolicy(): Promise<void> {
     policyOpen.value = false;
     refreshAfterChange();
   } catch (failure) {
-    policyError.value = failure instanceof ApiError ? failure.message : String(failure);
+    policyError.value = failureText(failure);
   } finally {
     policyBusy.value = false;
   }
@@ -702,7 +699,7 @@ async function runReset(): Promise<void> {
     celebrate();
     refreshAfterChange();
   } catch (failure) {
-    resetError.value = failure instanceof ApiError ? failure.message : String(failure);
+    resetError.value = failureText(failure);
   }
 }
 
@@ -1028,12 +1025,12 @@ let savedCustomUntil = 0;
       </div>
       <UsagePlot
         v-if="plotPoints.some((point) => point.value > 0)"
-        ref="plot" v-model:active="activePoint" :points="plotPoints" :bucket-ms="report?.bucket_ms ?? 3600000"
+        ref="plot" v-model:active="activePoint" :points="plotPoints" :bucket-ms="report?.bucket_ms ?? HOUR_MS"
         :offset-ms="offsetMs" :format="trendFormat" :label="t('dashboardChartKeyboard')" :height="190"
       />
       <p v-else class="oa-viz-empty">{{ t('noRequestsPeriod') }}</p>
       <footer class="oa-viz-foot">
-        <span><span class="oa-dashboard-dot" />{{ (report?.bucket_ms ?? 0) >= 86400000 ? t('trendDaily') : t('trendHourly') }}</span>
+        <span><span class="oa-dashboard-dot" />{{ (report?.bucket_ms ?? 0) >= DAY_MS ? t('trendDaily') : t('trendHourly') }}</span>
         <span>{{ t('dashboardPeak', { value: trendFormat(trendPeak) }) }}</span>
       </footer>
     </section>

@@ -35,6 +35,8 @@ import { formatBytes } from '@/lib/format';
 import AdminFailure from './AdminFailure.vue';
 import { useAdminView } from './adminView';
 import { refreshSite, site } from '@/stores/session';
+import { failureText } from './shared';
+import { FEEDBACK_FLASH_MS } from '@/lib/flash';
 
 const view = useAdminView();
 view.setTitle(() => t('adminSettingsTitle'), () => t('controlSettingsSubtitle'));
@@ -93,6 +95,11 @@ const SEARCH_GROUPS = {
     'apiKeys', 'apiEnabled', 'apiEnabledHint',
   ],
 } satisfies Record<string, StringKey[]>;
+// The bound on settings.AttachmentPurgeDays (internal/admin/instance.go). Its
+// own figure rather than a shared one: it happens to equal the card and
+// retention limits, and moving one of those must not move this.
+const MAX_PURGE_DAYS = 3650;
+
 const error = ref('');
 const loaded = ref(false);
 const models = ref<Pick<AdminModel, 'id' | 'display_name' | 'model_id' | 'enabled' | 'provider_name'>[]>([]);
@@ -336,9 +343,9 @@ async function save(): Promise<void> {
     // just saved rather than waiting for a reload.
     void refreshSite().catch(() => {});
     saveLabel.value = t('saved');
-    window.setTimeout(() => { saveLabel.value = ''; }, 1500);
+    window.setTimeout(() => { saveLabel.value = ''; }, FEEDBACK_FLASH_MS);
   } catch (failure) {
-    flash.value = failure instanceof ApiError ? failure.message : String(failure);
+    flash.value = failureText(failure);
     saveLabel.value = '';
   } finally {
     busy.value = false;
@@ -380,7 +387,7 @@ function importSettings(): void {
     })
     .catch((failure: unknown) => {
       flashOK.value = false;
-      flash.value = failure instanceof ApiError ? failure.message : String(failure);
+      flash.value = failureText(failure);
     });
 }
 
@@ -399,7 +406,7 @@ function purge(): void {
     })
     .catch((failure: unknown) => {
       flashOK.value = false;
-      flash.value = failure instanceof ApiError ? failure.message : String(failure);
+      flash.value = failureText(failure);
     })
     .finally(() => { purging.value = false; });
 }
@@ -452,7 +459,7 @@ async function uploadLogoFile(file: File): Promise<void> {
   } catch (failure) {
     flashOK.value = false;
     // An Error's own message is the text to show; String() would prefix its class.
-    flash.value = failure instanceof Error ? failure.message : String(failure);
+    flash.value = failureText(failure);
   } finally {
     uploadingLogo.value = false;
     dragOverLogo.value = false;
@@ -490,7 +497,7 @@ async function clearSiteLogo(): Promise<void> {
   } catch (failure) {
     flashOK.value = false;
     // An Error's own message is the text to show; String() would prefix its class.
-    flash.value = failure instanceof Error ? failure.message : String(failure);
+    flash.value = failureText(failure);
   } finally {
     uploadingLogo.value = false;
   }
@@ -582,7 +589,7 @@ async function load(): Promise<void> {
     };
     accept();
   } catch (failure) {
-    error.value = failure instanceof Error ? failure.message : String(failure);
+    error.value = failureText(failure);
   } finally {
     loaded.value = true;
   }
@@ -963,7 +970,7 @@ onMounted(load);
           v-model="form.purgeAfterDays"
           :label="t('attachmentPurgeDays')"
           :min="0"
-          :max="3650"
+          :max="MAX_PURGE_DAYS"
           :hint="t('attachmentPurgeDaysHint')"
         />
         <OaTextField

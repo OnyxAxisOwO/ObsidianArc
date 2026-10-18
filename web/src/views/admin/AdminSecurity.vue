@@ -39,7 +39,7 @@ import { settingsRefusalText } from '@/lib/refusal';
 import { currentUser, isSuperAdmin, site } from '@/stores/session';
 import { maskUser } from '@/admin/safeMode';
 import AdminFailure from './AdminFailure.vue';
-import { minutesLabel } from './shared';
+import { minutesLabel, failureText } from './shared';
 import PluginSettingsCard from './PluginSettingsCard.vue';
 import { usePluginSettings } from './pluginSettings';
 import OaAccountFields from '@/components/OaAccountFields.vue';
@@ -51,6 +51,7 @@ import SecurityLogCard from './SecurityLogCard.vue';
 import SecurityMailCard from './SecurityMailCard.vue';
 import SecurityUserCheckCard from './SecurityUserCheckCard.vue';
 import { formatEventReason, reviewDecision } from './security-text';
+import { FEEDBACK_FLASH_MS } from '@/lib/flash';
 
 const view = useAdminView();
 view.setTitle(() => t('navSecurity'), () => t('securitySubtitle'));
@@ -370,7 +371,7 @@ async function submitTwoFactor(): Promise<void> {
     showTwoFactorModal.value = false;
     twoFactorCode.value = '';
   } catch (failure) {
-    twoFactorError.value = failure instanceof ApiError ? settingsRefusalText(failure) : String(failure);
+    twoFactorError.value = failure instanceof ApiError ? settingsRefusalText(failure) : failureText(failure);
     twoFactorCode.value = '';
     await nextTick();
     twoFactorField.value?.focus();
@@ -435,7 +436,7 @@ async function performSave(codeParam?: string): Promise<void> {
       // not report that write as failed; the next page load will fetch it.
     }
     saveLabel.value = t('saved');
-    window.setTimeout(() => { saveLabel.value = ''; }, 1500);
+    window.setTimeout(() => { saveLabel.value = ''; }, FEEDBACK_FLASH_MS);
     void loadAdoption();
   } catch (failure) {
     if (failure instanceof ApiError && failure.code === 'two_factor_code_required') {
@@ -453,7 +454,7 @@ async function performSave(codeParam?: string): Promise<void> {
     } else if (failure instanceof ApiError && failure.code === 'two_factor_required') {
       flash.value = t('signupReviewPromptNeeds2FA');
     } else {
-      flash.value = failure instanceof ApiError ? settingsRefusalText(failure) : String(failure);
+      flash.value = failure instanceof ApiError ? settingsRefusalText(failure) : failureText(failure);
     }
     saveLabel.value = '';
     throw failure;
@@ -491,7 +492,7 @@ function runTrial(): void {
         { reason });
     })
     .catch((failure: unknown) => {
-      trial.value.answer = failure instanceof ApiError ? failure.message : String(failure);
+      trial.value.answer = failureText(failure);
     })
     .finally(() => { trial.value.running = false; });
 }
@@ -595,7 +596,7 @@ async function load(): Promise<void> {
     initialReviewPrompt.value = values['security.signup_review_prompt'] ?? '';
     accept();
   } catch (failure) {
-    error.value = failure instanceof Error ? failure.message : String(failure);
+    error.value = failureText(failure);
   } finally {
     loaded.value = true;
   }

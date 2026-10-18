@@ -23,10 +23,10 @@ import type { Column } from '@/components/table-types';
 import { t } from '@/composables/useI18n';
 import { useBulk } from '@/composables/useBulk';
 import { usePanelSlot } from '@/composables/usePanelSlot';
-import { apiErrorText } from '@/lib/api-error';
 import { relativeTime } from '@/lib/format';
 import AdminFailure from './AdminFailure.vue';
 import { useAdminView } from './adminView';
+import { failureText, runRemove } from './shared';
 
 type DisplayMode = Announcement['display_mode'];
 
@@ -147,21 +147,14 @@ async function save(): Promise<void> {
     finish();
   } catch (failure) {
     busy.value = false;
-    panelError.value = apiErrorText(failure);
+    panelError.value = failureText(failure);
   }
 }
 
 async function remove(): Promise<void> {
   const record = editing.value;
   if (!record) return;
-  busy.value = true;
-  try {
-    await adminApi.deleteAnnouncement(record.id);
-    finish();
-  } catch (failure) {
-    busy.value = false;
-    panelError.value = apiErrorText(failure);
-  }
+  await runRemove(() => adminApi.deleteAnnouncement(record.id), { busy, error: panelError }, finish);
 }
 
 async function load(): Promise<void> {
@@ -172,7 +165,7 @@ async function load(): Promise<void> {
   try {
     ({ announcements: announcements.value } = await adminApi.announcements());
   } catch (failure) {
-    error.value = failure instanceof Error ? failure.message : String(failure);
+    error.value = failureText(failure);
   } finally {
     loaded.value = true;
     if (first) checkDrawerTarget();

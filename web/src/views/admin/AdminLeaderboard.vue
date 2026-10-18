@@ -11,8 +11,6 @@
 // readers see, then the policy that governs it.
 
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
-import { ApiError } from '@/api/client';
-import { codeText } from '@/lib/api-error';
 import { adminApi } from '@/admin/api';
 import { fetchLeaderboard, type Leaderboard } from '@/api/leaderboard';
 import OaNumberField from '@/components/OaNumberField.vue';
@@ -27,6 +25,8 @@ import AdminWorkbench from './AdminWorkbench.vue';
 import { useAdminView } from './adminView';
 import { useSettingsDraft } from './settingsDraft';
 import type { WorkbenchGroup } from './workbench';
+import { failureText, runLoad } from './shared';
+import { FEEDBACK_FLASH_MS } from '@/lib/flash';
 
 const view = useAdminView();
 view.setTitle(() => t('navLeaderboard'), () => t('leaderboardSubtitle'));
@@ -85,7 +85,7 @@ async function save(): Promise<void> {
     accept(values);
     saveLabel.value = t('saved');
     window.clearTimeout(saveLabelTimer);
-    saveLabelTimer = window.setTimeout(() => { saveLabel.value = ''; }, 1500);
+    saveLabelTimer = window.setTimeout(() => { saveLabel.value = ''; }, FEEDBACK_FLASH_MS);
     try {
       // The preview is the readers' own endpoint, and identity is applied by
       // the server, so it has to be re-asked rather than re-rendered. A refresh
@@ -99,7 +99,7 @@ async function save(): Promise<void> {
   } catch (failure) {
     // Only a code the interface has a sentence for is translated; any other
     // keeps the server's sentence, which an administrator may need verbatim.
-    flash.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    flash.value = failureText(failure);
     saveLabel.value = '';
   } finally {
     busy.value = false;
@@ -107,8 +107,7 @@ async function save(): Promise<void> {
 }
 
 async function load(): Promise<void> {
-  error.value = '';
-  try {
+  await runLoad(async () => {
     const [settingsData, board] = await Promise.all([
       adminApi.settings(),
       // The same endpoint readers call. An administrator holding this grant
@@ -127,11 +126,7 @@ async function load(): Promise<void> {
     preview.value = board;
     previewFailed.value = board === null;
     accept();
-  } catch (failure) {
-    error.value = failure instanceof Error ? failure.message : String(failure);
-  } finally {
-    loaded.value = true;
-  }
+  }, { error, loaded });
 }
 
 const categories: WorkbenchGroup[] = [

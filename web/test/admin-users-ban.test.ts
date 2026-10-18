@@ -326,8 +326,10 @@ describe('AdminUsers, banning with a reason', () => {
 
     footerSave()!.click();
     await settle();
-    // A plain Error is shown as String() makes it, which is what the panel shows.
-    expect(panels.textContent).toContain(t('savedBeforeError', { error: 'Error: policy store down' }));
+    // A plain Error is shown as its message, the way every backoffice screen
+    // words a failure (failureText), without the engine's "Error:" prefix.
+    expect(panels.textContent).toContain(t('savedBeforeError', { error: 'policy store down' }));
+    expect(panels.textContent).not.toContain('Error: policy store down');
     expect(updates()).toHaveLength(1);
 
     footerSave()!.click();

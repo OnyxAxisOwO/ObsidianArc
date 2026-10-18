@@ -13,8 +13,6 @@ import { adminApi, type AuditEntry, type AuditFacets } from '@/admin/api';
 import { AUDIT_ACTIONS, auditWeight } from './audit-actions';
 import { auditText as at, type AuditTextKey } from './audit-text';
 import { maskLog, maskUser } from '@/admin/safeMode';
-import { ApiError } from '@/api/client';
-import { codeText } from '@/lib/api-error';
 import { IconClose, IconRefresh } from '@/icons';
 import OaBadge from '@/components/OaBadge.vue';
 import OaIconButton from '@/components/OaIconButton.vue';
@@ -32,6 +30,7 @@ import { HOUR_MS } from '@/lib/time';
 import { isSuperAdmin } from '@/stores/session';
 import AdminFailure from './AdminFailure.vue';
 import { useAdminView } from './adminView';
+import { failureText } from './shared';
 
 const WINDOWS: Array<{ value: string; label: StringKey; hours: number }> = [
   { value: '24', label: 'last24h', hours: 24 },
@@ -136,7 +135,7 @@ async function reload(): Promise<void> {
       // Without facets the filter controls cannot be drawn, so they give way to
       // the failure; the retry asks for both again.
       facets.value = null;
-      facetsError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : t('failed');
+      facetsError.value = failureText(failure);
     },
   );
   await Promise.all([facetsDone, paint()]);
@@ -161,7 +160,7 @@ async function paint(): Promise<void> {
   } catch (failure) {
     if (ticket !== listTicket) return;
     entries.value = [];
-    listError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : t('failed');
+    listError.value = failureText(failure);
   } finally {
     if (ticket === listTicket) loading.value = false;
   }
@@ -345,7 +344,7 @@ async function open(entry: AuditEntry): Promise<void> {
     const { entry: full } = await adminApi.auditEntry(entry.id);
     if (ticket === detailTicket) opened.value = full;
   } catch (failure) {
-    if (ticket === detailTicket) detailError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : t('failed');
+    if (ticket === detailTicket) detailError.value = failureText(failure);
   }
 }
 
@@ -405,7 +404,7 @@ async function saveRetention(value: string): Promise<void> {
     await adminApi.saveSettings({ 'audit.retention_days': value });
     if (facets.value) facets.value = { ...facets.value, retention_days: Number(value) };
   } catch (failure) {
-    retentionError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : t('failed');
+    retentionError.value = failureText(failure);
   }
 }
 

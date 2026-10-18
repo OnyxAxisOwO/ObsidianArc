@@ -12,7 +12,6 @@ import {
   type Account, type AdminSession, type ApiKey, type CardHolding, type Conversation,
   type Group, type Message, type QuotaWindowKind, type Role, type UsageBreakdown,
 } from '@/admin/api';
-import { ApiError } from '@/api/client';
 import type { UsageSummary } from '@/api/usage';
 import { ADMIN_PERMISSIONS } from '@/admin/permissions';
 import OaCheckList from '@/components/OaCheckList.vue';
@@ -38,7 +37,7 @@ import type { Stat } from '@/components/stat';
 import { t, tn } from '@/composables/useI18n';
 import { cardTitle, formatCardScope, windowChoices } from '@/lib/card-scope';
 import { DAY, HOUR } from './usage/scale';
-import { toDateTimeLocal } from './shared';
+import { toDateTimeLocal, failureText } from './shared';
 import { useBulk } from '@/composables/useBulk';
 import { usePanelSlot } from '@/composables/usePanelSlot';
 import { IconTrash } from '@/icons';
@@ -156,10 +155,6 @@ function failedForAccount(row: Account, failure: unknown): void {
 function panelFailure(row: Account, failure: unknown): void {
   if (panelShows(row.id)) panelError.value = failureText(failure);
   else failedForAccount(row, failure);
-}
-
-function failureText(failure: unknown): string {
-  return failure instanceof ApiError ? failure.message : String(failure);
 }
 
 // --- the account panel ------------------------------------------------------------
@@ -1051,7 +1046,7 @@ async function load(): Promise<void> {
   try {
     ({ groups: groups.value } = await adminApi.groupOptions());
   } catch (failure) {
-    namesFailure = failure instanceof Error ? failure.message : String(failure);
+    namesFailure = failureText(failure);
   }
   loaded.value = true;
   await list();

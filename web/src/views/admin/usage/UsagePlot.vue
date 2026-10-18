@@ -11,6 +11,7 @@ import { computed, ref, useId, watch } from 'vue';
 import { localeTag } from '@/lib/format';
 import { niceScale, smoothPath, tickFormat, timeTicks } from './scale';
 import type { PlotPoint } from './shape';
+import { DAY_MS } from '@/lib/time';
 
 const props = withDefaults(defineProps<{
   points: readonly PlotPoint[];
@@ -80,7 +81,7 @@ const selected = computed(() => props.active === null ? null : props.points[prop
 function describe(at: number): string {
   const wall = (instant: number, options: Intl.DateTimeFormatOptions): string =>
     new Date(instant + props.offsetMs).toLocaleString(locale.value, { ...options, timeZone: 'UTC' });
-  if (props.bucketMs >= 86_400_000) {
+  if (props.bucketMs >= DAY_MS) {
     return wall(at, { month: 'short', day: 'numeric', weekday: 'short' });
   }
   const from = wall(at, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });

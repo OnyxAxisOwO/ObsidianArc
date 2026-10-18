@@ -63,7 +63,15 @@ async function request<T>(method: string, path: string, options: RequestOptions 
 
   if (response.status === 204) return undefined as T;
 
-  const text = await response.text();
+  // The body can break off after the headers arrived, which is the same lost
+  // connection fetchApi words for the reader, not the engine's TypeError.
+  let text: string;
+  try {
+    text = await response.text();
+  } catch (error) {
+    if (init.signal?.aborted) throw error;
+    throw new ApiError(0, 'network', t('connectionFailed'), { detail: networkDetail(error) });
+  }
   let payload: unknown = null;
   if (text) {
     try {

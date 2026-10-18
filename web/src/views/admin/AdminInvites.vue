@@ -16,9 +16,9 @@ import { useDebounceFn } from '@vueuse/core';
 import { adminApi, type Group, type InviteCode, type InviteStats, type InviteUse } from '@/admin/api';
 import { fetchSite } from '@/api/auth';
 import { inviteLink } from '@/api/invites';
-import { ApiError } from '@/api/client';
-import { codeText } from '@/lib/api-error';
 import { copyToClipboard } from '@/chat/markdown';
+import InviteGroupFields from './InviteGroupFields.vue';
+import InviteLimitFields from './InviteLimitFields.vue';
 import AdminControlCard from './AdminControlCard.vue';
 import PluginList from './PluginList.vue';
 import { provideOpenRecord } from './openRecord';
@@ -40,12 +40,14 @@ import { t } from '@/composables/useI18n';
 import { IconChart, IconSend, IconUsers } from '@/icons';
 import { compactNumber, relativeTime } from '@/lib/format';
 import { rememberedPageSize } from '@/lib/page-size';
-import { DAY_MS } from '@/lib/time';
+import { expiresAtFromDays } from '@/lib/time';
 import { maskCredential, maskUser } from '@/admin/safeMode';
 import { site } from '@/stores/session';
 import AdminFailure from './AdminFailure.vue';
 import { useSettingsDraft } from './settingsDraft';
 import { useAdminView } from './adminView';
+import { failureText } from './shared';
+import { FEEDBACK_FLASH_MS, flashCopy } from '@/lib/flash';
 
 const view = useAdminView();
 provideOpenRecord();
@@ -59,13 +61,12 @@ function formatCode(code: string, kind?: string): string {
   return code.length === 8 ? `${code.slice(0, 4)}-${code.slice(4)}` : code;
 }
 
-// The longest span a day field takes. Each is a bound the server enforces, and a
-// larger number is refused on save, so the field stops at the same figure rather
-// than letting the operator find out after typing it.
+// The longest span the reward card field takes. It is a bound the server
+// enforces, and a larger number is refused on save, so the field stops at the
+// same figure rather than letting the operator find out after typing it. The
+// group's day fields keep their own bound in InviteGroupFields.vue.
 // settings.InvitesRewardCardDays (internal/admin/instance.go).
 const MAX_REWARD_CARD_DAYS = 3650;
-// invite.MaxGroupDays (internal/invite/invite.go).
-const MAX_GROUP_DAYS = 3650;
 
 // --- settings: the registration policy and what an invite is worth --------------
 
@@ -164,7 +165,7 @@ async function loadSettings(): Promise<void> {
     requiredAsStored.value = String(required);
     accept();
   } catch (failure) {
-    settingsError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    settingsError.value = failureText(failure);
   } finally {
     settingsLoaded.value = true;
   }
@@ -178,7 +179,7 @@ async function loadGroups(): Promise<void> {
   try {
     groups.value = (await adminApi.groupOptions()).groups ?? [];
   } catch (failure) {
-    groupsError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    groupsError.value = failureText(failure);
   }
 }
 
@@ -207,9 +208,9 @@ async function saveSettings(): Promise<void> {
     }
     saveLabel.value = t('saved');
     window.clearTimeout(saveLabelTimer);
-    saveLabelTimer = window.setTimeout(() => { saveLabel.value = ''; }, 1500);
+    saveLabelTimer = window.setTimeout(() => { saveLabel.value = ''; }, FEEDBACK_FLASH_MS);
   } catch (failure) {
-    saveFlash.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    saveFlash.value = failureText(failure);
     saveLabel.value = '';
   } finally {
     savingBusy.value = false;
@@ -226,7 +227,7 @@ async function loadStats(): Promise<void> {
   try {
     stats.value = await adminApi.inviteStats();
   } catch (failure) {
-    statsError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    statsError.value = failureText(failure);
   }
 }
 
@@ -283,7 +284,7 @@ async function list(): Promise<void> {
     total.value = result.total;
   } catch (failure) {
     if (ticket !== listRequest) return;
-    listError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    listError.value = failureText(failure);
   } finally {
     if (ticket === listRequest) listing.value = false;
   }
@@ -309,7 +310,7 @@ async function loadPartners(): Promise<void> {
     partnerCodes.value = result.codes ?? [];
     partnerTotal.value = result.total;
   } catch (failure) {
-    partnerListError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    partnerListError.value = failureText(failure);
   } finally {
     partnerLoading.value = false;
   }
@@ -470,7 +471,7 @@ async function loadUses(id: string): Promise<void> {
       usesTotal.value = result.total;
     }
   } catch (failure) {
-    if (existing.value?.id === id) usesError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    if (existing.value?.id === id) usesError.value = failureText(failure);
   } finally {
     if (existing.value?.id === id) usesLoading.value = false;
   }
@@ -519,7 +520,7 @@ async function create(): Promise<void> {
       code: count > 1 ? '' : genForm.value.code.trim(),
       max_uses: maxUses,
       // Zero is "never", which is what an empty field means here.
-      expires_at: days && days > 0 ? Date.now() + days * DAY_MS : 0,
+      expires_at: expiresAtFromDays(days),
       group_id: groupId,
       group_days: groupId ? from : 0,
       // A "to" no higher than "from" is a fixed length, not a range.
@@ -532,7 +533,7 @@ async function create(): Promise<void> {
     void loadStats();
     if (partner) void loadPartners();
   } catch (failure) {
-    panelError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    panelError.value = failureText(failure);
   } finally {
     busy.value = false;
   }
@@ -549,7 +550,7 @@ async function revoke(): Promise<void> {
     void loadStats();
     if (row.kind === 'partner') void loadPartners();
   } catch (failure) {
-    panelError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    panelError.value = failureText(failure);
   } finally {
     busy.value = false;
   }
@@ -558,13 +559,10 @@ async function revoke(): Promise<void> {
 // The result is written onto the button that was pressed, and put back after a
 // moment. A button that kept saying "Copy failed" would hide the label the next
 // copy starts from, and the timer is kept so a newer result is not cleared early.
-let copyFlashTimer = 0;
+let cancelCopyFlash = (): void => {};
 function copyWithFlash(text: string): void {
-  void copyToClipboard(text).then((ok) => {
-    copyFlash.value = ok ? t('copied') : t('copyFailed');
-    window.clearTimeout(copyFlashTimer);
-    copyFlashTimer = window.setTimeout(() => { copyFlash.value = ''; }, 1500);
-  });
+  cancelCopyFlash();
+  cancelCopyFlash = flashCopy(copyToClipboard(text), (label) => { copyFlash.value = label; });
 }
 function copyCode(code: string, kind?: string): void {
   copyWithFlash(formatCode(code, kind));
@@ -592,7 +590,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   disposed = true;
   window.clearTimeout(saveLabelTimer);
-  window.clearTimeout(copyFlashTimer);
+  cancelCopyFlash();
 });
 </script>
 
@@ -834,27 +832,14 @@ onBeforeUnmount(() => {
         :hint="t('inviteCustomCodeHint')"
         monospace
       />
-      <p v-if="groupsError" class="oa-field-hint" role="alert">{{ groupsError }}</p>
-      <OaSelectField
-        v-model="genForm.groupId"
-        :label="t('inviteGroup')"
-        :options="[
-          { value: '', label: t('inviteGroupNone') },
-          ...groups.map((group) => ({ value: group.id, label: group.name })),
-        ]"
+      <InviteGroupFields
+        v-model:group-id="genForm.groupId"
+        v-model:days-from="genForm.daysFrom"
+        v-model:days-to="genForm.daysTo"
+        :groups="groups"
+        :error="groupsError"
       />
-      <template v-if="genForm.groupId">
-        <OaNumberField v-model="genForm.daysFrom" :label="t('inviteGroupDaysFrom')" :min="0" :max="MAX_GROUP_DAYS" :hint="t('inviteGroupDaysHint')" />
-        <OaNumberField v-model="genForm.daysTo" :label="t('inviteGroupDaysTo')" :min="0" :max="MAX_GROUP_DAYS" :placeholder="t('inviteGroupDaysFixed')" />
-      </template>
-      <OaNumberField v-model="genForm.maxUses" :label="t('inviteMaxUses')" :min="0" :max="100000" :hint="t('inviteMaxUsesHint')" />
-      <OaNumberField
-        v-model="genForm.expiresDays"
-        :label="t('inviteExpiresDays')"
-        :min="0"
-        :placeholder="t('noLimit')"
-        :hint="t('inviteExpiresDaysHint')"
-      />
+      <InviteLimitFields v-model:max-uses="genForm.maxUses" v-model:expires-days="genForm.expiresDays" />
       <OaSwitchField v-model="genForm.allowExisting" :label="t('inviteAllowExisting')" :hint="t('inviteAllowExistingHint')" />
     </template>
 
@@ -870,27 +855,14 @@ onBeforeUnmount(() => {
         :hint="t('inviteCustomCodeHint')"
         monospace
       />
-      <OaNumberField v-model="genForm.maxUses" :label="t('inviteMaxUses')" :min="0" :max="100000" :hint="t('inviteMaxUsesHint')" />
-      <OaNumberField
-        v-model="genForm.expiresDays"
-        :label="t('inviteExpiresDays')"
-        :min="0"
-        :placeholder="t('noLimit')"
-        :hint="t('inviteExpiresDaysHint')"
+      <InviteLimitFields v-model:max-uses="genForm.maxUses" v-model:expires-days="genForm.expiresDays" />
+      <InviteGroupFields
+        v-model:group-id="genForm.groupId"
+        v-model:days-from="genForm.daysFrom"
+        v-model:days-to="genForm.daysTo"
+        :groups="groups"
+        :error="groupsError"
       />
-      <p v-if="groupsError" class="oa-field-hint" role="alert">{{ groupsError }}</p>
-      <OaSelectField
-        v-model="genForm.groupId"
-        :label="t('inviteGroup')"
-        :options="[
-          { value: '', label: t('inviteGroupNone') },
-          ...groups.map((group) => ({ value: group.id, label: group.name })),
-        ]"
-      />
-      <template v-if="genForm.groupId">
-        <OaNumberField v-model="genForm.daysFrom" :label="t('inviteGroupDaysFrom')" :min="0" :max="MAX_GROUP_DAYS" :hint="t('inviteGroupDaysHint')" />
-        <OaNumberField v-model="genForm.daysTo" :label="t('inviteGroupDaysTo')" :min="0" :max="MAX_GROUP_DAYS" :placeholder="t('inviteGroupDaysFixed')" />
-      </template>
       <OaTextField v-model="genForm.note" :label="t('inviteNote')" :hint="t('inviteNoteHint')" />
     </template>
   </OaPanel>

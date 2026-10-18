@@ -31,6 +31,7 @@ const REASONS: Record<string, StringKey> = {
   'PoW 步数超出上限': 'securityReasonPoWMaxExceeded',
   'PoW 计算结果不匹配': 'securityReasonPoWInvalidNonce',
   'PoW 挑战已被使用': 'securityReasonPoWReplayed',
+  'PoW 难度已提高，挑战需重新获取': 'securityReasonPoWTierRaised',
   'PoW 校验失败': 'securityReasonPoWFailed',
   'Turnstile 人机验证未通过': 'securityReasonTurnstileFailed',
 };

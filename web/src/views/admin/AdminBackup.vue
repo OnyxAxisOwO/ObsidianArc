@@ -6,7 +6,6 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { useDocumentVisibility, useIntervalFn } from '@vueuse/core';
 import { adminApi, type AdminBackup, type AdminBackupInput, type StorageType } from '@/admin/api';
 import { ApiError } from '@/api/client';
-import { codeText } from '@/lib/api-error';
 import OaBadge from '@/components/OaBadge.vue';
 import OaNumberField from '@/components/OaNumberField.vue';
 import OaSelectField from '@/components/OaSelectField.vue';
@@ -19,6 +18,7 @@ import { absoluteTime } from '@/lib/format';
 import AdminControlCard from './AdminControlCard.vue';
 import AdminFailure from './AdminFailure.vue';
 import { useAdminView } from './adminView';
+import { failureText } from './shared';
 
 interface BackupForm {
   type: StorageType;
@@ -160,7 +160,7 @@ watch(
 // A server sentence is kept unless its code has a reader's translation: a 503
 // from the storage is the operator's only clue, and it arrives untranslated.
 function message(failure: unknown): string {
-  return failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+  return failureText(failure);
 }
 
 // Matched by code so the refusal reads in the operator's language; the server's

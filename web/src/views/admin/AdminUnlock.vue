@@ -15,7 +15,7 @@ import { t } from '@/composables/useI18n';
 import { IconLock } from '@/icons';
 import { refusalText } from '@/lib/refusal';
 import { currentUser } from '@/stores/session';
-import { minutesLabel } from './shared';
+import { minutesLabel, failureText } from './shared';
 
 const emit = defineEmits<{ (event: 'unlocked'): void }>();
 
@@ -46,7 +46,7 @@ async function submit(): Promise<void> {
     await enterBackoffice(value);
     emit('unlocked');
   } catch (failure) {
-    error.value = failure instanceof ApiError ? refusalText(failure) : String(failure);
+    error.value = failure instanceof ApiError ? refusalText(failure) : failureText(failure);
     code.value = '';
     busy.value = false;
     await nextTick();

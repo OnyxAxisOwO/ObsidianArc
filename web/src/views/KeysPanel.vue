@@ -32,6 +32,7 @@ import { usePanelExit } from '@/composables/usePanelExit';
 import { IconCheck, IconCopy, IconGear, IconPause, IconPlay, IconTrash } from '@/icons';
 import { openCCSwitch, type CCSwitchApp } from '@/lib/cc-switch';
 import { absoluteTime, relativeTime } from '@/lib/format';
+import { expiresAtFromDays } from '@/lib/time';
 import { keyIssuing } from '@/plugins/registry';
 import type { KeyConfirmation } from '@/plugins/types';
 import { currentUser, siteInfo } from '@/stores/session';
@@ -45,7 +46,6 @@ const LIFETIMES: Array<{ days: number; label: StringKey }> = [
   { days: 365, label: 'keyDays365' },
 ];
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 // The refusals that come after the server has checked the challenge, and so
 // spent its single-use token, plus an internal failure, which may have come
 // after the check. A refusal before the check keeps the token for the
@@ -314,7 +314,7 @@ async function create(): Promise<void> {
     try {
       issued.value = await createKey(
         label,
-        days > 0 ? Date.now() + days * DAY_MS : 0,
+        expiresAtFromDays(days),
         newModels.value,
         token,
       );
@@ -372,7 +372,7 @@ async function saveEdit(): Promise<void> {
   };
   if (editLifetime.value !== 'keep') {
     const days = Number(editLifetime.value);
-    changes.expires_at = days > 0 ? Date.now() + days * DAY_MS : 0;
+    changes.expires_at = expiresAtFromDays(days);
   }
   busy.value = true;
   try {
