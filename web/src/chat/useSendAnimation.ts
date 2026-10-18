@@ -24,9 +24,15 @@ export function hasFlown(id: string): boolean {
   return flownIDs.value.includes(id);
 }
 
+// Read at each call rather than once at load: the setting can change while the
+// page is open.
+function prefersReducedMotion(): boolean {
+  return typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
+}
+
 export function markFlying(id: string): void {
   if (!id) return;
-  if (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+  if (prefersReducedMotion()) {
     if (!flownIDs.value.includes(id)) {
       flownIDs.value = [...flownIDs.value, id];
     }
@@ -120,7 +126,7 @@ export async function playSendAnimation(options: SendAnimationOptions): Promise<
   };
 
   // 1. Accessibility: respect prefers-reduced-motion
-  if (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+  if (prefersReducedMotion()) {
     // Consumed here as step 5 would have: left behind, a stale rect from this
     // send would be where the next one flies from.
     lastComposerRect.value = null;

@@ -46,6 +46,19 @@ export function compactNumber(value: number): string {
   return `${Math.round(value / 100_000_000) / 10}B`;
 }
 
+// Constructing a formatter is the expensive part of printing a date, and the
+// usage board prints every row again each time it refreshes, every 15 seconds.
+const dayFormatters = new Map<string, Intl.DateTimeFormat>();
+
+function dayFormatter(tag: string): Intl.DateTimeFormat {
+  let formatter = dayFormatters.get(tag);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat(tag);
+    dayFormatters.set(tag, formatter);
+  }
+  return formatter;
+}
+
 export function relativeTime(at: number): string {
   if (!at) return '—';
   const seconds = Math.round((Date.now() - at) / 1000);
@@ -62,7 +75,7 @@ export function relativeTime(at: number): string {
   if (hours < 48) return t('timeHours', { count: hours });
   const days = Math.round(hours / 24);
   if (days < 30) return t('timeDays', { count: days });
-  return new Date(at).toLocaleDateString(localeTag());
+  return dayFormatter(localeTag()).format(new Date(at));
 }
 
 export function absoluteTime(at: number): string {

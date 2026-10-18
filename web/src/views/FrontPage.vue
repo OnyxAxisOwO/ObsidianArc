@@ -151,7 +151,7 @@ const step = ref(0);
 const typedLine = ref<HTMLElement | null>(null);
 let typed = '';
 const typing = ref(true);
-const current = computed(() => SESSION[step.value] ?? SESSION[0]!);
+const current = computed(() => SESSION[step.value] ?? SESSION[0]);
 // The output belongs to the command that finished typing, so it appears only
 // once the line is whole. Typing `model list` above a usage table for half a
 // second reads as the terminal answering the wrong question.
@@ -290,7 +290,7 @@ onMounted(() => {
   if (still.value || typeof IntersectionObserver === 'undefined') {
     node.querySelectorAll('.oa-front-reveal').forEach((el) => el.classList.add('shown'));
     counted.value = FACTS.map((fact) => fact.value);
-    showTyped(SESSION[0]!.command);
+    showTyped(SESSION[0].command);
     typing.value = false;
     return;
   }

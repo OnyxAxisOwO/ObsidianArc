@@ -56,14 +56,10 @@ watch(activeID, () => {
   settle(() => { switched.value = false; }, RISE_MS);
 });
 
-let route: ReturnType<typeof useRoute> | undefined;
-let router: ReturnType<typeof useRouter> | undefined;
-try {
-  route = useRoute();
-  router = useRouter();
-} catch {
-  // outside router context in tests
-}
+// Tests mount without a router, so either may be missing and the optional
+// chains below are what keep them from failing.
+const route = useRoute();
+const router = useRouter();
 
 function onSelectConversation(id: string): void {
   void openConversation(id);

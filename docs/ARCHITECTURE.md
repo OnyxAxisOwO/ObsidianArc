@@ -226,9 +226,16 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
 | Binary (SQLite + embedded SPA) | < 30 MB | 27.10 MB (23.40 MB `-tags nosqlite`, Linux amd64, Go 1.27.2); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 206.31 kB to open the chat (179.89 JS + 26.43 CSS), sent by the server at gzip's best level; the build's gzip column reads 206.98 kB (180.12 JS + 26.86 CSS) |
+| Frontend, on the wire | < 135 kB | 204.73 kB to open the chat (178.31 JS + 26.43 CSS), sent by the server at gzip's best level; the build's gzip column reads 205.38 kB (178.52 JS + 26.86 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-10-18 (UTC), after the review fixes: the Options API branch
+of Vue is compiled out by both Vite configs, since nothing in the tree uses
+it. 204.73 kB to open the chat (178.31 JS + 26.43 CSS), down 1.58 kB; the
+build's estimate is 205.38 kB, 0.62 kB under the bundle test's 206 kB. The
+lazy chunks are unchanged, and the binary still reads 27.10 MB (23.40 MB
+without SQLite).
 
 Remeasured on 2026-10-18 (UTC), after the account form's refusals were given
 sentences of the page's own. A password change refused as unchanged or too

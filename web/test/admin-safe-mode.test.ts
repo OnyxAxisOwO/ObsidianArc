@@ -219,12 +219,10 @@ describe('AdminSafeMode component', () => {
     triggerBtn.click();
     await nextTick();
 
-    // Menu content is present
     const menu = host.querySelector('.oa-menu-safe-mode')!;
     expect(menu).not.toBeNull();
     expect(menu.textContent).toContain('******');
 
-    // Toggle master switch
     const masterSwitch = menu.querySelector<HTMLInputElement>('.oa-safe-switch input')!;
     expect(masterSwitch.checked).toBe(false);
     masterSwitch.click();
@@ -233,7 +231,6 @@ describe('AdminSafeMode component', () => {
     expect(safeModeEnabled.value).toBe(true);
     expect(triggerBtn.classList.contains('is-active')).toBe(true);
 
-    // Category rows can be toggled
     const categoryRows = menu.querySelectorAll<HTMLButtonElement>('.oa-safe-mode-row');
     expect(categoryRows.length).toBe(SAFE_CATEGORIES.length);
 
@@ -865,7 +862,7 @@ describe('UptimePanel safe mode masking', () => {
           ],
         };
       }
-      return null;
+      throw new Error(`unexpected GET ${path}`);
     });
 
     const router = createRouter({

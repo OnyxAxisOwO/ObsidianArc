@@ -28,12 +28,8 @@ import {
 import { modelsListed } from './useModels';
 import { currentUser, isAdmin } from '@/stores/session';
 
-let route: ReturnType<typeof useRoute> | undefined;
-try {
-  route = useRoute();
-} catch {
-  // outside router context in tests
-}
+// Tests mount without a router, so there may be no route to read.
+const route = useRoute();
 const isTerminal = computed(() => route?.path === '/terminal');
 
 const emit = defineEmits<{ (event: 'open-setup'): void }>();

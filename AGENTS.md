@@ -61,7 +61,8 @@ binary stays static and cross-compiles, and it costs 2.8 MB of that binary,
 also written down in `docs/ARCHITECTURE.md`. `x/sync` is there for
 `singleflight` alone, which keeps the backoffice's heavy aggregations from
 being computed once per waiting request; pgx's pool already links the module
-(`x/sync/semaphore`), so it brings nothing new into the build. A sixth is that conversation again.
+(`x/sync/semaphore`), so it brings nothing new into the build. A sixth is that
+conversation again.
 
 ## Plugins: what only some instances want
 
@@ -123,7 +124,10 @@ here hold for it unchanged; what differs is where the code comes from.
   plugin module imports only what the entry already has — `@/api/client`,
   `@/icons`, `@/lib/*`, and `pluginStrings` from `plugins/registry.ts` — never
   `views/admin/`, or the bundler splits a shared chunk out and the file count
-  in `test/bundle.test.ts` catches it.
+  in `test/bundle.test.ts` catches it. A plugin component uses the Composition
+  API: the core is built with the Options API compiled out (`optionsAPI: false`
+  in `web/vite.config.ts`), so `data` and `methods` would be ignored without
+  any error.
 - **A plugin's strings are its own**, in `pluginStrings(en, zh)`, typed the way
   `i18n.ts` is. They never go into the core dictionaries.
 - **Tests come with it**, in the plugin's own package: `servertest` builds a
@@ -432,12 +436,12 @@ installs, updates and removes).
 change moves one of those numbers, re-measure and update it in the same change.
 They drifted to nearly double once because nobody re-ran the build.
 
-Current: 27.10 MB binary (this repository ships no plugin; 2.8 MB of it is
-the plugin runtime); 206.31 kB on the wire to open the chat (the build's gzip
-column reads 206.98 kB), against a target of 135. The target used to be 80 and
+Current: 27.10 MB binary (this repository ships no plugin; 2.8 MB of it is the
+plugin runtime); 204.73 kB on the wire to open the chat (the build's gzip
+column reads 205.38 kB), against a target of 135. The target used to be 80 and
 the figure used to be 59.5; adopting Vue moved both, and
-`docs/ARCHITECTURE.md` says so rather than
-quietly restating a target the build cannot meet.
+`docs/ARCHITECTURE.md` says so rather than quietly restating a target the
+build cannot meet.
 
 The backoffice, the terminal, the Chinese dictionary, the LaTeX renderer, the
 public front page and the landing page are separate chunks, fetched only by the
@@ -450,13 +454,13 @@ those splits. `web/src/lib/format.ts` holds
 `formatUptime` for exactly that reason: one import of one four-line helper
 used to pull the whole backoffice back into the main bundle.
 
-`test/bundle.test.ts` asserts the build produces exactly ten files (the entry's
-script and stylesheet, the backoffice's and the terminal's script and
+`test/bundle.test.ts` asserts the build produces exactly ten files (the
+entry's script and stylesheet, the backoffice's and the terminal's script and
 stylesheet, the Chinese dictionary, the maths renderer, the front page and the
-landing page), plus one per directory under `web/src/plugins/` — each plugin's own chunk. Route-level
-lazy loading produces a dozen and is switched off for everything but the
-backoffice, the terminal and the front page; if that count changes, it should be because
-somebody decided it should.
+landing page), plus one per directory under `web/src/plugins/` — each plugin's
+own chunk. Route-level lazy loading produces a dozen and is switched off for
+everything but the backoffice, the terminal and the front page; if that count
+changes, it should be because somebody decided it should.
 
 Responses are compressed by `httpx.Compress`, on an allowlist of content
 types. Adding `text/event-stream` to it would buffer streamed answers into

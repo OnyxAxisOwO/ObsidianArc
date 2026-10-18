@@ -424,596 +424,604 @@ describe('the screens the mounted application draws', () => {
     });
   }
 
-  it('filters history titles without changing the underlying list and clears with Escape', async () => {
-    adopt(ACCOUNT);
-    await mountAt('/');
-    conversations.value = ['Vue Search', '周末计划', 'Go notes'].map((title, index) => ({
-      id: `search-${index}`, title, model_id: '', pinned: false, message_count: 0, created_at: 0, updated_at: 0,
-    }));
-    await nextTick();
-    await search('.oa-history-search input', '  ＶＵＥ search  ');
-    expect(host.querySelectorAll('.ai-chat-list-item')).toHaveLength(1);
-    expect(host.querySelector('.ai-chat-list-title')?.textContent).toBe('Vue Search');
-    expect(conversations.value).toHaveLength(3);
-    await search('.oa-history-search input', '周末');
-    expect(host.querySelector('.ai-chat-list-title')?.textContent).toBe('周末计划');
-    const input = await search('.oa-history-search input', 'absent');
-    expect(host.querySelector('.ai-chat-list-empty')?.textContent).toBe(t('noSearchResults'));
-    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-    await nextTick();
-    expect(host.querySelectorAll('.ai-chat-list-item')).toHaveLength(3);
-    expect(document.activeElement).toBe(input);
-    input.dispatchEvent(new CompositionEvent('compositionstart'));
-    await search('.oa-history-search input', 'zhou');
-    expect(host.querySelectorAll('.ai-chat-list-item')).toHaveLength(3);
-    input.value = '周末';
-    input.dispatchEvent(new CompositionEvent('compositionend'));
-    await nextTick();
-    expect(host.querySelectorAll('.ai-chat-list-item')).toHaveLength(1);
-    expect(host.querySelector('.ai-chat-list-title')?.textContent).toBe('周末计划');
-    conversations.value = [];
+  describe('the chat', () => {
+    it('filters history titles without changing the underlying list and clears with Escape', async () => {
+      adopt(ACCOUNT);
+      await mountAt('/');
+      conversations.value = ['Vue Search', '周末计划', 'Go notes'].map((title, index) => ({
+        id: `search-${index}`, title, model_id: '', pinned: false, message_count: 0, created_at: 0, updated_at: 0,
+      }));
+      await nextTick();
+      await search('.oa-history-search input', '  ＶＵＥ search  ');
+      expect(host.querySelectorAll('.ai-chat-list-item')).toHaveLength(1);
+      expect(host.querySelector('.ai-chat-list-title')?.textContent).toBe('Vue Search');
+      expect(conversations.value).toHaveLength(3);
+      await search('.oa-history-search input', '周末');
+      expect(host.querySelector('.ai-chat-list-title')?.textContent).toBe('周末计划');
+      const input = await search('.oa-history-search input', 'absent');
+      expect(host.querySelector('.ai-chat-list-empty')?.textContent).toBe(t('noSearchResults'));
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      await nextTick();
+      expect(host.querySelectorAll('.ai-chat-list-item')).toHaveLength(3);
+      expect(document.activeElement).toBe(input);
+      input.dispatchEvent(new CompositionEvent('compositionstart'));
+      await search('.oa-history-search input', 'zhou');
+      expect(host.querySelectorAll('.ai-chat-list-item')).toHaveLength(3);
+      input.value = '周末';
+      input.dispatchEvent(new CompositionEvent('compositionend'));
+      await nextTick();
+      expect(host.querySelectorAll('.ai-chat-list-item')).toHaveLength(1);
+      expect(host.querySelector('.ai-chat-list-title')?.textContent).toBe('周末计划');
+      conversations.value = [];
+    });
+
+    it('swaps one panel for another without letting the chat reflow wide', async () => {
+      adopt(ACCOUNT);
+      await mountAt('/settings');
+      expect(host.querySelector('.oa-panel')?.classList.contains('open')).toBe(true);
+
+      // Sibling routes, so the outgoing panel unmounts and the incoming one
+      // mounts inside a single flush. The new one has to arrive already open:
+      // entering from the right would show the conversation at full width for
+      // the frame in between, then narrow it again.
+      await router.push('/keys');
+      await nextTick();
+
+      const panel = host.querySelector('.oa-panel');
+      expect(panel).not.toBeNull();
+      expect(panel?.classList.contains('open')).toBe(true);
+    });
+
+    it('leaves out the trial transcript when there is no trial', async () => {
+      // `.oa-landing-thread` is `flex: 1`, so an empty one absorbs the column
+      // and pushes the notice and the way in to the bottom of the window.
+      site.value = {
+        ...siteInfo.value,
+        registration_enabled: true,
+        landing: { mode: 'chat', intro: '', trial: false, trial_turns: 0 },
+      };
+      await mountAt('/');
+
+      // The landing page is a lazy chunk, so it can arrive after mountAt has
+      // settled, and how long that takes depends on which test loaded it first.
+      await vi.waitFor(() => expect(host.querySelector('.oa-landing-chat')).not.toBeNull());
+      expect(host.querySelector('.oa-landing-thread')).toBeNull();
+      expect(host.querySelector('.oa-landing-entry')).not.toBeNull();
+    });
+
+    it('collapses the conversation rail from the header, and remembers nothing else', async () => {
+      adopt(ACCOUNT);
+      await mountAt('/');
+
+      const row = host.querySelector('.ai-chat')!;
+      const toggle = host.querySelector<HTMLButtonElement>('.oa-header-leading .oa-icon-btn')!;
+      const before = row.classList.contains('rail-collapsed');
+
+      toggle.click();
+      await nextTick();
+      expect(row.classList.contains('rail-collapsed')).toBe(!before);
+
+      toggle.click();
+      await nextTick();
+      expect(row.classList.contains('rail-collapsed')).toBe(before);
+    });
+
+    it('still draws the transcript when the trial is live', async () => {
+      site.value = {
+        ...siteInfo.value,
+        landing: { mode: 'chat', intro: '', trial: true, trial_turns: 3 },
+      };
+      await mountAt('/');
+
+      await vi.waitFor(() => expect(host.querySelector('.oa-landing-thread')).not.toBeNull());
+      expect(host.querySelector('.oa-landing-composer')).not.toBeNull();
+    });
   });
 
-  it('searches settings across categories and preserves a hidden profile draft', async () => {
-    await changeLanguage('en');
-    adopt(ACCOUNT);
-    await mountAt('/settings');
-    await search('.oa-settings-search input', 'nickname');
-    expect(shown(PANELS)).toHaveLength(1);
-    const nickname = shown(PANELS)[0]!.querySelector<HTMLInputElement>('input')!;
-    nickname.value = 'Unsaved nickname';
-    nickname.dispatchEvent(new Event('input', { bubbles: true }));
-    await search('.oa-settings-search input', 'wallpaper');
-    expect(shown('.oa-wallpaper-upload')).toHaveLength(1);
-    expect(shown('.oa-range-field')).toHaveLength(0);
-    await search('.oa-settings-search input', 'nothing-matches-this');
-    expect(shown(PANELS)).toHaveLength(0);
-    expect(host.querySelector('.oa-settings .oa-search-empty')?.textContent).toBe(t('noSearchResults'));
-    await search('.oa-settings-search input', 'nickname');
-    expect(shown(PANELS)[0]!.querySelector<HTMLInputElement>('input')).toBe(nickname);
-    expect(nickname.value).toBe('Unsaved nickname');
-    host.querySelector<HTMLButtonElement>('.oa-settings-search button')!.click();
-    await nextTick();
-    expect(shown(PANELS)).toHaveLength(1);
-    expect(shown('.oa-wallpaper-upload')).toHaveLength(1);
-    expect(shown('.oa-range-field')).toHaveLength(0);
-    expect(host.querySelector('.oa-panel')).not.toBeNull();
+  describe('settings', () => {
+    it('searches settings across categories and preserves a hidden profile draft', async () => {
+      await changeLanguage('en');
+      adopt(ACCOUNT);
+      await mountAt('/settings');
+      await search('.oa-settings-search input', 'nickname');
+      expect(shown(PANELS)).toHaveLength(1);
+      const nickname = shown(PANELS)[0]!.querySelector<HTMLInputElement>('input')!;
+      nickname.value = 'Unsaved nickname';
+      nickname.dispatchEvent(new Event('input', { bubbles: true }));
+      await search('.oa-settings-search input', 'wallpaper');
+      expect(shown('.oa-wallpaper-upload')).toHaveLength(1);
+      expect(shown('.oa-range-field')).toHaveLength(0);
+      await search('.oa-settings-search input', 'nothing-matches-this');
+      expect(shown(PANELS)).toHaveLength(0);
+      expect(host.querySelector('.oa-settings .oa-search-empty')?.textContent).toBe(t('noSearchResults'));
+      await search('.oa-settings-search input', 'nickname');
+      expect(shown(PANELS)[0]!.querySelector<HTMLInputElement>('input')).toBe(nickname);
+      expect(nickname.value).toBe('Unsaved nickname');
+      host.querySelector<HTMLButtonElement>('.oa-settings-search button')!.click();
+      await nextTick();
+      expect(shown(PANELS)).toHaveLength(1);
+      expect(shown('.oa-wallpaper-upload')).toHaveLength(1);
+      expect(shown('.oa-range-field')).toHaveLength(0);
+      expect(host.querySelector('.oa-panel')).not.toBeNull();
+    });
+
+    it('updates settings matches when switching language with a query still entered', async () => {
+      await changeLanguage('en');
+      adopt(ACCOUNT);
+      await mountAt('/settings');
+      await search('.oa-settings-search input', '壁纸');
+      expect(shown(PANELS)).toHaveLength(0);
+      await changeLanguage('zh');
+      await nextTick();
+      expect(shown('.oa-wallpaper-upload')).toHaveLength(1);
+      expect(shown('.oa-range-field')).toHaveLength(0);
+      expect(host.querySelector<HTMLInputElement>('.oa-settings-search input')?.placeholder).toBe('搜索设置');
+      await changeLanguage('en');
+    });
+
+    it('saves drafts across categories and keeps edits made during an in-flight save', async () => {
+      adopt({ ...ACCOUNT, role: 'super_admin' });
+      await mountAt('/admin/settings');
+      await search('#secIdentity input', 'First draft');
+      const category = Array.from(host.querySelectorAll<HTMLButtonElement>('.oa-workbench-tab'))
+        .find((button) => button.textContent?.includes(t('controlFiles')))!;
+      category.click();
+      await nextTick();
+      expect(shown('.oa-control-card').map((card) => card.id)).toEqual(['secAttachments', 'secCleanup']);
+      await search('#secAttachments input[type="number"]', '12');
+      const server = fetch;
+      let finish!: (response: Response) => void;
+      let submitted: Record<string, string> = {};
+      vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).endsWith('/api/admin/settings') && init?.method === 'PUT') {
+          submitted = JSON.parse(String(init.body));
+          return new Promise<Response>((resolve) => { finish = resolve; });
+        }
+        return server(input, init);
+      }));
+      host.querySelector<HTMLButtonElement>('.oa-admin-actions .primary')!.click();
+      await nextTick();
+      expect(submitted['site.name']).toBe('First draft');
+      expect(submitted['attachments.max_mb']).toBe('12');
+      expect(submitted).not.toHaveProperty('registration.enabled');
+      await search('#secAttachments input[type="number"]', '18');
+      finish(new Response(JSON.stringify({ settings: submitted }), { status: 200 }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(host.querySelector('.oa-control-save-state')?.textContent).toContain(t('controlUnsaved'));
+      expect(host.querySelector<HTMLInputElement>('#secAttachments input')?.value).toBe('18');
+      await search('#secAttachments input[type="number"]', '12');
+      expect(host.querySelector('.oa-control-save-state')?.textContent).toContain(t('controlSaved'));
+    });
+
+    it('opens hidden categories for deep links and keeps local search from hiding the target', async () => {
+      // jsdom has no layout or native scrolling; the browser verifies placement.
+      HTMLElement.prototype.scrollIntoView ??= () => {};
+      adopt({ ...ACCOUNT, role: 'super_admin' });
+      await mountAt('/admin/security#secChatChallenge');
+      expect(host.querySelector('.oa-workbench-tab[aria-pressed="true"]')?.textContent)
+        .toContain(t('controlVerification'));
+      expect(shown('.oa-control-card').map((card) => card.id)).toContain('secChatChallenge');
+      await search('.oa-workbench .oa-search input', t('signupsPerIP'));
+      expect(shown('.oa-control-card').map((card) => card.id)).toEqual(['secRegistrationLimits']);
+      await router.push('/admin/security#secSecurityLog');
+      await nextTick();
+      expect(host.querySelector<HTMLInputElement>('.oa-workbench .oa-search input')?.value).toBe('');
+      expect(shown('.oa-control-card').map((card) => card.id)).toEqual(['secSecurityLog']);
+    });
+
+    it('opens a challenge before sending a redemption code when the operator requires it', async () => {
+      window.turnstile = {
+        render: vi.fn(() => 'redeem-widget'),
+        reset: vi.fn(),
+        remove: vi.fn(),
+      };
+      site.value = {
+        ...siteInfo.value,
+        turnstile_site_key: 'test-site-key',
+        turnstile_on_redeem: true,
+      };
+      adopt(ACCOUNT);
+      await mountAt('/usage');
+
+      // The plus beside the reset cards heading, found by what it says: the first
+      // button in that row is now the one that folds the section.
+      [...host.querySelectorAll<HTMLButtonElement>('button')]
+        .find((button) => button.getAttribute('aria-label') === t('redeemAdd'))!.click();
+      await nextTick();
+      const input = host.querySelector<HTMLInputElement>('.oa-redeem-row input')!;
+      input.value = 'HUMAN';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      host.querySelector<HTMLButtonElement>('.oa-redeem-row button')!.click();
+      await nextTick();
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+
+      expect(document.querySelector('.oa-modal-overlay')).not.toBeNull();
+      expect(document.querySelector('.oa-modal-card .oa-auth-title')?.textContent)
+        .toBe(t('redeemChallengeTitle'));
+      const sent = vi.mocked(fetch).mock.calls.some(([request, options]) =>
+        String(request).includes('/api/usage/redeem') && options?.method === 'POST');
+      expect(sent).toBe(false);
+    });
   });
 
-  it('updates settings matches when switching language with a query still entered', async () => {
-    await changeLanguage('en');
-    adopt(ACCOUNT);
-    await mountAt('/settings');
-    await search('.oa-settings-search input', '壁纸');
-    expect(shown(PANELS)).toHaveLength(0);
-    await changeLanguage('zh');
-    await nextTick();
-    expect(shown('.oa-wallpaper-upload')).toHaveLength(1);
-    expect(shown('.oa-range-field')).toHaveLength(0);
-    expect(host.querySelector<HTMLInputElement>('.oa-settings-search input')?.placeholder).toBe('搜索设置');
-    await changeLanguage('en');
+  describe('sign-in and the second step', () => {
+    it('sends an account the policy is holding to enrol, and nowhere else', async () => {
+      adopt({ ...ACCOUNT, two_factor_enrol: true });
+      await mountAt('/settings');
+      expect(router.currentRoute.value.path).toBe('/two-factor');
+      expect(router.currentRoute.value.query['next']).toBe('/settings');
+      expect(host.querySelector('.oa-auth-title')?.textContent).toBe(t('twoFactorRequiredTitle'));
+      expect(host.querySelector('.oa-2fa-wizard')).not.toBeNull();
+    });
+
+    // An account owing both steps used to be sent back and forth between the
+    // factor page and the connect page, nesting its destination on every hop.
+    it('settles an account owing both steps on the factor page, then on the connect page', async () => {
+      adopt({ ...ACCOUNT, two_factor_enrol: true, oidc_binding_required: true });
+      await mountAt('/');
+      expect(router.currentRoute.value.path).toBe('/two-factor');
+      expect(router.currentRoute.value.query['next']).toBeUndefined();
+
+      adopt({ ...ACCOUNT, two_factor_enrol: false, oidc_binding_required: true });
+      await router.replace({ path: '/two-factor', query: { next: '/settings' } });
+      expect(router.currentRoute.value.path).toBe('/bind-oidc');
+      expect(router.currentRoute.value.query['next']).toBe('/settings');
+    });
+
+    // The gates run in order, so the connect page asked for by address still
+    // waits behind an unfinished second step rather than claiming the account.
+    it('holds an account still owing a factor at the factor page when it asks for the connect page', async () => {
+      adopt({ ...ACCOUNT, two_factor_enrol: true, oidc_binding_required: true });
+      await mountAt('/bind-oidc');
+      expect(router.currentRoute.value.path).toBe('/two-factor');
+      expect(router.currentRoute.value.query['next']).toBe('/bind-oidc');
+    });
+
+    // An object location drops the query of a path that carries one, so a deep
+    // link into a tab used to land on the panel without its tab.
+    it('keeps the query of a destination carried through the sign-in page', async () => {
+      adopt(ACCOUNT);
+      await router.replace({ path: '/login', query: { next: '/settings?tab=keys' } });
+      expect(router.currentRoute.value.path).toBe('/settings');
+      expect(router.currentRoute.value.query['tab']).toBe('keys');
+    });
   });
 
-  it('filters admin navigation and instance settings while retaining unsaved values', async () => {
-    await changeLanguage('en');
-    adopt({ ...ACCOUNT, role: 'super_admin' });
-    await mountAt('/admin/settings');
-    await search('.oa-admin-search input', 'providers');
-    expect(host.querySelectorAll('.oa-admin-nav')).toHaveLength(1);
-    expect(host.querySelector('.oa-admin-nav')?.getAttribute('href')).toBe('/admin/providers');
-    expect(router.currentRoute.value.path).toBe('/admin/settings');
-    await search('.oa-admin-body .oa-search input', t('siteName'));
-    const siteName = shown('.oa-admin-body section')[0]!.querySelector<HTMLInputElement>('input')!;
-    siteName.value = 'Unsaved site';
-    siteName.dispatchEvent(new Event('input', { bubbles: true }));
-    await search('.oa-admin-body .oa-search input', t('attachmentPurgeDaily'));
-    expect(shown('.oa-admin-body section')).toHaveLength(1);
-    expect(shown('.oa-admin-body section')[0]!.textContent).toContain(t('attachmentPurgeDaily'));
-    await search('.oa-admin-body .oa-search input', t('siteName'));
-    expect(shown('.oa-admin-body section')[0]!.querySelector<HTMLInputElement>('input')).toBe(siteName);
-    expect(siteName.value).toBe('Unsaved site');
-    await search('.oa-admin-body .oa-search input', 'nothing-matches-this');
-    expect(shown('.oa-admin-body section')).toHaveLength(0);
-    expect(host.querySelector('.oa-admin-body .oa-search-empty')?.textContent).toBe(t('noSearchResults'));
-    await search('.oa-admin-body .oa-search input', '');
-    // The site category's cards: identity, signed-out background, the site
-    // theme, signed-in background, the PWA card, landing, about, the home
-    // notice, the feedback signature and the release notices.
-    expect(shown('.oa-admin-body section')).toHaveLength(10);
-  });
+  describe('the backoffice', () => {
+    it('filters admin navigation and instance settings while retaining unsaved values', async () => {
+      await changeLanguage('en');
+      adopt({ ...ACCOUNT, role: 'super_admin' });
+      await mountAt('/admin/settings');
+      await search('.oa-admin-search input', 'providers');
+      expect(host.querySelectorAll('.oa-admin-nav')).toHaveLength(1);
+      expect(host.querySelector('.oa-admin-nav')?.getAttribute('href')).toBe('/admin/providers');
+      expect(router.currentRoute.value.path).toBe('/admin/settings');
+      await search('.oa-admin-body .oa-search input', t('siteName'));
+      const siteName = shown('.oa-admin-body section')[0]!.querySelector<HTMLInputElement>('input')!;
+      siteName.value = 'Unsaved site';
+      siteName.dispatchEvent(new Event('input', { bubbles: true }));
+      await search('.oa-admin-body .oa-search input', t('attachmentPurgeDaily'));
+      expect(shown('.oa-admin-body section')).toHaveLength(1);
+      expect(shown('.oa-admin-body section')[0]!.textContent).toContain(t('attachmentPurgeDaily'));
+      await search('.oa-admin-body .oa-search input', t('siteName'));
+      expect(shown('.oa-admin-body section')[0]!.querySelector<HTMLInputElement>('input')).toBe(siteName);
+      expect(siteName.value).toBe('Unsaved site');
+      await search('.oa-admin-body .oa-search input', 'nothing-matches-this');
+      expect(shown('.oa-admin-body section')).toHaveLength(0);
+      expect(host.querySelector('.oa-admin-body .oa-search-empty')?.textContent).toBe(t('noSearchResults'));
+      await search('.oa-admin-body .oa-search input', '');
+      // The site category's cards: identity, signed-out background, the site
+      // theme, signed-in background, the PWA card, landing, about, the home
+      // notice, the feedback signature and the release notices.
+      expect(shown('.oa-admin-body section')).toHaveLength(10);
+    });
 
-  it('saves drafts across categories and keeps edits made during an in-flight save', async () => {
-    adopt({ ...ACCOUNT, role: 'super_admin' });
-    await mountAt('/admin/settings');
-    await search('#secIdentity input', 'First draft');
-    const category = Array.from(host.querySelectorAll<HTMLButtonElement>('.oa-workbench-tab'))
-      .find((button) => button.textContent?.includes(t('controlFiles')))!;
-    category.click();
-    await nextTick();
-    expect(shown('.oa-control-card').map((card) => card.id)).toEqual(['secAttachments', 'secCleanup']);
-    await search('#secAttachments input[type="number"]', '12');
-    const server = fetch;
-    let finish!: (response: Response) => void;
-    let submitted: Record<string, string> = {};
-    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-      if (String(input).endsWith('/api/admin/settings') && init?.method === 'PUT') {
-        submitted = JSON.parse(String(init.body));
-        return new Promise<Response>((resolve) => { finish = resolve; });
-      }
-      return server(input, init);
-    }));
-    host.querySelector<HTMLButtonElement>('.oa-admin-actions .primary')!.click();
-    await nextTick();
-    expect(submitted['site.name']).toBe('First draft');
-    expect(submitted['attachments.max_mb']).toBe('12');
-    expect(submitted).not.toHaveProperty('registration.enabled');
-    await search('#secAttachments input[type="number"]', '18');
-    finish(new Response(JSON.stringify({ settings: submitted }), { status: 200 }));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(host.querySelector('.oa-control-save-state')?.textContent).toContain(t('controlUnsaved'));
-    expect(host.querySelector<HTMLInputElement>('#secAttachments input')?.value).toBe('18');
-    await search('#secAttachments input[type="number"]', '12');
-    expect(host.querySelector('.oa-control-save-state')?.textContent).toContain(t('controlSaved'));
-  });
+    // The operator's policy holds an account at the door until it enrols. The
+    // server refuses the rest regardless; the router only saves drawing a
+    // screen made of refusals, and must still let the enrolment screen mount.
+    // The operator's code at the backoffice door. The page must not mount — and
+    // so must not ask the server for anything — until the code is in, and a
+    // visit that lapses mid-page must hand the screen back to the door.
+    it('asks for the backoffice code before drawing a page, and draws it after', async () => {
+      const locked: Account = {
+        ...ACCOUNT, role: 'super_admin', two_factor_at: 1,
+        two_factor_backoffice_verify: 'visit', two_factor_backoffice_minutes: 15, two_factor_backoffice_locked: true,
+      };
+      adopt(locked);
+      const server = fetch;
+      const calls: string[] = [];
+      let open = false;
+      vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        calls.push(`${init?.method ?? 'GET'} ${url}`);
+        if (url.endsWith('/api/auth/me')) {
+          return Promise.resolve(new Response(JSON.stringify({
+            user: { ...locked, two_factor_backoffice_locked: !open }, preferences: {},
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        }
+        if (url.endsWith('/api/profile/two-factor/backoffice')) {
+          open = true;
+          return Promise.resolve(new Response(null, { status: 204 }));
+        }
+        if (url.endsWith('/api/profile/two-factor/backoffice/leave')) {
+          return Promise.resolve(new Response(null, { status: 204 }));
+        }
+        return server(input, init);
+      }));
 
-  // The operator's policy holds an account at the door until it enrols. The
-  // server refuses the rest regardless; the router only saves drawing a
-  // screen made of refusals, and must still let the enrolment screen mount.
-  // The operator's code at the backoffice door. The page must not mount — and
-  // so must not ask the server for anything — until the code is in, and a
-  // visit that lapses mid-page must hand the screen back to the door.
-  it('asks for the backoffice code before drawing a page, and draws it after', async () => {
-    const locked: Account = {
-      ...ACCOUNT, role: 'super_admin', two_factor_at: 1,
-      two_factor_backoffice_verify: 'visit', two_factor_backoffice_minutes: 15, two_factor_backoffice_locked: true,
-    };
-    adopt(locked);
-    const server = fetch;
-    const calls: string[] = [];
-    let open = false;
-    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      calls.push(`${init?.method ?? 'GET'} ${url}`);
-      if (url.endsWith('/api/auth/me')) {
-        return Promise.resolve(new Response(JSON.stringify({
-          user: { ...locked, two_factor_backoffice_locked: !open }, preferences: {},
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
-      }
-      if (url.endsWith('/api/profile/two-factor/backoffice')) {
-        open = true;
-        return Promise.resolve(new Response(null, { status: 204 }));
-      }
-      if (url.endsWith('/api/profile/two-factor/backoffice/leave')) {
-        return Promise.resolve(new Response(null, { status: 204 }));
-      }
-      return server(input, init);
-    }));
-
-    await mountAt('/admin/users');
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await nextTick();
-    expect(host.querySelector('.oa-2fa-unlock')).not.toBeNull();
-    expect(host.querySelector('.oa-2fa-unlock')!.textContent).toContain(t('backofficeUnlockVisit'));
-    expect(host.querySelector('#usersList')).toBeNull();
-    expect(calls.some((call) => call.includes('/api/admin/'))).toBe(false);
-
-    const field = host.querySelector<HTMLInputElement>('.oa-2fa-unlock input')!;
-    field.value = '123456';
-    field.dispatchEvent(new Event('input', { bubbles: true }));
-    for (let i = 0; i < 4; i++) {
+      await mountAt('/admin/users');
       await new Promise((resolve) => setTimeout(resolve, 0));
       await nextTick();
-    }
-    expect(calls).toContain('POST /api/profile/two-factor/backoffice');
-    expect(host.querySelector('[role="dialog"]')).toBeNull();
-    expect(host.querySelector('#usersList')).not.toBeNull();
+      expect(host.querySelector('.oa-2fa-unlock')).not.toBeNull();
+      expect(host.querySelector('.oa-2fa-unlock')!.textContent).toContain(t('backofficeUnlockVisit'));
+      expect(host.querySelector('#usersList')).toBeNull();
+      expect(calls.some((call) => call.includes('/api/admin/'))).toBe(false);
 
-    // The server says the visit ran out: the page gives way to the door.
-    open = false;
-    window.dispatchEvent(new Event('oa-backoffice-locked'));
-    for (let i = 0; i < 3; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      await nextTick();
-    }
-    expect(host.querySelector('.oa-2fa-unlock')).not.toBeNull();
-
-    // Leaving the backoffice says so, which is what ends a visit in this mode.
-    app?.unmount();
-    app = null;
-    expect(calls).toContain('POST /api/profile/two-factor/backoffice/leave');
-  });
-
-  // The door switched on after this page loaded: the shell's copy of the
-  // account says nothing about it, so the first refusal has to be enough.
-  it('shows the door when it was switched on after the page loaded', async () => {
-    const before: Account = { ...ACCOUNT, role: 'super_admin', two_factor_at: 1 };
-    adopt(before);
-    const server = fetch;
-    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-      if (String(input).endsWith('/api/auth/me')) {
-        return Promise.resolve(new Response(JSON.stringify({
-          user: { ...before, two_factor_backoffice_verify: 'visit', two_factor_backoffice_locked: true }, preferences: {},
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      const field = host.querySelector<HTMLInputElement>('.oa-2fa-unlock input')!;
+      field.value = '123456';
+      field.dispatchEvent(new Event('input', { bubbles: true }));
+      for (let i = 0; i < 4; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        await nextTick();
       }
-      return server(input, init);
-    }));
-    await mountAt('/admin/users');
-    expect(host.querySelector('#usersList')).not.toBeNull();
+      expect(calls).toContain('POST /api/profile/two-factor/backoffice');
+      expect(host.querySelector('[role="dialog"]')).toBeNull();
+      expect(host.querySelector('#usersList')).not.toBeNull();
 
-    window.dispatchEvent(new Event('oa-backoffice-locked'));
-    for (let i = 0; i < 3; i++) {
+      // The server says the visit ran out: the page gives way to the door.
+      open = false;
+      window.dispatchEvent(new Event('oa-backoffice-locked'));
+      for (let i = 0; i < 3; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        await nextTick();
+      }
+      expect(host.querySelector('.oa-2fa-unlock')).not.toBeNull();
+
+      // Leaving the backoffice says so, which is what ends a visit in this mode.
+      app?.unmount();
+      app = null;
+      expect(calls).toContain('POST /api/profile/two-factor/backoffice/leave');
+    });
+
+    // The door switched on after this page loaded: the shell's copy of the
+    // account says nothing about it, so the first refusal has to be enough.
+    it('shows the door when it was switched on after the page loaded', async () => {
+      const before: Account = { ...ACCOUNT, role: 'super_admin', two_factor_at: 1 };
+      adopt(before);
+      const server = fetch;
+      vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).endsWith('/api/auth/me')) {
+          return Promise.resolve(new Response(JSON.stringify({
+            user: { ...before, two_factor_backoffice_verify: 'visit', two_factor_backoffice_locked: true }, preferences: {},
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        }
+        return server(input, init);
+      }));
+      await mountAt('/admin/users');
+      expect(host.querySelector('#usersList')).not.toBeNull();
+
+      window.dispatchEvent(new Event('oa-backoffice-locked'));
+      for (let i = 0; i < 3; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        await nextTick();
+      }
+      expect(host.querySelector('.oa-2fa-stage .oa-2fa-unlock')).not.toBeNull();
+      expect(host.querySelector('#usersList')).toBeNull();
+    });
+
+    it('draws the setup in place of a backoffice page the policy has closed', async () => {
+      adopt({ ...ACCOUNT, role: 'super_admin', two_factor_backoffice: true });
+      await mountAt('/admin/users');
+      expect(host.querySelector('.oa-2fa-gate .oa-2fa-title')?.textContent).toBe(t('twoFactorGateTitle'));
+      expect(host.querySelector('.oa-2fa-gate .oa-2fa-wizard')).not.toBeNull();
+      // The page itself never mounted, so it asked the server for nothing.
+      expect(host.querySelector('#usersList')).toBeNull();
+      // The rail stays, so it is clear where this is.
+      expect(host.querySelector('.oa-admin-rail')).not.toBeNull();
+    });
+
+    it('keeps resource data and table state after a failed refresh and does not invent a CPU sample', async () => {
+      adopt({ ...ACCOUNT, role: 'super_admin' });
+      await mountAt('/admin/resources');
+      expect(host.querySelector('.oa-resource-metrics')?.textContent).toContain(t('resMeasuring'));
+      const table = host.querySelector('.oa-table-block');
+      const server = fetch;
+      vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).includes('/api/admin/resources')) return Promise.reject(new Error('Refresh unavailable'));
+        return server(input, init);
+      }));
+      host.querySelector<HTMLButtonElement>('.oa-admin-actions button')!.click();
       await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(host.querySelector('.oa-table-block')).toBe(table);
+      // A failed fetch is shown as the translated connection line; the browser's
+      // own wording ('Refresh unavailable' here) travels in details, not on screen.
+      expect(host.querySelector('[role="alert"]')?.textContent).toContain(t('connectionFailed'));
+      expect(host.querySelector('[role="alert"]')?.textContent).not.toContain('Refresh unavailable');
+      expect(host.querySelector('.oa-resource-metrics')?.textContent).toContain(t('resMeasuring'));
+    });
+
+    it('expands the compact admin search across the navigation strip on narrow screens', async () => {
+      vi.stubGlobal('matchMedia', vi.fn((query: string) => ({
+        matches: query === '(max-width: 900px)',
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })));
+      adopt({ ...ACCOUNT, role: 'super_admin' });
+      await mountAt('/admin/settings');
+
+      const searchBox = host.querySelector<HTMLElement>('.oa-admin-search')!;
+      const trigger = searchBox.querySelector<HTMLButtonElement>('.oa-search-open')!;
+      const input = searchBox.querySelector<HTMLInputElement>('input')!;
+      expect(searchBox.classList.contains('oa-search-collapsible')).toBe(true);
+      expect(searchBox.classList.contains('expanded')).toBe(false);
+
+      trigger.click();
       await nextTick();
-    }
-    expect(host.querySelector('.oa-2fa-stage .oa-2fa-unlock')).not.toBeNull();
-    expect(host.querySelector('#usersList')).toBeNull();
-  });
+      expect(searchBox.classList.contains('expanded')).toBe(true);
+      expect(document.activeElement).toBe(input);
 
-  it('sends an account the policy is holding to enrol, and nowhere else', async () => {
-    adopt({ ...ACCOUNT, two_factor_enrol: true });
-    await mountAt('/settings');
-    expect(router.currentRoute.value.path).toBe('/two-factor');
-    expect(router.currentRoute.value.query['next']).toBe('/settings');
-    expect(host.querySelector('.oa-auth-title')?.textContent).toBe(t('twoFactorRequiredTitle'));
-    expect(host.querySelector('.oa-2fa-wizard')).not.toBeNull();
-  });
+      await search('.oa-admin-search input', 'providers');
+      expect(host.querySelectorAll('.oa-admin-nav')).toHaveLength(1);
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      await nextTick();
+      expect(searchBox.classList.contains('expanded')).toBe(false);
+      expect(host.querySelectorAll('.oa-admin-nav')).toHaveLength(1);
+      expect(document.activeElement).toBe(trigger);
 
-  // An account owing both steps used to be sent back and forth between the
-  // factor page and the connect page, nesting its destination on every hop.
-  it('settles an account owing both steps on the factor page, then on the connect page', async () => {
-    adopt({ ...ACCOUNT, two_factor_enrol: true, oidc_binding_required: true });
-    await mountAt('/');
-    expect(router.currentRoute.value.path).toBe('/two-factor');
-    expect(router.currentRoute.value.query['next']).toBeUndefined();
+      trigger.click();
+      await nextTick();
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      await nextTick();
+      expect(searchBox.classList.contains('expanded')).toBe(false);
+      // Backup joins terminal, invites and leaderboard on the rail, and is
+      // super-admin-only because it contains the whole instance; bonus and
+      // check-in sit beside usage; the audit trail follows the request log; the
+      // plugins screen is the last of the core's pages.
+      expect(host.querySelectorAll('.oa-admin-nav')).toHaveLength(20);
+      expect(host.querySelector('a[href="/admin/administrators"]')).toBeNull();
+      expect(document.activeElement).toBe(trigger);
+    });
 
-    adopt({ ...ACCOUNT, two_factor_enrol: false, oidc_binding_required: true });
-    await router.replace({ path: '/two-factor', query: { next: '/settings' } });
-    expect(router.currentRoute.value.path).toBe('/bind-oidc');
-    expect(router.currentRoute.value.query['next']).toBe('/settings');
-  });
+    it('mounts the uptime panel when navigated to and toggles accordion cards', async () => {
+      adopt({ ...ACCOUNT, role: 'super_admin' });
+      await mountAt('/uptime');
+      expect(host.querySelector('.oa-panel')).not.toBeNull();
+      expect(host.querySelector('.oa-uptime-content')).not.toBeNull();
 
-  // The gates run in order, so the connect page asked for by address still
-  // waits behind an unfinished second step rather than claiming the account.
-  it('holds an account still owing a factor at the factor page when it asks for the connect page', async () => {
-    adopt({ ...ACCOUNT, two_factor_enrol: true, oidc_binding_required: true });
-    await mountAt('/bind-oidc');
-    expect(router.currentRoute.value.path).toBe('/two-factor');
-    expect(router.currentRoute.value.query['next']).toBe('/bind-oidc');
-  });
+      const cards = host.querySelectorAll('.oa-uptime-card');
+      expect(cards.length).toBe(2);
 
-  // An object location drops the query of a path that carries one, so a deep
-  // link into a tab used to land on the panel without its tab.
-  it('keeps the query of a destination carried through the sign-in page', async () => {
-    adopt(ACCOUNT);
-    await router.replace({ path: '/login', query: { next: '/settings?tab=keys' } });
-    expect(router.currentRoute.value.path).toBe('/settings');
-    expect(router.currentRoute.value.query['tab']).toBe('keys');
-  });
+      const firstHeader = cards[0]?.querySelector<HTMLElement>('.oa-uptime-card-header');
+      const firstAccordion = cards[0]?.querySelector('.oa-uptime-accordion');
+      expect(firstAccordion?.classList.contains('open')).toBe(false);
+      expect(firstHeader?.querySelector('.oa-uptime-percentage')?.textContent).toContain('50.0%');
+      expect(firstHeader?.querySelector('.oa-uptime-percentage')?.textContent).not.toContain('99');
+      expect(cards[1]?.querySelector('.oa-uptime-percentage')?.textContent).toContain('—');
 
-  it('draws the setup in place of a backoffice page the policy has closed', async () => {
-    adopt({ ...ACCOUNT, role: 'super_admin', two_factor_backoffice: true });
-    await mountAt('/admin/users');
-    expect(host.querySelector('.oa-2fa-gate .oa-2fa-title')?.textContent).toBe(t('twoFactorGateTitle'));
-    expect(host.querySelector('.oa-2fa-gate .oa-2fa-wizard')).not.toBeNull();
-    // The page itself never mounted, so it asked the server for nothing.
-    expect(host.querySelector('#usersList')).toBeNull();
-    // The rail stays, so it is clear where this is.
-    expect(host.querySelector('.oa-admin-rail')).not.toBeNull();
-  });
+      // Clicking header expands the card
+      firstHeader?.click();
+      await nextTick();
+      expect(firstAccordion?.classList.contains('open')).toBe(true);
+      expect(firstAccordion?.querySelector('.oa-uptime-card-stats')?.textContent).toContain('99.0%');
 
-  it('opens hidden categories for deep links and keeps local search from hiding the target', async () => {
-    // jsdom has no layout or native scrolling; the browser verifies placement.
-    HTMLElement.prototype.scrollIntoView ??= () => {};
-    adopt({ ...ACCOUNT, role: 'super_admin' });
-    await mountAt('/admin/security#secChatChallenge');
-    expect(host.querySelector('.oa-workbench-tab[aria-pressed="true"]')?.textContent)
-      .toContain(t('controlVerification'));
-    expect(shown('.oa-control-card').map((card) => card.id)).toContain('secChatChallenge');
-    await search('.oa-workbench .oa-search input', t('signupsPerIP'));
-    expect(shown('.oa-control-card').map((card) => card.id)).toEqual(['secRegistrationLimits']);
-    await router.push('/admin/security#secSecurityLog');
-    await nextTick();
-    expect(host.querySelector<HTMLInputElement>('.oa-workbench .oa-search input')?.value).toBe('');
-    expect(shown('.oa-control-card').map((card) => card.id)).toEqual(['secSecurityLog']);
-  });
+      // Clicking again collapses it
+      firstHeader?.click();
+      await nextTick();
+      expect(firstAccordion?.classList.contains('open')).toBe(false);
 
-  it('keeps resource data and table state after a failed refresh and does not invent a CPU sample', async () => {
-    adopt({ ...ACCOUNT, role: 'super_admin' });
-    await mountAt('/admin/resources');
-    expect(host.querySelector('.oa-resource-metrics')?.textContent).toContain(t('resMeasuring'));
-    const table = host.querySelector('.oa-table-block');
-    const server = fetch;
-    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-      if (String(input).includes('/api/admin/resources')) return Promise.reject(new Error('Refresh unavailable'));
-      return server(input, init);
-    }));
-    host.querySelector<HTMLButtonElement>('.oa-admin-actions button')!.click();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(host.querySelector('.oa-table-block')).toBe(table);
-    // A failed fetch is shown as the translated connection line; the browser's
-    // own wording ('Refresh unavailable' here) travels in details, not on screen.
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain(t('connectionFailed'));
-    expect(host.querySelector('[role="alert"]')?.textContent).not.toContain('Refresh unavailable');
-    expect(host.querySelector('.oa-resource-metrics')?.textContent).toContain(t('resMeasuring'));
-  });
+      // Expand all button
+      const actionBtns = host.querySelectorAll<HTMLButtonElement>('.oa-uptime-action-btn');
+      const expandAllBtn = actionBtns[0];
+      const collapseAllBtn = actionBtns[1];
 
-  it('expands the compact admin search across the navigation strip on narrow screens', async () => {
-    vi.stubGlobal('matchMedia', vi.fn((query: string) => ({
-      matches: query === '(max-width: 900px)',
-      media: query,
-      onchange: null,
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-      addListener: vi.fn(),
-      removeListener: vi.fn(),
-      dispatchEvent: vi.fn(),
-    })));
-    adopt({ ...ACCOUNT, role: 'super_admin' });
-    await mountAt('/admin/settings');
+      expandAllBtn?.click();
+      await nextTick();
+      const accordions = host.querySelectorAll('.oa-uptime-accordion.open');
+      expect(accordions.length).toBe(2);
 
-    const searchBox = host.querySelector<HTMLElement>('.oa-admin-search')!;
-    const trigger = searchBox.querySelector<HTMLButtonElement>('.oa-search-open')!;
-    const input = searchBox.querySelector<HTMLInputElement>('input')!;
-    expect(searchBox.classList.contains('oa-search-collapsible')).toBe(true);
-    expect(searchBox.classList.contains('expanded')).toBe(false);
+      // Collapse all button
+      collapseAllBtn?.click();
+      await nextTick();
+      const closedAccordions = host.querySelectorAll('.oa-uptime-accordion.open');
+      expect(closedAccordions.length).toBe(0);
+    });
 
-    trigger.click();
-    await nextTick();
-    expect(searchBox.classList.contains('expanded')).toBe(true);
-    expect(document.activeElement).toBe(input);
+    it('mounts the admin availability section when navigated to', async () => {
+      adopt({ ...ACCOUNT, role: 'super_admin' });
+      await mountAt('/admin/availability');
 
-    await search('.oa-admin-search input', 'providers');
-    expect(host.querySelectorAll('.oa-admin-nav')).toHaveLength(1);
-    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-    await nextTick();
-    expect(searchBox.classList.contains('expanded')).toBe(false);
-    expect(host.querySelectorAll('.oa-admin-nav')).toHaveLength(1);
-    expect(document.activeElement).toBe(trigger);
+      const body = host.querySelector('.oa-admin-body');
+      expect(body).not.toBeNull();
+      await search('#secDegradationPolicy input', '77');
 
-    trigger.click();
-    await nextTick();
-    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-    await nextTick();
-    expect(searchBox.classList.contains('expanded')).toBe(false);
-    // Backup joins terminal, invites and leaderboard on the rail, and is
-    // super-admin-only because it contains the whole instance; bonus and
-    // check-in sit beside usage; the audit trail follows the request log; the
-    // plugins screen is the last of the core's pages.
-    expect(host.querySelectorAll('.oa-admin-nav')).toHaveLength(20);
-    expect(host.querySelector('a[href="/admin/administrators"]')).toBeNull();
-    expect(document.activeElement).toBe(trigger);
-  });
+      const probeButton = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(
+        (button) => button.textContent?.trim() === t('probeAllModels'),
+      );
+      expect(probeButton).not.toBeUndefined();
+      probeButton?.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(probeButton?.textContent?.trim()).toBe(
+        t('probeAllModelsProgress', { completed: 1, total: 2 }),
+      );
 
-  it('swaps one panel for another without letting the chat reflow wide', async () => {
-    adopt(ACCOUNT);
-    await mountAt('/settings');
-    expect(host.querySelector('.oa-panel')?.classList.contains('open')).toBe(true);
+      // The stub sends the done frame on a timer of its own; wait for what it
+      // draws rather than for a number of milliseconds that has to outlast it.
+      const done = t('probeAllModelsDone', { total: 2, succeeded: 1, failed: 1, skipped: 0 });
+      await until(() => body?.textContent?.includes(done) === true, 'the probe\'s done frame to be drawn');
 
-    // Sibling routes, so the outgoing panel unmounts and the incoming one
-    // mounts inside a single flush. The new one has to arrive already open:
-    // entering from the right would show the conversation at full width for
-    // the frame in between, then narrow it again.
-    await router.push('/keys');
-    await nextTick();
+      const calls = vi.mocked(globalThis.fetch).mock.calls;
+      expect(calls.some(([input]) => String(input).includes('/api/admin/health/probe'))).toBe(true);
+      expect(body?.textContent).toContain(done);
+      expect(host.querySelector<HTMLInputElement>('#secDegradationPolicy input')?.value).toBe('77');
+      expect(host.querySelector('.oa-control-save-state')?.textContent).toContain(t('controlUnsaved'));
+      expect(calls.filter(([input, init]) => String(input).endsWith('/api/admin/settings') && init?.method === 'GET')).toHaveLength(1);
+    });
 
-    const panel = host.querySelector('.oa-panel');
-    expect(panel).not.toBeNull();
-    expect(panel?.classList.contains('open')).toBe(true);
-  });
+    it('moves each backoffice section with its heading and keeps navigation in place', async () => {
+      adopt({ ...ACCOUNT, role: 'super_admin' });
+      await mountAt('/admin/providers');
 
-  it('mounts the uptime panel when navigated to and toggles accordion cards', async () => {
-    adopt({ ...ACCOUNT, role: 'super_admin' });
-    await mountAt('/uptime');
-    expect(host.querySelector('.oa-panel')).not.toBeNull();
-    expect(host.querySelector('.oa-uptime-content')).not.toBeNull();
+      const first = host.querySelector('.oa-admin-main');
+      const rail = host.querySelector('.oa-admin-rail');
+      expect(first).not.toBeNull();
 
-    const cards = host.querySelectorAll('.oa-uptime-card');
-    expect(cards.length).toBe(2);
+      // Two steps in the same direction. A CSS animation runs when its class
+      // arrives, so `enter-forward` landing on a node that already carries it
+      // is not an arrival — the element itself has to be new.
+      await router.push('/admin/models');
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const second = host.querySelector('.oa-admin-main');
 
-    const firstHeader = cards[0]?.querySelector<HTMLElement>('.oa-uptime-card-header');
-    const firstAccordion = cards[0]?.querySelector('.oa-uptime-accordion');
-    expect(firstAccordion?.classList.contains('open')).toBe(false);
-    expect(firstHeader?.querySelector('.oa-uptime-percentage')?.textContent).toContain('50.0%');
-    expect(firstHeader?.querySelector('.oa-uptime-percentage')?.textContent).not.toContain('99');
-    expect(cards[1]?.querySelector('.oa-uptime-percentage')?.textContent).toContain('—');
+      await router.push('/admin/usage');
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const third = host.querySelector('.oa-admin-main');
 
-    // Clicking header expands the card
-    firstHeader?.click();
-    await nextTick();
-    expect(firstAccordion?.classList.contains('open')).toBe(true);
-    expect(firstAccordion?.querySelector('.oa-uptime-card-stats')?.textContent).toContain('99.0%');
+      expect(second).not.toBe(first);
+      expect(third).not.toBe(second);
+      expect(third?.classList.contains('enter-forward')).toBe(true);
+      expect(third?.contains(host.querySelector('.oa-admin-head'))).toBe(true);
+      expect(host.querySelector('.oa-admin-rail')).toBe(rail);
 
-    // Clicking again collapses it
-    firstHeader?.click();
-    await nextTick();
-    expect(firstAccordion?.classList.contains('open')).toBe(false);
+      await router.push('/admin/providers');
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const back = host.querySelector('.oa-admin-main');
+      expect(back?.classList.contains('enter-back')).toBe(true);
+      expect(back?.querySelector('.oa-admin-actions button')).not.toBeNull();
+      expect(host.querySelectorAll('.oa-admin-actions')).toHaveLength(1);
 
-    // Expand all button
-    const actionBtns = host.querySelectorAll<HTMLButtonElement>('.oa-uptime-action-btn');
-    const expandAllBtn = actionBtns[0];
-    const collapseAllBtn = actionBtns[1];
+      await router.push('/admin/providers#provider-list');
+      await nextTick();
+      expect(host.querySelector('.oa-admin-main')).toBe(back);
+    });
 
-    expandAllBtn?.click();
-    await nextTick();
-    const accordions = host.querySelectorAll('.oa-uptime-accordion.open');
-    expect(accordions.length).toBe(2);
+    it('gives the backoffice the same pair of controls, beside the title', async () => {
+      adopt({ ...ACCOUNT, role: 'super_admin' });
+      await mountAt('/admin');
 
-    // Collapse all button
-    collapseAllBtn?.click();
-    await nextTick();
-    const closedAccordions = host.querySelectorAll('.oa-uptime-accordion.open');
-    expect(closedAccordions.length).toBe(0);
-  });
+      // Both live in the header now. The way out used to sit inside the rail,
+      // which is the one place it could not be reached from once the rail could
+      // be slid away.
+      const leading = host.querySelector('.oa-header-leading')!;
+      expect(leading.querySelector('.oa-admin-rail-toggle')).not.toBeNull();
+      expect(leading.querySelector('.oa-admin-back')).not.toBeNull();
+      expect(host.querySelector('.oa-admin-rail-head .oa-admin-back')).toBeNull();
 
-  it('opens a challenge before sending a redemption code when the operator requires it', async () => {
-    window.turnstile = {
-      render: vi.fn(() => 'redeem-widget'),
-      reset: vi.fn(),
-      remove: vi.fn(),
-    };
-    site.value = {
-      ...siteInfo.value,
-      turnstile_site_key: 'test-site-key',
-      turnstile_on_redeem: true,
-    };
-    adopt(ACCOUNT);
-    await mountAt('/usage');
+      const row = host.querySelector('.oa-admin')!;
+      const toggle = host.querySelector<HTMLButtonElement>('.oa-admin-rail-toggle')!;
+      const before = row.classList.contains('rail-collapsed');
 
-    // The plus beside the reset cards heading, found by what it says: the first
-    // button in that row is now the one that folds the section.
-    [...host.querySelectorAll<HTMLButtonElement>('button')]
-      .find((button) => button.getAttribute('aria-label') === t('redeemAdd'))!.click();
-    await nextTick();
-    const input = host.querySelector<HTMLInputElement>('.oa-redeem-row input')!;
-    input.value = 'HUMAN';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    host.querySelector<HTMLButtonElement>('.oa-redeem-row button')!.click();
-    await nextTick();
-    await new Promise((resolve) => requestAnimationFrame(resolve));
+      toggle.click();
+      await nextTick();
+      expect(row.classList.contains('rail-collapsed')).toBe(!before);
 
-    expect(document.querySelector('.oa-modal-overlay')).not.toBeNull();
-    expect(document.querySelector('.oa-modal-card .oa-auth-title')?.textContent)
-      .toBe(t('redeemChallengeTitle'));
-    const sent = vi.mocked(fetch).mock.calls.some(([request, options]) =>
-      String(request).includes('/api/usage/redeem') && options?.method === 'POST');
-    expect(sent).toBe(false);
-  });
-
-  it('mounts the admin availability section when navigated to', async () => {
-    adopt({ ...ACCOUNT, role: 'super_admin' });
-    await mountAt('/admin/availability');
-
-    const body = host.querySelector('.oa-admin-body');
-    expect(body).not.toBeNull();
-    await search('#secDegradationPolicy input', '77');
-
-    const probeButton = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(
-      (button) => button.textContent?.trim() === t('probeAllModels'),
-    );
-    expect(probeButton).not.toBeUndefined();
-    probeButton?.click();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(probeButton?.textContent?.trim()).toBe(
-      t('probeAllModelsProgress', { completed: 1, total: 2 }),
-    );
-
-    // The stub sends the done frame on a timer of its own; wait for what it
-    // draws rather than for a number of milliseconds that has to outlast it.
-    const done = t('probeAllModelsDone', { total: 2, succeeded: 1, failed: 1, skipped: 0 });
-    await until(() => body?.textContent?.includes(done) === true, 'the probe\'s done frame to be drawn');
-
-    const calls = vi.mocked(globalThis.fetch).mock.calls;
-    expect(calls.some(([input]) => String(input).includes('/api/admin/health/probe'))).toBe(true);
-    expect(body?.textContent).toContain(done);
-    expect(host.querySelector<HTMLInputElement>('#secDegradationPolicy input')?.value).toBe('77');
-    expect(host.querySelector('.oa-control-save-state')?.textContent).toContain(t('controlUnsaved'));
-    expect(calls.filter(([input, init]) => String(input).endsWith('/api/admin/settings') && init?.method === 'GET')).toHaveLength(1);
-  });
-
-  it('moves each backoffice section with its heading and keeps navigation in place', async () => {
-    adopt({ ...ACCOUNT, role: 'super_admin' });
-    await mountAt('/admin/providers');
-
-    const first = host.querySelector('.oa-admin-main');
-    const rail = host.querySelector('.oa-admin-rail');
-    expect(first).not.toBeNull();
-
-    // Two steps in the same direction. A CSS animation runs when its class
-    // arrives, so `enter-forward` landing on a node that already carries it
-    // is not an arrival — the element itself has to be new.
-    await router.push('/admin/models');
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    const second = host.querySelector('.oa-admin-main');
-
-    await router.push('/admin/usage');
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    const third = host.querySelector('.oa-admin-main');
-
-    expect(second).not.toBe(first);
-    expect(third).not.toBe(second);
-    expect(third?.classList.contains('enter-forward')).toBe(true);
-    expect(third?.contains(host.querySelector('.oa-admin-head'))).toBe(true);
-    expect(host.querySelector('.oa-admin-rail')).toBe(rail);
-
-    await router.push('/admin/providers');
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    const back = host.querySelector('.oa-admin-main');
-    expect(back?.classList.contains('enter-back')).toBe(true);
-    expect(back?.querySelector('.oa-admin-actions button')).not.toBeNull();
-    expect(host.querySelectorAll('.oa-admin-actions')).toHaveLength(1);
-
-    await router.push('/admin/providers#provider-list');
-    await nextTick();
-    expect(host.querySelector('.oa-admin-main')).toBe(back);
-  });
-
-  it('leaves out the trial transcript when there is no trial', async () => {
-    // `.oa-landing-thread` is `flex: 1`, so an empty one absorbs the column
-    // and pushes the notice and the way in to the bottom of the window.
-    site.value = {
-      ...siteInfo.value,
-      registration_enabled: true,
-      landing: { mode: 'chat', intro: '', trial: false, trial_turns: 0 },
-    };
-    await mountAt('/');
-
-    // The landing page is a lazy chunk, so it can arrive after mountAt has
-    // settled, and how long that takes depends on which test loaded it first.
-    await vi.waitFor(() => expect(host.querySelector('.oa-landing-chat')).not.toBeNull());
-    expect(host.querySelector('.oa-landing-thread')).toBeNull();
-    expect(host.querySelector('.oa-landing-entry')).not.toBeNull();
-  });
-
-  it('collapses the conversation rail from the header, and remembers nothing else', async () => {
-    adopt(ACCOUNT);
-    await mountAt('/');
-
-    const row = host.querySelector('.ai-chat')!;
-    const toggle = host.querySelector<HTMLButtonElement>('.oa-header-leading .oa-icon-btn')!;
-    const before = row.classList.contains('rail-collapsed');
-
-    toggle.click();
-    await nextTick();
-    expect(row.classList.contains('rail-collapsed')).toBe(!before);
-
-    toggle.click();
-    await nextTick();
-    expect(row.classList.contains('rail-collapsed')).toBe(before);
-  });
-
-  it('gives the backoffice the same pair of controls, beside the title', async () => {
-    adopt({ ...ACCOUNT, role: 'super_admin' });
-    await mountAt('/admin');
-
-    // Both live in the header now. The way out used to sit inside the rail,
-    // which is the one place it could not be reached from once the rail could
-    // be slid away.
-    const leading = host.querySelector('.oa-header-leading')!;
-    expect(leading.querySelector('.oa-admin-rail-toggle')).not.toBeNull();
-    expect(leading.querySelector('.oa-admin-back')).not.toBeNull();
-    expect(host.querySelector('.oa-admin-rail-head .oa-admin-back')).toBeNull();
-
-    const row = host.querySelector('.oa-admin')!;
-    const toggle = host.querySelector<HTMLButtonElement>('.oa-admin-rail-toggle')!;
-    const before = row.classList.contains('rail-collapsed');
-
-    toggle.click();
-    await nextTick();
-    expect(row.classList.contains('rail-collapsed')).toBe(!before);
-
-    toggle.click();
-    await nextTick();
-    expect(row.classList.contains('rail-collapsed')).toBe(before);
-  });
-
-  it('still draws the transcript when the trial is live', async () => {
-    site.value = {
-      ...siteInfo.value,
-      landing: { mode: 'chat', intro: '', trial: true, trial_turns: 3 },
-    };
-    await mountAt('/');
-
-    await vi.waitFor(() => expect(host.querySelector('.oa-landing-thread')).not.toBeNull());
-    expect(host.querySelector('.oa-landing-composer')).not.toBeNull();
+      toggle.click();
+      await nextTick();
+      expect(row.classList.contains('rail-collapsed')).toBe(before);
+    });
   });
 });
