@@ -153,8 +153,18 @@ dev:
 ## quietly passes when it cannot run is not a check, so build first if there
 ## is nothing there. CI has already built by this point, so this does not fire
 ## there and cannot rewrite the lockfile behind its back.
+##
+## A build older than the source is the same false green in another shape:
+## the assertions read yesterday's bundle and pass. That case only rebuilds
+## — no install — because a bundle on disk means the packages are already
+## there, and an install is what would rewrite the lockfile. CI builds fresh,
+## so nothing is newer than its bundle and this does not fire there either.
 test: vet
 	@test -d internal/web/dist/assets || $(MAKE) web
+	@if [ -n "$$(find web/src web/index.html web/vite.config.ts web/package.json -newer internal/web/dist/index.html -print 2>/dev/null | head -n 1)" ]; then \
+		echo "internal/web/dist is older than web/src: rebuilding"; \
+		npm --prefix web run build; \
+	fi
 	sh scripts/deploy_test.sh
 	go test -p 4 ./...
 	npm --prefix web run test

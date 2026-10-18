@@ -93,3 +93,75 @@ func TestAnExistingBundleIsServedAsItself(t *testing.T) {
 		t.Errorf("Cache-Control = %q, want the fingerprinted-asset policy", cc)
 	}
 }
+
+// Embedded files carry no modification time, so without a tag every
+// revalidation of the shell or a bundle was answered in full.
+func TestTheShellRevalidatesAndFollowsTheSettings(t *testing.T) {
+	if _, err := fs.Stat(distFS, "dist/index.html"); err != nil {
+		t.Skip("frontend not built: run the web build to exercise the embedded bundle")
+	}
+	title := "First"
+	handler, err := Handler(Options{Title: func() string { return title }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	get := func(inm string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		if inm != "" {
+			req.Header.Set("If-None-Match", inm)
+		}
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+
+	first := get("")
+	tag := first.Header().Get("ETag")
+	if first.Code != http.StatusOK || !strings.HasPrefix(tag, `W/"`) {
+		t.Fatalf("status = %d, ETag = %q, want 200 with a weak tag", first.Code, tag)
+	}
+	if again := get(tag); again.Code != http.StatusNotModified {
+		t.Errorf("revalidation status = %d, want 304", again.Code)
+	}
+
+	// The operator renames the site: the browser's copy must not be confirmed.
+	title = "Second"
+	renamed := get(tag)
+	if renamed.Code != http.StatusOK {
+		t.Fatalf("after a rename, status = %d, want 200", renamed.Code)
+	}
+	if !strings.Contains(renamed.Body.String(), "Second") {
+		t.Error("the renamed shell does not carry the new title")
+	}
+	if renamed.Header().Get("ETag") == tag {
+		t.Error("the tag did not change with the title")
+	}
+}
+
+func TestAFingerprintedBundleRevalidates(t *testing.T) {
+	handler := builtHandler(t)
+
+	entries, err := fs.ReadDir(distFS, "dist/assets")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("the build produced no assets")
+	}
+	target := "/assets/" + entries[0].Name()
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+	tag := rec.Header().Get("ETag")
+	if rec.Code != http.StatusOK || tag != `W/"`+entries[0].Name()+`"` {
+		t.Fatalf("status = %d, ETag = %q, want 200 tagged with the file name", rec.Code, tag)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, target, nil)
+	req.Header.Set("If-None-Match", tag)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotModified {
+		t.Errorf("revalidation status = %d, want 304", rec.Code)
+	}
+}

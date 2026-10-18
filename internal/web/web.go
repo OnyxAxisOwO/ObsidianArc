@@ -8,7 +8,9 @@ package web
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"errors"
 	"io/fs"
 	"net/http"
@@ -109,6 +111,12 @@ func Handler(opts Options) (http.Handler, error) {
 		// to cache forever. Anything else keeps the default.
 		if strings.HasPrefix(clean, "assets/") {
 			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			// The fingerprint in the name is the content's identity, so it is
+			// the validator too; embedded files have no modification time to
+			// offer instead. Weak, because httpx.Compress may send these
+			// bytes gzipped and a strong tag would claim the two encodings are
+			// byte-identical. FileServer answers If-None-Match from this header.
+			w.Header().Set("ETag", `W/"`+path.Base(clean)+`"`)
 		}
 		fileServer.ServeHTTP(w, r)
 	}), nil
@@ -145,6 +153,12 @@ func serveIndex(w http.ResponseWriter, r *http.Request, index []byte, opts Optio
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
+	// Hashed per request, after the substitutions: a tag computed once from
+	// the embedded file would stay the same when an operator renames the
+	// site, and the browser would keep the old title on a 304. Weak for the
+	// same reason as the assets' — the compressor may re-encode the body.
+	sum := sha256.Sum256(body)
+	w.Header().Set("ETag", `W/"`+hex.EncodeToString(sum[:16])+`"`)
 	http.ServeContent(w, r, "index.html", time.Time{}, bytes.NewReader(body))
 }
 
