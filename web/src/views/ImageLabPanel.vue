@@ -24,6 +24,7 @@ import OaSelectField from '@/components/OaSelectField.vue';
 import OaTurnstile from '@/components/OaTurnstile.vue';
 import { t } from '@/composables/useI18n';
 import { usePanelExit } from '@/composables/usePanelExit';
+import { usePanelFullscreen } from '@/composables/usePanelFullscreen';
 import { ImageError, prepareImage } from '@/chat/image';
 import { loadModels, models } from '@/chat/useModels';
 import {
@@ -41,12 +42,13 @@ import { apiErrorText } from '@/lib/api-error';
 import { GUARD_DEADLINE_MS, GuardTimeout, withDeadline } from '@/lib/deadline';
 import { relativeTime } from '@/lib/format';
 import { solvePoW } from '@/lib/pow';
+import { challengeText } from '@/lib/refusal';
 import { guards } from '@/plugins/registry';
 import { siteInfo } from '@/stores/session';
 
 const panels = usePanelExit();
 const panel = ref<InstanceType<typeof OaPanel> | null>(null);
-const fullscreen = ref(false);
+const { fullscreen, toggle: toggleFullscreen } = usePanelFullscreen(() => panel.value);
 
 const activeTab = ref<'generate' | 'history'>('generate');
 const gallery = ref<ImageGenerationRecord[]>([]);
@@ -61,7 +63,7 @@ const selectedSize = ref('1024x1024');
 const busy = ref(false);
 const error = ref('');
 /** What the confirm button says while a challenge, not the model, is the wait. */
-const stage = ref('');
+const statusText = ref('');
 
 // The operator's checks in front of the lab. Each token is good for one
 // picture, so every attempt asks again, whatever became of the last.
@@ -298,6 +300,12 @@ const SIZES = [
   { value: '', ratio: '', w: 1, h: 1 },
 ] as const;
 
+// The silhouette sits in a 32-unit icon box. Both its longest side and its area
+// are capped, so every ratio is drawn at a comparable size.
+const ICON_BOX = 32;
+const SILHOUETTE_MAX_SIDE = 26;
+const SILHOUETTE_MAX_AREA = 420;
+
 /**
  * The silhouette drawn on a tile, inside the 32-unit icon box.
  *
@@ -306,10 +314,10 @@ const SIZES = [
  * preset be added to the table above without drawing another `<svg>`.
  */
 function silhouette(w: number, h: number) {
-  const scale = Math.min(26 / Math.max(w, h), Math.sqrt(420 / (w * h)));
+  const scale = Math.min(SILHOUETTE_MAX_SIDE / Math.max(w, h), Math.sqrt(SILHOUETTE_MAX_AREA / (w * h)));
   const width = Math.round(w * scale * 10) / 10;
   const height = Math.round(h * scale * 10) / 10;
-  return { width, height, x: (32 - width) / 2, y: (32 - height) / 2 };
+  return { width, height, x: (ICON_BOX - width) / 2, y: (ICON_BOX - height) / 2 };
 }
 
 const sizeOptions = computed(() => SIZES.map((size) => ({
@@ -336,12 +344,18 @@ onMounted(async () => {
   void loadGallery();
 });
 
-function toggleFullscreen(): void {
-  fullscreen.value = panel.value?.toggleFullscreen() ?? false;
-}
+
+// A refresh asked for while a read is already running is kept, not dropped: that
+// read may have started before the new picture was saved, so the refresh runs once
+// it lands. A page of older results is still turned away, because two pages that
+// both append would list the same rows twice.
+let galleryRefreshWaiting = false;
 
 async function loadGallery(before?: number, beforeId?: string): Promise<void> {
-  if (loadingGallery.value) return;
+  if (loadingGallery.value) {
+    if (!before) galleryRefreshWaiting = true;
+    return;
+  }
   loadingGallery.value = true;
   try {
     const res = await listImageGenerations(
@@ -357,6 +371,10 @@ async function loadGallery(before?: number, beforeId?: string): Promise<void> {
     error.value = err instanceof ApiError ? apiErrorText(err) : t('failed');
   } finally {
     loadingGallery.value = false;
+    if (galleryRefreshWaiting && !unmounted) {
+      galleryRefreshWaiting = false;
+      void loadGallery();
+    }
   }
 }
 
@@ -397,18 +415,31 @@ async function generate(): Promise<void> {
     }
   }
 
+  // Read before the first await: a solve or a guard can take seconds, and closing
+  // the panel meanwhile clears the references. The request carries what was on
+  // screen when Generate was pressed, not what is left of it afterwards.
+  const modelID = selectedModelID.value;
+  const style = selectedStyle.value;
+  const size = selectedSize.value;
+  // Only `images`: the server reads that list in preference to `image`, so
+  // sending the first picture under both uploads it twice.
+  const images = references.value.map((r) => r.data);
+
   busy.value = true;
   try {
     // Cheapest first, as the server asks them: the arithmetic, then the
     // plugin guards, whose service may take a moment.
     let pow: PoWSolution | undefined;
     if (needsPoW.value) {
-      stage.value = t('powSolving');
+      statusText.value = t('powSolving');
+      // Not cancelled if the panel closes, and neither is the request after it:
+      // the reader already pressed Generate, and the picture is kept in the
+      // gallery either way.
       pow = await solvePoW(await fetchPoWChallenge()).promise;
     }
     const guardTokens: Record<string, string> = {};
     for (const { guard, config } of activeGuards.value) {
-      stage.value = guard.checking();
+      statusText.value = guard.checking();
       try {
         guardTokens[guard.name] = await withDeadline(guard.token('images', config), GUARD_DEADLINE_MS);
       } catch (failure: unknown) {
@@ -416,16 +447,13 @@ async function generate(): Promise<void> {
         return;
       }
     }
-    stage.value = '';
+    statusText.value = '';
 
-    // Only `images`: the server reads that list in preference to `image`, so
-    // sending the first picture under both uploads it twice.
-    const images = references.value.map((r) => r.data);
     const res = await generateImages({
-      model_id: selectedModelID.value,
+      model_id: modelID,
       prompt: text,
-      style: selectedStyle.value,
-      size: selectedSize.value,
+      style,
+      size,
       n: 1,
       ...(images.length > 0 ? { images } : {}),
       ...(turnstileToken ? { turnstile: turnstileToken } : {}),
@@ -435,24 +463,37 @@ async function generate(): Promise<void> {
 
     if (res.images && res.images.length) {
       const arrived = Date.now();
-      const fresh = res.images.map((img, n): LabResult => ({
-        ...img,
-        download: `image-${arrived}-${n}.${imageExtension(img.mime)}`,
-      }));
+      // The gallery URL is the copy the screen reads. The base64 copy is kept only
+      // when the server gave no URL, so it is not held for the whole session.
+      const fresh = res.images.map((img, n): LabResult => {
+        const { b64_json: bytes, ...rest } = img;
+        return {
+          ...rest,
+          ...(img.url ? {} : { b64_json: bytes }),
+          download: `image-${arrived}-${n}.${imageExtension(img.mime)}`,
+        };
+      });
       history.value = [...fresh, ...history.value];
       void loadGallery();
     }
   } catch (err) {
-    const code = err instanceof ApiError ? err.code : '';
-    if (code === 'challenge_failed' || code.startsWith('pow_')) error.value = t('challengeFailed');
-    else if (code === 'challenge_unavailable') error.value = t('challengeUnavailable');
-    else error.value = err instanceof ApiError ? apiErrorText(err) : t('failed');
+    error.value = challengeText(err) ?? (err instanceof ApiError ? apiErrorText(err) : t('failed'));
   } finally {
-    stage.value = '';
+    statusText.value = '';
     busy.value = false;
     // Spent whether or not it passed.
     turnstile.value?.reset();
   }
+}
+
+// Both kinds of card open the same lightbox with the name their download link
+// uses, so the two cannot drift apart.
+function zoomResult(img: LabResult): void {
+  zoomedImage.value = { url: imageSource(img), alt: img.revised_prompt || prompt.value, download: img.download };
+}
+
+function zoomGalleryItem(item: ImageGenerationRecord): void {
+  zoomedImage.value = { url: item.url, alt: item.revised_prompt || item.prompt, download: galleryDownloadName(item) };
 }
 
 function imageSource(img: ImageGenerationItem): string {
@@ -487,7 +528,7 @@ function galleryDownloadName(item: ImageGenerationRecord): string {
   <OaPanel
     ref="panel"
     :title="t('imageLab')"
-    :confirm-label="activeTab === 'generate' ? (busy ? (stage || t('generatingImage')) : t('generateImage')) : undefined"
+    :confirm-label="activeTab === 'generate' ? (busy ? (statusText || t('generatingImage')) : t('generateImage')) : undefined"
     :confirmable="activeTab === 'generate' && !!prompt.trim() && !!selectedModelID && !preparing"
     :footer="activeTab === 'generate'"
     :busy="busy"
@@ -680,14 +721,14 @@ function galleryDownloadName(item: ImageGenerationRecord): string {
           :site-key="siteInfo.turnstile_site_key ?? ''"
         />
 
-        <div v-if="busy" class="ai-chat-pending" style="margin: 16px 0;">
+        <div v-if="busy" class="ai-chat-pending oa-image-lab-pending">
           <span class="ai-chat-spinner" />
-          <span>{{ stage || t('generatingImage') }}</span>
+          <span>{{ statusText || t('generatingImage') }}</span>
         </div>
 
         <div v-if="history.length" class="oa-image-lab-results">
           <OaFormSection :title="t('imageResult')" />
-          <div v-for="(img, idx) in history" :key="idx" class="oa-image-lab-card">
+          <div v-for="img in history" :key="img.download" class="oa-image-lab-card">
             <img
               :src="imageSource(img)"
               class="oa-image-lab-img"
@@ -695,11 +736,11 @@ function galleryDownloadName(item: ImageGenerationRecord): string {
               tabindex="0"
               :aria-label="t('zoomImage')"
               :alt="img.revised_prompt || prompt"
-              @click="zoomedImage = { url: imageSource(img), alt: img.revised_prompt || prompt, download: img.download }"
-              @keydown.enter.prevent="zoomedImage = { url: imageSource(img), alt: img.revised_prompt || prompt, download: img.download }"
-              @keydown.space.prevent="zoomedImage = { url: imageSource(img), alt: img.revised_prompt || prompt, download: img.download }"
+              @click="zoomResult(img)"
+              @keydown.enter.prevent="zoomResult(img)"
+              @keydown.space.prevent="zoomResult(img)"
             />
-            <p v-if="img.revised_prompt" class="oa-field-hint" style="margin-top: 8px;">
+            <p v-if="img.revised_prompt" class="oa-field-hint oa-image-lab-note">
               {{ img.revised_prompt }}
             </p>
             <div class="oa-image-lab-actions">
@@ -708,8 +749,7 @@ function galleryDownloadName(item: ImageGenerationRecord): string {
                 :download="img.download"
                 target="_blank"
                 rel="noopener"
-                class="oa-btn primary"
-                style="text-decoration: none; display: inline-flex; align-items: center; gap: 6px;"
+                class="oa-btn primary oa-image-lab-download"
               >
                 <IconDownload :size="14" />
                 <span>{{ t('downloadImage') }}</span>
@@ -721,7 +761,7 @@ function galleryDownloadName(item: ImageGenerationRecord): string {
     </template>
 
     <template v-else-if="activeTab === 'history'">
-      <div v-if="loadingGallery && !gallery.length" class="ai-chat-pending" style="margin: 32px auto;">
+      <div v-if="loadingGallery && !gallery.length" class="ai-chat-pending oa-image-lab-loading">
         <span class="ai-chat-spinner" />
         <span>{{ t('thinking') }}</span>
       </div>
@@ -737,9 +777,9 @@ function galleryDownloadName(item: ImageGenerationRecord): string {
             role="button"
             tabindex="0"
             :aria-label="t('zoomImage')"
-            @click="zoomedImage = { url: item.url, alt: item.revised_prompt || item.prompt, download: galleryDownloadName(item) }"
-            @keydown.enter.prevent="zoomedImage = { url: item.url, alt: item.revised_prompt || item.prompt, download: galleryDownloadName(item) }"
-            @keydown.space.prevent="zoomedImage = { url: item.url, alt: item.revised_prompt || item.prompt, download: galleryDownloadName(item) }"
+            @click="zoomGalleryItem(item)"
+            @keydown.enter.prevent="zoomGalleryItem(item)"
+            @keydown.space.prevent="zoomGalleryItem(item)"
           >
             <img
               class="oa-gallery-img"
@@ -777,7 +817,7 @@ function galleryDownloadName(item: ImageGenerationRecord): string {
               >
                 <IconDownload :size="12" />
               </a>
-              <span style="flex: 1;" />
+              <span class="oa-gallery-spacer" />
               <OaConfirmButton
                 class="oa-gallery-btn danger"
                 :resting-title="t('deleteImageConfirm')"

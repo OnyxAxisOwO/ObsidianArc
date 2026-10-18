@@ -11,10 +11,11 @@
 // to be a sentence under the title is now a progress line and a bar, and
 // each invitee row carries its own outcome rather than a shared blurb.
 
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ApiError } from '@/api/client';
-import { apiFailureText } from '@/lib/api-error-text';
+import { useLatestTimeout } from '@/composables/useLatestTimeout';
+import { apiErrorText } from '@/lib/api-error';
 import {
   claimInviteCode, fetchProfileInvites, formatInviteCode, inviteLink, regenerateProfileInvite,
   type ProfileInvitee, type ProfileInvites,
@@ -47,7 +48,7 @@ async function load(): Promise<void> {
   try {
     data.value = await fetchProfileInvites();
   } catch (failure) {
-    flash.value = failure instanceof ApiError ? failure.message : String(failure);
+    flash.value = apiErrorText(failure);
   } finally {
     loading.value = false;
   }
@@ -55,18 +56,15 @@ async function load(): Promise<void> {
 
 onMounted(load);
 
-const copyTimers: { code?: ReturnType<typeof setTimeout>; link?: ReturnType<typeof setTimeout> } = {};
+// Each copy button has its own confirmation, so copying the link does not end the
+// code's confirmation early, and leaving the screen cancels both.
+const COPY_FLASH_MS = 1500;
+const copiedLater = { code: useLatestTimeout(), link: useLatestTimeout() };
 
 function flashCopy(which: 'code' | 'link'): void {
   const target = which === 'code' ? copiedCode : copiedLink;
   target.value = true;
-  if (copyTimers[which]) {
-    clearTimeout(copyTimers[which]);
-  }
-  copyTimers[which] = setTimeout(() => {
-    target.value = false;
-    delete copyTimers[which];
-  }, 1500);
+  copiedLater[which](() => { target.value = false; }, COPY_FLASH_MS);
 }
 
 // A refused clipboard — plain HTTP, a locked-down browser — says so, the
@@ -91,11 +89,6 @@ function copyLink(): void {
   void copyToClipboard(link.value).then((ok) => copied('link', ok));
 }
 
-onUnmounted(() => {
-  if (copyTimers.code) clearTimeout(copyTimers.code);
-  if (copyTimers.link) clearTimeout(copyTimers.link);
-});
-
 async function regenerate(): Promise<void> {
   if (busy.value) return;
   busy.value = true;
@@ -106,7 +99,7 @@ async function regenerate(): Promise<void> {
     if (failure instanceof ApiError && failure.code === 'too_many_attempts') {
       flash.value = t('tooManyAttempts', { count: Number(failure.details['retry_after_seconds'] ?? 60) });
     } else {
-      flash.value = failure instanceof ApiError ? failure.message : String(failure);
+      flash.value = apiErrorText(failure);
     }
   } finally {
     busy.value = false;
@@ -137,7 +130,7 @@ onMounted(() => {
 });
 
 function claimErrorText(failure: unknown): string {
-  if (!(failure instanceof ApiError)) return String(failure);
+  if (!(failure instanceof ApiError)) return apiErrorText(failure);
   switch (failure.code) {
     case 'invite_claimed': return t('inviteClaimAlready');
     case 'invite_group_conflict': return t('inviteClaimConflict');
@@ -147,7 +140,7 @@ function claimErrorText(failure: unknown): string {
     case 'invite_invalid':
       return t('inviteClaimInvalid');
     default:
-      return apiFailureText(failure, 'failed');
+      return apiErrorText(failure);
   }
 }
 

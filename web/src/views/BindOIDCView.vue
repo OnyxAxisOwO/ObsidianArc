@@ -23,9 +23,9 @@ import { ApiError } from '@/api/client';
 import { connectProvider } from '@/api/oauth';
 import OaField from '@/components/OaField.vue';
 import OaThemeToggle from '@/components/OaThemeToggle.vue';
-import { t, type StringKey } from '@/composables/useI18n';
+import { t } from '@/composables/useI18n';
 import { IconSpark } from '@/icons';
-import { connectRefusalText } from '@/lib/refusal';
+import { connectCallbackText, connectRefusalText } from '@/lib/refusal';
 import { safeNext, serverOwned } from '@/lib/next';
 import { adopt, currentUser, forget, siteInfo } from '@/stores/session';
 import { useLoginBackground } from '@/composables/useLoginBackground';
@@ -86,17 +86,6 @@ function sendConnect(proof: string): void {
     .finally(() => { busy.value = false; });
 }
 
-// Codes the connect callback can send back in oauth_error. Anything else is
-// the general sentence: the raw code means nothing to the person reading it.
-const CONNECT_REFUSALS: Record<string, StringKey> = {
-  denied: 'oauthDenied',
-  state: 'oauthState',
-  already_linked: 'oauthAlreadyLinked',
-  address_taken: 'oauthConnectAddressTaken',
-  unavailable: 'oauthUnavailable',
-  provider: 'oauthProviderFailed',
-};
-
 // The connect flow leaves this page and comes back to it, so its outcome
 // arrives in the query rather than in a response — the same contract the
 // settings screen's own connections panel reads.
@@ -107,8 +96,7 @@ onMounted(async () => {
   const done = route.query['oauth'];
   const failure = route.query['oauth_error'];
   if (typeof failure === 'string' && failure) {
-    const known = Object.hasOwn(CONNECT_REFUSALS, failure) ? CONNECT_REFUSALS[failure] : undefined;
-    flash.value = t(known ?? 'oauthFailed');
+    flash.value = connectCallbackText(failure);
   }
   if (done || failure) void router.replace({ path: route.path, query: {} });
   if (done !== 'connected') return;

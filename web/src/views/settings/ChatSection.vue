@@ -38,6 +38,9 @@ const stats = ref(currentPreferences.value['show_stats'] === true);
 // nobody is shown a switch that would do nothing.
 const statsAllowed = computed(() => currentUser.value?.allow_stats !== false);
 
+// Fetched here rather than read from the shared model list: that list is loaded
+// once at startup and keeps no record of a failed load, and this section has to
+// say when the catalogue could not be read.
 onMounted(() => {
   void api.get<{ models: Array<{ id: string; display_name: string; usable?: boolean }> }>('/api/models')
     .then(({ models: list }) => {

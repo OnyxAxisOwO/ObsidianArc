@@ -40,6 +40,7 @@ import { useBulk } from '@/composables/useBulk';
 import { usePanelSlot } from '@/composables/usePanelSlot';
 import { IconTrash } from '@/icons';
 import { absoluteTime, compactNumber, localeTag, relativeTime } from '@/lib/format';
+import { cardTitle, formatCardScope } from '@/lib/card-scope';
 import { rememberedPageSize } from '@/lib/page-size';
 import { describeUserAgent } from '@/lib/ua';
 import { currentUser, canAdmin, isSuperAdmin, siteInfo } from '@/stores/session';
@@ -224,34 +225,6 @@ function grantSelectedWindows(): string[] {
     return [];
   }
   return [grantScopePreset.value];
-}
-
-function formatCardScope(card: { windows?: string[] }): string {
-  const wins = card.windows ?? [];
-  if (wins.length === 0 || wins.includes('full')) {
-    return t('cardFullReset');
-  }
-  const order = ['5h', '1w', '1m'];
-  const sorted = [...wins].sort((a, b) => order.indexOf(a) - order.indexOf(b));
-  if (sorted.length === 1) {
-    if (sorted[0] === '5h') return t('cardScope5H');
-    if (sorted[0] === '1w') return t('cardScope1W');
-    if (sorted[0] === '1m') return t('cardScope1M');
-  }
-  const labels = sorted.map((w) => {
-    if (w === '5h') return t('cardScopeLabel5H');
-    if (w === '1w') return t('cardScopeLabel1W');
-    if (w === '1m') return t('cardScopeLabel1M');
-    return w;
-  });
-  return t('cardScopeCombined', { windows: labels.join(' + ') });
-}
-
-function cardTitle(card: { name?: string; windows?: string[] }): string {
-  if (card.name && card.name.trim()) {
-    return card.name.trim();
-  }
-  return formatCardScope(card);
 }
 
 function cardSubtitle(card: { name?: string; windows?: string[]; source: string; expires_at: number }): string {

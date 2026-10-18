@@ -10,10 +10,12 @@
 // inside the same card, so the thing being set up and the steps setting it up
 // read as one object instead of a stack of loose parts.
 
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import type { Account } from '@/api/auth';
 import { ApiError } from '@/api/client';
-import { apiFailureText } from '@/lib/api-error-text';
+import { useLatestTimeout } from '@/composables/useLatestTimeout';
+import { useLeaveWarning } from '@/composables/useLeaveWarning';
+import { apiErrorText } from '@/lib/api-error';
 import { fetchSessions, revokeOtherSessions, revokeSession, type DeviceSession } from '@/api/sessions';
 import {
   disableTwoFactor, fetchTwoFactor, regenerateRecovery, type TwoFactorStatus,
@@ -59,7 +61,7 @@ async function load(): Promise<void> {
   try {
     status.value = await fetchTwoFactor();
   } catch (failure) {
-    flash.value = failure instanceof ApiError ? failure.message : String(failure);
+    flash.value = apiErrorText(failure);
   }
 }
 
@@ -84,11 +86,11 @@ function finishFresh(): void {
 }
 
 function refusal(failure: unknown): string {
-  if (!(failure instanceof ApiError)) return String(failure);
+  if (!(failure instanceof ApiError)) return apiErrorText(failure);
   switch (failure.code) {
     case 'two_factor_code': return t('twoFactorCodeWrong');
     case 'two_factor_mandatory': return t('twoFactorMandatoryNote');
-    default: return apiFailureText(failure, 'failed');
+    default: return apiErrorText(failure);
   }
 }
 
@@ -119,11 +121,15 @@ async function confirm(): Promise<void> {
   }
 }
 
+// The codes are copied as one block, and the confirmation says so for a moment.
+const COPY_FLASH_MS = 1500;
+const copiedLater = useLatestTimeout();
+
 function copyFresh(): void {
   void copyToClipboard(fresh.value.join('\n')).then((ok) => {
     if (!ok) return;
     copied.value = true;
-    window.setTimeout(() => { copied.value = false; }, 1500);
+    copiedLater(() => { copied.value = false; }, COPY_FLASH_MS);
   });
 }
 
@@ -132,14 +138,7 @@ function copyFresh(): void {
 // only their digests, so they cannot be shown again. The browser is asked
 // before that happens. Leaving this page inside the app asks nothing: the codes
 // stay in memory (see recovery.ts), so coming back shows them again.
-function warnBeforeLeaving(event: BeforeUnloadEvent): void {
-  if (!fresh.value.length || savedCodes.value) return;
-  event.preventDefault();
-  event.returnValue = '';
-}
-
-onMounted(() => window.addEventListener('beforeunload', warnBeforeLeaving));
-onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeLeaving));
+useLeaveWarning(() => !!fresh.value.length && !savedCodes.value);
 
 // --- signed-in devices --------------------------------------------------------
 //
@@ -159,7 +158,7 @@ async function loadDevices(): Promise<void> {
     const { sessions } = await fetchSessions();
     devices.value = sessions;
   } catch (failure) {
-    devicesFlash.value = failure instanceof ApiError ? failure.message : String(failure);
+    devicesFlash.value = apiErrorText(failure);
   }
 }
 
@@ -173,7 +172,7 @@ async function signOutDevice(id: string): Promise<void> {
     await revokeSession(id);
     devices.value = (devices.value ?? []).filter((entry) => entry.id !== id);
   } catch (failure) {
-    devicesFlash.value = failure instanceof ApiError ? failure.message : String(failure);
+    devicesFlash.value = apiErrorText(failure);
   } finally {
     revokingID.value = '';
   }
@@ -188,7 +187,7 @@ async function signOutOthers(): Promise<void> {
     devices.value = (devices.value ?? []).filter((entry) => entry.current);
     devicesNotice.value = t('deviceSignOutOthersDone');
   } catch (failure) {
-    devicesFlash.value = failure instanceof ApiError ? failure.message : String(failure);
+    devicesFlash.value = apiErrorText(failure);
   } finally {
     revokingOthers.value = false;
   }

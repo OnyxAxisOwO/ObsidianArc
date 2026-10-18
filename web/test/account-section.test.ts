@@ -98,7 +98,10 @@ describe('the password section', () => {
     await mount(AccountSection);
 
     expect(passwordInputs()).toHaveLength(0);
-    expect(host.textContent).toContain('Could not reach the server.');
+    // A server failure's sentence was written for logs: the reader gets the
+    // screen's own line in their language.
+    expect(host.textContent).not.toContain('Could not reach the server.');
+    expect(host.textContent).toContain(t('failed'));
     expect(button(t('retry'))).toBeTruthy();
   });
 

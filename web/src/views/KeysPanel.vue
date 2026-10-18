@@ -12,6 +12,9 @@
 
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { ApiError, api } from '@/api/client';
+import { useLatestTimeout } from '@/composables/useLatestTimeout';
+import KeyEndpoint from './KeyEndpoint.vue';
+import { apiErrorText } from '@/lib/api-error';
 import { createKey, deleteKey, listKeys, updateKey, type ApiKey } from '@/api/keys';
 import { copyToClipboard } from '@/chat/markdown';
 import type { AvailableModel } from '@/chat/useModels';
@@ -51,6 +54,9 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // a spent token, and that fails as challenge_failed on reuse, which is when
 // the widget resets.
 const POST_CHALLENGE_CODES = new Set(['challenge_failed', 'challenge_unavailable', 'internal']);
+// The shape a key takes: the fixed prefix, then 32 random bytes in unpadded
+// base64url, which is 43 characters.
+const KEY_SHAPE = /^sk-oa-[A-Za-z0-9_-]{43}$/;
 // How long a revoke button stays armed. Long enough to read the question and
 // decide; short enough that an armed button left alone goes back to being a
 // safe one.
@@ -128,7 +134,7 @@ const endpoint = `${window.location.origin}/v1`;
 
 const usableModels = computed(() => models.value.filter((model) => model.usable !== false));
 const modelItems = computed<ListItem[]>(() =>
-  usableModels.value.map((model) => ({ value: model.id, label: model.display_name || model.id })));
+  usableModels.value.map((model) => ({ value: model.id, label: modelLabel(model) })));
 
 const importApp = ref<CCSwitchApp>('claude');
 const importModel = ref('');
@@ -146,7 +152,7 @@ const editDirty = computed(() => {
 });
 const editTokenValid = computed(() => {
   const token = editToken.value.trim();
-  return /^sk-oa-[A-Za-z0-9_-]{43}$/.test(token) && !!editing.value &&
+  return KEY_SHAPE.test(token) && !!editing.value &&
     token.startsWith(editing.value.prefix);
 });
 const importBlocked = computed(() => {
@@ -161,7 +167,7 @@ const importChoices = computed(() => {
   const allowed = modelIDsFor(importKey.value);
   return usableModels.value
     .filter((model) => !allowed.length || allowed.includes(model.id))
-    .map((model) => ({ value: model.id, label: model.display_name || model.id }));
+    .map((model) => ({ value: model.id, label: modelLabel(model) }));
 });
 
 // Synchronous, because the token belongs to the row that was open: an async
@@ -212,10 +218,18 @@ function itemsFor(selected: string[]): ListItem[] {
   return items;
 }
 
-function modelName(id: string): string {
-  return models.value.find((model) => model.id === id)?.display_name || id;
+function modelLabel(model: AvailableModel): string {
+  return model.display_name || model.id;
 }
 
+function modelName(id: string): string {
+  const model = models.value.find((candidate) => candidate.id === id);
+  return model ? modelLabel(model) : id;
+}
+
+// The single-model field is still read: a response that carries only that field,
+// which the server keeps for clients written before model lists existed, must
+// still name its model here. The keys tests pin this input.
 function modelIDsFor(row: ApiKey): string[] {
   if (row.model_ids?.length) return row.model_ids;
   return row.model_id ? [row.model_id] : [];
@@ -232,7 +246,7 @@ function expiryLabel(row: ApiKey): string {
 }
 
 // A refusal the interface has no words for is shown as the server wrote it.
-function refusalText(failure: unknown): string {
+function keyRefusalText(failure: unknown): string {
   if (!(failure instanceof ApiError)) return t('failed');
   switch (failure.code) {
     case 'too_many_keys':
@@ -244,9 +258,13 @@ function refusalText(failure: unknown): string {
     case 'key_not_found':
       return t('keyErrorNotFound');
     default:
-      return failure.message;
+      return apiErrorText(failure);
   }
 }
+
+// A dropped request must not leave the model picker empty until the panel is
+// reopened, so the next refresh asks again; a success clears the flag.
+let catalogueFailed = false;
 
 // Keys only: creating, pausing, editing or revoking a key leaves the model
 // catalogue as it was, so it is fetched when the panel opens, and again on a
@@ -259,15 +277,11 @@ async function refresh(): Promise<void> {
     max.value = result.max;
     if (catalogueFailed) void loadModelCatalogue();
   } catch (failure) {
-    error.value = refusalText(failure);
+    error.value = keyRefusalText(failure);
   } finally {
     loaded.value = true;
   }
 }
-
-// A dropped request must not leave the model picker empty until the panel is
-// reopened, so the next refresh asks again; a success clears the flag.
-let catalogueFailed = false;
 
 async function loadModelCatalogue(): Promise<void> {
   try {
@@ -317,7 +331,7 @@ async function create(): Promise<void> {
     newLifetime.value = '0';
     await refresh();
   } catch (failure) {
-    error.value = refusalText(failure);
+    error.value = keyRefusalText(failure);
   } finally {
     busy.value = false;
   }
@@ -329,7 +343,7 @@ async function togglePaused(row: ApiKey): Promise<void> {
     await updateKey(row.id, { disabled: !row.disabled });
     await refresh();
   } catch (failure) {
-    error.value = refusalText(failure);
+    error.value = keyRefusalText(failure);
   } finally {
     busy.value = false;
   }
@@ -366,7 +380,7 @@ async function saveEdit(): Promise<void> {
     editing.value = null;
     await refresh();
   } catch (failure) {
-    error.value = refusalText(failure);
+    error.value = keyRefusalText(failure);
   } finally {
     busy.value = false;
   }
@@ -390,15 +404,18 @@ function revoke(row: ApiKey): void {
   void deleteKey(row.id)
     .then(refresh)
     .catch((failure: unknown) => {
-      error.value = refusalText(failure);
+      error.value = keyRefusalText(failure);
     })
     .finally(() => { busy.value = false; });
 }
 
 const copied = ref(false);
 const endpointCopied = ref(false);
-let copiedTimer = 0;
-let endpointCopiedTimer = 0;
+// Both confirmations last the same time: a copy is confirmed for a moment and
+// then the button says what it did before.
+const COPY_FLASH_MS = 1500;
+const copiedLater = useLatestTimeout();
+const endpointCopiedLater = useLatestTimeout();
 
 function copyToken(): void {
   const token = issued.value?.token;
@@ -406,8 +423,7 @@ function copyToken(): void {
   void copyToClipboard(token).then((ok) => {
     if (!ok) return;
     copied.value = true;
-    window.clearTimeout(copiedTimer);
-    copiedTimer = window.setTimeout(() => { copied.value = false; }, 1600);
+    copiedLater(() => { copied.value = false; }, COPY_FLASH_MS);
   });
 }
 
@@ -415,16 +431,14 @@ function copyEndpoint(): void {
   void copyToClipboard(endpoint).then((ok) => {
     if (!ok) return;
     endpointCopied.value = true;
-    window.clearTimeout(endpointCopiedTimer);
-    endpointCopiedTimer = window.setTimeout(() => { endpointCopied.value = false; }, 1500);
+    endpointCopiedLater(() => { endpointCopied.value = false; }, COPY_FLASH_MS);
   });
 }
 
 // A timer left running would write into a panel that is no longer on screen.
+// The copy confirmations clear themselves with the component.
 onBeforeUnmount(() => {
   window.clearTimeout(armTimer);
-  window.clearTimeout(copiedTimer);
-  window.clearTimeout(endpointCopiedTimer);
 });
 
 onMounted(() => {
@@ -471,18 +485,7 @@ onMounted(() => {
           </OaIconButton>
         </div>
 
-        <div class="oa-key-endpoint">
-          <div class="oa-key-endpoint-text">
-            <span class="oa-field-label">{{ t('apiBaseUrl') }}</span>
-            <code>{{ endpoint }}</code>
-            <span class="oa-key-endpoint-hint">{{ t('apiProtocols') }}</span>
-          </div>
-          <OaIconButton
-            class="oa-icon-btn"
-            :label="endpointCopied ? t('copied') : t('copy')"
-            @click="copyEndpoint"
-          ><IconCopy :size="15" /></OaIconButton>
-        </div>
+        <KeyEndpoint :endpoint="endpoint" :copied="endpointCopied" @copy="copyEndpoint" />
       </section>
       <!-- Editing one row replaces the panel's contents rather than opening a
            second column: it is the same record, being looked at more closely. -->
@@ -581,18 +584,7 @@ onMounted(() => {
              key. It exists to be pasted somewhere else, and selecting
              monospace text out of a rounded box by hand is the part nobody
              enjoys. -->
-        <div v-else class="oa-key-endpoint">
-          <div class="oa-key-endpoint-text">
-            <span class="oa-field-label">{{ t('apiBaseUrl') }}</span>
-            <code>{{ endpoint }}</code>
-            <span class="oa-key-endpoint-hint">{{ t('apiProtocols') }}</span>
-          </div>
-          <OaIconButton
-            class="oa-icon-btn"
-            :label="endpointCopied ? t('copied') : t('copy')"
-            @click="copyEndpoint"
-          ><IconCopy :size="15" /></OaIconButton>
-        </div>
+        <KeyEndpoint v-else :endpoint="endpoint" :copied="endpointCopied" @copy="copyEndpoint" />
       </section>
 
       <section v-if="enabled" class="oa-keys-create">

@@ -55,3 +55,29 @@ export function matchesSettings(query: string, group: SettingsGroup): boolean {
   if (!query.trim()) return true;
   return matchesSearch(query, ...TERMS[group].map((key) => t(key)));
 }
+
+export type SettingsSection = 'appearance' | 'chat' | 'account' | 'security' | 'invites';
+
+// The section each group is shown in. The panel decides which sections to show from
+// this table, and the object is checked against every group, so a new group cannot
+// be searchable yet missing from the section that would show it.
+const SECTION_OF = {
+  appearance: 'appearance',
+  wallpaper: 'appearance',
+  chat: 'chat',
+  profile: 'account',
+  connections: 'account',
+  authorizations: 'account',
+  password: 'account',
+  data: 'account',
+  twofactor: 'security',
+  devices: 'security',
+  invites: 'invites',
+} as const satisfies Record<SettingsGroup, SettingsSection>;
+
+/** Whether a section has anything matching the query, which is what shows it while a search runs. */
+export function sectionMatches(query: string, section: SettingsSection): boolean {
+  return (Object.keys(SECTION_OF) as SettingsGroup[]).some(
+    (group) => SECTION_OF[group] === section && matchesSettings(query, group),
+  );
+}

@@ -28,7 +28,8 @@ import type { GuardAction } from '@/plugins/types';
 import { t, type StringKey } from '@/composables/useI18n';
 import { ApiError } from '@/api/client';
 import { loginRefusalText, refusalText } from '@/lib/refusal';
-import { IconGithub, IconGoogle, IconKey, IconSpark, type OaIcon } from '@/icons';
+import { providerMark } from '@/lib/provider-marks';
+import { IconSpark } from '@/icons';
 import { adopt, forget, pendingSecondFactor, siteInfo } from '@/stores/session';
 import { useLoginBackground } from '@/composables/useLoginBackground';
 import OaBackdrop from '@/components/OaBackdrop.vue';
@@ -84,7 +85,9 @@ const buttonLabel = ref('');
 
 const identifierField = ref<HTMLInputElement | null>(null);
 const passwordField = ref<HTMLInputElement | null>(null);
-const guard = ref<InstanceType<typeof OaTurnstile> | null>(null);
+// The Cloudflare widget. Named apart from the plugin guards below, which are
+// guards too but answer to guards(), not to this ref.
+const turnstile = ref<InstanceType<typeof OaTurnstile> | null>(null);
 
 let currentPoWTask: PoWTask | null = null;
 let powPromise: Promise<PoWSolution> | null = null;
@@ -169,6 +172,9 @@ watch(
 
 const stage = computed(() => (!registering.value && pendingSecondFactor.value ? 'code' : 'password'));
 const code = ref('');
+// The one-time code is six digits. The field takes one character more, so a
+// code typed with a space between the halves still fits.
+const TWO_FACTOR_DIGITS = 6;
 /** A recovery code instead of one from the app: a different field, not a
  *  different endpoint. */
 const recoveryMode = ref(false);
@@ -225,7 +231,7 @@ async function onCode(): Promise<void> {
 /** Six digits is the whole answer from an app, so there is nothing to wait for. */
 function onCodeInput(event: Event): void {
   code.value = (event.target as HTMLInputElement).value;
-  if (!recoveryMode.value && code.value.replace(/\D/g, '').length === 6) void onCode();
+  if (!recoveryMode.value && code.value.replace(/\D/g, '').length === TWO_FACTOR_DIGITS) void onCode();
 }
 
 function toggleRecovery(): void {
@@ -276,10 +282,21 @@ watch(activeGuards, (list) => {
 const providers = computed(() => (setup.value ? [] : site.value.oauth ?? []));
 const thirdPartyOnlySignup = computed(() => !!(site.value.oauth_only_signup || site.value.oidc_only_signup));
 
+// The text that was shown for a challenge refusal, kept as that exact string.
+// Comparing with a fresh t() would stop matching after a language switch, because
+// the shown text stays in the language it was shown in.
+let shownChallengeError = '';
+
+function showChallengeError(message: string): void {
+  shownChallengeError = message;
+  error.value = message;
+}
+
 function onTurnstileSolved(): void {
-  if (error.value === t('challengeRequired') || error.value === t('challengeFailed')) {
+  if (shownChallengeError && error.value === shownChallengeError) {
     error.value = '';
   }
+  shownChallengeError = '';
 }
 
 // A solution this close to running out is solved again rather than sent: the
@@ -323,9 +340,9 @@ async function onProviderClick(event: MouseEvent, providerId: string): Promise<v
   if (providerPending) return;
   providerPending = true;
   try {
-    const token = guarded.value ? (guard.value?.token() ?? '') : '';
+    const token = guarded.value ? (turnstile.value?.token() ?? '') : '';
     if (guarded.value && !token) {
-      error.value = t('challengeRequired');
+      showChallengeError(t('challengeRequired'));
       return;
     }
     let pow: PoWSolution | undefined;
@@ -350,10 +367,6 @@ async function onProviderClick(event: MouseEvent, providerId: string): Promise<v
   }
 }
 
-const MARKS: Record<string, OaIcon> = { github: IconGithub, google: IconGoogle };
-function mark(id: string): OaIcon {
-  return MARKS[id] ?? IconKey;
-}
 
 /**
  * Why a provider sign-in came back without signing anybody in.
@@ -392,16 +405,16 @@ const OAUTH_REFUSALS: Record<string, StringKey> = {
 
 onMounted(() => {
   document.body.classList.add('has-auth-page');
-  const code = route.query['oauth_error'];
-  if (typeof code === 'string' && code) {
+  const oauthError = route.query['oauth_error'];
+  if (typeof oauthError === 'string' && oauthError) {
     const banReason = route.query['ban_reason'];
-    if (code === 'disabled' && typeof banReason === 'string' && banReason.trim()) {
+    if (oauthError === 'disabled' && typeof banReason === 'string' && banReason.trim()) {
       error.value = t('accountBannedWithReason', { reason: banReason.trim() });
     } else {
       // Own keys only: the code is whatever the query carried, and every object
       // inherits some names (constructor), which would pass for a known refusal.
-      const known = Object.hasOwn(OAUTH_REFUSALS, code) ? OAUTH_REFUSALS[code] : undefined;
-      error.value = known ? t(known) : pluginOAuthError(code) ?? t('oauthFailed');
+      const known = Object.hasOwn(OAUTH_REFUSALS, oauthError) ? OAUTH_REFUSALS[oauthError] : undefined;
+      error.value = known ? t(known) : pluginOAuthError(oauthError) ?? t('oauthFailed');
     }
     // Out of the address bar: a reload should not raise a message about a
     // sign-in that is long over. The page the sign-in was for stays, so the
@@ -430,47 +443,41 @@ onUnmounted(() => {
 const USERNAME_RE = /^[A-Za-z0-9._-]{3,32}$/;
 const EMAIL_RE = /^[^@\s]+@[^@\s.]+\.[^@\s]+$/;
 const MIN_PASSWORD_CHARS = 8;
+// A review that takes longer than this is said so on the button. A quick answer
+// never shows the note at all, so it does not flash past.
+const REVIEW_NOTE_DELAY_MS = 900;
+
+// The checks made before anything is sent, in the order the form reads. The server
+// makes the same ones and is the one that decides; these only say the reason in
+// words straight away. Returns the sentence to show, or '' when the form may go.
+function formProblem(identity: string, secret: string): string {
+  if (!identity || !secret) return t('fillBothFields');
+  if (registering.value && emailRequired.value && !email.value.trim()) return t('emailRequiredHere');
+  const fieldError = registering.value ? fieldProblem(fields.value, fieldPlan.value) : null;
+  if (fieldError) return fieldError;
+  if (registering.value && inviteMode.value === 'invite' && !inviteCode.value.trim()) {
+    return t('inviteRequiredHere');
+  }
+  // The rules the server applies to a sign-up, checked here only so the reason
+  // is said in words. A refusal from the server would reach the reader as a
+  // generic sentence, because the server's codes for these are not separate.
+  if (registering.value) {
+    if (!USERNAME_RE.test(identity)) return t('usernameInvalid');
+    if ([...secret].length < MIN_PASSWORD_CHARS) return t('passwordTooShort');
+    if (email.value.trim() && !EMAIL_RE.test(email.value.trim())) return t('emailInvalid');
+  }
+  return '';
+}
 
 async function onSubmit(): Promise<void> {
   if (busy.value) return;
 
   const identity = identifier.value.trim();
   const secret = password.value;
-  if (!identity || !secret) {
-    error.value = t('fillBothFields');
+  const problem = formProblem(identity, secret);
+  if (problem) {
+    error.value = problem;
     return;
-  }
-  // Checked here as well as on the server, only so the answer is immediate.
-  // The server is the one that decides.
-  if (registering.value && emailRequired.value && !email.value.trim()) {
-    error.value = t('emailRequiredHere');
-    return;
-  }
-  const fieldError = registering.value ? fieldProblem(fields.value, fieldPlan.value) : null;
-  if (fieldError) {
-    error.value = fieldError;
-    return;
-  }
-  if (registering.value && inviteMode.value === 'invite' && !inviteCode.value.trim()) {
-    error.value = t('inviteRequiredHere');
-    return;
-  }
-  // The rules the server applies to a sign-up, checked here only so the reason
-  // is said in words. A refusal from the server would reach the reader as a
-  // generic sentence, because the server's codes for these are not separate.
-  if (registering.value) {
-    if (!USERNAME_RE.test(identity)) {
-      error.value = t('usernameInvalid');
-      return;
-    }
-    if ([...secret].length < MIN_PASSWORD_CHARS) {
-      error.value = t('passwordTooShort');
-      return;
-    }
-    if (email.value.trim() && !EMAIL_RE.test(email.value.trim())) {
-      error.value = t('emailInvalid');
-      return;
-    }
   }
 
   busy.value = true;
@@ -534,7 +541,7 @@ async function onSubmit(): Promise<void> {
   // A review takes seconds. Saying so beats a button that sits on "creating
   // account" long enough to read as a form that has hung.
   const reviewNote = registering.value && site.value.signup_review
-    ? window.setTimeout(() => { buttonLabel.value = t('signupReviewing'); }, 900)
+    ? window.setTimeout(() => { buttonLabel.value = t('signupReviewing'); }, REVIEW_NOTE_DELAY_MS)
     : 0;
 
   try {
@@ -544,15 +551,15 @@ async function onSubmit(): Promise<void> {
           password: secret,
           email: email.value.trim(),
           fields: fieldValues(fields.value, fieldPlan.value),
-          turnstile: guard.value?.token() ?? '',
+          turnstile: turnstile.value?.token() ?? '',
           guards: guardTokens,
           inviteCode: inviteCode.value.trim(),
           ...(solution ? { pow: solution } : {}),
         })
-      : await login(identity, secret, guard.value?.token() ?? '', guardTokens);
+      : await login(identity, secret, turnstile.value?.token() ?? '', guardTokens);
 
     window.clearTimeout(reviewNote);
-    guard.value?.reset();
+    turnstile.value?.reset();
     if (!result.user) {
       busy.value = false;
       buttonLabel.value = '';
@@ -568,12 +575,14 @@ async function onSubmit(): Promise<void> {
     // A token is good for one submission, so a refusal for any reason — a
     // taken username as much as a failed challenge — leaves a spent token
     // behind that would fail the next attempt on its own.
-    guard.value?.reset();
+    turnstile.value?.reset();
     resetPoW();
     startPoWIfNeeded();
-    error.value = registering.value
+    const message = registering.value
       ? refusalText(failure, domains.value)
       : loginRefusalText(failure);
+    if (failure instanceof ApiError && failure.code === 'challenge_failed') showChallengeError(message);
+    else error.value = message;
     busy.value = false;
     buttonLabel.value = '';
     await nextTick();
@@ -618,7 +627,7 @@ async function onSubmit(): Promise<void> {
               :inputmode="recoveryMode ? 'text' : 'numeric'"
               :autocomplete="recoveryMode ? 'off' : 'one-time-code'"
               spellcheck="false"
-              :maxlength="recoveryMode ? 16 : 7"
+              :maxlength="recoveryMode ? 16 : TWO_FACTOR_DIGITS + 1"
               :placeholder="recoveryMode ? 'xxxxx-xxxxx' : '000000'"
               @input="onCodeInput"
             >
@@ -666,7 +675,7 @@ async function onSubmit(): Promise<void> {
         <div v-if="registering && thirdPartyOnlySignup" class="oa-auth-form">
           <OaTurnstile
             v-if="guarded"
-            ref="guard"
+            ref="turnstile"
             :site-key="site.turnstile_site_key ?? ''"
             @solved="onTurnstileSolved"
           />
@@ -679,7 +688,7 @@ async function onSubmit(): Promise<void> {
               :href="signInURL(provider.id, { next: safeNext(route.query['next']), register: true })"
               @click="onProviderClick($event, provider.id)"
             >
-              <component :is="mark(provider.id)" :size="15" />
+              <component :is="providerMark(provider.id)" :size="15" />
               <span>{{ t('continueWith', { provider: provider.name }) }}</span>
             </a>
           </div>
@@ -750,7 +759,7 @@ async function onSubmit(): Promise<void> {
 
           <OaTurnstile
             v-if="guarded"
-            ref="guard"
+            ref="turnstile"
             :site-key="site.turnstile_site_key ?? ''"
             @solved="onTurnstileSolved"
           />
@@ -779,7 +788,7 @@ async function onSubmit(): Promise<void> {
                 :href="signInURL(provider.id, { next: safeNext(route.query['next']), register: registering })"
                 @click="onProviderClick($event, provider.id)"
               >
-                <component :is="mark(provider.id)" :size="15" />
+                <component :is="providerMark(provider.id)" :size="15" />
                 <span>{{ t('continueWith', { provider: provider.name }) }}</span>
               </a>
             </div>

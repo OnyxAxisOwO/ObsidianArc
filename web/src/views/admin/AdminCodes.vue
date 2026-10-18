@@ -23,6 +23,7 @@ import OaTable from '@/components/OaTable.vue';
 import OaTextField from '@/components/OaTextField.vue';
 import type { Column } from '@/components/table-types';
 import { t } from '@/composables/useI18n';
+import { formatCardScope } from '@/lib/card-scope';
 import { useBulk } from '@/composables/useBulk';
 import { usePanelSlot } from '@/composables/usePanelSlot';
 import { relativeTime } from '@/lib/format';
@@ -92,25 +93,9 @@ const form = ref({
   expiresDays: null as number | null,
 });
 
+// A code grants the same windows a card does, so it is worded the same way.
 function formatCodeScope(windows?: string[]): string {
-  const wins = windows ?? [];
-  if (wins.length === 0 || wins.includes('full')) {
-    return t('cardFullReset');
-  }
-  const order = ['5h', '1w', '1m'];
-  const sorted = [...wins].sort((a, b) => order.indexOf(a) - order.indexOf(b));
-  if (sorted.length === 1) {
-    if (sorted[0] === '5h') return t('cardScope5H');
-    if (sorted[0] === '1w') return t('cardScope1W');
-    if (sorted[0] === '1m') return t('cardScope1M');
-  }
-  const labels = sorted.map((w) => {
-    if (w === '5h') return t('cardScopeLabel5H');
-    if (w === '1w') return t('cardScopeLabel1W');
-    if (w === '1m') return t('cardScopeLabel1M');
-    return w;
-  });
-  return t('cardScopeCombined', { windows: labels.join(' + ') });
+  return formatCardScope({ windows: windows ?? [] });
 }
 
 function selectedWindows(): string[] {

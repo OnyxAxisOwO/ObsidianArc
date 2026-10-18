@@ -335,8 +335,10 @@ describe('the invites card', () => {
     expect(host.textContent).toContain(t('inviteClaimTitle'));
     expect(() => button(t('inviteClaimSubmit'))).not.toThrow();
 
-    // Error and retry button are shown
-    expect(host.textContent).toContain('Network connection failed');
+    // Error and retry button are shown; a server failure reads as the screen's
+    // own line rather than the English it came with.
+    expect(host.textContent).not.toContain('Network connection failed');
+    expect(host.textContent).toContain(t('failed'));
     const retryBtn = button(t('retry'));
     expect(retryBtn).not.toBeNull();
 

@@ -9,7 +9,8 @@
 // broken.
 
 import { computed, ref } from 'vue';
-import { ApiError, api } from '@/api/client';
+import { api } from '@/api/client';
+import { apiErrorText } from '@/lib/api-error';
 import { ImageError, prepareImage } from '@/chat/image';
 import OaRangeField from '@/components/OaRangeField.vue';
 import { IconImage, IconChevronRight } from '@/icons';
@@ -93,9 +94,9 @@ async function upload(file: File): Promise<void> {
     syncPreferences({ wallpaper: next });
     status.value = '';
   } catch (error) {
-    status.value = error instanceof ImageError || error instanceof ApiError
-      ? error.message
-      : String(error);
+    // An ImageError is already worded in the reader's language; a request
+    // failure is translated by its code like every other screen's.
+    status.value = error instanceof ImageError ? error.message : apiErrorText(error);
   } finally {
     uploading.value = false;
   }

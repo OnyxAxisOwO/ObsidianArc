@@ -77,13 +77,26 @@ describe('key refusals', () => {
     expect(panelHost.textContent).not.toContain('You already have the maximum');
   });
 
-  it('shows a refusal without a code as the server wrote it', async () => {
+  it('shows a refusal without a translation as the server wrote it', async () => {
+    vi.spyOn(keysAPI, 'createKey').mockRejectedValue(
+      new ApiError(400, 'some_new_refusal', 'That name is reserved.'),
+    );
+    await mount();
+    await submitName('plain');
+
+    expect(panelHost.textContent).toContain('That name is reserved.');
+  });
+
+  // A server failure's sentence was written for logs and API clients, so the
+  // reader gets the screen's generic line rather than the server's English.
+  it('shows a server failure as the generic line', async () => {
     vi.spyOn(keysAPI, 'createKey').mockRejectedValue(
       new ApiError(500, 'internal', 'Something went wrong on our side.'),
     );
     await mount();
     await submitName('plain');
 
-    expect(panelHost.textContent).toContain('Something went wrong on our side.');
+    expect(panelHost.textContent).not.toContain('Something went wrong on our side.');
+    expect(panelHost.textContent).toContain(t('failed'));
   });
 });

@@ -20,6 +20,11 @@ const CODE_KEYS: Record<string, StringKey> = {
   too_many_pending_images: 'errTooManyPendingImages',
   attachment_quota_full: 'errAttachmentQuotaFull',
   storage_full: 'errStorageFull',
+  // Export and backup refusals a reader can act on. Without a sentence here they
+  // would show the server's English, which is written for logs.
+  export_too_large: 'errExportTooLarge',
+  backup_in_progress: 'errBackupInProgress',
+  backup_busy: 'errBackupBusy',
   // The trial screen already has these two sentences, so the chat uses the same
   // wording rather than a second, drifting copy.
   trial_exhausted: 'trialExhausted',
