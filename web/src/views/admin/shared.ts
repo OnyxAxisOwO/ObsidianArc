@@ -44,6 +44,11 @@ export function addMonths(from: Date, months: number): Date {
   return date;
 }
 
+// model.DefaultMaxOutput. The reservation is the server's; this copy only
+// words it, and internal/model/testdata/worst_case.json holds the two to one
+// table so that neither moves without the other.
+const DEFAULT_MAX_OUTPUT = 4096;
+
 /**
  * What one turn reserves before it runs, mirroring Model.WorstCase in Go.
  *
@@ -54,9 +59,9 @@ export function addMonths(from: Date, months: number): Date {
  * being told before saving rather than after a user complains.
  */
 export function worstCase(entry: AdminModel): number {
-  const ceiling = entry.max_output_tokens > 0 && entry.max_output_tokens < 4096
+  const ceiling = entry.max_output_tokens > 0 && entry.max_output_tokens < DEFAULT_MAX_OUTPUT
     ? entry.max_output_tokens
-    : 4096;
+    : DEFAULT_MAX_OUTPUT;
   return entry.request_weight + (ceiling / 1000) * entry.output_token_weight;
 }
 

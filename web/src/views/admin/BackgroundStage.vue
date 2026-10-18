@@ -23,6 +23,7 @@ import { computed, ref } from 'vue';
 import { useElementSize } from '@vueuse/core';
 import { Code, Monitor, Smartphone, Tablet, Trash2, Upload } from 'lucide-vue-next';
 import { adminApi } from '@/admin/api';
+import { BACKGROUND_TYPES, imageProblem, imageType, MAX_BACKGROUND_BYTES, pickImage, readAsBase64 } from '@/admin/upload';
 import { ApiError } from '@/api/client';
 import OaConfirmButton from '@/components/OaConfirmButton.vue';
 import OaIconButton from '@/components/OaIconButton.vue';
@@ -132,43 +133,21 @@ let seed = '';
 let draftKey = '';
 let pageRequest = 0;
 
-function detectFileType(file: File): string {
-  const type = file.type.toLowerCase();
-  if (type === 'image/jpeg' || type === 'image/jpg') return 'image/jpeg';
-  if (type === 'image/png') return 'image/png';
-  if (type === 'image/webp') return 'image/webp';
-  if (type === 'image/avif') return 'image/avif';
-  const name = file.name.toLowerCase();
-  if (name.endsWith('.jpg') || name.endsWith('.jpeg')) return 'image/jpeg';
-  if (name.endsWith('.png')) return 'image/png';
-  if (name.endsWith('.webp')) return 'image/webp';
-  if (name.endsWith('.avif')) return 'image/avif';
-  return '';
-}
-
 function fail(failure: unknown): void {
   emit('status', failure instanceof ApiError ? failure.message : String(failure), false);
 }
 
 async function uploadFile(file: File): Promise<void> {
-  const mime = detectFileType(file);
-  if (!mime || file.size > 6 * 1024 * 1024) {
-    emit('status', t('loginBgFormats'), false);
+  const problem = imageProblem(file, BACKGROUND_TYPES, MAX_BACKGROUND_BYTES, t('loginBgFormats'));
+  const mime = imageType(file, BACKGROUND_TYPES);
+  if (problem || !mime) {
+    emit('status', problem, false);
     return;
   }
   const target = key.value;
   busy.value = true;
   try {
-    const base64 = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const res = String(reader.result ?? '');
-        const comma = res.indexOf(',');
-        resolve(comma !== -1 ? res.slice(comma + 1) : res);
-      };
-      reader.onerror = () => reject(new Error('Failed to read file'));
-      reader.readAsDataURL(file);
-    });
+    const base64 = await readAsBase64(file);
     const res = await adminApi.uploadLoginBackground(target, mime, base64);
     emit('changed', target, { url: res.url, html: false });
     emit('status', t('loginBgUploaded'), true);
@@ -180,14 +159,7 @@ async function uploadFile(file: File): Promise<void> {
 }
 
 function choose(): void {
-  const input = document.createElement('input');
-  input.type = 'file';
-  input.accept = 'image/png,image/jpeg,image/webp,image/avif,.jpg,.jpeg,.png,.webp,.avif';
-  input.onchange = () => {
-    const file = input.files?.[0];
-    if (file) void uploadFile(file);
-  };
-  input.click();
+  pickImage(BACKGROUND_TYPES, (file) => void uploadFile(file));
 }
 
 function onDrop(event: DragEvent): void {
