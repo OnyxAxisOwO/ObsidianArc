@@ -38,3 +38,12 @@
   align-items: center;
   justify-content: center;
 }
+
+// Keyboard focus on a control: the shared ring, with the browser's outline
+// removed. The ring is the only focus mark in this interface (AGENTS.md: no
+// outlines, focus is a ring only), so every control that takes focus includes
+// this rather than writing the same two declarations again.
+@mixin focus-ring {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+}

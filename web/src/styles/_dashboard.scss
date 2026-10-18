@@ -2,6 +2,8 @@
    coloured and wallpaper themes must all retain the same visual hierarchy.
    The curve, the week-on-a-clock and the switches come from _analytics.scss,
    so the overview and the usage report draw the same things the same way. */
+@use 'mixins';
+
 .oa-admin-main-dashboard .oa-admin-body { padding-top: 26px; }
 .oa-dashboard { display: flex; flex-direction: column; gap: 16px; max-width: 1480px; margin: 0 auto; container: dashboard / inline-size; }
 .oa-dashboard-intro { display: flex; justify-content: space-between; align-items: flex-end; gap: 20px; padding: 4px 2px 10px; }
@@ -234,7 +236,7 @@ a.oa-dashboard-resource:hover { background: var(--ai-state-hover); }
 @container dashboard (max-width: 1040px) {
   .oa-dashboard-loading > div { grid-column: span 2; }
 }
-.oa-dashboard :is(button, a, summary, [tabindex]):focus-visible { outline: none; box-shadow: 0 0 0 3px var(--ai-focus-shadow); }
+.oa-dashboard :is(button, a, summary, [tabindex]):focus-visible { @include mixins.focus-ring; }
 
 /* Container width also follows the resizable admin rail, unlike a viewport breakpoint. */
 @container dashboard (max-width: 1040px) {

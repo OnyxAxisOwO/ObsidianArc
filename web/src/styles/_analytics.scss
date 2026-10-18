@@ -6,6 +6,8 @@
    into a surface, so a chart is drawn in whatever colour the reader picked
    and reads the same way on a light scheme, a dark one and a wallpaper. */
 
+@use 'mixins';
+
 /* --- small shared pieces --------------------------------------------------- */
 
 /* Read by a screen reader, drawn for nobody. */
@@ -103,8 +105,7 @@
 }
 
 .oa-text-btn:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+  @include mixins.focus-ring;
 }
 
 /* Quick picks under a field — "a week", "a month" — which used to be buttons
@@ -136,8 +137,7 @@
 }
 
 .oa-chip-btn:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+  @include mixins.focus-ring;
 }
 
 /* --- cards ------------------------------------------------------------------ */

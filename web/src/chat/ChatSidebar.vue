@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import type { Conversation } from '@/api/chat';
 import OaConfirmButton from '@/components/OaConfirmButton.vue';
+import OaIconButton from '@/components/OaIconButton.vue';
 import OaMenu from '@/components/OaMenu.vue';
 import OaMenuItem from '@/components/OaMenuItem.vue';
 import OaResizer from '@/components/OaResizer.vue';
@@ -151,15 +152,9 @@ function onNewChat(): void {
     <template v-if="activeTab === 'history'">
       <div class="ai-history-search-row">
         <OaSearchField v-model="query" class="oa-history-search" :label="t('searchHistory')" />
-        <button
-          type="button"
-          class="ai-history-new-btn"
-          :title="t('newChat')"
-          :aria-label="t('newChat')"
-          @click="onNewChat"
-        >
+        <OaIconButton class="ai-history-new-btn" :label="t('newChat')" @click="onNewChat">
           <IconPlus :size="16" />
-        </button>
+        </OaIconButton>
       </div>
 
       <OaScrollArea wrap-class="ai-chat-list-wrap" scroll-class="ai-chat-list">
@@ -192,18 +187,16 @@ function onNewChat(): void {
           ><span class="ai-chat-spinner" /></span>
           <OaMenu group-class="ai-chat-item-menu" :menu-class="'ai-chat-context-menu' + (openUpMap[conversation.id] ? ' open-up' : '')">
             <template #trigger="{ open: menuOpen, toggle }">
-              <button
-                type="button"
+              <OaIconButton
                 class="ai-chat-list-more"
                 :class="{ active: menuOpen }"
-                :title="t('moreOptions')"
-                :aria-label="t('moreOptions')"
+                :label="t('moreOptions')"
                 aria-haspopup="menu"
                 :aria-expanded="menuOpen ? 'true' : 'false'"
                 @click.stop="handleMenuTrigger($event, conversation.id, toggle)"
               >
                 <IconMoreVertical :size="13" />
-              </button>
+              </OaIconButton>
             </template>
             <template #default="{ close }">
               <OaMenuItem :title="t('rename')" @click.stop="close(); rename(conversation)">

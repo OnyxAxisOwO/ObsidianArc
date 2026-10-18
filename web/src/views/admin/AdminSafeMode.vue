@@ -116,14 +116,14 @@ function onCategoryClick(cat: SafeCategory): void {
         <div class="oa-safe-mode-actions">
           <button
             type="button"
-            class="oa-safe-mode-action-btn"
+            class="oa-menu-head-action oa-safe-mode-action-btn"
             @click="setAllCategories(true); toggleSafeMode(true)"
           >
             {{ t('safeModeSelectAll') }}
           </button>
           <button
             type="button"
-            class="oa-safe-mode-action-btn"
+            class="oa-menu-head-action oa-safe-mode-action-btn"
             @click="setAllCategories(false)"
           >
             {{ t('safeModeClearAll') }}

@@ -141,18 +141,16 @@ defineExpose({
         <!-- What answers and how hard it thinks, beside the button that sends
              it — the decision and the act in the same place. -->
         <ModelControl />
-        <button
-          type="button"
+        <OaIconButton
           class="ai-chat-send"
           :class="{ stop: stoppable }"
           :disabled="busy ? !stoppable : !status.configured"
-          :title="t(stoppable ? 'stop' : 'send')"
-          :aria-label="t(stoppable ? 'stop' : 'send')"
+          :label="t(stoppable ? 'stop' : 'send')"
           @click="onSend"
         >
           <IconStop v-if="stoppable" :size="14" />
           <IconSend v-else :size="16" />
-        </button>
+        </OaIconButton>
       </div>
     </div>
 

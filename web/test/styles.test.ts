@@ -555,4 +555,37 @@ describe('focus and motion on every copy of a control', () => {
 
     expect(offenders).toEqual([]);
   });
+
+  it('keeps an armed clear-all button red under the pointer', () => {
+    // Both rules are one class and one pseudo-class, so the later one wins.
+    // The hover rule came second, and the grey hover fill covered the armed red.
+    const chat = sheet('_chat.scss');
+    const hover = chat.indexOf('.ai-chat-clear-all:hover {');
+
+    expect(hover).toBeGreaterThan(-1);
+    expect(chat.indexOf('.ai-chat-clear-all.armed {')).toBeGreaterThan(hover);
+  });
+
+  it('rings every icon control and link that takes keyboard focus', () => {
+    // These reached focus with only the browser's outline. Each one has to
+    // take the shared mixin, so the ring stays one token and one width.
+    const everything = fs.readdirSync(path.resolve(__dirname, '../src/styles'))
+      .filter((name) => name.endsWith('.scss'))
+      .map((name) => sheet(name))
+      .join('\n');
+    const ringed = [
+      '.oa-icon-btn', '.ai-chat-send', '.ai-chat-plus', '.ai-chat-list-more', '.ai-chat-mini-btn',
+      '.ai-chat-setup-action', '.ai-chat-new', '.ai-chat-clear-all', '.ai-chat-attachment-remove',
+      '.oa-reference-remove', '.oa-gallery-btn', '.oa-thread-remove', '.oa-toast-close',
+      '.oa-menu-head-action', '.oa-admin-nav', '.oa-admin-subnav-item', '.oa-settings-rail-item',
+      '.ai-project-action-btn', '.ai-history-new-btn', '.ai-code-btn', '.oa-btn', '.oa-chip-btn', '.oa-text-btn',
+    ];
+
+    for (const selector of ringed) {
+      const literal = selector.replace(/\./g, '\\.');
+      expect(everything, selector).toMatch(new RegExp(`${literal}:focus-visible[^{]*\\{\\s*@include mixins\\.focus-ring;`));
+    }
+    // The lightbox's close button nests its ring under the class.
+    expect(sheet('_surfaces.scss')).toMatch(/\.oa-lightbox-close \{[\s\S]*?&:focus-visible \{\s*@include mixins\.focus-ring;/);
+  });
 });

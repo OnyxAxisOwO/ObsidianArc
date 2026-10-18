@@ -16,6 +16,8 @@
  * like a dashboard bolted to the side of one.
  */
 
+@use 'mixins';
+
 .oa-admin {
   /* The containing block for a full-screen panel. */
   position: relative;
@@ -122,6 +124,15 @@
   background: var(--ai-badge-bg);
   color: var(--ai-badge-text);
   font-weight: 600;
+}
+
+/* These are links and buttons that take focus, and had no ring of their own,
+   so the browser's outline was all a keyboard user saw. The settings rail
+   uses the same pattern and gets the same ring. */
+.oa-admin-nav:focus-visible,
+.oa-admin-subnav-item:focus-visible,
+.oa-settings-rail-item:focus-visible {
+  @include mixins.focus-ring;
 }
 
 /* Search result groups in the administration rail: when searching, matching
@@ -3004,8 +3015,7 @@
 }
 
 .oa-audit-badge-btn:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+  @include mixins.focus-ring;
 }
 
 .oa-audit-summary {
@@ -3646,6 +3656,10 @@
   color: var(--ai-danger);
 }
 
+.oa-gallery-btn:focus-visible {
+  @include mixins.focus-ring;
+}
+
 .oa-gallery-load-more {
   display: flex;
   justify-content: center;
@@ -3878,15 +3892,14 @@
   object-fit: cover;
 }
 
+/* The remove control on a thumbnail. The composer's copy of it, in _chat.scss,
+   shares this look and sets only its own size and offset. */
+.ai-chat-attachment-remove,
 .oa-reference-remove {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   position: absolute;
-  top: 3px;
-  right: 3px;
-  width: 20px;
-  height: 20px;
   padding: 0;
   border: none;
   border-radius: 50%;
@@ -3895,8 +3908,21 @@
   cursor: pointer;
 }
 
+.ai-chat-attachment-remove:hover,
 .oa-reference-remove:hover {
   background: rgba(0, 0, 0, 0.75);
+}
+
+.ai-chat-attachment-remove:focus-visible,
+.oa-reference-remove:focus-visible {
+  @include mixins.focus-ring;
+}
+
+.oa-reference-remove {
+  top: 3px;
+  right: 3px;
+  width: 20px;
+  height: 20px;
 }
 
 /* Compact drop tile displayed beside thumbnail cards when more images can be added. */
@@ -4121,6 +4147,11 @@
 
   &:hover {
     background: rgba(255, 255, 255, 0.35);
+  }
+
+  /* On the dark scrim the ring is the focus mark, as everywhere else. */
+  &:focus-visible {
+    @include mixins.focus-ring;
   }
 }
 
@@ -5154,6 +5185,12 @@
   color: var(--ai-danger);
 }
 
+/* Keyboard focus on the row's edit and delete buttons is the ring, as on the
+ * other icon controls, not the browser's outline. */
+.ai-project-action-btn:focus-visible {
+  @include mixins.focus-ring;
+}
+
 .ai-project-form {
   display: flex;
   flex-direction: column;
@@ -5700,6 +5737,12 @@
 .oa-thread-remove.armed {
   background: color-mix(in srgb, var(--ai-danger) 18%, transparent);
   color: var(--ai-danger);
+}
+
+/* The button is revealed for keyboard focus as well as hover (see the opacity
+   rule above), so the ring is what shows where focus is. */
+.oa-thread-remove:focus-visible {
+  @include mixins.focus-ring;
 }
 
 /* Shorter than the box a whole report is written in: a reply is usually a
@@ -6321,8 +6364,9 @@
   opacity: 0.75;
 }
 
-/* Revealed on hover — see AGENTS.md on this being deliberate everywhere a
-   close or delete control sits next to something read by default. */
+/* Hidden until the toast is hovered or has focus inside it. A notice is read,
+   not acted on, so it does not carry a button all the time; focus-within
+   reveals it too, so a keyboard user still finds it. */
 .oa-toast-close {
   flex-shrink: 0;
   display: flex;
@@ -6347,6 +6391,10 @@
 .oa-toast-close:hover {
   background: var(--ai-state-hover);
   color: var(--ai-text);
+}
+
+.oa-toast-close:focus-visible {
+  @include mixins.focus-ring;
 }
 
 .oa-toast-enter-active,

@@ -3,6 +3,8 @@
    read as one product rather than as a chat app with an admin panel bolted
    to the side. Nothing here introduces a new colour, radius or easing. */
 
+@use 'mixins';
+
 /* --- auth ------------------------------------------------------------------ */
 
 .oa-auth {
@@ -76,9 +78,6 @@
   // taller than the viewport so the header/title is never cut off.
   margin-top: auto;
   margin-bottom: auto;
-  /* The same rise the transcript uses when a conversation is switched, so
-     arriving at this page feels like the rest of the interface. */
-  animation: aiChatSwitch 0.34s cubic-bezier(0.2, 0, 0, 1);
 }
 
 .oa-auth-brand {
@@ -354,14 +353,21 @@
   font-size: 13px;
 }
 
-.oa-auth-error {
-  margin: 0;
+/* The red notice box. Sign-in and the other forms use .oa-auth-error; the
+   chat's failed-turn notice (.ai-chat-error) shares the box, and only adds its
+   own layout around the retry button. */
+.oa-auth-error,
+.ai-chat-error {
   padding: 9px 12px;
   border-radius: 12px;
   /* Mixed from the token rather than written as its light value: the text
      follows --ai-danger into the dark theme, and a fill that stayed the light
      theme's red sat under it as a dark smear. */
   background: color-mix(in srgb, var(--ai-danger) 12%, transparent);
+}
+
+.oa-auth-error {
+  margin: 0;
   color: var(--ai-danger);
   font-size: 12px;
   line-height: 1.5;
@@ -435,12 +441,14 @@
   backdrop-filter: blur(4px);
 }
 
+/* No animation is set here. The card also carries .oa-auth-card, whose entrance
+   (sectionEnter, in _surfaces.scss) therefore plays on modals too. The
+   transition in this rule is what moves the card in and out. */
 .oa-modal-card {
   position: relative;
   box-shadow: var(--ai-shadow-md), 0 20px 48px rgba(0, 0, 0, 0.25);
   transform: translateY(12px) scale(0.97);
   transition: transform 0.22s cubic-bezier(0.2, 0, 0, 1);
-  animation: none;
 }
 
 .oa-modal-overlay.open .oa-modal-card {
@@ -513,14 +521,18 @@
    anybody acts on, and a digit here would be the loudest thing in the
    header. Sat on the avatar, which is the part of this control that is still
    visible once the name is hidden on a narrow screen. */
-.oa-account-dot {
+.oa-account-dot,
+.oa-bell-dot {
   position: absolute;
-  top: 3px;
-  left: 26px;
   width: 7px;
   height: 7px;
   border-radius: 50%;
   background: var(--ai-danger);
+}
+
+.oa-account-dot {
+  top: 3px;
+  left: 26px;
 }
 
 .oa-account-name {
@@ -885,13 +897,8 @@ body.oa-resizing * {
 }
 
 .oa-bell-dot {
-  position: absolute;
   top: 6px;
   right: 6px;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--ai-danger);
 }
 
 .oa-menu-announce {
@@ -921,6 +928,12 @@ body.oa-resizing * {
 .oa-menu-head-action:hover {
   background: var(--ai-state-hover);
   color: var(--ai-text);
+}
+
+/* The safe-mode footer's buttons carry this class too (AdminSafeMode.vue), so
+   they take the ring from here. */
+.oa-menu-head-action:focus-visible {
+  @include mixins.focus-ring;
 }
 
 /* An unread row is marked by a dot in the leading slot, which is where the
@@ -1592,20 +1605,12 @@ button.oa-home-notice-main:focus-visible {
     gap: 4px;
   }
 
+  /* The footer's select-all and clear-all carry .oa-menu-head-action as well,
+     which gives them the pill, the type and the hover. Only the side padding
+     differs, and it stays here: this nested rule is the more specific one, so
+     it wins over the shared 9px. */
   .oa-safe-mode-action-btn {
-    border: none;
-    border-radius: 999px;
     padding: 3px 8px;
-    background: transparent;
-    color: var(--ai-text-secondary);
-    font: inherit;
-    font-size: 11px;
-    cursor: pointer;
-
-    &:hover {
-      background: var(--ai-state-hover);
-      color: var(--ai-text);
-    }
   }
 
   .oa-safe-mode-status {

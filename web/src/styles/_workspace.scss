@@ -2,6 +2,8 @@
    around src/chat.js. Consumes the same --ai-* custom properties chat.css
    defines, so the two never disagree about palette. */
 
+@use 'mixins';
+
 .oa-workspace {
   display: flex;
   flex-direction: column;
@@ -94,6 +96,12 @@
   cursor: default;
 }
 
+/* Icon controls are circles that take keyboard focus. Without this rule they
+   fell back to the browser's outline, which the pills and fields do not use. */
+.oa-icon-btn:focus-visible {
+  @include mixins.focus-ring;
+}
+
 /* Pills, filled, no outline. A border and a fill are two ways of saying the
    same thing, and the fill is the one that survives being put on a tinted
    surface — which every surface now is.
@@ -152,8 +160,7 @@
 }
 
 .oa-btn:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+  @include mixins.focus-ring;
 }
 
 .oa-btn:disabled {
