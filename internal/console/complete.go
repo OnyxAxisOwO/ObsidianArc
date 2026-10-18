@@ -34,8 +34,9 @@ type CompletionItem struct {
 //
 // It only ever completes a command the actor may run: the same visibility
 // rule help and Spec use.
-func (c *Console) Complete(ctx context.Context, s *Session, line string, pos int) Completion {
-	_ = ctx // no admin call is made for completion; kept for symmetry with Execute and for a future dynamic completer
+// The context is unused because completion makes no admin call; it stays in the
+// signature so the web and SSH callers pass one the way they do to Execute.
+func (c *Console) Complete(_ context.Context, s *Session, line string, pos int) Completion {
 	if pos < 0 {
 		pos = 0
 	}

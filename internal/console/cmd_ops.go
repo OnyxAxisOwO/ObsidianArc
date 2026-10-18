@@ -6,10 +6,15 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 )
 
+// The operations group is registered one noun family per init — health,
+// usage, quota, code, log — so each family's locals stay with it and one
+// family can be read without scrolling through the others. Go runs a
+// file's inits in order, so the registration order is what it was.
 func init() {
 	registerCommand(Command{
 		Name:       "dash",
@@ -155,10 +160,7 @@ func init() {
 			}
 			frames := ParseSSE(raw)
 			if len(frames) == 0 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("没有收到探测进度")
-				}
-				return rt.Errorf("no probe progress was received")
+				return rt.Fail(Text{EN: "no probe progress was received", ZH: "没有收到探测进度"})
 			}
 			// An error frame means the run stopped short of "done". Its exit status
 			// must say so, or a script takes a half-probed instance for a healthy one.
@@ -174,10 +176,7 @@ func init() {
 				}
 			}
 			stopped := func() error {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("探测中途出错：%s", failure)
-				}
-				return rt.Errorf("the probe stopped with an error: %s", failure)
+				return rt.Fail(Text{EN: fmt.Sprintf("the probe stopped with an error: %s", failure), ZH: fmt.Sprintf("探测中途出错：%s", failure)})
 			}
 			if rt.effectiveJSON() {
 				if failed {
@@ -228,7 +227,9 @@ func init() {
 			})
 		},
 	})
+}
 
+func init() {
 	usageFilterFlags := []Flag{
 		{Name: "--user", Hint: Text{EN: "filter to one account, by ref", ZH: "按账户筛选，可用引用"}, Value: "REF"},
 		{Name: "--group", Hint: Text{EN: "filter to one group, by ref", ZH: "按分组筛选，可用引用"}, Value: "REF"},
@@ -338,7 +339,7 @@ func init() {
 			{Name: "--state", Hint: Text{EN: "low is 80% or more of a window spent; exhausted is all of it", ZH: "low 为已用 80% 以上；exhausted 为已用尽"}, Value: "STATE"},
 			{Name: "--q", Hint: Text{EN: "search name, nickname or email", ZH: "搜索用户名、昵称或邮箱"}, Value: "TEXT"},
 			{Name: "--group", Hint: Text{EN: "only this group's accounts", ZH: "只看这个用户组的账户"}, Value: "ID"},
-			{Name: "--limit", Hint: Text{EN: "rows to show; default 50", ZH: "显示多少行；默认 50"}, Value: "N"},
+			{Name: "--limit", Hint: Text{EN: "rows to show; default 50", ZH: "显示多少行；默认 50"}, Value: "N", Default: "50"},
 			{Name: "--offset", Hint: Text{EN: "rows to skip", ZH: "跳过多少行"}, Value: "N"},
 		},
 		Examples:   []string{"usage allowances --state exhausted", "usage allowances --q alice"},
@@ -385,18 +386,13 @@ func init() {
 				// its figure is matches among those, not a count of the population.
 				if rt.String("state") != "" {
 					loaded := formatNumber(asNum(asMap(data)["loaded"]))
-					if rt.Session.Lang == "zh" {
-						rt.Printf("最近的 %s 个账号中有 %s 个符合条件；之外的账号不计入。\n", loaded, listed)
-					} else {
-						rt.Printf("%s matching accounts among the newest %s; accounts beyond those are not counted.\n", listed, loaded)
-					}
+					rt.Say(Text{
+						EN: fmt.Sprintf("%s matching accounts among the newest %s; accounts beyond those are not counted.\n", listed, loaded),
+						ZH: fmt.Sprintf("最近的 %s 个账号中有 %s 个符合条件；之外的账号不计入。\n", loaded, listed),
+					})
 				} else {
 					total := formatNumber(asNum(asMap(data)["total"]))
-					if rt.Session.Lang == "zh" {
-						rt.Printf("仅列出最近的 %s 个账号（共 %s 个）；排序与计数只覆盖这些账号。\n", listed, total)
-					} else {
-						rt.Printf("Showing the newest %s of %s accounts; the ranking and counts cover only those.\n", listed, total)
-					}
+					rt.Say(Text{EN: fmt.Sprintf("Showing the newest %s of %s accounts; the ranking and counts cover only those.\n", listed, total), ZH: fmt.Sprintf("仅列出最近的 %s 个账号（共 %s 个）；排序与计数只覆盖这些账号。\n", listed, total)})
 				}
 			}
 			return rt.Table([]string{"account", "5h", "1w", "1m"}, rows)
@@ -424,10 +420,7 @@ func init() {
 		Endpoints:  []string{"GET /api/admin/usage/breakdown"},
 		Run: func(_ context.Context, rt *Runtime) error {
 			if rt.NArg() == 0 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("需要维度：model、provider、user、group 或 status")
-				}
-				return rt.Errorf("a dimension is required: model, provider, user, group or status")
+				return rt.Fail(Text{EN: "a dimension is required: model, provider, user, group or status", ZH: "需要维度：model、provider、user、group 或 status"})
 			}
 			dimension := rt.Arg(0)
 			q, err := buildUsageQuery(rt)
@@ -553,6 +546,13 @@ func init() {
 			scope := rt.String("scope")
 			body := bodyBuilder{"scope": scope}
 			switch scope {
+			case "all":
+				// The all branch never reads an id, so "--scope all --id alice" would
+				// reset everyone while the operator meant one account. The line is
+				// refused instead.
+				if rt.Present("id") {
+					return rt.Fail(Text{EN: "--scope all takes no --id; use --scope user to reset one account", ZH: "--scope all 不能再给 --id；要重置单个账户请用 --scope user"})
+				}
 			case "user":
 				uid, err := resolveUserRef(rt, rt.String("id"))
 				if err != nil {
@@ -565,6 +565,8 @@ func init() {
 					return err
 				}
 				body["id"] = gid
+			default:
+				return rt.Fail(Text{EN: "--scope must be all, group or user", ZH: "--scope 必须是 all、group 或 user"})
 			}
 			data, _, err := rt.Call(http.MethodPost, "/api/admin/usage/reset", map[string]any(body))
 			if err != nil {
@@ -573,7 +575,9 @@ func init() {
 			return rt.Fields([][2]string{{"accounts", formatNumber(asNum(asMap(data)["accounts"]))}})
 		},
 	})
+}
 
+func init() {
 	registerCommand(Command{
 		Name:    "quota list",
 		Group:   "operations",
@@ -602,6 +606,8 @@ func init() {
 				for k := range windows {
 					wins = append(wins, k)
 				}
+				// Sorted, so a quota shows its windows in the same order each time.
+				sort.Strings(wins)
 				rows = append(rows, []string{
 					asStr(p["scope"]), asStr(p["scope_id"]), limitStr(p["rpm"]), limitStr(p["tpm"]),
 					strings.Join(wins, ","), formatMS(p["updated_at"]),
@@ -620,10 +626,12 @@ func init() {
 			EN: "The policy is replaced wholesale on the server, so this command reads the existing " +
 				"policy first and carries every other window forward unchanged — only the --window " +
 				"named here (if any) and --rpm/--tpm are touched. --clear-rpm / --clear-tpm set that " +
-				"limit back to 'inherit'.",
+				"limit back to 'inherit'. If the policy changes between that read and the save, the save is " +
+				"refused rather than overwriting the change; run the command again.",
 			ZH: "服务器端策略是整体替换写入的，因此本命令会先读取现有策略，并原样保留其余窗口的设置——" +
 				"只会改动这里指定的 --window（如果给出）以及 --rpm / --tpm。--clear-rpm / --clear-tpm " +
-				"会把对应限制改回“继承”。",
+				"会把对应限制改回“继承”。如果读取之后、保存之前策略被别人改过，保存会被拒绝而不是覆盖那次修改；" +
+				"重新执行一次即可。",
 		},
 		Flags: []Flag{
 			{Name: "--scope", Hint: Text{EN: "global, group or user, required", ZH: "global、group 或 user，必填"}, Value: "SCOPE"},
@@ -664,10 +672,7 @@ func init() {
 				}
 				scopeID = gid
 			default:
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("--scope 必须是 global、group 或 user")
-				}
-				return rt.Errorf("--scope must be global, group or user")
+				return rt.Fail(Text{EN: "--scope must be global, group or user", ZH: "--scope 必须是 global、group 或 user"})
 			}
 
 			existing, _, err := rt.Call(http.MethodGet, "/api/admin/quota/policies", nil)
@@ -676,9 +681,15 @@ func init() {
 			}
 			var rpm, tpm any
 			windows := map[string]any{}
+			// What the policy looked like when it was read, sent back as the
+			// save's precondition: the windows carried forward are this
+			// reading's, and another administrator's change since then would
+			// otherwise be overwritten with them. 0 means no policy yet.
+			var readAt int64
 			for _, raw := range asSlice(asMap(existing)["policies"]) {
 				p := asMap(raw)
 				if asStr(p["scope"]) == scope && asStr(p["scope_id"]) == scopeID {
+					readAt = int64(asNum(p["updated_at"]))
 					rpm, tpm = p["rpm"], p["tpm"]
 					for k, v := range asMap(p["windows"]) {
 						windows[k] = v
@@ -726,7 +737,7 @@ func init() {
 				}
 			}
 
-			body := map[string]any{"scope": scope, "scope_id": scopeID, "rpm": rpm, "tpm": tpm, "windows": windows}
+			body := map[string]any{"scope": scope, "scope_id": scopeID, "rpm": rpm, "tpm": tpm, "windows": windows, "if_updated_at": readAt}
 			data, _, err := rt.Call(http.MethodPut, "/api/admin/quota/policies", body)
 			if err != nil {
 				return err
@@ -754,10 +765,7 @@ func init() {
 		Endpoints:   []string{"DELETE /api/admin/quota/policies/{scope}"},
 		Run: func(_ context.Context, rt *Runtime) error {
 			if rt.NArg() == 0 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("需要 scope：global、group 或 user")
-				}
-				return rt.Errorf("a scope is required: global, group or user")
+				return rt.Fail(Text{EN: "a scope is required: global, group or user", ZH: "需要 scope：global、group 或 user"})
 			}
 			scope := rt.Arg(0)
 			var scopeID string
@@ -776,10 +784,7 @@ func init() {
 				}
 				scopeID = gid
 			default:
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("scope 必须是 global、group 或 user")
-				}
-				return rt.Errorf("scope must be global, group or user")
+				return rt.Fail(Text{EN: "scope must be global, group or user", ZH: "scope 必须是 global、group 或 user"})
 			}
 			q := url.Values{}
 			if scopeID != "" {
@@ -795,15 +800,12 @@ func init() {
 			if rt.effectiveJSON() {
 				return rt.Fields(nil)
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已删除。\n")
-			} else {
-				rt.Printf("deleted.\n")
-			}
-			return nil
+			return rt.confirm(Text{EN: "deleted.", ZH: "已删除。"})
 		},
 	})
+}
 
+func init() {
 	registerCommand(Command{
 		Name:       "code list",
 		Group:      "operations",
@@ -934,15 +936,12 @@ func init() {
 			if rt.effectiveJSON() {
 				return rt.Fields(nil)
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已删除。\n")
-			} else {
-				rt.Printf("deleted.\n")
-			}
-			return nil
+			return rt.confirm(Text{EN: "deleted.", ZH: "已删除。"})
 		},
 	})
+}
 
+func init() {
 	logFilterFlags := []Flag{
 		{Name: "--channel", Hint: Text{EN: "web or api", ZH: "web 或 api"}, Value: "CHANNEL"},
 		{Name: "--method", Hint: Text{EN: "HTTP method", ZH: "HTTP 方法"}, Value: "METHOD"},
@@ -1023,7 +1022,7 @@ func init() {
 		Group:      "operations",
 		Summary:    Text{EN: "Show request log facet counts", ZH: "显示请求日志的分面统计"},
 		Usage:      "log facets [--since MS]",
-		Flags:      []Flag{{Name: "--since", Hint: Text{EN: "epoch ms, default 0 (all time)", ZH: "毫秒时间戳，默认 0（全部时间）"}, Value: "MS"}},
+		Flags:      []Flag{{Name: "--since", Hint: Text{EN: "epoch ms, default 0 (all time)", ZH: "毫秒时间戳，默认 0（全部时间）"}, Value: "MS", Default: "0"}},
 		Examples:   []string{"log facets", "log facets --since 0"},
 		SeeAlso:    []string{"log list"},
 		Permission: "logs",
@@ -1084,10 +1083,7 @@ func init() {
 		Endpoints:   []string{"POST /api/admin/logs/prune"},
 		Run: func(_ context.Context, rt *Runtime) error {
 			if !rt.Present("days") {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("需要 --days（0 表示全部）")
-				}
-				return rt.Errorf("--days is required (0 means everything)")
+				return rt.Fail(Text{EN: "--days is required (0 means everything)", ZH: "需要 --days（0 表示全部）"})
 			}
 			data, _, err := rt.Call(http.MethodPost, "/api/admin/logs/prune", map[string]any{"days": rt.Int("days")})
 			if err != nil {
@@ -1117,18 +1113,11 @@ func breakdownRows(v any) [][]string {
 // windowFigure is how full one allowance window is, judged on whichever of its
 // limits is closest — the same reading the account's own bars are drawn from.
 func windowFigure(window map[string]any) string {
-	worst := -1.0
-	for _, pair := range [][2]string{
-		{"used_requests", "limit_requests"}, {"used_tokens", "limit_tokens"}, {"used_credits", "limit_credits"},
-	} {
-		if limit := asNum(window[pair[1]]); limit > 0 {
-			worst = max(worst, min(1, asNum(window[pair[0]])/limit))
-		}
-	}
-	if worst < 0 {
+	ratio, has := windowRatio(window)
+	if !has || ratio < 0 {
 		return "-"
 	}
-	return fmt.Sprintf("%d%% used", int(worst*100+0.5))
+	return fmt.Sprintf("%d%% used", int(min(1, ratio)*100+0.5))
 }
 
 // renderProbeFrames prints a probe run as one JSON array of {event, data}

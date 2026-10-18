@@ -79,7 +79,7 @@ func TestAPanicOnTheShellGoroutineStillTellsTheClient(t *testing.T) {
 // Every notice this package writes has a Chinese text, and it is not the English
 // copied over. A missing one would show the wrong language to a Chinese session.
 func TestEveryNoticeHasBothLanguages(t *testing.T) {
-	notices := map[string]notice{
+	notices := map[string]console.Text{
 		"revoked":           noticeRevoked,
 		"credentialChanged": noticeCredentialChanged,
 		"retry":             noticeRetry,
@@ -91,14 +91,14 @@ func TestEveryNoticeHasBothLanguages(t *testing.T) {
 		"commandStopped":    noticeCommandStopped,
 	}
 	for name, n := range notices {
-		if n.en == "" || n.zh == "" {
+		if n.EN == "" || n.ZH == "" {
 			t.Errorf("%s: a language is empty: %+v", name, n)
 		}
-		if n.en == n.zh {
+		if n.EN == n.ZH {
 			t.Errorf("%s: the Chinese text is the English text", name)
 		}
-		if n.in("zh") != n.zh || n.in("en") != n.en || n.in("") != n.en {
-			t.Errorf("%s: in() does not pick the language it was asked for", name)
+		if n.For("zh") != n.ZH || n.For("en") != n.EN || n.For("") != n.EN {
+			t.Errorf("%s: For does not pick the language it was asked for", name)
 		}
 	}
 }

@@ -25,48 +25,28 @@ import (
 func inviteRewardLabel(u map[string]any, lang string) string {
 	if asBoolVal(u["counted"]) {
 		if n := asNum(u["reward_cards"]); n > 0 {
-			if lang == "zh" {
-				return fmt.Sprintf("+%v 张重置卡", n)
-			}
-			return fmt.Sprintf("+%v cards", n)
+			return Text{EN: fmt.Sprintf("+%v cards", n), ZH: fmt.Sprintf("+%v 张重置卡", n)}.For(lang)
 		}
-		if lang == "zh" {
-			return "已计入"
-		}
-		return "counted"
+		return Text{EN: "counted", ZH: "已计入"}.For(lang)
 	}
 	if s := asStr(u["reward_skipped"]); s != "" {
-		switch s {
-		case "same_ip":
-			if lang == "zh" {
-				return "不符合奖励条件"
-			}
-			return "Ineligible for reward"
-		case "limit":
-			if lang == "zh" {
-				return "邀请名额已用完"
-			}
-			return "Invite limit reached"
-		case "disabled":
-			if lang == "zh" {
-				return "奖励当时已关闭"
-			}
-			return "Rewards were off"
-		case "inviter_gone":
-			if lang == "zh" {
-				return "邀请人账号已注销"
-			}
-			return "Inviter’s account no longer exists"
-		case "inviter_disabled":
-			if lang == "zh" {
-				return "邀请人账号已被禁用"
-			}
-			return "Inviter’s account is disabled"
-		default:
-			return s
+		if label, ok := inviteSkipLabels[s]; ok {
+			return label.For(lang)
 		}
+		return s
 	}
 	return "-"
+}
+
+// inviteSkipLabels says why an invite earned no reward. A code not listed here
+// is shown as it was recorded, so a reason added later is visible before it has
+// a label.
+var inviteSkipLabels = map[string]Text{
+	"same_ip":          {EN: "Ineligible for reward", ZH: "不符合奖励条件"},
+	"limit":            {EN: "Invite limit reached", ZH: "邀请名额已用完"},
+	"disabled":         {EN: "Rewards were off", ZH: "奖励当时已关闭"},
+	"inviter_gone":     {EN: "Inviter’s account no longer exists", ZH: "邀请人账号已注销"},
+	"inviter_disabled": {EN: "Inviter’s account is disabled", ZH: "邀请人账号已被禁用"},
 }
 
 // inviteesTable renders the "invitees" array both `me invite` and

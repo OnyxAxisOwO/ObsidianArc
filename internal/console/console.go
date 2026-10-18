@@ -15,6 +15,7 @@
 package console
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -143,8 +144,8 @@ type Result struct {
 // is unexported, so only cmd_session.go can produce it.
 var errExit = errors.New("console: end session")
 
-// unaudited is exactly the exclusion list section 4 of the contract names:
-// every pure session command that touches no admin API and changes nothing
+// unaudited is the list of commands kept out of the audit trail: every pure
+// session command that touches no admin API and changes nothing
 // but the session it runs in. Everything else — including `exit`/`quit`,
 // which end the session, and `watch`, which repeats a command that is
 // itself audited on every iteration — is worth a record.
@@ -163,6 +164,15 @@ const unparsedLine = "(unparsed input)"
 // those steps writes what the user should see to out before returning —
 // Result is what the transport needs, not what the user reads.
 func (c *Console) Execute(ctx context.Context, s *Session, out io.Writer, line string) Result {
+	// The line's output reaches the transport in buffered chunks, not write by
+	// write. A table is written a cell at a time, and each write that reaches a
+	// browser costs an SSE frame and a flush, and each one that reaches SSH a
+	// channel packet and a stall timer. A watch flushes after every run itself
+	// (Runtime.flushOut), so a repeating command still shows each run as it ends.
+	buf := bufio.NewWriter(out)
+	defer buf.Flush()
+	out = buf
+
 	start := time.Now()
 	trimmed := strings.TrimSpace(line)
 	if trimmed == "" {
@@ -225,7 +235,7 @@ func (c *Console) runTokens(ctx context.Context, s *Session, out io.Writer, toke
 	}
 
 	if parsed.Help {
-		renderCommandHelp(out, s, cmd, c.reg)
+		renderCommandHelp(out, s, cmd)
 		return Result{OK: true, Elapsed: time.Since(start)}
 	}
 
@@ -328,11 +338,8 @@ func runRecovered(ctx context.Context, cmd *Command, rt *Runtime) (err error) {
 			"panic", p,
 			"stack", string(debug.Stack()),
 		)
-		message := "Something went wrong on our side. The server has logged it."
-		if rt.Session.Lang == "zh" {
-			message = "服务器内部出错，已记入日志。"
-		}
-		err = &CallError{Status: http.StatusInternalServerError, Code: "internal", Message: message}
+		message := Text{EN: "Something went wrong on our side. The server has logged it.", ZH: "服务器内部出错，已记入日志。"}
+		err = &CallError{Status: http.StatusInternalServerError, Code: "internal", Message: message.For(rt.Session.Lang)}
 	}()
 	return cmd.Run(ctx, rt)
 }
@@ -523,44 +530,39 @@ func (c *Console) Banner(s *Session) string {
 	// terminal like everything else.
 	who := sanitize(s.Actor.DisplayName())
 
+	// Each line is kept in both languages and read in the session's, so a
+	// session never shows one line in each.
+	role := roleLabel(s.Actor.Role)
 	var b strings.Builder
-	if s.Lang == "zh" {
-		fmt.Fprintf(&b, "%s — 终端\n", site)
-		fmt.Fprintf(&b, "已登录：%s（%s）\n", who, roleLabel(s.Actor.Role, s.Lang))
-		if c.opts.SSH.Enabled {
-			fmt.Fprintf(&b, "SSH：%s，主机指纹 %s\n", c.opts.SSH.Addr, c.opts.SSH.Fingerprint)
-		}
-		b.WriteString("输入 'help' 开始，或 'help -k <关键字>' 搜索命令。")
-	} else {
-		fmt.Fprintf(&b, "%s — Terminal\n", site)
-		fmt.Fprintf(&b, "Signed in as %s (%s)\n", who, roleLabel(s.Actor.Role, s.Lang))
-		if c.opts.SSH.Enabled {
-			fmt.Fprintf(&b, "SSH: %s, host fingerprint %s\n", c.opts.SSH.Addr, c.opts.SSH.Fingerprint)
-		}
-		b.WriteString("Type 'help' to get started, or 'help -k <word>' to search.")
+	b.WriteString(Text{EN: site + " — Terminal", ZH: site + " — 终端"}.For(s.Lang) + "\n")
+	b.WriteString(Text{
+		EN: "Signed in as " + who + " (" + role.EN + ")",
+		ZH: "已登录：" + who + "（" + role.ZH + "）",
+	}.For(s.Lang) + "\n")
+	if c.opts.SSH.Enabled {
+		b.WriteString(Text{
+			EN: "SSH: " + c.opts.SSH.Addr + ", host fingerprint " + c.opts.SSH.Fingerprint,
+			ZH: "SSH：" + c.opts.SSH.Addr + "，主机指纹 " + c.opts.SSH.Fingerprint,
+		}.For(s.Lang) + "\n")
 	}
+	b.WriteString(Text{
+		EN: "Type 'help' to get started, or 'help -k <word>' to search.",
+		ZH: "输入 'help' 开始，或 'help -k <关键字>' 搜索命令。",
+	}.For(s.Lang))
 	return b.String()
 }
 
-func roleLabel(role user.Role, lang string) string {
-	// Every account has a terminal now, so the banner names what the reader
-	// is rather than assuming an administrator.
-	if role == user.RoleUser {
-		if lang == "zh" {
-			return "成员"
-		}
-		return "member"
+// roleLabel names an account's role for the banner. Every account has a terminal
+// now, so the banner names what the reader is rather than assuming an
+// administrator.
+func roleLabel(role user.Role) Text {
+	switch role {
+	case user.RoleUser:
+		return Text{EN: "member", ZH: "成员"}
+	case user.RoleSuperAdmin:
+		return Text{EN: "super admin", ZH: "超级管理员"}
 	}
-	if role == user.RoleSuperAdmin {
-		if lang == "zh" {
-			return "超级管理员"
-		}
-		return "super admin"
-	}
-	if lang == "zh" {
-		return "管理员"
-	}
-	return "admin"
+	return Text{EN: "admin", ZH: "管理员"}
 }
 
 // refuse writes a refusal the way the caller reads output. In text it is the
@@ -577,11 +579,10 @@ func refuse(out io.Writer, jsonMode bool, code, message string) {
 }
 
 func renderUnknown(out io.Writer, s *Session, jsonMode bool, name string) {
-	if s.Lang == "zh" {
-		refuse(out, jsonMode, "unknown_command", fmt.Sprintf("未知命令 %q。输入 'help' 查看可用命令。", name))
-		return
-	}
-	refuse(out, jsonMode, "unknown_command", fmt.Sprintf("Unknown command %q. Type 'help' to see what is available.", name))
+	refuse(out, jsonMode, "unknown_command", Text{
+		EN: fmt.Sprintf("Unknown command %q. Type 'help' to see what is available.", name),
+		ZH: fmt.Sprintf("未知命令 %q。输入 'help' 查看可用命令。", name),
+	}.For(s.Lang))
 }
 
 func renderPermissionDenied(out io.Writer, s *Session, jsonMode bool, cmd *Command) {
@@ -593,17 +594,15 @@ func renderPermissionDenied(out io.Writer, s *Session, jsonMode bool, cmd *Comma
 		// invariant is ever broken.
 		grant = "administrators"
 	}
-	if s.Lang == "zh" {
-		refuse(out, jsonMode, "permission_denied", fmt.Sprintf("权限不足：此命令需要 %q 权限。", grant))
-		return
-	}
-	refuse(out, jsonMode, "permission_denied", fmt.Sprintf("permission denied: this command needs the %q grant", grant))
+	refuse(out, jsonMode, "permission_denied", Text{
+		EN: fmt.Sprintf("permission denied: this command needs the %q grant", grant),
+		ZH: fmt.Sprintf("权限不足：此命令需要 %q 权限。", grant),
+	}.For(s.Lang))
 }
 
 func renderConfirmRequired(out io.Writer, s *Session, jsonMode bool, cmd *Command) {
-	if s.Lang == "zh" {
-		refuse(out, jsonMode, "confirmation_required", fmt.Sprintf("此操作不可撤销：加上 --yes（或 -y）确认，例如 %s --yes", cmd.Name))
-		return
-	}
-	refuse(out, jsonMode, "confirmation_required", fmt.Sprintf("this is destructive: add --yes (or -y) to confirm, e.g. %s --yes", cmd.Name))
+	refuse(out, jsonMode, "confirmation_required", Text{
+		EN: fmt.Sprintf("this is destructive: add --yes (or -y) to confirm, e.g. %s --yes", cmd.Name),
+		ZH: fmt.Sprintf("此操作不可撤销：加上 --yes（或 -y）确认，例如 %s --yes", cmd.Name),
+	}.For(s.Lang))
 }

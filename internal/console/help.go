@@ -85,27 +85,19 @@ func renderHelpIndex(out io.Writer, s *Session, reg *registry) {
 		fmt.Fprintln(out)
 	}
 
-	if lang == "zh" {
-		fmt.Fprintln(out, "输入 'help <命令>' 查看详情，'help -k <关键字>' 搜索命令，或 'help keys' 查看快捷键。")
-	} else {
-		fmt.Fprintln(out, "Type 'help <command>' for details, 'help -k <word>' to search, or 'help keys' for keyboard shortcuts.")
-	}
+	fmt.Fprintln(out, Text{EN: "Type 'help <command>' for details, 'help -k <word>' to search, or 'help keys' for keyboard shortcuts.", ZH: "输入 'help <命令>' 查看详情，'help -k <关键字>' 搜索命令，或 'help keys' 查看快捷键。"}.For(lang))
 }
 
 // renderCommandHelp is `help <command>` and, identically, `<command>
 // --help`: summary, usage, the extended description, arguments, flags with
 // their defaults, at least two worked examples, see-also, and the grant it
 // needs.
-func renderCommandHelp(out io.Writer, s *Session, cmd *Command, reg *registry) {
+func renderCommandHelp(out io.Writer, s *Session, cmd *Command) {
 	lang := s.Lang
 
 	fmt.Fprintln(out, cmd.Summary.For(lang))
 	fmt.Fprintln(out)
-	if lang == "zh" {
-		fmt.Fprintf(out, "用法： %s\n", cmd.Usage)
-	} else {
-		fmt.Fprintf(out, "Usage: %s\n", cmd.Usage)
-	}
+	fmt.Fprint(out, Text{EN: fmt.Sprintf("Usage: %s\n", cmd.Usage), ZH: fmt.Sprintf("用法： %s\n", cmd.Usage)}.For(lang))
 
 	if extra := cmd.Help.For(lang); extra != "" {
 		fmt.Fprintln(out)
@@ -167,8 +159,6 @@ func renderCommandHelp(out io.Writer, s *Session, cmd *Command, reg *registry) {
 	if len(cmd.Endpoints) > 0 {
 		fmt.Fprintf(out, "%s %s\n", callsLabel.For(lang), strings.Join(cmd.Endpoints, ", "))
 	}
-
-	_ = reg // reserved for a future "did you mean" pass over the registry
 }
 
 func permissionDisplay(permission, lang string) string {
@@ -194,11 +184,7 @@ func renderNounHelp(out io.Writer, s *Session, noun string, reg *registry) bool 
 	sort.Slice(matches, func(i, j int) bool { return matches[i].Name < matches[j].Name })
 
 	lang := s.Lang
-	if lang == "zh" {
-		fmt.Fprintf(out, "%s 的可用命令：\n", noun)
-	} else {
-		fmt.Fprintf(out, "Commands under %q:\n", noun)
-	}
+	fmt.Fprint(out, Text{EN: fmt.Sprintf("Commands under %q:\n", noun), ZH: fmt.Sprintf("%s 的可用命令：\n", noun)}.For(lang))
 	width := 0
 	for _, cmd := range matches {
 		if l := len(cmd.Name); l > width {
@@ -219,11 +205,7 @@ func renderSearch(out io.Writer, s *Session, query string, reg *registry) {
 	lang := s.Lang
 	q := strings.ToLower(strings.TrimSpace(query))
 	if q == "" {
-		if lang == "zh" {
-			fmt.Fprintln(out, "用法： help -k <关键字>")
-		} else {
-			fmt.Fprintln(out, "Usage: help -k <word>")
-		}
+		fmt.Fprintln(out, Text{EN: "Usage: help -k <word>", ZH: "用法： help -k <关键字>"}.For(lang))
 		return
 	}
 
@@ -234,11 +216,7 @@ func renderSearch(out io.Writer, s *Session, query string, reg *registry) {
 		}
 	}
 	if len(matches) == 0 {
-		if lang == "zh" {
-			fmt.Fprintf(out, "没有匹配 %q 的命令。\n", query)
-		} else {
-			fmt.Fprintf(out, "No commands match %q.\n", query)
-		}
+		fmt.Fprint(out, Text{EN: fmt.Sprintf("No commands match %q.\n", query), ZH: fmt.Sprintf("没有匹配 %q 的命令。\n", query)}.For(lang))
 		return
 	}
 	sort.Slice(matches, func(i, j int) bool { return matches[i].Name < matches[j].Name })
@@ -278,30 +256,30 @@ func commandMatchesQuery(cmd *Command, q string) bool {
 func renderSSHHelp(out io.Writer, s *Session, c *Console) {
 	lang := s.Lang
 	if !c.opts.SSH.Enabled {
-		if lang == "zh" {
-			fmt.Fprintln(out, "此实例未开启控制台的 SSH 访问。")
-		} else {
-			fmt.Fprintln(out, "SSH access to this console is not enabled on this instance.")
-		}
+		fmt.Fprintln(out, Text{EN: "SSH access to this console is not enabled on this instance.", ZH: "此实例未开启控制台的 SSH 访问。"}.For(lang))
 		return
 	}
 
 	username := s.Actor.Username
 	port := portOf(c.opts.SSH.Addr)
 
-	if lang == "zh" {
-		fmt.Fprintln(out, "这是 Arc 的终端，不是服务器 shell —— 只能运行这里列出的命令。")
-		fmt.Fprintf(out, "连接： ssh %s@<域名> -p %s\n", username, port)
-		fmt.Fprintf(out, "主机指纹： %s\n", c.opts.SSH.Fingerprint)
-		fmt.Fprintln(out, "单条命令，适合脚本：")
-		fmt.Fprintf(out, "  ssh %s@<域名> -p %s 'user list --json' | jq\n", username, port)
-	} else {
-		fmt.Fprintln(out, "This is the console, not a server shell — only the commands listed here run.")
-		fmt.Fprintf(out, "Connect: ssh %s@<host> -p %s\n", username, port)
-		fmt.Fprintf(out, "Host fingerprint: %s\n", c.opts.SSH.Fingerprint)
-		fmt.Fprintln(out, "One-shot usage, script-friendly:")
-		fmt.Fprintf(out, "  ssh %s@<host> -p %s 'user list --json' | jq\n", username, port)
-	}
+	fmt.Fprintln(out, Text{
+		EN: "This is the console, not a server shell — only the commands listed here run.",
+		ZH: "这是 Arc 的终端，不是服务器 shell —— 只能运行这里列出的命令。",
+	}.For(lang))
+	fmt.Fprint(out, Text{
+		EN: fmt.Sprintf("Connect: ssh %s@<host> -p %s\n", username, port),
+		ZH: fmt.Sprintf("连接： ssh %s@<域名> -p %s\n", username, port),
+	}.For(lang))
+	fmt.Fprint(out, Text{
+		EN: fmt.Sprintf("Host fingerprint: %s\n", c.opts.SSH.Fingerprint),
+		ZH: fmt.Sprintf("主机指纹： %s\n", c.opts.SSH.Fingerprint),
+	}.For(lang))
+	fmt.Fprintln(out, Text{EN: "One-shot usage, script-friendly:", ZH: "单条命令，适合脚本："}.For(lang))
+	fmt.Fprint(out, Text{
+		EN: fmt.Sprintf("  ssh %s@<host> -p %s 'user list --json' | jq\n", username, port),
+		ZH: fmt.Sprintf("  ssh %s@<域名> -p %s 'user list --json' | jq\n", username, port),
+	}.For(lang))
 }
 
 func portOf(addr string) string {
@@ -312,8 +290,7 @@ func portOf(addr string) string {
 }
 
 // renderKeysHelp is `help keys`: the line-editing and terminal shortcuts,
-// shared between the web terminal and consolessh's own line editor — the
-// key set in the contract's section 2.4 is what this documents.
+// shared between the web terminal and consolessh's own line editor.
 func renderKeysHelp(out io.Writer, s *Session) {
 	type row struct{ key, en, zh string }
 	rows := []row{
@@ -332,11 +309,7 @@ func renderKeysHelp(out io.Writer, s *Session) {
 	}
 
 	lang := s.Lang
-	if lang == "zh" {
-		fmt.Fprintln(out, "快捷键：")
-	} else {
-		fmt.Fprintln(out, "Keyboard shortcuts:")
-	}
+	fmt.Fprintln(out, Text{EN: "Keyboard shortcuts:", ZH: "快捷键："}.For(lang))
 	width := 0
 	for _, r := range rows {
 		if l := len(r.key); l > width {
@@ -344,10 +317,7 @@ func renderKeysHelp(out io.Writer, s *Session) {
 		}
 	}
 	for _, r := range rows {
-		desc := r.en
-		if lang == "zh" {
-			desc = r.zh
-		}
+		desc := Text{EN: r.en, ZH: r.zh}.For(lang)
 		fmt.Fprintf(out, "  %-*s  %s\n", width, r.key, desc)
 	}
 }

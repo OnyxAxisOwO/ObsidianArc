@@ -44,12 +44,8 @@ func (c *closableConn) Close() error {
 // first thing written, before any idle timer exists, so a stall there held the
 // session's slots until the process ended.
 func TestAWriteThatStallsEndsTheSession(t *testing.T) {
-	previous := writeStallTimeout
-	writeStallTimeout = 50 * time.Millisecond
-	t.Cleanup(func() { writeStallTimeout = previous })
-
 	gone := make(chan struct{})
-	srv := &Server{cfg: Config{Console: newTestConsole(t), IdleTimeout: time.Hour}}
+	srv := &Server{cfg: Config{Console: newTestConsole(t), IdleTimeout: time.Hour, WriteStallTimeout: 50 * time.Millisecond}}
 	sess := newSSHSession(srv, &closableConn{gone: gone}, &stalledChannel{gone: gone},
 		adminUser("admin"), "127.0.0.1", "")
 
@@ -86,12 +82,8 @@ func (c *stalledCloseChannel) Close() error {
 // its session. closeChannel runs under closeOnce, so a stall timer that went
 // through close would wait behind the write it was armed to end.
 func TestAStalledChannelCloseEndsTheSession(t *testing.T) {
-	previous := writeStallTimeout
-	writeStallTimeout = 50 * time.Millisecond
-	t.Cleanup(func() { writeStallTimeout = previous })
-
 	gone := make(chan struct{})
-	srv := &Server{cfg: Config{Console: newTestConsole(t), IdleTimeout: time.Hour}}
+	srv := &Server{cfg: Config{Console: newTestConsole(t), IdleTimeout: time.Hour, WriteStallTimeout: 50 * time.Millisecond}}
 	channel := &stalledCloseChannel{stalledChannel: stalledChannel{gone: gone}}
 	sess := newSSHSession(srv, &closableConn{gone: gone}, channel, adminUser("admin"), "127.0.0.1", "")
 

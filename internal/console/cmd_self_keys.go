@@ -2,6 +2,7 @@ package console
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -72,11 +73,11 @@ func init() {
 			// enabled/max are top-level fields of the same response, not a
 			// row — shown the way "user show" appends cards and quota below
 			// its own Fields block, rather than forcing them into the table.
-			if rt.Session.Lang == "zh" {
-				rt.Printf("\n可创建新密钥：%s，上限：%v\n", yesNo(asBoolVal(m["enabled"])), asNum(m["max"]))
-			} else {
-				rt.Printf("\ncan create new keys: %s, max: %v\n", yesNo(asBoolVal(m["enabled"])), asNum(m["max"]))
-			}
+			canCreate, keyMax := yesNo(asBoolVal(m["enabled"])), asNum(m["max"])
+			rt.Say(Text{
+				EN: fmt.Sprintf("\ncan create new keys: %s, max: %v\n", canCreate, keyMax),
+				ZH: fmt.Sprintf("\n可创建新密钥：%s，上限：%v\n", canCreate, keyMax),
+			})
 			return nil
 		},
 	})
@@ -110,10 +111,7 @@ func init() {
 		Run: func(_ context.Context, rt *Runtime) error {
 			name := rt.String("name")
 			if name == "" {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("需要 --name")
-				}
-				return rt.Errorf("--name is required")
+				return rt.Fail(Text{EN: "--name is required", ZH: "需要 --name"})
 			}
 
 			body := bodyBuilder{}
@@ -146,11 +144,7 @@ func init() {
 				return nil
 			}
 			token := asStr(m["token"])
-			if rt.Session.Lang == "zh" {
-				rt.Printf("\ntoken（现在就保存它——这是它唯一一次完整显示）：%s\n", token)
-			} else {
-				rt.Printf("\ntoken (save it now — this is the only time it is shown in full): %s\n", token)
-			}
+			rt.Say(Text{EN: fmt.Sprintf("\ntoken (save it now — this is the only time it is shown in full): %s\n", token), ZH: fmt.Sprintf("\ntoken（现在就保存它——这是它唯一一次完整显示）：%s\n", token)})
 			return nil
 		},
 	})
@@ -194,10 +188,7 @@ func init() {
 				body["disabled"] = !rt.Bool("enabled")
 			}
 			if len(body) == 0 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("没有需要修改的内容：请至少给出一个选项")
-				}
-				return rt.Errorf("nothing to change: give at least one flag")
+				return rt.Fail(Text{EN: "nothing to change: give at least one flag", ZH: "没有需要修改的内容：请至少给出一个选项"})
 			}
 
 			data, _, err := rt.Call(http.MethodPatch, "/api/keys/"+url.PathEscape(keyID), map[string]any(body))
@@ -243,12 +234,7 @@ func init() {
 			if _, _, err := rt.Call(http.MethodDelete, "/api/keys/"+url.PathEscape(keyID), nil); err != nil {
 				return err
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已删除。\n")
-			} else {
-				rt.Printf("deleted.\n")
-			}
-			return nil
+			return rt.confirm(Text{EN: "deleted.", ZH: "已删除。"})
 		},
 	})
 }

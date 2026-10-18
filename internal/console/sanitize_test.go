@@ -44,7 +44,7 @@ func assertNoControlFromData(t *testing.T, rendered string) {
 	t.Helper()
 	// Strip the codes this package legitimately emits, then nothing
 	// escape-shaped may be left.
-	for _, own := range []string{ansiReset, ansiBold, ansiDim, ansiUnderline, ansiRed, ansiGreen, ansiYellow} {
+	for _, own := range []string{ansiReset, ansiBold, ansiDim, ansiUnderline, ansiRed} {
 		rendered = strings.ReplaceAll(rendered, own, "")
 	}
 	if i := strings.IndexRune(rendered, 0x1b); i >= 0 {

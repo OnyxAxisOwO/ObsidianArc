@@ -129,12 +129,7 @@ func init() {
 			if _, _, err := rt.Call(http.MethodPost, "/api/profile/two-factor/disable", map[string]any{"code": code}); err != nil {
 				return err
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("两步验证已关闭。\n")
-			} else {
-				rt.Printf("two-step sign-in is off.\n")
-			}
-			return nil
+			return rt.confirm(Text{EN: "two-step sign-in is off.", ZH: "两步验证已关闭。"})
 		},
 	})
 
@@ -193,12 +188,7 @@ func init() {
 			if _, _, err := rt.Call(http.MethodPost, "/api/profile/two-factor/backoffice", map[string]any{"code": code}); err != nil {
 				return err
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("后台命令已解锁。\n")
-			} else {
-				rt.Printf("backoffice commands unlocked.\n")
-			}
-			return nil
+			return rt.confirm(Text{EN: "backoffice commands unlocked.", ZH: "后台命令已解锁。"})
 		},
 	})
 }
@@ -211,11 +201,7 @@ func printRecoveryCodes(rt *Runtime, raw any) error {
 	// The header is for a person reading the codes. Under --json the table
 	// prints the response body, and a line of text before it is not JSON.
 	if !rt.effectiveJSON() {
-		if rt.Session.Lang == "zh" {
-			rt.Printf("恢复码（仅显示这一次，每个只能用一次）：\n")
-		} else {
-			rt.Printf("recovery codes (shown once; each works once):\n")
-		}
+		rt.Say(Text{EN: "recovery codes (shown once; each works once):\n", ZH: "恢复码（仅显示这一次，每个只能用一次）：\n"})
 	}
 	return rt.Table([]string{"recovery_code"}, rows)
 }

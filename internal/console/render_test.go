@@ -139,20 +139,6 @@ func TestRuntimeTablePrefersTheRawServerPayloadOverSyntheticJSON(t *testing.T) {
 	}
 }
 
-func TestMaskTruncatesLongSecretsAndHidesShortOnesEntirely(t *testing.T) {
-	if got, want := Mask("sk-abcd1234efgh"), "sk-…efgh"; got != want {
-		t.Fatalf("Mask(long) = %q, want %q", got, want)
-	}
-	if got := Mask("short"); strings.Contains(got, "short") {
-		t.Fatalf("Mask(short) = %q, must not contain the original value", got)
-	}
-	for _, secret := range []string{"", "a", "sk-1234", "sk-abcd1234efgh5678"} {
-		if strings.Contains(Mask(secret), secret) && secret != "" {
-			t.Fatalf("Mask(%q) = %q leaks the full secret", secret, Mask(secret))
-		}
-	}
-}
-
 func TestRenderErrorReturnsTheCallErrorCodeAndShowsItDim(t *testing.T) {
 	err := &CallError{Status: 403, Code: "admin_permission_denied", Message: "no."}
 	var buf bytes.Buffer

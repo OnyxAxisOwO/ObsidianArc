@@ -46,10 +46,7 @@ func init() {
 			// were the list. Refuse it here instead; the page is 200 at most.
 			limit := rt.IntOr("limit", 60)
 			if limit < 1 || limit > 200 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("--limit 必须在 1 到 200 之间")
-				}
-				return rt.Errorf("--limit must be between 1 and 200")
+				return rt.Fail(Text{EN: "--limit must be between 1 and 200", ZH: "--limit 必须在 1 到 200 之间"})
 			}
 			q := url.Values{}
 			q.Set("limit", strconv.Itoa(limit))
@@ -168,10 +165,7 @@ func init() {
 			body.str(rt, "title", "title")
 			body.boolv(rt, "pinned", "pinned")
 			if len(body) == 0 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("没有需要修改的内容：请至少给出一个选项")
-				}
-				return rt.Errorf("nothing to change: give at least one flag")
+				return rt.Fail(Text{EN: "nothing to change: give at least one flag", ZH: "没有需要修改的内容：请至少给出一个选项"})
 			}
 			data, _, err := rt.Call(http.MethodPatch, "/api/conversations/"+url.PathEscape(ref), map[string]any(body))
 			if err != nil {
@@ -210,12 +204,7 @@ func init() {
 			if _, _, err := rt.Call(http.MethodDelete, "/api/conversations/"+url.PathEscape(ref), nil); err != nil {
 				return err
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已删除。\n")
-			} else {
-				rt.Printf("deleted.\n")
-			}
-			return nil
+			return rt.confirm(Text{EN: "deleted.", ZH: "已删除。"})
 		},
 	})
 
@@ -268,10 +257,7 @@ func init() {
 				return err
 			}
 			if rt.NArg() < 2 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("需要消息序号（chat show 里的 seq）")
-				}
-				return rt.Errorf("a message number is required (seq, from chat show)")
+				return rt.Fail(Text{EN: "a message number is required (seq, from chat show)", ZH: "需要消息序号（chat show 里的 seq）"})
 			}
 			// Addressed by the number chat show prints rather than by id:
 			// the transcript is what the reader has in front of them, and it
@@ -288,21 +274,13 @@ func init() {
 				}
 			}
 			if messageID == "" {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("这段对话里没有序号为 %s 的消息", rt.Arg(1))
-				}
-				return rt.Errorf("there is no message %s in this conversation", rt.Arg(1))
+				return rt.Fail(Text{EN: fmt.Sprintf("there is no message %s in this conversation", rt.Arg(1)), ZH: fmt.Sprintf("这段对话里没有序号为 %s 的消息", rt.Arg(1))})
 			}
 			path := "/api/conversations/" + url.PathEscape(ref) + "/messages/" + url.PathEscape(messageID)
 			if _, _, err := rt.Call(http.MethodPatch, path, map[string]any{"content": rt.String("content")}); err != nil {
 				return err
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已修改。\n")
-			} else {
-				rt.Printf("edited.\n")
-			}
-			return nil
+			return rt.confirm(Text{EN: "edited.", ZH: "已修改。"})
 		},
 	})
 
@@ -331,12 +309,7 @@ func init() {
 			if _, _, err := rt.Call(http.MethodPatch, "/api/conversations/"+url.PathEscape(ref), body); err != nil {
 				return err
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已归档。\n")
-			} else {
-				rt.Printf("archived.\n")
-			}
-			return nil
+			return rt.confirm(Text{EN: "archived.", ZH: "已归档。"})
 		},
 	})
 
@@ -365,12 +338,7 @@ func init() {
 			if _, _, err := rt.Call(http.MethodPatch, "/api/conversations/"+url.PathEscape(ref), body); err != nil {
 				return err
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已取消归档。\n")
-			} else {
-				rt.Printf("unarchived.\n")
-			}
-			return nil
+			return rt.confirm(Text{EN: "unarchived.", ZH: "已取消归档。"})
 		},
 	})
 }

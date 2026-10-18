@@ -68,21 +68,22 @@ package console
 //     --json and the session's `format json`: when either is set they print
 //     the server's own response body instead of building a table, so a
 //     command almost never needs its own JSON branch.
-//   - Permission is copied from the route table in API.md, verbatim — the
-//     engine's own comma-list check (hasPermission, below) is only the
-//     friendly refusal; the dispatched request is re-checked by the real
-//     admin.Handlers.Routes wrapper regardless.
+//   - Permission is copied from the route table in internal/admin (admin.Routes),
+//     verbatim — the engine's own comma-list check (hasPermission, below) is
+//     only the friendly refusal; the dispatched request is re-checked by the
+//     real admin.Handlers.Routes wrapper regardless.
 //
-// A destructive command additionally sets Destructive: true and checks
-// rt.Confirmed() is unnecessary in the common case — Execute already refuses
-// to call Run at all until --yes (or -y) is present. Confirmed exists for a
-// command that wants to branch on it anyway (a dry-run summary before the
-// real call, say).
+// A destructive command sets Destructive: true and needs no check of its own in
+// the common case — Execute already refuses to call Run at all until --yes (or
+// -y) is present. Confirmed exists for a command that wants to branch on it
+// anyway (a dry-run summary before the real call, say).
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -187,8 +188,8 @@ type Command struct {
 	Permission  string
 	Destructive bool
 	// Endpoints are the admin routes this command calls, "METHOD /path" —
-	// what help prints under "Calls:" and what a route-parity test (added
-	// once every noun's commands exist) checks against admin.Routes.
+	// what help prints under "Calls:" and what the route-parity test in
+	// commands_test.go checks against admin.Routes.
 	Endpoints []string
 	Run       func(ctx context.Context, rt *Runtime) error
 	// SecretArgs names the positional arguments, by index, that hold a
@@ -238,7 +239,9 @@ func RegisterCore(cmd Command) { registerCommand(cmd) }
 
 // ResolveUser is how a plugin's command reads an account argument: an id as
 // it stands, or a username looked up through the same admin list the core
-// commands use, with the same "no such user" and "which one" answers.
+// commands use, with the same "no such user" and "which one" answers. The
+// lookup itself lives with the other shared helpers in helpers.go; these two
+// are the exported door to it.
 func ResolveUser(rt *Runtime, ref string) (string, error) { return resolveUserRef(rt, ref) }
 
 // RequireArg is the first positional argument, or the error the core
@@ -471,10 +474,9 @@ func hasPermission(actor user.User, permissions string) bool {
 }
 
 // CallError is what Runtime.Call returns for an HTTP-level failure (status
-// >= 300, see Call). It carries the admin API's own error code so the renderer can
-// show it dim beside the message, exactly as section 1.5 of the contract
-// asks: "error: <message>" plus the code, HTTP status only when there is no
-// message.
+// >= 300, see Call). It carries the admin API's own error code so the renderer
+// can show it dim beside the message: "error: <message>" plus the code, and the
+// HTTP status only when there is no message.
 type CallError struct {
 	Status  int
 	Code    string
@@ -498,6 +500,11 @@ type Runtime struct {
 	yes      bool
 	jsonFlag bool
 	rawJSON  []byte
+
+	// The references list read by this run, see references(). It is dropped by
+	// any write, so a name resolved after a change sees the change.
+	refs     any
+	refsRead bool
 }
 
 // Arg returns the i-th positional argument, or "" past the end — a command
@@ -613,6 +620,11 @@ func normalizeFlagName(name string) string { return strings.TrimLeft(name, "-") 
 // API's own code and message — return it from Run as-is and the engine
 // renders it exactly the way a failed dispatch is supposed to look.
 func (rt *Runtime) Call(method, path string, body any) (any, int, error) {
+	// A write may change what the references list holds, even one that fails
+	// part way, so the list is read again after it.
+	if method != http.MethodGet {
+		rt.refsRead = false
+	}
 	resp, err := rt.console.opts.Dispatch(rt.Ctx, rt.Session.Actor, method, path, body)
 	if err != nil {
 		return nil, 0, err
@@ -655,15 +667,15 @@ func (rt *Runtime) MayCall(method string) bool {
 func twoFactorHint(code, lang string) string {
 	switch code {
 	case "two_factor_backoffice_verify":
-		if lang == "zh" {
-			return "此命令需要先输入验证码：2fa backoffice <验证码>（验证器应用中的六位数字，或一个恢复码）"
-		}
-		return "this command needs a code first: 2fa backoffice <code> (six digits from your app, or a recovery code)"
+		return Text{
+			EN: "this command needs a code first: 2fa backoffice <code> (six digits from your app, or a recovery code)",
+			ZH: "此命令需要先输入验证码：2fa backoffice <验证码>（验证器应用中的六位数字，或一个恢复码）",
+		}.For(lang)
 	case "two_factor_backoffice":
-		if lang == "zh" {
-			return "此命令需要先为你的账户开启两步验证：2fa setup"
-		}
-		return "this command needs two-step sign-in on your account first: 2fa setup"
+		return Text{
+			EN: "this command needs two-step sign-in on your account first: 2fa setup",
+			ZH: "此命令需要先为你的账户开启两步验证：2fa setup",
+		}.For(lang)
 	}
 	return ""
 }
@@ -782,7 +794,49 @@ func (rt *Runtime) Printf(format string, args ...any) {
 // Errorf builds an error the way fmt.Errorf does. It does not write
 // anything itself — Execute renders whatever error Run returns exactly
 // once, through the same path a *CallError takes, so a command never needs
-// to know how errors are displayed.
+// to know how errors are displayed. Commands build errors through the
+// Runtime rather than fmt for the same reason: the one place that renders a
+// failure is also the one place that decides its form.
 func (rt *Runtime) Errorf(format string, args ...any) error {
 	return fmt.Errorf(format, args...)
+}
+
+// Fail is Errorf for a message kept in both languages, written in the
+// session's language. With no arguments the text is used as it stands, so a %
+// in it is not read as a verb; with arguments, both languages take them in the
+// same order.
+func (rt *Runtime) Fail(t Text, args ...any) error {
+	msg := t.For(rt.Session.Lang)
+	if len(args) == 0 {
+		return errors.New(msg)
+	}
+	return fmt.Errorf(msg, args...)
+}
+
+// Say is Printf for a message kept in both languages, written in the session's
+// language and sanitized the same way.
+func (rt *Runtime) Say(t Text) {
+	rt.Printf("%s", t.For(rt.Session.Lang))
+}
+
+// confirm ends a command that changed something and has nothing else to show.
+// Under --json it prints the empty object every other write prints, so a
+// pipeline reading stdout gets a document; in text it names the outcome in one
+// line.
+func (rt *Runtime) confirm(done Text) error {
+	if rt.effectiveJSON() {
+		return rt.Fields(nil)
+	}
+	rt.Printf("%s\n", done.For(rt.Session.Lang))
+	return nil
+}
+
+// flushOut hands whatever the command has buffered to the transport. Execute
+// buffers a whole line, and a watch flushes after each run and before it
+// waits, so each tick's output appears as the tick runs instead of only when
+// the watch ends.
+func (rt *Runtime) flushOut() {
+	if f, ok := rt.Out.(interface{ Flush() error }); ok {
+		_ = f.Flush()
+	}
 }

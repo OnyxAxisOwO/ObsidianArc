@@ -57,16 +57,13 @@ func init() {
 
 			joined := strings.Join(args, " ")
 			if cmd, ok := rt.console.reg.lookup(joined); ok && hasPermission(rt.Session.Actor, cmd.Permission) {
-				renderCommandHelp(rt.Out, rt.Session, cmd, rt.console.reg)
+				renderCommandHelp(rt.Out, rt.Session, cmd)
 				return nil
 			}
 			if renderNounHelp(rt.Out, rt.Session, args[0], rt.console.reg) {
 				return nil
 			}
-			if rt.Session.Lang == "zh" {
-				return rt.Errorf("没有名为 %q 的命令或主题。", joined)
-			}
-			return rt.Errorf("no command or topic named %q", joined)
+			return rt.Fail(Text{EN: fmt.Sprintf("no command or topic named %q", joined), ZH: fmt.Sprintf("没有名为 %q 的命令或主题。", joined)})
 		},
 	})
 
@@ -128,11 +125,7 @@ func init() {
 			perms := "—"
 			switch {
 			case actor.IsSuperAdmin():
-				if lang == "zh" {
-					perms = "全部（超级管理员）"
-				} else {
-					perms = "all (super admin)"
-				}
+				perms = Text{EN: "all (super admin)", ZH: "全部（超级管理员）"}.For(lang)
 			case len(actor.AdminPermissions) > 0:
 				perms = strings.Join(actor.AdminPermissions, ", ")
 			}
@@ -158,10 +151,7 @@ func init() {
 		Run: func(_ context.Context, rt *Runtime) error {
 			v, shown := rt.console.visibleVersion(rt.Session.Actor)
 			if !shown {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("本实例不向普通成员显示构建版本")
-				}
-				return rt.Errorf("this instance does not show its build version to members")
+				return rt.Fail(Text{EN: "this instance does not show its build version to members", ZH: "本实例不向普通成员显示构建版本"})
 			}
 			if v == "" {
 				v = "dev"
@@ -190,11 +180,10 @@ func init() {
 		Examples: []string{"history"},
 		SeeAlso:  []string{"help keys"},
 		Run: func(_ context.Context, rt *Runtime) error {
-			if rt.Session.Lang == "zh" {
-				rt.Printf("历史记录保存在你的终端里：网页终端用 ↑/↓ 翻阅；SSH 同样支持 ↑/↓，并可用 Ctrl-R 搜索。\n")
-				return nil
-			}
-			rt.Printf("History lives in your own terminal: ↑/↓ in the web terminal, or ↑/↓ and Ctrl-R to search over SSH.\n")
+			rt.Say(Text{
+				EN: "History lives in your own terminal: ↑/↓ in the web terminal, or ↑/↓ and Ctrl-R to search over SSH.\n",
+				ZH: "历史记录保存在你的终端里：网页终端用 ↑/↓ 翻阅；SSH 同样支持 ↑/↓，并可用 Ctrl-R 搜索。\n",
+			})
 			return nil
 		},
 	})
@@ -249,16 +238,10 @@ func init() {
 			// negative --for used to mean the 24-hour maximum without a word. Both
 			// are refused by name, since the operator asked for something else.
 			if rt.IntOr("count", 0) < 0 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("--count 不能为负数；0 表示直到 --for 用完")
-				}
-				return rt.Errorf("--count cannot be negative: 0 means until --for runs out")
+				return rt.Fail(Text{EN: "--count cannot be negative: 0 means until --for runs out", ZH: "--count 不能为负数；0 表示直到 --for 用完"})
 			}
 			if rt.Present("for") && rt.DurationOr("for", 0) <= 0 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("--for 必须是正的时长，例如 30m，最长 24h")
-				}
-				return rt.Errorf("--for must be a positive duration such as 30m, at most 24h")
+				return rt.Fail(Text{EN: "--for must be a positive duration such as 30m, at most 24h", ZH: "--for 必须是正的时长，例如 30m，最长 24h"})
 			}
 
 			name, writes := rt.console.repeatsAWrite(sub)
@@ -266,10 +249,7 @@ func init() {
 				// Without --count a write would repeat until --for ran out, one
 				// --yes covering every run. A stated count says how many changes
 				// the operator asked for.
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("watch 反复执行会写入数据的命令时必须用 --count 写明次数，例如 watch --count 1 -- %s", name)
-				}
-				return rt.Errorf("watch repeats a command that writes only with a stated --count, e.g. watch --count 1 -- %s", name)
+				return rt.Fail(Text{EN: fmt.Sprintf("watch repeats a command that writes only with a stated --count, e.g. watch --count 1 -- %s", name), ZH: fmt.Sprintf("watch 反复执行会写入数据的命令时必须用 --count 写明次数，例如 watch --count 1 -- %s", name)})
 			}
 
 			interval := rt.DurationOr("interval", 2*time.Second)
@@ -302,12 +282,23 @@ func init() {
 						return nil
 					}
 					if err != nil {
-						if rt.Session.Lang == "zh" {
-							return rt.Errorf("watch 已停止：此次登录已结束，或此账户已无法使用控制台。")
-						}
-						return rt.Errorf("watch stopped: the sign-in has ended, or this account may no longer use the console.")
+						return rt.Fail(Text{EN: "watch stopped: the sign-in has ended, or this account may no longer use the console.", ZH: "watch 已停止：此次登录已结束，或此账户已无法使用控制台。"})
 					}
 					rt.Session.Actor = account
+				}
+
+				// The command this watch repeats can change while the watch runs: a
+				// plugin may be installed, switched or removed. Every later run looks
+				// the command up again, so one that has become a write meets the same
+				// --count rule the first run did.
+				if i > 0 {
+					_, writes = rt.console.repeatsAWrite(sub)
+					if writes && count <= 0 {
+						return rt.Fail(Text{
+							EN: "watch stopped: the command now writes, and no --count was given.",
+							ZH: "watch 已停止：该命令已改为会写入数据，而未用 --count 写明次数。",
+						})
+					}
 				}
 
 				if rt.Session.Colour {
@@ -319,14 +310,15 @@ func init() {
 				// Under --json the header would precede the one JSON document the
 				// command prints, and a parser reading stdout would fail on it.
 				if writes && !rt.effectiveJSON() && !wantsJSON(sub) {
-					if rt.Session.Lang == "zh" {
-						rt.Printf("第 %d 次，共 %d 次\n", i+1, count)
-					} else {
-						rt.Printf("run %d of %d\n", i+1, count)
-					}
+					rt.Say(Text{
+						EN: fmt.Sprintf("run %d of %d\n", i+1, count),
+						ZH: fmt.Sprintf("第 %d 次，共 %d 次\n", i+1, count),
+					})
 				}
 
+				rt.flushOut()
 				result := rt.console.runTokens(ctx, rt.Session, rt.Out, sub, time.Now())
+				rt.flushOut()
 				if result.Exit {
 					return errExit
 				}
@@ -334,10 +326,7 @@ func init() {
 				// would be refused the same way and written to the audit trail
 				// again, so the watch ends here and says why.
 				if result.Code == "permission_denied" {
-					if rt.Session.Lang == "zh" {
-						return rt.Errorf("watch 已停止：此账户已无权执行该命令。")
-					}
-					return rt.Errorf("watch stopped: this account no longer has the permission the command needs.")
+					return rt.Fail(Text{EN: "watch stopped: this account no longer has the permission the command needs.", ZH: "watch 已停止：此账户已无权执行该命令。"})
 				}
 				if ctx.Err() != nil {
 					watchStopped(rt, ctx, limit)
@@ -451,9 +440,8 @@ func watchStopped(rt *Runtime, ctx context.Context, limit time.Duration) {
 	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return
 	}
-	if rt.Session.Lang == "zh" {
-		rt.Printf("\nwatch 已运行 %s，到时间停止。\n", limit)
-		return
-	}
-	rt.Printf("\nwatch stopped after %s.\n", limit)
+	rt.Say(Text{
+		EN: fmt.Sprintf("\nwatch stopped after %s.\n", limit),
+		ZH: fmt.Sprintf("\nwatch 已运行 %s，到时间停止。\n", limit),
+	})
 }

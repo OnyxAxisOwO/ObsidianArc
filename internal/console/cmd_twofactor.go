@@ -89,12 +89,7 @@ func init() {
 			if _, _, err := rt.Call(http.MethodDelete, "/api/admin/users/"+url.PathEscape(uid)+"/two-factor", nil); err != nil {
 				return err
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已关闭该账户的两步验证。\n")
-			} else {
-				rt.Printf("two-step sign-in is off for that account.\n")
-			}
-			return nil
+			return rt.confirm(Text{EN: "two-step sign-in is off for that account.", ZH: "已关闭该账户的两步验证。"})
 		},
 	})
 }

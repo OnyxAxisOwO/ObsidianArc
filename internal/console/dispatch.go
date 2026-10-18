@@ -22,9 +22,8 @@ type Dispatcher func(ctx context.Context, actor user.User, method, path string, 
 
 // recorder is an in-process http.ResponseWriter with no socket behind it —
 // header map, status, buffer. httpx has no exported recorder (its own is
-// the access log's private type), and the contract is explicit that
-// dispatch.go must not reach for net/http/httptest from non-test code, so
-// this is the one place that type has to exist.
+// the access log's private type), and this package keeps net/http/httptest
+// out of non-test code, so this is the one place that type has to exist.
 type recorder struct {
 	header http.Header
 	status int
@@ -119,8 +118,8 @@ func callerAddr(ctx context.Context) string {
 // the recorder above has no socket to stream over, so it simply
 // accumulates every frame httpx.SSE writes, in order, into Response.Body —
 // this turns that accumulation back into the frames a real client would
-// have seen one at a time, so a `health probe` command (added once
-// cmd_ops.go exists) does not need to know the wire format itself.
+// have seen one at a time, so the `health probe` command in cmd_ops.go does
+// not need to know the wire format itself.
 type SSEFrame struct {
 	Event string
 	Data  []byte

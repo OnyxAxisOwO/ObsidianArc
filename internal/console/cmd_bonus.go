@@ -232,7 +232,10 @@ func init() {
 				return err
 			}
 			_, _, err = rt.Call(http.MethodDelete, "/api/admin/bonus/bars/"+url.PathEscape(asStr(bar["id"])), nil)
-			return err
+			if err != nil {
+				return err
+			}
+			return rt.confirm(Text{EN: "deleted.", ZH: "已删除。"})
 		},
 	})
 
@@ -263,10 +266,7 @@ func init() {
 			// Refused before the lookup: a negative count is never a valid expiry, and
 			// the server would otherwise keep the credit forever.
 			if rt.Present("days") && rt.Int("days") < 0 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("--days 不能为负数")
-				}
-				return rt.Errorf("--days cannot be negative")
+				return rt.Fail(Text{EN: "--days cannot be negative", ZH: "--days 不能为负数"})
 			}
 			bar, err := findBar(rt, rt.Arg(0))
 			if err != nil {
@@ -310,7 +310,7 @@ func init() {
 		Summary:    Text{EN: "List what has been granted in a bonus bar", ZH: "列出赠金条里已经发放的数额"},
 		Usage:      "bonus grants <id|name> [--limit N] [--offset N]",
 		Args:       []Arg{{Name: "id|name", Hint: Text{EN: "the bar", ZH: "赠金条"}, Required: true}},
-		Flags:      []Flag{{Name: "--limit", Hint: Text{EN: "page size, default 50", ZH: "每页条数，默认 50"}, Value: "N"}, {Name: "--offset", Hint: Text{EN: "rows to skip", ZH: "跳过的条数"}, Value: "N"}},
+		Flags:      []Flag{{Name: "--limit", Hint: Text{EN: "page size, default 50", ZH: "每页条数，默认 50"}, Value: "N", Default: "50"}, {Name: "--offset", Hint: Text{EN: "rows to skip", ZH: "跳过的条数"}, Value: "N"}},
 		Examples:   []string{"bonus grants 新用户礼包 --limit 20", "bonus grants 新用户礼包 --offset 20 --json"},
 		Permission: "usage",
 		Endpoints:  []string{"GET /api/admin/bonus/bars/{id}/grants"},
@@ -358,10 +358,7 @@ func init() {
 		Endpoints:   []string{"POST /api/admin/bonus/bars/{id}/pool"},
 		Run: func(_ context.Context, rt *Runtime) error {
 			if rt.Present("add") == rt.Present("set") {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("需要 --add 或 --set 其中之一")
-				}
-				return rt.Errorf("give one of --add or --set")
+				return rt.Fail(Text{EN: "give one of --add or --set", ZH: "需要 --add 或 --set 其中之一"})
 			}
 			bar, err := findBar(rt, rt.Arg(0))
 			if err != nil {
@@ -462,7 +459,13 @@ func init() {
 				return rt.Errorf("usage: credit bonus switch <id> <on|off>")
 			}
 			_, _, err := rt.Call(http.MethodPut, "/api/bonus/"+url.PathEscape(rt.Arg(0))+"/choice", map[string]any{"enabled": state == "on"})
-			return err
+			if err != nil {
+				return err
+			}
+			if state == "on" {
+				return rt.confirm(Text{EN: "switched on.", ZH: "已开启。"})
+			}
+			return rt.confirm(Text{EN: "switched off.", ZH: "已关闭。"})
 		},
 	})
 }

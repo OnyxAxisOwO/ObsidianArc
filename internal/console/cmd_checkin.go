@@ -107,7 +107,10 @@ func init() {
 				body[key] = parsed
 			}
 			_, _, err = rt.Call(http.MethodPut, "/api/admin/checkin", body)
-			return err
+			if err != nil {
+				return err
+			}
+			return rt.confirm(Text{EN: "saved.", ZH: "已保存。"})
 		},
 	})
 
