@@ -514,13 +514,10 @@
   margin-right: calc(-1 * (var(--oa-panel-width) + 14px));
   opacity: 0;
   transform: translate3d(24px, 0, 0);
-  transition: margin-right 0.34s var(--ai-ease-out),
-              transform 0.34s var(--ai-ease-out),
-              opacity 0.22s ease;
   /* Asks the compositor for the layer before a slide starts, so the first
      frame does not stall on creating it. Closed panels carry the hint too;
      a closed panel is unmounted within the zoom time, so it costs nothing. */
-  will-change: margin-right, transform, opacity;
+  will-change: transform, opacity;
 }
 
 .oa-panel.open {
@@ -783,8 +780,11 @@
 }
 
 /* Below three-column width it becomes an overlay, the same fallback the
-   conversation rail makes. */
-@media (max-width: 1100px) {
+   conversation rail makes. It is the complement of the three-column query
+   rather than max-width: 1100px, because a fractional viewport such as
+   1100.5px is neither at most 1100 nor at least 1101 and would get neither
+   the overlay nor the fold. */
+@media not all and (min-width: 1101px) {
   .oa-panel {
     position: fixed;
     z-index: 30;
@@ -2411,21 +2411,6 @@
   cursor: default;
 }
 
-.oa-reference-pick:not(.oa-reference-dropzone):not(.oa-reference-add-tile) {
-  display: inline-flex;
-  align-items: center;
-  align-self: flex-start;
-  gap: 7px;
-  padding: 8px 14px;
-  border: none;
-  border-radius: 999px;
-  background: var(--ai-field-bg);
-  color: var(--ai-text-secondary);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-
 .oa-reference-pick:hover:not(:disabled) {
   background: var(--ai-field-bg-hover);
   color: var(--ai-text);
@@ -2530,7 +2515,7 @@
   fill: rgba(125, 125, 125, 0.08);
   stroke: var(--ai-text-secondary);
   stroke-width: 1.8;
-  transition: all 0.15s ease;
+  transition: fill 0.15s ease, stroke 0.15s ease, stroke-width 0.15s ease;
 }
 
 .oa-ratio-name {
@@ -2662,6 +2647,16 @@
   box-sizing: border-box;
 }
 
+// The grid a full-screen panel lays its cards out in: as many 340px columns
+// as fit, each card as tall as its own content. The gap is the caller's,
+// because the two pages space their cards differently.
+@mixin fullscreen-grid($gap) {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr));
+  gap: $gap;
+  align-items: start;
+}
+
 .oa-panel.fullscreen .oa-uptime-content {
   @include fullscreen-column;
 }
@@ -2727,11 +2722,7 @@
 // When maximized, model cards flow horizontally in multiple rows rather than
 // stretching a single column across the whole widescreen viewport.
 .oa-panel.fullscreen .oa-uptime-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr));
-  grid-auto-flow: row;
-  gap: 10px;
-  align-items: start;
+  @include fullscreen-grid(10px);
 }
 
 .oa-uptime-row-main {
@@ -2835,8 +2826,7 @@
   }
 
   &:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 2px var(--ai-primary);
+    @include mixins.focus-ring;
   }
 }
 
@@ -2862,9 +2852,11 @@
     background: var(--ai-surface-container);
   }
 
+  // Inset rather than the outer 3px ring the other controls draw: the card
+  // around this header is overflow: hidden, so an outer ring would be clipped.
   &:focus-visible {
     outline: none;
-    box-shadow: inset 0 0 0 2px var(--ai-primary);
+    box-shadow: inset 0 0 0 3px var(--ai-focus-shadow);
   }
 }
 
@@ -3001,11 +2993,9 @@
   list-style: none;
 }
 
+// Uptime's full-screen cards sit 10px apart, these 8px: unifying them is a design call.
 .oa-panel.fullscreen .oa-board-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr));
-  gap: 8px;
-  align-items: start;
+  @include fullscreen-grid(8px);
 }
 
 .oa-board-row {
@@ -3257,13 +3247,6 @@
 
 .oa-settings > .oa-settings-group {
   gap: 26px;
-}
-
-/* A range gets its focus halo on the thumb, never a filled input rectangle. */
-.oa-range-field input[type='range']:focus {
-  outline: none;
-  background: transparent;
-  box-shadow: none;
 }
 
 /* The pager stays outside the horizontal scroller so its controls stay on screen. */

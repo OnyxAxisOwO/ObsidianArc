@@ -510,6 +510,7 @@
   background: var(--ai-primary);
 }
 
+/* A range gets its focus halo on the thumb, never a filled input rectangle. */
 .oa-range-field input[type="range"]:focus-visible::-webkit-slider-thumb,
 .oa-range-field input[type="range"]:active::-webkit-slider-thumb {
   box-shadow: 0 0 0 4px var(--ai-focus-shadow);

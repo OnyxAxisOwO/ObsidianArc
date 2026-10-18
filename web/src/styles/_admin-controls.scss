@@ -197,7 +197,7 @@
     border: 1.5px solid var(--ai-border);
     background: var(--ai-surface-container, rgba(128, 128, 128, 0.1));
     color: transparent;
-    transition: all 120ms ease;
+    transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
   }
 
   .oa-safe-mode-icon {

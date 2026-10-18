@@ -408,9 +408,6 @@
   .oa-admin-rail {
     flex-direction: row;
     flex-wrap: nowrap;
-    width: auto;
-    padding: 8px;
-    overflow-x: auto;
   }
 
   .oa-admin-rail-title,
@@ -597,7 +594,6 @@
   flex: 0 1 auto;
 }
 
-.oa-app-id,
 .oa-app-secret-value,
 .oa-app-uri {
   /* Every one of these is a long value in a box that may be narrow. */

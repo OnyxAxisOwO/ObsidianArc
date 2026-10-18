@@ -226,9 +226,18 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
 | Binary (SQLite + embedded SPA) | < 30 MB | 27.10 MB (23.40 MB `-tags nosqlite`, Linux amd64, Go 1.27.2); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 202.10 kB to open the chat (179.23 JS + 22.87 CSS), sent by the server at gzip's best level; the build's gzip column reads 202.72 kB (179.52 JS + 23.20 CSS) |
+| Frontend, on the wire | < 135 kB | 202.02 kB to open the chat (179.23 JS + 22.79 CSS), sent by the server at gzip's best level; the build's gzip column reads 202.65 kB (179.53 JS + 23.12 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-10-18 (UTC), after a pass over the stylesheets: rules that no
+element matched, declarations a later rule had already overridden, and a second
+copy of the full-screen grid are gone, and the gap between 1100px and 1101px in
+the layout breakpoints is closed, so a fractional viewport such as 1100.5px gets
+the overlay it was missing. 202.02 kB to open the chat (179.23 JS + 22.79 CSS),
+down 0.08 kB; the build's estimate is 202.65 kB, 1.35 kB under the bundle test's
+204 kB budget. The backoffice stylesheet is 15.21 kB on the wire, and the binary
+still rounds to 27.10 MB.
 
 Remeasured on 2026-10-18 (UTC), after the front page's and the landing
 page's stylesheets moved out of the entry: `_front.scss` and the new
