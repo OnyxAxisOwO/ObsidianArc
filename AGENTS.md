@@ -434,9 +434,12 @@ installs, updates and removes).
 change moves one of those numbers, re-measure and update it in the same change.
 They drifted to nearly double once because nobody re-ran the build.
 
-Current: 27.10 MB binary (this repository ships no plugin; 2.8 MB of it is
-the plugin runtime); 205.74 kB on the wire to open the chat (the build's gzip
-column reads 206.46 kB), against a target of 135. The target used to be 80 and
+Current: 27.96 MB binary (this repository ships no plugin; 2.8 MB of it is
+the plugin runtime, and 0.86 MB the brotli and gzip copies of the frontend the
+build writes for the server to send); to open the chat, 172.74 kB on the wire
+to a browser that takes brotli and 205.71 kB to one that takes only gzip, which
+is the figure the budget holds (the build's gzip column reads 206.46 kB),
+against a target of 135. The target used to be 80 and
 the figure used to be 59.5; adopting Vue moved both, and
 `docs/ARCHITECTURE.md` says so rather than
 quietly restating a target the build cannot meet.

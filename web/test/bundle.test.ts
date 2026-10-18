@@ -34,8 +34,29 @@ describe('code splitting invariants in production bundle', () => {
         'place, and skipping them would report a green that checked nothing.',
       );
     }
-    return fs.readdirSync(assetsDir);
+    // The .br and .gz beside each file are copies the build compressed for the
+    // server to send (vite.config.ts), not output of the bundler: counting
+    // them would triple every count below without saying anything about the
+    // splits. The test after this one holds them to their originals.
+    return fs.readdirSync(assetsDir).filter((f) => !/\.(br|gz)$/.test(f));
   }
+
+  it('writes a brotli and a gzip copy of every script, stylesheet and the shell, and no others', () => {
+    const all = fs.readdirSync(assetsDir);
+    const originals = builtAssets()
+      .map((f) => path.join(assetsDir, f))
+      .concat(path.resolve(assetsDir, '../index.html'));
+    for (const file of originals) {
+      const body = fs.readFileSync(file);
+      expect(zlib.brotliDecompressSync(fs.readFileSync(file + '.br')).equals(body), `${file}.br`).toBe(true);
+      expect(zlib.gunzipSync(fs.readFileSync(file + '.gz')).equals(body), `${file}.gz`).toBe(true);
+    }
+    // A copy whose original is gone would be served by nothing and embedded
+    // in the binary all the same.
+    for (const copy of all.filter((f) => /\.(br|gz)$/.test(f))) {
+      expect(all, `${copy} has no original`).toContain(copy.replace(/\.(br|gz)$/, ''));
+    }
+  });
 
   // Every plugin's browser half is a chunk of its own, named for its entry
   // (src/plugins/<name>/<name>.plugin.ts), and nothing else: see

@@ -12,7 +12,9 @@ import (
 	"embed"
 	"encoding/hex"
 	"errors"
+	"io"
 	"io/fs"
+	"mime"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -62,7 +64,12 @@ func Handler(opts Options) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
+	return handler(assets, opts)
+}
 
+// handler is Handler over any tree, so the tests can hand it one without the
+// build's compressed copies and see the fallback.
+func handler(assets fs.FS, opts Options) (http.Handler, error) {
 	index, err := fs.ReadFile(assets, "index.html")
 	if err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
@@ -71,6 +78,13 @@ func Handler(opts Options) (http.Handler, error) {
 		// Compiling without a built frontend is a normal state during backend
 		// work; saying so beats a bare 404 that looks like a routing bug.
 		return http.HandlerFunc(notBuilt), nil
+	}
+
+	shell := shellFile{plain: index, encoded: map[string][]byte{}}
+	for _, coding := range codings {
+		if body, err := fs.ReadFile(assets, "index.html"+coding.suffix); err == nil {
+			shell.encoded[coding.name] = body
+		}
 	}
 
 	fileServer := http.FileServerFS(assets)
@@ -83,7 +97,7 @@ func Handler(opts Options) (http.Handler, error) {
 
 		clean := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
 		if clean == "" || clean == "." {
-			serveIndex(w, r, index, opts)
+			serveIndex(w, r, shell, opts)
 			return
 		}
 
@@ -99,13 +113,13 @@ func Handler(opts Options) (http.Handler, error) {
 			}
 			// Not a file on disk: an application route. The SPA router
 			// resolves it client-side, so it gets the shell.
-			serveIndex(w, r, index, opts)
+			serveIndex(w, r, shell, opts)
 			return
 		}
 		info, statErr := file.Stat()
 		file.Close()
 		if statErr != nil || info.IsDir() {
-			serveIndex(w, r, index, opts)
+			serveIndex(w, r, shell, opts)
 			return
 		}
 
@@ -113,15 +127,100 @@ func Handler(opts Options) (http.Handler, error) {
 		// to cache forever. Anything else keeps the default.
 		if strings.HasPrefix(clean, "assets/") {
 			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			if serveEncoded(w, r, assets, clean) {
+				return
+			}
 			// The fingerprint in the name is the content's identity, so it is
 			// the validator too; embedded files have no modification time to
 			// offer instead. Weak, because httpx.Compress may send these
 			// bytes gzipped and a strong tag would claim the two encodings are
 			// byte-identical. FileServer answers If-None-Match from this header.
+			// The copies compressed at build time carry tags of their own (see
+			// serveEncoded); this one is for the file as it is.
 			w.Header().Set("ETag", `W/"`+path.Base(clean)+`"`)
 		}
 		fileServer.ServeHTTP(w, r)
 	}), nil
+}
+
+// The codings the build writes beside each script, stylesheet and the shell
+// (web/vite.config.ts), in the order they are preferred: brotli is about a
+// sixth smaller than gzip on this bundle, and every browser that sends br
+// sends gzip too, so it wins whenever it is accepted at all.
+//
+// Compressing at build time rather than per request is what makes brotli
+// affordable: its best level costs seconds on the entry script, which a
+// build pays once and a request must never pay. It costs binary size instead
+// — the embedded tree carries each file three times — which is written down
+// with the other measured costs in docs/ARCHITECTURE.md.
+var codings = []struct{ name, suffix string }{
+	{"br", ".br"},
+	{"gzip", ".gz"},
+}
+
+// addVary names Accept-Encoding once. httpx.Compress has usually added it
+// already, and a second copy is harmless to a browser but reads as two
+// headers to a cache that compares them as strings.
+func addVary(header http.Header) {
+	for _, value := range header.Values("Vary") {
+		for _, field := range strings.Split(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(field), "Accept-Encoding") {
+				return
+			}
+		}
+	}
+	header.Add("Vary", "Accept-Encoding")
+}
+
+// serveEncoded sends the build's compressed copy of an asset when the client
+// takes one and the build wrote one, and reports whether it did. When it does
+// not, the caller sends the file as it is and httpx.Compress may still gzip it
+// on the way out — which is the fallback a build without compressed copies,
+// or a file the build did not compress, relies on.
+//
+// The tag names the coding, and is strong: these bytes are fixed at build
+// time and httpx.Compress leaves an encoded body alone, so the tag describes
+// exactly what was sent. One tag for all three would let a cache that holds
+// the gzip copy confirm it to a client that asked for br, and the other way
+// round.
+func serveEncoded(w http.ResponseWriter, r *http.Request, assets fs.FS, name string) bool {
+	accept := r.Header.Get("Accept-Encoding")
+	for _, coding := range codings {
+		file, err := assets.Open(name + coding.suffix)
+		if err != nil {
+			continue
+		}
+		// Asked about whether or not this client takes it: a copy exists, so
+		// the answer depends on Accept-Encoding for every client.
+		addVary(w.Header())
+		if !httpx.AcceptsEncoding(accept, coding.name) {
+			file.Close()
+			continue
+		}
+		body, seekable := file.(io.ReadSeeker)
+		if !seekable {
+			file.Close()
+			continue
+		}
+		defer file.Close()
+		header := w.Header()
+		// Named before ServeContent can sniff it from the compressed bytes,
+		// which would read as an octet stream and be refused as a module.
+		if kind := mime.TypeByExtension(path.Ext(name)); kind != "" {
+			header.Set("Content-Type", kind)
+		}
+		header.Set("Content-Encoding", coding.name)
+		header.Set("ETag", `"`+path.Base(name)+coding.suffix+`"`)
+		http.ServeContent(w, r, path.Base(name), time.Time{}, body)
+		return true
+	}
+	return false
+}
+
+// shellFile is index.html as built, with the copies the build compressed.
+type shellFile struct {
+	plain   []byte
+	encoded map[string][]byte
 }
 
 // The shell must never be cached: it carries the script tags that point at
@@ -129,8 +228,8 @@ func Handler(opts Options) (http.Handler, error) {
 // That is also what makes per-request branding affordable — nothing here has
 // to invalidate a cache when an operator saves the settings page, because
 // there was never one to invalidate.
-func serveIndex(w http.ResponseWriter, r *http.Request, index []byte, opts Options) {
-	body := index
+func serveIndex(w http.ResponseWriter, r *http.Request, shell shellFile, opts Options) {
+	body := shell.plain
 	// Neither substitution touches the inline theme script the CSP hash is
 	// computed from (see InlineScriptHashes): that hash is read from this
 	// same embedded file at server startup, and a browser hashes whatever
@@ -160,7 +259,31 @@ func serveIndex(w http.ResponseWriter, r *http.Request, index []byte, opts Optio
 	// site, and the browser would keep the old title on a 304. Weak for the
 	// same reason as the assets' — the compressor may re-encode the body.
 	sum := sha256.Sum256(body)
-	w.Header().Set("ETag", `W/"`+hex.EncodeToString(sum[:16])+`"`)
+	tag := hex.EncodeToString(sum[:16])
+
+	// The build's compressed copies are of the shell as built, so they are
+	// only the truth while no substitution has changed it. An instance that
+	// renames itself gets its shell compressed per request by httpx.Compress
+	// instead — a few kilobytes, which is why that is not worth a cache.
+	if bytes.Equal(body, shell.plain) && len(shell.encoded) > 0 {
+		addVary(w.Header())
+		accept := r.Header.Get("Accept-Encoding")
+		for _, coding := range codings {
+			encoded, ok := shell.encoded[coding.name]
+			if !ok || !httpx.AcceptsEncoding(accept, coding.name) {
+				continue
+			}
+			w.Header().Set("Content-Encoding", coding.name)
+			// The coding is in the tag for the reason serveEncoded gives;
+			// still weak, like the plain shell's, so the two kinds of tag
+			// this path hands out are compared the same way.
+			w.Header().Set("ETag", `W/"`+tag+"-"+coding.name+`"`)
+			http.ServeContent(w, r, "index.html", time.Time{}, bytes.NewReader(encoded))
+			return
+		}
+	}
+
+	w.Header().Set("ETag", `W/"`+tag+`"`)
 	http.ServeContent(w, r, "index.html", time.Time{}, bytes.NewReader(body))
 }
 

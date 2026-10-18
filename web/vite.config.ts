@@ -1,6 +1,7 @@
 import { defineConfig, type Plugin } from 'vite';
 import vue from '@vitejs/plugin-vue';
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
+import { brotliCompressSync, gzipSync, constants as zlibConstants } from 'node:zlib';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -26,9 +27,45 @@ function keepEmbedDirectory(): Plugin {
   };
 }
 
+// Writes a brotli and a gzip copy beside every script, stylesheet and the
+// shell, which internal/web sends instead of the file when the browser takes
+// one. Brotli at its best level takes seconds on the entry script: paid once
+// here, it is a sixth off the first paint; paid per request, it would be a
+// stall on every uncached one, which is why the server's own compressor stays
+// gzip. gzip is level 9 to match that compressor, so a browser without br
+// receives what it did before. Node's own zlib, so this costs no dependency.
+function precompress(): Plugin {
+  const worth = /\.(js|css|html)$/;
+  const write = (file: string) => {
+    const body = readFileSync(file);
+    writeFileSync(
+      file + '.br',
+      brotliCompressSync(body, {
+        params: {
+          [zlibConstants.BROTLI_PARAM_MODE]: zlibConstants.BROTLI_MODE_TEXT,
+          [zlibConstants.BROTLI_PARAM_QUALITY]: zlibConstants.BROTLI_MAX_QUALITY,
+          [zlibConstants.BROTLI_PARAM_SIZE_HINT]: body.length,
+        },
+      }),
+    );
+    writeFileSync(file + '.gz', gzipSync(body, { level: 9 }));
+  };
+  return {
+    name: 'obsidian-precompress',
+    apply: 'build',
+    closeBundle() {
+      const assets = resolve(OUT_DIR, 'assets');
+      for (const name of readdirSync(assets)) {
+        if (worth.test(name)) write(resolve(assets, name));
+      }
+      write(resolve(OUT_DIR, 'index.html'));
+    },
+  };
+}
+
 export default defineConfig({
   root: HERE,
-  plugins: [vue(), keepEmbedDirectory()],
+  plugins: [vue(), keepEmbedDirectory(), precompress()],
   resolve: {
     alias: { '@': resolve(HERE, 'src') },
   },

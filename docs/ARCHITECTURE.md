@@ -225,10 +225,28 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 27.10 MB (23.40 MB `-tags nosqlite`, Linux amd64, Go 1.27.2); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 205.74 kB to open the chat (179.32 JS + 26.41 CSS), sent by the server at gzip's best level; the build's gzip column reads 206.46 kB (179.61 JS + 26.85 CSS) |
+| Binary (SQLite + embedded SPA) | < 30 MB | 27.96 MB (24.26 MB `-tags nosqlite`, Linux amd64, Go 1.27.2), 0.86 MB of it the frontend's precompressed copies; this repository ships no plugin |
+| Frontend, on the wire | < 135 kB | 172.74 kB to open the chat with brotli (150.51 JS + 22.23 CSS); 205.71 kB with gzip (179.19 JS + 26.52 CSS), which the budget holds; both are copies compressed at build time; the build's gzip column reads 206.46 kB (179.61 JS + 26.85 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-10-18 (UTC), with the frontend compressed at build time.
+The build writes a brotli copy (best quality) and a gzip copy (level 9) beside
+every script, stylesheet and the shell, and the server sends the one the
+browser takes — brotli first — instead of compressing per request; a file with
+no copy, or a shell an operator's branding has changed, still goes through
+`httpx.Compress`. To open the chat a browser that takes brotli now receives
+172.74 kB (150.51 JS + 22.23 CSS), 32.97 kB less than before; one that takes
+only gzip receives 205.71 kB (179.19 JS + 26.52 CSS), down 0.03 kB because
+Node's zlib at level 9 and Go's encode slightly differently. The budget stays
+on the gzip figure, the worst any visitor is sent. The lazy chunks, gzip then
+brotli: backoffice 170.13 / 135.59 kB plus 15.29 / 13.36 kB of stylesheet,
+Chinese dictionary 20.00 / 16.87 kB, the backoffice's Chinese 32.85 /
+27.61 kB, terminal 8.05 / 7.33 kB plus 1.64 / 1.37 kB, math 3.77 / 3.28 kB,
+front page 4.11 / 3.65 kB, landing page 3.11 / 2.74 kB. The copies are
+embedded too, so the binary is 27.96 MB (24.26 MB without SQLite), up 0.86 MB
+from 27.10 MB — the price of brotli, which at its best level takes seconds on
+the entry script and could not be paid per request.
 
 Remeasured on 2026-10-18 (UTC), with the backoffice's Chinese split out of
 the Chinese dictionary. The 1658 keys only the backoffice says had their
@@ -733,15 +751,15 @@ page, and the landing page (the intro or trial a signed-out visitor sees on an
 instance that chose one).
 What each reader actually downloads, as the server sends it (2026-10-18):
 
-| | gzipped |
-| --- | --- |
-| English, not an administrator | 204.97 kB |
-| Chinese, not an administrator | 256.16 kB |
-| …and a conversation containing a formula | 259.95 kB |
-| Chinese administrator, backoffice open | 441.99 kB |
-| Anybody, once they open the terminal | +9.68 kB |
-| A visitor to an instance whose front door is the front page | +4.14 kB |
-| A signed-out visitor to an instance whose front door is the intro or trial | +3.12 kB |
+| | gzip | brotli |
+| --- | --- | --- |
+| English, not an administrator | 205.71 kB | 172.74 kB |
+| Chinese, not an administrator | 225.71 kB | 189.61 kB |
+| …and a conversation containing a formula | 229.48 kB | 192.89 kB |
+| Chinese administrator, backoffice open | 443.98 kB | 366.17 kB |
+| Anybody, once they open the terminal | +9.69 kB | +8.70 kB |
+| A visitor to an instance whose front door is the front page | +4.11 kB | +3.65 kB |
+| A signed-out visitor to an instance whose front door is the intro or trial | +3.11 kB | +2.74 kB |
 
 Route-level splitting would shave the first paint further and is deliberately
 switched off for everything but the backoffice and the terminal: /settings, /keys, /usage and
@@ -760,7 +778,10 @@ entry.
 These are transferred sizes. The server compresses its own responses, because
 the deployment this document assumes has nothing in front of it to do that
 instead: 136 kB of JavaScript leaves as 47, and 70 kB of CSS as 13. The
-allowlist in `httpx.Compress` is what keeps the event stream out of it — a
+frontend's scripts, stylesheets and shell were compressed when they were built
+and are sent as they are, with `Content-Encoding`, `Vary: Accept-Encoding` and
+a tag per coding, and the compressor leaves an encoded body alone; it still
+handles everything else. The allowlist in `httpx.Compress` is what keeps the event stream out of it — a
 streamed answer pushed through a compressor arrives when the buffer fills
 rather than when the model produced a word, and nothing in any log would say
 so.

@@ -107,6 +107,10 @@ func (w *gzipWriter) decide(status int) {
 		return
 	}
 	header := w.Header()
+	// Already encoded — the embedded frontend sends copies compressed when it
+	// was built. Compressing those again would wrap one coding in another
+	// under a single label, and the browser would decode it once and render
+	// the rest as garbage.
 	if header.Get("Content-Encoding") != "" {
 		return
 	}
@@ -195,9 +199,16 @@ func mediaType(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
 
-// acceptsGzip reads the header the way HTTP defines it: the entry naming gzip
-// outranks a wildcard wherever each appears, and only a quality of exactly
-// zero refuses gzip.
+// acceptsGzip is the compressor's own question, kept as a name because the
+// rule below was wrong twice and the tests that pin it ask it this way.
+func acceptsGzip(header string) bool { return AcceptsEncoding(header, "gzip") }
+
+// AcceptsEncoding reads Accept-Encoding the way HTTP defines it: the entry
+// naming the coding outranks a wildcard wherever each appears, and only a
+// quality of exactly zero refuses it. Exported because the embedded frontend
+// sends copies compressed at build time and has to ask the same question for
+// br as this middleware asks for gzip; two readings of one header would
+// disagree on exactly the edge cases below.
 //
 // Both halves of that were wrong before, in opposite directions. Returning on
 // the first entry that matched either name meant "*;q=0, gzip" was refused —
@@ -205,16 +216,16 @@ func mediaType(value string) string {
 // the wildcard. And the quality was matched as a string prefix, so
 // "gzip;q=0.001" read as a refusal: it is the faintest possible acceptance,
 // not a rejection.
-func acceptsGzip(header string) bool {
+func AcceptsEncoding(header, coding string) bool {
 	wildcard, seen := 0.0, false
 	for _, part := range strings.Split(header, ",") {
 		fields := strings.Split(part, ";")
 		switch strings.ToLower(strings.TrimSpace(fields[0])) {
-		case "gzip":
+		case coding:
 			return qualityOf(fields[1:]) > 0
 		case "*":
-			// Remembered rather than returned: a later gzip entry is more
-			// specific and decides on its own.
+			// Remembered rather than returned: a later entry naming the coding
+			// is more specific and decides on its own.
 			if !seen {
 				wildcard, seen = qualityOf(fields[1:]), true
 			}
