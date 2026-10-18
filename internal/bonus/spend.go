@@ -40,16 +40,14 @@ type Hold struct {
 	Exclusive bool   `json:"exclusive,omitempty"`
 }
 
-func total(holds []Hold) float64 {
+// Total is the credits a set of holds covers.
+func Total(holds []Hold) float64 {
 	var sum float64
 	for _, h := range holds {
 		sum += h.Amount
 	}
 	return sum
 }
-
-// Total is the credits a set of holds covers.
-func Total(holds []Hold) float64 { return total(holds) }
 
 type candidate struct {
 	grantID   string
@@ -105,17 +103,9 @@ func (s *Store) candidates(ctx context.Context, q database.Queryer, userID, mode
 			continue
 		}
 		c.reserve = kind == KindReserve
-		switch {
-		case c.reserve, mode == ModeOff:
-			c.priority = false
-		case mode == ModeOn:
-			c.priority = true
-		default:
-			c.priority = defOn
-			if enabled != nil {
-				c.priority = *enabled
-			}
-		}
+		// A reserve has no switch, so it is never spent in the priority phase
+		// whatever the account's choice on the bar says.
+		c.priority = !c.reserve && switchedOn(mode, defOn, enabled)
 		if phase == Priority && !c.priority {
 			continue
 		}

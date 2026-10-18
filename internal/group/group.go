@@ -54,7 +54,7 @@ type Group struct {
 var (
 	ErrNotFound      = errors.New("group: not found")
 	ErrNameTaken     = errors.New("group: a group with that name already exists")
-	ErrInvalidName   = errors.New("group: name must be 1-40 characters")
+	ErrInvalidName   = fmt.Errorf("group: name must be 1-%d characters", MaxNameChars)
 	ErrDeleteLast    = errors.New("group: the last group cannot be deleted")
 	ErrDeleteDefault = errors.New("group: the default group cannot be deleted; make another group the default first")
 	ErrUnsetDefault  = errors.New("group: the default group cannot be cleared; make another group the default instead")

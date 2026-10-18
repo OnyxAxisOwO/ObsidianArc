@@ -419,7 +419,7 @@ func TestAStreakMilestoneIsClaimedOnceForTheRunItWasReachedIn(t *testing.T) {
 	if _, err := f.svc.Claim(ctx, a.ID, "w"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.svc.Claim(ctx, a.ID, "w"); !errors.Is(err, ErrAlreadyClaimd) {
+	if _, err := f.svc.Claim(ctx, a.ID, "w"); !errors.Is(err, ErrAlreadyClaimed) {
 		t.Fatalf("a second claim in the same run: %v", err)
 	}
 	if n, total := f.grants(t, a.ID); n != 1 || total != 10 {
@@ -470,7 +470,7 @@ func TestAMonthMilestoneCountsTheDaysOfTheMonthAndStartsOverNextMonth(t *testing
 	if err != nil || len(cards) != 2 || cards[0].Name != "月卡" {
 		t.Fatalf("cards: %+v %v", cards, err)
 	}
-	if _, err := f.svc.Claim(ctx, a.ID, "m"); !errors.Is(err, ErrAlreadyClaimd) {
+	if _, err := f.svc.Claim(ctx, a.ID, "m"); !errors.Is(err, ErrAlreadyClaimed) {
 		t.Fatalf("second claim in the month: %v", err)
 	}
 	// Next month the count starts again.

@@ -98,11 +98,6 @@ type Store struct{ db *database.DB }
 
 func NewStore(db *database.DB) *Store { return &Store{db: db} }
 
-// Issue is the compatibility wrapper for callers that still pin one model.
-func (s *Store) Issue(ctx context.Context, userID, name, modelID string, expiresAt int64) (Key, string, error) {
-	return s.IssueModels(ctx, userID, name, []string{modelID}, expiresAt)
-}
-
 // IssueModels creates a key and returns it together with the token, which the
 // caller must hand to the user immediately: this is the only time it exists.
 func (s *Store) IssueModels(ctx context.Context, userID, name string, modelIDs []string, expiresAt int64) (Key, string, error) {

@@ -37,6 +37,8 @@ const (
 	// at afterwards, which is the only place they are ever shown in full.
 	MaxBatch = 200
 	MaxDays  = 3650
+	// dayMillis is a day in the milliseconds expiries are stored in.
+	dayMillis = int64(24 * time.Hour / time.Millisecond)
 )
 
 var (
@@ -54,6 +56,7 @@ var (
 	ErrInvalidWindow = errors.New("card: invalid quota window")
 	ErrNamedBatch    = errors.New("card: a batch is generated, so it cannot be given a code of its own")
 	ErrBatchTooLarge = errors.New("card: a batch holds at most MaxBatch codes")
+	ErrTooManyCards  = errors.New("card: a request holds at most MaxCards cards")
 )
 
 // ValidWindows are the quota allowance windows that a card can target. It is
@@ -303,15 +306,15 @@ func (s *Store) SpendNextForWindow(ctx context.Context, q database.Queryer, user
 		var spent Card
 		err := s.db.Tx(ctx, func(tx *database.Tx) error {
 			var err error
-			spent, err = s.spendNextLocked(ctx, tx, userID, targetWindow)
+			spent, err = s.spendNextCard(ctx, tx, userID, targetWindow)
 			return err
 		})
 		return spent, err
 	}
-	return s.spendNextLocked(ctx, q, userID, targetWindow)
+	return s.spendNextCard(ctx, q, userID, targetWindow)
 }
 
-func (s *Store) spendNextLocked(ctx context.Context, q database.Queryer, userID string, targetWindow string) (Card, error) {
+func (s *Store) spendNextCard(ctx context.Context, q database.Queryer, userID string, targetWindow string) (Card, error) {
 	now := time.Now().UnixMilli()
 	targetWindow = strings.TrimSpace(strings.ToLower(targetWindow))
 
@@ -403,7 +406,7 @@ func (s *Store) GrantUntilNamed(ctx context.Context, userID string, count int, e
 		return nil, err
 	}
 	now := time.Now().UnixMilli()
-	if expiresAt <= now || expiresAt > now+int64(MaxDays)*24*3600*1000 {
+	if expiresAt <= now || expiresAt > now+int64(MaxDays)*dayMillis {
 		return nil, ErrInvalidExpiry
 	}
 	return s.grant(ctx, nil, userID, count, expiresAt, now, name, windows)
@@ -421,26 +424,23 @@ func (s *Store) GrantUntilNamed(ctx context.Context, userID string, count int, e
 // cards wants all eleven moved, not eleven requests.
 func (s *Store) Reschedule(ctx context.Context, userID string, cardIDs []string, expiresAt int64) (int, error) {
 	now := time.Now().UnixMilli()
-	if expiresAt <= now || expiresAt > now+int64(MaxDays)*24*3600*1000 {
+	if expiresAt <= now || expiresAt > now+int64(MaxDays)*dayMillis {
 		return 0, ErrInvalidExpiry
 	}
 
 	query := `UPDATE usage_cards SET expires_at = ? WHERE user_id = ? AND used_at = ?`
 	args := []any{expiresAt, userID, 0}
 
+	// Refused rather than cut: a request that moved part of its list and reported
+	// success would send the operator looking for the rest, as with a batch.
+	if len(cardIDs) > MaxCards {
+		return 0, ErrTooManyCards
+	}
 	if len(cardIDs) > 0 {
-		if len(cardIDs) > MaxCards {
-			cardIDs = cardIDs[:MaxCards]
-		}
-		placeholders := make([]byte, 0, len(cardIDs)*2)
-		for i, cardID := range cardIDs {
-			if i > 0 {
-				placeholders = append(placeholders, ',')
-			}
-			placeholders = append(placeholders, '?')
+		for _, cardID := range cardIDs {
 			args = append(args, cardID)
 		}
-		query += ` AND id IN (` + string(placeholders) + `)`
+		query += ` AND id IN (` + database.Placeholders(len(cardIDs)) + `)`
 	}
 
 	result, err := s.db.Exec(ctx, query, args...)
@@ -458,7 +458,12 @@ func (s *Store) grant(ctx context.Context, q database.Queryer, userID string, co
 	if count < 1 {
 		return nil, ErrInvalidCount
 	}
-	count = min(count, MaxCards)
+	// Refused rather than cut to the limit, as CreateCodes refuses an oversized
+	// batch: the answer is the cards granted, and a grant cut short would be
+	// reported as the number asked for.
+	if count > MaxCards {
+		return nil, ErrTooManyCards
+	}
 	cleanName := text.TrimAndTruncate(name, MaxNameChars)
 	rawWindows := normalizeWindows(windows)
 	parsedWin := parseWindows(rawWindows)
@@ -539,13 +544,26 @@ func (s *Store) Revoke(ctx context.Context, userID, cardID string) error {
 // Revoke is: used_at = 0 stays in the DELETE's predicate, so a card that
 // gets spent between the two statements survives having paid for a reset.
 // The caller holds the owner's row lock, which serialises two claw-backs
-// against one inviter; the predicate covers everyone else.
+// against one inviter, and a nil q takes that lock itself. The predicate
+// covers everyone else.
 func (s *Store) RevokeAvailable(ctx context.Context, q database.Queryer, userID string, max int) (int, error) {
-	if q == nil {
-		q = s.db
-	}
 	if max <= 0 {
 		return 0, nil
+	}
+	if q == nil {
+		var revoked int
+		err := s.db.Tx(ctx, func(tx *database.Tx) error {
+			// Nothing else holds the owner's row when there is no caller
+			// transaction, so take it here. Without it two claw-backs read the same
+			// cards, and the second one takes nothing.
+			if _, err := tx.Exec(ctx, `UPDATE users SET updated_at = updated_at WHERE id = ?`, userID); err != nil {
+				return fmt.Errorf("card: revoke available: %w", err)
+			}
+			var err error
+			revoked, err = s.RevokeAvailable(ctx, tx, userID, max)
+			return err
+		})
+		return revoked, err
 	}
 	now := time.Now().UnixMilli()
 	rows, err := q.Query(ctx,
@@ -573,18 +591,13 @@ func (s *Store) RevokeAvailable(ctx context.Context, q database.Queryer, userID 
 		return 0, nil
 	}
 
-	var placeholders strings.Builder
 	args := make([]any, 0, len(ids)+2)
 	args = append(args, userID, 0)
-	for i, cardID := range ids {
-		if i > 0 {
-			placeholders.WriteByte(',')
-		}
-		placeholders.WriteString("?")
+	for _, cardID := range ids {
 		args = append(args, cardID)
 	}
 	result, err := q.Exec(ctx,
-		`DELETE FROM usage_cards WHERE user_id = ? AND used_at = ? AND id IN (`+placeholders.String()+`)`,
+		`DELETE FROM usage_cards WHERE user_id = ? AND used_at = ? AND id IN (`+database.Placeholders(len(ids))+`)`,
 		args...)
 	if err != nil {
 		return 0, fmt.Errorf("card: revoke available: %w", err)
@@ -762,10 +775,12 @@ func (s *Store) createCode(ctx context.Context, q database.Queryer, in CodeInput
 	// handler. A code already past its expiry is refused by each redemption with
 	// the same answer as a typo, and nobody who minted it is ever told why.
 	if record.ExpiresAt != 0 && (record.ExpiresAt <= record.CreatedAt ||
-		record.ExpiresAt > record.CreatedAt+int64(MaxDays)*24*3600*1000) {
+		record.ExpiresAt > record.CreatedAt+int64(MaxDays)*dayMillis) {
 		return Code{}, ErrInvalidExpiry
 	}
-	record.Cards = min(record.Cards, MaxCards)
+	if record.Cards > MaxCards {
+		return Code{}, ErrTooManyCards
+	}
 
 	_, err := q.Exec(ctx,
 		`INSERT INTO redemption_codes
@@ -916,7 +931,7 @@ func (s *Store) Redeem(ctx context.Context, userID, code string) (Card, error) {
 			Name:      name,
 			Windows:   parseWindows(rawWins),
 			Source:    SourceCode,
-			ExpiresAt: now + int64(clampDays(cardDays))*24*3600*1000,
+			ExpiresAt: now + int64(clampDays(cardDays))*dayMillis,
 			CreatedAt: now,
 		}
 		if _, err := tx.Exec(ctx,

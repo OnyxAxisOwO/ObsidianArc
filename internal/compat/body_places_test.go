@@ -156,7 +156,7 @@ func (f *fixture) addAccount(t *testing.T, name string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, token, err := f.keys.Issue(ctx, account.ID, name, "", 0)
+	_, token, err := f.keys.IssueModels(ctx, account.ID, name, nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -518,7 +518,7 @@ func TestAWaitingRequestThatIsCancelledLeavesTheQueue(t *testing.T) {
 func TestASecondKeyOfTheSameAccountSharesItsPlaces(t *testing.T) {
 	f := newFixture(t)
 	f.upstream.reply(answer)
-	_, second, err := f.keys.Issue(context.Background(), f.account.ID, "second", "", 0)
+	_, second, err := f.keys.IssueModels(context.Background(), f.account.ID, "second", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
