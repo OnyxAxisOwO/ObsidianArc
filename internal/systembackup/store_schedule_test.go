@@ -2,7 +2,9 @@ package systembackup
 
 import (
 	"context"
+	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -148,5 +150,84 @@ func TestRepeatedFailuresBackOffUpToTheInterval(t *testing.T) {
 	}
 	if failures != 0 {
 		t.Fatalf("consecutive failures after a success = %d, want 0", failures)
+	}
+}
+
+// Claims and finishes racing from several goroutines, as two instances would,
+// all serialise on the scheduler's own row lock: every run that was claimed and
+// then failed is counted exactly once, with none lost to a stale read.
+func TestConcurrentRunsCountEveryFailureOnce(t *testing.T) {
+	store := savedS3Store(t)
+	ctx := context.Background()
+	anchor := time.Now()
+
+	const workers, rounds = 4, 6
+	var (
+		wg      sync.WaitGroup
+		mu      sync.Mutex
+		claimed int
+	)
+	errs := make(chan error, workers*rounds)
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < rounds; i++ {
+				token, err := store.claim(ctx, anchor, true)
+				if errors.Is(err, ErrAlreadyRunning) {
+					continue
+				}
+				if err != nil {
+					errs <- err
+					return
+				}
+				if token == "" {
+					continue
+				}
+				if err := store.finish(ctx, token, "error", "upstream refused the upload", anchor, 0); err != nil {
+					errs <- err
+					return
+				}
+				mu.Lock()
+				claimed++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	if claimed == 0 {
+		t.Fatal("no run was ever claimed")
+	}
+	failures, err := failureCount(ctx, store.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failures != claimed {
+		t.Fatalf("consecutive failures = %d, want one per claimed run (%d)", failures, claimed)
+	}
+}
+
+func TestRetentionFallsBackFromDaysToTheDefault(t *testing.T) {
+	cases := []struct {
+		cfg  Config
+		want int
+	}{
+		{Config{RetentionHours: 5, RetentionDays: 9}, 5},
+		{Config{RetentionDays: 2}, 48},
+		{Config{}, DefaultRetentionHours},
+	}
+	for _, c := range cases {
+		if got := effectiveRetentionHours(c.cfg); got != c.want {
+			t.Fatalf("effectiveRetentionHours(%+v) = %d, want %d", c.cfg, got, c.want)
+		}
+	}
+	for hours, days := range map[int]int{1: 1, 24: 1, 25: 2, 168: 7} {
+		if got := retentionDays(hours); got != days {
+			t.Fatalf("retentionDays(%d) = %d, want %d", hours, got, days)
+		}
 	}
 }

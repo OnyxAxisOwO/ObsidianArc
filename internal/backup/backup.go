@@ -742,6 +742,13 @@ func (s *Service) importThread(ctx context.Context, account user.User, thread Th
 			`UPDATE users SET updated_at = updated_at WHERE id = ?`, account.ID); err != nil {
 			return err
 		}
+		// Counted afresh in every conversation's transaction, so an import of
+		// N conversations into an account holding S messages costs N indexed
+		// counts of S — the quadratic shape the character tally avoids. It is
+		// kept on purpose: a tally read once before the import would be the
+		// soft ceiling the characters have, and two imports racing would each
+		// pass against the same stale total. With the caps above, N×S stays in
+		// the millions for any account in real use.
 		stored, err := s.conversations.CountMessages(ctx, tx, account.ID)
 		if err != nil {
 			return err

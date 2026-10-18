@@ -402,12 +402,25 @@ func (s *Store) MarkSeen(ctx context.Context, userID string, announcementIDs []s
 			placeholders = append(placeholders, "?")
 			args = append(args, announcementID)
 		}
-		_, err := s.db.Exec(ctx,
-			`INSERT INTO announcement_reads (announcement_id, user_id, read_at)
-			 SELECT a.id, ?, ? FROM announcements a
-			 WHERE a.published = ? AND a.id IN (`+strings.Join(placeholders, ", ")+`)
-			 ON CONFLICT (announcement_id, user_id) DO NOTHING`,
-			args...)
+		in := strings.Join(placeholders, ", ")
+		// The published check is a read the insert acts on, so it holds the
+		// row locks Update and MarkRead take: on PostgreSQL a lone INSERT ...
+		// SELECT reads a snapshot from before an unpublish still committing,
+		// and would write a read row for what is by then a draft.
+		err := s.db.Tx(ctx, func(tx *database.Tx) error {
+			if _, err := tx.Exec(ctx,
+				`UPDATE announcements SET updated_at = updated_at
+				 WHERE published = ? AND id IN (`+in+`)`, args[2:]...); err != nil {
+				return err
+			}
+			_, err := tx.Exec(ctx,
+				`INSERT INTO announcement_reads (announcement_id, user_id, read_at)
+				 SELECT a.id, ?, ? FROM announcements a
+				 WHERE a.published = ? AND a.id IN (`+in+`)
+				 ON CONFLICT (announcement_id, user_id) DO NOTHING`,
+				args...)
+			return err
+		})
 		if err != nil {
 			return fmt.Errorf("announcement: mark seen: %w", err)
 		}
