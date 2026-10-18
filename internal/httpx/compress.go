@@ -3,6 +3,7 @@ package httpx
 import (
 	"compress/gzip"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -52,6 +53,11 @@ func Compress() Middleware {
 // its fast matcher and sends about 4% more than zlib's default on the
 // frontend bundle, and these are the bytes a visitor waits for. Levels 7-9
 // run the lazy matcher zlib uses. The cost is CPU per uncached response.
+//
+// Compressed bytes are not cached per path. The fingerprinted assets carry an
+// immutable lifetime, so a browser asks for each one once per release, and
+// the rest is dynamic output that cannot be cached this way. A cache would
+// hold a second copy of the bundle in memory to save work nobody repeats.
 // The level is a constant, so NewWriterLevel cannot return its error here.
 var gzipPool = sync.Pool{
 	New: func() any {
@@ -169,7 +175,12 @@ func (w *gzipWriter) close() {
 	if !w.on {
 		return
 	}
-	_ = w.gz.Close()
+	// A failed close means the trailer did not reach the client, which is what a
+	// client that went away looks like from here. It is not an incident, but
+	// it is the only record there is of the response ending short.
+	if err := w.gz.Close(); err != nil {
+		slog.Debug("gzip response did not close cleanly", "error", err)
+	}
 	gzipPool.Put(w.gz)
 	w.gz = nil
 	w.on = false

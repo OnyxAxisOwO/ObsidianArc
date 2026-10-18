@@ -1,7 +1,6 @@
 package settings
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -80,28 +79,8 @@ func DetectImageMedia(data []byte) (string, error) {
 	if len(data) < 12 {
 		return "", ErrLoginBackgroundUnsupported
 	}
-	// PNG: \x89PNG\r\n\x1a\n
-	if bytes.HasPrefix(data, []byte("\x89PNG\r\n\x1a\n")) {
-		return "image/png", nil
-	}
-	// JPEG: \xFF\xD8\xFF
-	if data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF {
-		return "image/jpeg", nil
-	}
-	// WebP: RIFF....WEBP
-	if bytes.HasPrefix(data, []byte("RIFF")) && bytes.Equal(data[8:12], []byte("WEBP")) {
-		return "image/webp", nil
-	}
-	// AVIF: ....ftypavif or ....ftypavis or compatible brands in the ftyp box
-	if bytes.Equal(data[4:8], []byte("ftyp")) {
-		brand := string(data[8:12])
-		if brand == "avif" || brand == "avis" {
-			return "image/avif", nil
-		}
-		limit := min(len(data), 64)
-		if bytes.Contains(data[8:limit], []byte("avif")) || bytes.Contains(data[8:limit], []byte("avis")) {
-			return "image/avif", nil
-		}
+	if mime, ok := sniffRasterImage(data); ok {
+		return mime, nil
 	}
 	return "", ErrLoginBackgroundUnsupported
 }
@@ -131,7 +110,8 @@ func (s *Service) SetHTMLBackground(ctx context.Context, variant, html string) (
 }
 
 // SetLoginBackground stores or updates a login background image for a given variant.
-func (s *Service) SetLoginBackground(ctx context.Context, variant, mime string, data []byte) (int64, error) {
+// Its type is the one the bytes show; the caller's claim about it is not taken.
+func (s *Service) SetLoginBackground(ctx context.Context, variant string, data []byte) (int64, error) {
 	variant = NormalizeVariant(variant)
 	if !ValidLoginBackgroundVariants[variant] {
 		return 0, fmt.Errorf("settings: unknown variant %q", variant)
@@ -140,11 +120,11 @@ func (s *Service) SetLoginBackground(ctx context.Context, variant, mime string, 
 		return 0, ErrLoginBackgroundTooLarge
 	}
 
-	detectedMime, err := DetectImageMedia(data)
+	mime, err := DetectImageMedia(data)
 	if err != nil {
 		return 0, ErrLoginBackgroundUnsupported
 	}
-	return s.storeBackground(ctx, variant, detectedMime, data)
+	return s.storeBackground(ctx, variant, mime, data)
 }
 
 func (s *Service) storeBackground(ctx context.Context, variant, mime string, data []byte) (int64, error) {

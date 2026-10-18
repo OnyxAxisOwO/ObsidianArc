@@ -31,6 +31,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin/wasm"
 	securityevents "github.com/OnyxAxisOwO/ObsidianArc/internal/security"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
+	chars "github.com/OnyxAxisOwO/ObsidianArc/internal/text"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/turnstile"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
@@ -179,7 +180,7 @@ func (m *Manager) hostFunc(l *loaded) wasm.HostFunc {
 			case "error":
 				level = slog.LevelError
 			}
-			slog.Log(c.Ctx, level, truncate(a.Msg, 1000), attrs...)
+			slog.Log(c.Ctx, level, chars.Truncate(a.Msg, 1000), attrs...)
 			return nil, nil
 
 		case "id.new":
@@ -339,11 +340,15 @@ func (m *Manager) hostFunc(l *loaded) wasm.HostFunc {
 			if c.Info.Actor != nil {
 				actorID, actorName = c.Info.Actor.ID, c.Info.Actor.Username
 			}
+			// The reason is bounded before it reaches the host's clean-up, so a
+			// plugin cannot make that walk an unlimited string. It is cut by
+			// character: a byte cut split multi-byte characters, which were then
+			// stored as replacement characters.
 			return nil, m.host.Security.Record(c.Ctx, q, securityevents.Event{
 				Event: a.Event, Severity: severity, UserID: a.UserID, Username: a.Username,
 				ActorID: actorID, ActorUsername: actorName, IP: a.IP,
 				Source:   securitySource(l.name, a.Source, administrator(c.Info.Actor)),
-				Decision: a.Decision, Reason: truncate(a.Reason, 500),
+				Decision: a.Decision, Reason: chars.Truncate(a.Reason, securityevents.MaxReasonChars),
 			})
 
 		case "users.count_active_admins", "users.set_status", "users.delete":
@@ -413,13 +418,6 @@ func (m *Manager) hostFunc(l *loaded) wasm.HostFunc {
 		}
 		return nil, &wasm.HostError{Code: "unknown_op", Message: "the server has no host call named " + op}
 	}
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n]
 }
 
 // queryer is the database the call is talking to: the open transaction when

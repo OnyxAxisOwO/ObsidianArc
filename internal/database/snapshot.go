@@ -17,6 +17,14 @@ import (
 
 var schemaIdentifier = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+// quoteIdentifier wraps a table name for a PRAGMA, which takes the name as an
+// identifier rather than as a bound value. The schemaIdentifier check already
+// keeps quotes out of every name that reaches here; escaping anyway means the
+// two PRAGMA call sites cannot disagree about it.
+func quoteIdentifier(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+}
+
 // ReadSnapshot gives a callback one point-in-time view of the database.
 // PostgreSQL pins the view with repeatable read; SQLite reads a VACUUM INTO
 // copy so the server's immediate-write transaction mode does not hold writers
@@ -113,7 +121,9 @@ func (db *DB) readSQLiteSnapshot(ctx context.Context, maxBytes int64, fn func(Qu
 // Tables lists tables in the active SQLite database or PostgreSQL search
 // schema. System tables owned by the database engine are omitted.
 func Tables(ctx context.Context, q Queryer) ([]string, error) {
-	query := `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`
+	// The underscore is escaped: unescaped it matches any character, and a
+	// user table named sqlite plus any seventh character would be hidden here.
+	query := `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite\_%' ESCAPE '\' ORDER BY name`
 	if q.Dialect() == Postgres {
 		query = `SELECT table_name FROM information_schema.tables
 			WHERE table_schema = current_schema() AND table_type = 'BASE TABLE'
@@ -181,7 +191,7 @@ func ForeignKeys(ctx context.Context, q Queryer, table string) ([]ForeignKey, er
 	var rows *sql.Rows
 	var err error
 	if q.Dialect() == SQLite {
-		rows, err = q.Query(ctx, `PRAGMA foreign_key_list("`+strings.ReplaceAll(table, `"`, `""`)+`")`)
+		rows, err = q.Query(ctx, `PRAGMA foreign_key_list(`+quoteIdentifier(table)+`)`)
 	} else {
 		rows, err = q.Query(ctx, `SELECT kcu.table_name, kcu.column_name, ccu.table_name, ccu.column_name
 			FROM information_schema.table_constraints AS tc
@@ -227,7 +237,7 @@ func PrimaryKeys(ctx context.Context, q Queryer, table string) ([]string, error)
 	var rows *sql.Rows
 	var err error
 	if q.Dialect() == SQLite {
-		rows, err = q.Query(ctx, `PRAGMA table_info("`+table+`")`)
+		rows, err = q.Query(ctx, `PRAGMA table_info(`+quoteIdentifier(table)+`)`)
 	} else {
 		rows, err = q.Query(ctx, `SELECT kcu.column_name
 			FROM information_schema.table_constraints AS tc

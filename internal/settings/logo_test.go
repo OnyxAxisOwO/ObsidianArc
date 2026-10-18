@@ -123,7 +123,7 @@ func TestSiteLogoCRUD(t *testing.T) {
 
 	// Set logo
 	pngData := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89")
-	at, err := svc.SetSiteLogo(ctx, "image/png", pngData)
+	at, err := svc.SetSiteLogo(ctx, pngData)
 	if err != nil {
 		t.Fatalf("set logo: %v", err)
 	}

@@ -17,6 +17,8 @@ import (
 	"path"
 	"strings"
 	"time"
+
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 )
 
 // The Vite build writes here (see web/vite.config.ts). `all:` so the
@@ -73,7 +75,7 @@ func Handler(opts Options) (http.Handler, error) {
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			httpx.WriteError(w, r, httpx.MethodNotAllowed())
 			return
 		}
 

@@ -145,8 +145,8 @@ func TestSecretKeyIsGeneratedOnceAndThenReused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !first.GeneratedSecret() {
-		t.Error("the first run did not report that it generated a key")
+	if !first.SecretFromDataDir() {
+		t.Error("the first run did not report that its key is in the data directory")
 	}
 	if len(first.SecretKey) < 16 {
 		t.Fatalf("generated a %d-byte key", len(first.SecretKey))
@@ -258,7 +258,7 @@ func TestAValidSecretFileIsLoadedAndNotRewritten(t *testing.T) {
 	}
 	// A key read back from the data directory is still reported as coming from
 	// it: main advises OBSIDIAN_SECRET_KEY on every start for that reason.
-	if !cfg.GeneratedSecret() {
+	if !cfg.SecretFromDataDir() {
 		t.Error("a key read from the data directory was not reported as coming from it")
 	}
 	left, err := os.ReadFile(path)
@@ -476,8 +476,8 @@ func TestAStartThatLosesThePublishLeavesTheWinnersKey(t *testing.T) {
 
 func TestASuppliedSecretIsUsedAndBoundedBelow(t *testing.T) {
 	cfg := load(t, map[string]string{"SECRET_KEY": strings.Repeat("k", 32)})
-	if cfg.GeneratedSecret() {
-		t.Error("a supplied key was reported as generated")
+	if cfg.SecretFromDataDir() {
+		t.Error("a supplied key was reported as coming from the data directory")
 	}
 	if string(cfg.SecretKey) != strings.Repeat("k", 32) {
 		t.Error("the supplied key was not the one used")
@@ -538,6 +538,21 @@ func TestAGeneratedSecretIsNotWarnedAbout(t *testing.T) {
 	load(t, nil)
 	if strings.Contains(logged.String(), "weak") {
 		t.Errorf("a key this process generated was called weak:\n%s", logged.String())
+	}
+}
+
+func TestAnUnparseableSMTPPortIsReportedOnce(t *testing.T) {
+	var logged strings.Builder
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	cfg := load(t, map[string]string{"SMTP_PORT": "twenty-five"})
+	if cfg.Mail.Port != 587 || cfg.Mail.ImplicitTLS {
+		t.Errorf("port %d, implicit TLS %v; want the defaults", cfg.Mail.Port, cfg.Mail.ImplicitTLS)
+	}
+	if n := strings.Count(logged.String(), envPrefix+"SMTP_PORT"); n != 1 {
+		t.Errorf("the bad port was reported %d times, want once:\n%s", n, logged.String())
 	}
 }
 

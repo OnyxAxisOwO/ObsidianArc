@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 )
 
 // Filter narrows a listing. A zero value means everything.
@@ -76,7 +79,7 @@ func (f Filter) where() (string, []any) {
 		// pattern. The wildcards are added here so neither has to be, and the
 		// escape character is declared because SQLite has none by default —
 		// without it the backslashes below would be matched literally.
-		add(`path LIKE ? ESCAPE '\'`, "%"+escapeLike(f.Path)+"%")
+		add(`path LIKE ? ESCAPE '\'`, "%"+database.EscapeLike(f.Path)+"%")
 	}
 	if f.Since > 0 {
 		add("at >= ?", f.Since)
@@ -90,17 +93,18 @@ func (f Filter) where() (string, []any) {
 	return " WHERE " + strings.Join(conditions, " AND "), args
 }
 
-// escapeLike neutralises the wildcards inside a value the operator typed, so
-// a path containing % or _ matches literally.
-func escapeLike(value string) string {
-	value = strings.ReplaceAll(value, "\\", "\\\\")
-	value = strings.ReplaceAll(value, "%", "\\%")
-	return strings.ReplaceAll(value, "_", "\\_")
-}
-
 // List returns one page, newest first, with the total the filter matches so
 // the screen can say "1–50 of 12,904".
+//
+// The count is a scan of the table when the filter has no time bound, so it
+// takes an aggregation slot, as the dashboard and leaderboard reads do.
 func (s *Store) List(ctx context.Context, filter Filter) ([]Entry, int64, error) {
+	release, err := httpx.AcquireAggregationSlot(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer release()
+
 	where, args := filter.where()
 
 	var total int64
@@ -127,11 +131,7 @@ func (s *Store) List(ctx context.Context, filter Filter) ([]Entry, int64, error)
 	out := []Entry{}
 	for rows.Next() {
 		var entry Entry
-		if err := rows.Scan(&entry.ID, &entry.At, &entry.Method, &entry.Path,
-			&entry.Status, &entry.DurationMS, &entry.Bytes,
-			&entry.UserID, &entry.Username, &entry.Channel, &entry.IP,
-			&entry.UserAgent, &entry.RequestID,
-			&entry.ModelID, &entry.ModelName, &entry.ErrorCode); err != nil {
+		if err := rows.Scan(entry.scanTargets()...); err != nil {
 			return nil, 0, fmt.Errorf("reqlog: scan: %w", err)
 		}
 		out = append(out, entry)
@@ -167,11 +167,21 @@ type Option struct {
 //
 // Searchable selectors need every distinct value, including accounts outside
 // the most frequent hundred. Counts still put common choices first.
+//
+// Without a since, every read below scans the whole table, so Facets takes an
+// aggregation slot for its run and answers busy the way the dashboard's
+// queries do when no slot frees up in time.
 func (s *Store) Facets(ctx context.Context, since int64) (Facets, error) {
 	out := Facets{
 		Users: []Option{}, Models: []Option{}, ErrorCodes: []Option{}, Statuses: []Option{},
 		Dropped: s.Dropped(), Evicted: s.Evicted(),
 	}
+
+	release, err := httpx.AcquireAggregationSlot(ctx)
+	if err != nil {
+		return out, err
+	}
+	defer release()
 
 	window := ""
 	var args []any
@@ -180,10 +190,10 @@ func (s *Store) Facets(ctx context.Context, since int64) (Facets, error) {
 		args = []any{since}
 	}
 
-	read := func(key, label, extra string) ([]Option, error) {
+	read := func(key, label string) ([]Option, error) {
 		rows, err := s.db.Query(ctx,
 			`SELECT `+key+`, MAX(`+label+`), COUNT(*) FROM request_log
-			 WHERE `+key+` <> ''`+extra+window+`
+			 WHERE `+key+` <> ''`+window+`
 			 GROUP BY `+key+` ORDER BY COUNT(*) DESC, `+key, args...)
 		if err != nil {
 			return nil, fmt.Errorf("reqlog: facet %s: %w", key, err)
@@ -204,14 +214,13 @@ func (s *Store) Facets(ctx context.Context, since int64) (Facets, error) {
 		return options, rows.Err()
 	}
 
-	var err error
-	if out.Users, err = read("user_id", "username", ""); err != nil {
+	if out.Users, err = read("user_id", "username"); err != nil {
 		return out, err
 	}
-	if out.Models, err = read("model_id", "model_name", ""); err != nil {
+	if out.Models, err = read("model_id", "model_name"); err != nil {
 		return out, err
 	}
-	if out.ErrorCodes, err = read("error_code", "error_code", ""); err != nil {
+	if out.ErrorCodes, err = read("error_code", "error_code"); err != nil {
 		return out, err
 	}
 

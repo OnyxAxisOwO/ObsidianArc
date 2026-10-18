@@ -44,6 +44,20 @@ func (s *Store) drain(t *testing.T) {
 	s.Run(ctx)
 }
 
+// The column list, the scan targets and the row tuple are positional; a
+// column added to one and not the others fails here rather than at the first
+// INSERT on a running instance.
+func TestTheColumnListsAgree(t *testing.T) {
+	named := len(strings.Split(columns, ","))
+	var entry Entry
+	targets := len(entry.scanTargets())
+	marks := strings.Count(rowPlaceholder, "?")
+	if named != columnCount || targets != columnCount || marks != columnCount {
+		t.Errorf("columns %d, scan targets %d, placeholders %d; columnCount is %d",
+			named, targets, marks, columnCount)
+	}
+}
+
 func TestEntriesSurviveTheQueue(t *testing.T) {
 	ctx := context.Background()
 	store := newStore(t)

@@ -95,6 +95,13 @@ func Forbidden(message string) *Error {
 	return newError(http.StatusForbidden, "forbidden", message)
 }
 
+// MethodNotAllowed is for the static and manifest handlers, which answer only
+// GET and HEAD. It carries the same envelope as every other refusal, so a
+// client that reads one error shape reads this too.
+func MethodNotAllowed() *Error {
+	return newError(http.StatusMethodNotAllowed, "method_not_allowed", "Method not allowed.")
+}
+
 // ForbiddenCode is Forbidden carrying a code the client can act on rather
 // than merely display — a refusal the interface has its own words for.
 func ForbiddenCode(code, message string) *Error {
@@ -184,14 +191,20 @@ func WriteError(w http.ResponseWriter, r *http.Request, err error) {
 			"request_id", RequestIDFrom(r.Context()),
 		)
 	}
+	writeErrorBody(w, apiErr)
+}
 
+// writeErrorBody is the wire form of an *Error. It is separate from WriteError
+// so that a caller which has already logged its failure, such as Recover, can
+// answer with the same envelope without logging it twice.
+func writeErrorBody(w http.ResponseWriter, apiErr *Error) {
 	body := map[string]any{"code": apiErr.Code, "message": apiErr.Message}
 	for key, value := range apiErr.Details {
 		body[key] = value
 	}
 
 	// A response already committed cannot carry an error body — most often a
-	// stream that failed halfway. The log above is the whole record.
+	// stream that failed halfway. The log is the whole record.
 	if Committed(w) {
 		return
 	}

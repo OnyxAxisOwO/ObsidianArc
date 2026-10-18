@@ -795,14 +795,6 @@ func (s *Store) List(ctx context.Context, filter ListFilter) ([]User, int, error
 	return out, total, rows.Err()
 }
 
-// escapeLike neutralises the wildcards inside a value an operator typed, so
-// a search for "_" matches an underscore rather than every account.
-func escapeLike(value string) string {
-	value = strings.ReplaceAll(value, "\\", "\\\\")
-	value = strings.ReplaceAll(value, "%", "\\%")
-	return strings.ReplaceAll(value, "_", "\\_")
-}
-
 func (filter ListFilter) clauses(fields []Field) (string, []any) {
 	conditions := []string{}
 	args := []any{}
@@ -814,7 +806,7 @@ func (filter ListFilter) clauses(fields []Field) (string, []any) {
 		// The escape character is declared rather than assumed: SQLite has
 		// none by default, so without it an operator searching for "_" gets
 		// every account back and reads it as a match.
-		pattern := "%" + escapeLike(strings.ToLower(search)) + "%"
+		pattern := "%" + database.EscapeLike(strings.ToLower(search)) + "%"
 		var match string
 		if filter.NameOnly {
 			match = `username_lower LIKE ? ESCAPE '\' OR LOWER(nickname) LIKE ? ESCAPE '\'`

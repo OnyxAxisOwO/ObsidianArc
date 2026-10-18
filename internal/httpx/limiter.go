@@ -1,6 +1,7 @@
 package httpx
 
 import (
+	"math"
 	"sync"
 	"time"
 )
@@ -15,6 +16,12 @@ type tokenBucket struct {
 // can produce, and memory must not follow it. The pow tracker keeps the same
 // ceiling for the same reason.
 const maxBuckets = 50_000
+
+// adaptiveSweepBuckets is the size above which a sweep drops idle buckets after
+// one minute rather than ten. It is a separate knob from maxBuckets: the sweep
+// keeps memory down under high-cardinality callers, and does not enforce the
+// ceiling.
+const adaptiveSweepBuckets = 10_000
 
 // TokenBucketLimiter throttles requests using a token bucket algorithm.
 // It is stored in memory: analytics dashboards and leaderboards do not warrant
@@ -91,12 +98,32 @@ func (l *TokenBucketLimiter) AllowN(key string, now time.Time, n float64) bool {
 	return false
 }
 
+// refillTime is how long an empty bucket takes to fill to burst. A rate of zero
+// or less never refills, so the result is as long as a duration can be.
+func (l *TokenBucketLimiter) refillTime() time.Duration {
+	if l.rate <= 0 {
+		return math.MaxInt64
+	}
+	seconds := l.burst / l.rate
+	if seconds >= math.MaxInt64/float64(time.Second) {
+		return math.MaxInt64
+	}
+	return time.Duration(seconds * float64(time.Second))
+}
+
 func (l *TokenBucketLimiter) sweepLocked(now time.Time) {
 	l.lastSwept = now
 	threshold := 10 * time.Minute
 	// Under high cardinality loads, prune aggressively so memory remains bounded.
-	if len(l.buckets) > 10000 {
+	if len(l.buckets) > adaptiveSweepBuckets {
 		threshold = time.Minute
+	}
+	// A dropped bucket comes back full, so dropping one that has not refilled
+	// hands its caller a burst it had already spent. Idle for the full refill
+	// time it is full anyway, and dropping it changes nothing. The threshold
+	// therefore never falls below that time, whatever the bucket count says.
+	if refill := l.refillTime(); refill > threshold {
+		threshold = refill
 	}
 	for k, b := range l.buckets {
 		if now.Sub(b.lastUpdate) > threshold {

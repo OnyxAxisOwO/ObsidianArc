@@ -1400,8 +1400,12 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			description = settingsService.Get(settings.SiteDescription)
 		}
 		iconURL := settingsService.Get(settings.PWAIconURL)
+		iconType := ""
 		if iconURL == "" && settingsService.SiteLogoUpdatedAt() > 0 {
 			iconURL = fmt.Sprintf("/api/site/logo?v=%d", settingsService.SiteLogoUpdatedAt())
+			// The logo's URL names no file, so the manifest cannot read the type from
+			// it; the type the upload was stored as is the one to declare.
+			iconType = settingsService.SiteLogoMime()
 		}
 		return web.Manifest{
 			Name:            name,
@@ -1410,6 +1414,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			ThemeColor:      settingsService.Get(settings.PWAThemeColor),
 			BackgroundColor: settingsService.Get(settings.PWABackgroundColor),
 			IconURL:         iconURL,
+			IconType:        iconType,
 		}
 	}))
 

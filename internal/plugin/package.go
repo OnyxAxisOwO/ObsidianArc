@@ -17,6 +17,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin/arcx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin/wasm"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
+	chars "github.com/OnyxAxisOwO/ObsidianArc/internal/text"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
@@ -351,7 +352,7 @@ func cleanOrigins(plugin string, origins []string) []string {
 		switch {
 		case !httpx.ValidOrigin(origin):
 			slog.Warn("plugin asked the page policy to trust something that is not an origin; dropped",
-				"plugin", plugin, "origin", truncate(origin, 80))
+				"plugin", plugin, "origin", chars.Truncate(origin, 80))
 		case len(kept) >= maxOrigins:
 			slog.Warn("plugin asked the page policy to trust too many origins; dropped",
 				"plugin", plugin, "origin", origin)

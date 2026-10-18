@@ -27,9 +27,11 @@ func (h *Handlers) listLogs(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
+	// Returned as is, not wrapped as Internal: a busy aggregation slot is an
+	// *httpx.Error that must reach the client as the 503 it is.
 	entries, total, err := h.requests.List(r.Context(), filter)
 	if err != nil {
-		return httpx.Internal(err)
+		return err
 	}
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"entries": entries,
@@ -49,7 +51,7 @@ func (h *Handlers) logFacets(w http.ResponseWriter, r *http.Request) error {
 
 	facets, err := h.requests.Facets(r.Context(), since)
 	if err != nil {
-		return httpx.Internal(err)
+		return err
 	}
 	return httpx.WriteJSON(w, http.StatusOK, facets)
 }

@@ -247,7 +247,7 @@ func TestConcurrentBackgroundWritesLeaveTheCacheOnTheStoredRow(t *testing.T) {
 				if w%2 == 0 {
 					_, err = svc.SetHTMLBackground(ctx, LoginBgLandscapeLight, fmt.Sprintf("<p>%d-%d</p>", round, w))
 				} else {
-					_, err = svc.SetLoginBackground(ctx, LoginBgLandscapeLight, "image/png",
+					_, err = svc.SetLoginBackground(ctx, LoginBgLandscapeLight,
 						[]byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"))
 				}
 				if err != nil {
