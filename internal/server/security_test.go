@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -23,6 +22,8 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/pow"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/server/testconfig"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/server/testrequest"
 )
 
 // The authorization surface, exercised as HTTP rather than as function calls.
@@ -64,21 +65,7 @@ func newInstanceAt(t *testing.T, version, feed string, tweak ...func(*config.Con
 	t.Helper()
 	dir := t.TempDir()
 
-	cfg := config.Config{
-		Addr:     ":0",
-		DataDir:  dir,
-		LogLevel: "error",
-		Database: config.Database{
-			Driver: "sqlite", DSN: filepath.Join(dir, "server.db"),
-			MaxOpenConns: 4, MaxIdleConns: 2,
-		},
-		Session: config.Session{TTL: time.Hour, CookieName: "obsidian_session", TouchInterval: time.Hour},
-		// Deliberately cheap: these tests hash a password on nearly every
-		// case, and the cost function is not what is under test.
-		Password:  config.Password{Memory: 8 * 1024, Iterations: 1, Parallelism: 1, SaltLength: 16, KeyLength: 32, MaxParallel: 4},
-		Upstream:  config.Upstream{DialTimeout: time.Second, ResponseHeaderTimeout: 2 * time.Second, MaxIdleConns: 2, IdleConnTimeout: time.Second},
-		SecretKey: []byte("a-test-instance-secret-value-here"),
-	}
+	cfg := testconfig.Config(dir)
 
 	for _, apply := range tweak {
 		apply(&cfg)
@@ -112,27 +99,11 @@ type session struct {
 // carries the same-origin header a browser would.
 func (in *instance) do(method, path string, body any, as *session) *httptest.ResponseRecorder {
 	in.t.Helper()
-
-	var reader io.Reader
-	if body != nil {
-		encoded, err := json.Marshal(body)
-		if err != nil {
-			in.t.Fatalf("encode body: %v", err)
-		}
-		reader = bytes.NewReader(encoded)
-	}
-
-	request := httptest.NewRequest(method, path, reader)
-	if body != nil {
-		request.Header.Set("Content-Type", "application/json")
-	}
-	if method != http.MethodGet && method != http.MethodHead {
-		request.Header.Set("Sec-Fetch-Site", "same-origin")
-	}
+	var cookie *http.Cookie
 	if as != nil {
-		request.AddCookie(as.cookie)
+		cookie = as.cookie
 	}
-
+	request := testrequest.New(in.t, method, path, body, cookie, "", nil)
 	recorder := httptest.NewRecorder()
 	in.handler.ServeHTTP(recorder, request)
 	return recorder

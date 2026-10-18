@@ -37,6 +37,10 @@ const (
 	// the remembered-browser cookie. See DeriveKey.
 	PurposeTwoFactorDigest = "obsidian-arc/two-factor-digest"
 	PurposeEmailCode       = "obsidian-arc/email-verification-code"
+	// The key that signs proof-of-work challenges. The value is part of what
+	// is issued: changing it would reject every challenge issued before an
+	// upgrade.
+	PurposePowChallenge = "obsidian-arc/pow-challenge"
 )
 
 var ErrDecrypt = errors.New("secret: could not decrypt (wrong key, or the value is corrupt)")

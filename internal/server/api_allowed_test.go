@@ -21,7 +21,7 @@ func TestAPIAllowedTreatsAFailedGroupReadAsAFault(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open(ctx, config.Database{
 		Driver: "sqlite", DSN: filepath.Join(t.TempDir(), "api.db"),
-		MaxOpenConns: 4, MaxIdleConns: 2,
+		MaxOpenConns: 4, MaxIdleConns: 4,
 	})
 	if err != nil {
 		t.Fatalf("open database: %v", err)

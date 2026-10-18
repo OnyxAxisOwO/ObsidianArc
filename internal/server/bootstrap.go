@@ -123,10 +123,9 @@ func ensureAdmin(
 	}
 
 	return db.Tx(ctx, func(tx *database.Tx) error {
-		// The re-check below used to stand on its own, with a comment saying
-		// it stopped two instances starting at once from both seeing an empty
-		// table. It did not: a plain count inside a transaction reads what is
-		// committed and blocks nobody, so under Postgres' default isolation
+		// The lock is what stops two instances starting at once from both
+		// seeing an empty table. A plain count inside a transaction reads what
+		// is committed and blocks nobody, so under Postgres' default isolation
 		// both would still see zero and both would insert.
 		if err := settings.Lock(ctx, tx); err != nil {
 			return err

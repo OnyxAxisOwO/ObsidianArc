@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
@@ -13,6 +12,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database/dbtest"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/mail"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/server/testconfig"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
@@ -40,7 +40,7 @@ func TestConcurrentBootstrapsCreateOneAdministrator(t *testing.T) {
 		dir := t.TempDir()
 		raceBootstrap(t, dir, config.Database{
 			Driver: "sqlite", DSN: filepath.Join(dir, "bootstrap.db"),
-			MaxOpenConns: 4, MaxIdleConns: 2,
+			MaxOpenConns: 4, MaxIdleConns: 4,
 		})
 	})
 
@@ -64,14 +64,9 @@ func newBootstrapFixture(t *testing.T, dir string, dbCfg config.Database) bootst
 	t.Helper()
 	ctx := context.Background()
 
-	cfg := config.Config{
-		DataDir:   dir,
-		Database:  dbCfg,
-		Session:   config.Session{TTL: time.Hour, CookieName: "obsidian_session", TouchInterval: time.Hour},
-		Password:  config.Password{Memory: 8 * 1024, Iterations: 1, Parallelism: 1, SaltLength: 16, KeyLength: 32, MaxParallel: 4},
-		SecretKey: []byte("a-test-instance-secret-value-here"),
-		Bootstrap: config.Bootstrap{Username: "founder", Password: "a-good-password"},
-	}
+	cfg := testconfig.Config(dir)
+	cfg.Database = dbCfg
+	cfg.Bootstrap = config.Bootstrap{Username: "founder", Password: "a-good-password"}
 
 	db, err := database.Open(ctx, cfg.Database)
 	if err != nil {
@@ -198,7 +193,7 @@ func TestConcurrentBootstrapsCreateOneDefaultGroup(t *testing.T) {
 		dir := t.TempDir()
 		run(t, dir, config.Database{
 			Driver: "sqlite", DSN: filepath.Join(dir, "groups.db"),
-			MaxOpenConns: 4, MaxIdleConns: 2,
+			MaxOpenConns: 4, MaxIdleConns: 4,
 		})
 	})
 
@@ -216,7 +211,7 @@ func TestFreshInstanceDefaultGroupGrantsEveryCapability(t *testing.T) {
 	dir := t.TempDir()
 	fx := newBootstrapFixture(t, dir, config.Database{
 		Driver: "sqlite", DSN: filepath.Join(dir, "fresh.db"),
-		MaxOpenConns: 4, MaxIdleConns: 2,
+		MaxOpenConns: 4, MaxIdleConns: 4,
 	})
 	cfg := fx.cfg
 	cfg.Bootstrap = config.Bootstrap{}
