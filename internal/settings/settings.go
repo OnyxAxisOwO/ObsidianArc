@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/url"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -360,12 +361,7 @@ const (
 var LandingModes = []string{LandingLogin, LandingIntroPage, LandingChat, LandingSite}
 
 func ValidLandingMode(value string) bool {
-	for _, candidate := range LandingModes {
-		if value == candidate {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(LandingModes, value)
 }
 
 // The two ways a notice can ask for attention. Two, and drawn from the
@@ -397,12 +393,7 @@ const (
 var AuthCardPositions = []string{AuthCardPositionCenter, AuthCardPositionLeft, AuthCardPositionRight}
 
 func ValidAuthCardPosition(value string) bool {
-	for _, candidate := range AuthCardPositions {
-		if value == candidate {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(AuthCardPositions, value)
 }
 
 // The ceiling on a trial, enforced here rather than trusted from the
@@ -415,12 +406,7 @@ const MaxTrialTurns = 20
 var UsageDisplays = []string{UsageAbsolute, UsageRemaining, UsageUsed}
 
 func ValidUsageDisplay(value string) bool {
-	for _, candidate := range UsageDisplays {
-		if value == candidate {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(UsageDisplays, value)
 }
 
 // How the leaderboard names the accounts on it, other than the reader's own.
@@ -439,12 +425,7 @@ const (
 var LeaderboardIdentities = []string{LeaderboardNickname, LeaderboardAnonymous, LeaderboardHandle}
 
 func ValidLeaderboardIdentity(value string) bool {
-	for _, candidate := range LeaderboardIdentities {
-		if value == candidate {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(LeaderboardIdentities, value)
 }
 
 // MaxLeaderboardSize bounds the list. Every place shown costs a lookup for its
@@ -470,12 +451,7 @@ const (
 var TwoFactorPolicies = []string{TwoFactorOptional, TwoFactorBackoffice, TwoFactorAdmins, TwoFactorEveryone}
 
 func ValidTwoFactorPolicy(value string) bool {
-	for _, candidate := range TwoFactorPolicies {
-		if value == candidate {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(TwoFactorPolicies, value)
 }
 
 // MaxTwoFactorRememberDays bounds "don't ask on this browser". A year is
@@ -502,12 +478,7 @@ const (
 var BackofficeVerifyModes = []string{BackofficeVerifyOff, BackofficeVerifyVisit, BackofficeVerifyIdle, BackofficeVerifyInterval}
 
 func ValidBackofficeVerifyMode(value string) bool {
-	for _, candidate := range BackofficeVerifyModes {
-		if value == candidate {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(BackofficeVerifyModes, value)
 }
 
 // MaxTwoFactorBackofficeMinutes bounds the minutes: a week, which is already

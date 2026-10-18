@@ -31,6 +31,23 @@ func newBackend(ctx context.Context, cfg Config) (StorageBackend, error) {
 	}
 }
 
+// bodyDrainLimit bounds how much of a response body is read before it is
+// closed. Reading to the end lets the transport reuse the connection, and the
+// limit keeps a misbehaving endpoint from holding one open by sending more.
+const bodyDrainLimit = 4096
+
+// drainAndClose discards up to bodyDrainLimit bytes of a response body and
+// closes it. Closing without reading would stop the connection being reused.
+func drainAndClose(body io.ReadCloser) {
+	_, _ = io.Copy(io.Discard, io.LimitReader(body, bodyDrainLimit))
+	_ = body.Close()
+}
+
+// isSuccess reports whether an HTTP status code is 2xx.
+func isSuccess(code int) bool {
+	return code >= 200 && code < 300
+}
+
 // ValidateConfig validates the storage configuration based on its chosen type.
 func ValidateConfig(cfg Config) error {
 	switch cfg.Type {

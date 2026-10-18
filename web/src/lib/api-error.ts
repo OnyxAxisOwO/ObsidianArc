@@ -53,6 +53,25 @@ const CODE_KEYS: Record<string, StringKey> = {
   provider_disabled: 'errProviderDisabled',
   model_routed: 'errModelRouted',
   plugin_timeout: 'errPluginTimeout',
+  // The import limits quote their figures from the answer's details, as
+  // export_too_large above does.
+  import_rate_limited: 'errImportRateLimited',
+  import_wrong_format: 'errImportWrongFormat',
+  import_too_large: 'errImportTooLarge',
+  import_nul_character: 'errImportNULCharacter',
+  feedback_daily_limit: 'feedbackNoneLeft',
+  feedback_not_found: 'errFeedbackNotFound',
+  feedback_title_invalid: 'errFeedbackTitleInvalid',
+  feedback_body_invalid: 'errFeedbackBodyInvalid',
+  feedback_kind_invalid: 'errFeedbackKindInvalid',
+  feedback_priority_invalid: 'errFeedbackPriorityInvalid',
+  feedback_status_invalid: 'errFeedbackStatusInvalid',
+  feedback_thread_full: 'errFeedbackThreadFull',
+  announcement_id_required: 'errAnnouncementIDRequired',
+  announcement_not_found: 'errAnnouncementNotFound',
+  announcement_title_invalid: 'errAnnouncementTitleInvalid',
+  announcement_too_long: 'errAnnouncementTooLong',
+  announcement_mode_invalid: 'errAnnouncementModeInvalid',
   // A connection that never reached the server is already worded by the client
   // in the reader's language. The status rule below would replace that with the
   // generic sentence, which says less about what went wrong.
@@ -79,11 +98,21 @@ const QUOTA_KEYS: Record<string, StringKey> = {
 // The reader's sentence for a code the interface has one for, or undefined. A
 // stream's error event carries the same code, so it is translated through here
 // too rather than shown as the server's English.
-export function codeText(code: string): string | undefined {
+export function codeText(code: string, details: Record<string, unknown> = {}): string | undefined {
   // The index is typed as possibly undefined under noUncheckedIndexedAccess,
   // so the lookup is narrowed before it is handed to t().
   const key = Object.hasOwn(CODE_KEYS, code) ? CODE_KEYS[code] : undefined;
-  return key ? t(key) : undefined;
+  return key ? t(key, sentenceVars(details)) : undefined;
+}
+
+// The figures a reader's sentence quotes, taken from the answer's details. Only
+// plain values are passed on, so a nested detail cannot reach a sentence as text.
+function sentenceVars(details: Record<string, unknown>): Record<string, string | number> {
+  const vars: Record<string, string | number> = {};
+  for (const [name, value] of Object.entries(details)) {
+    if (typeof value === 'string' || typeof value === 'number') vars[name] = value;
+  }
+  return vars;
 }
 
 // The sentence for a failed turn as the conversation stored it. The row keeps
@@ -120,7 +149,7 @@ export function apiErrorText(error: unknown, fallback: StringKey = 'failed'): st
     const resets = Number(error.details['resets_at']) || 0;
     return resets > 0 ? `${text} ${t('quotaResets', { when: absoluteTime(resets) })}` : text;
   }
-  const text = codeText(error.code);
+  const text = codeText(error.code, error.details);
   if (text) return text;
   // A server failure's sentence is English and was written for logs and API
   // clients, so a reader on a Chinese screen gets the screen's own fallback.

@@ -235,11 +235,16 @@ func base64Decode(value string) ([]byte, error) {
 	return base64.StdEncoding.DecodeString(value)
 }
 
+// maxArchiveEntries is a ceiling that does not depend on the table list. The
+// count check above already pins the entries to the schema, so this is only a
+// second bound on what a hostile archive can make the restore process.
+const maxArchiveEntries = 10001
+
 func validateArchiveEntries(archive *zip.Reader, tables []string) error {
 	if len(archive.File) != len(tables)+1 {
 		return errors.New("system backup: archive has missing or unexpected entries")
 	}
-	if uint64(len(archive.File)) > 10001 {
+	if uint64(len(archive.File)) > maxArchiveEntries {
 		return errors.New("system backup: archive contains too many entries")
 	}
 	expected := map[string]bool{manifestEntryName: true}

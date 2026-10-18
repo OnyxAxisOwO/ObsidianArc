@@ -90,8 +90,7 @@ func (c *WebDAVClient) PutObject(ctx context.Context, key string, body io.Reader
 	if err != nil {
 		return fmt.Errorf("webdav upload failed: %w", err)
 	}
-	defer res.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 4096))
+	drainAndClose(res.Body)
 
 	// WebDAV servers return 409 Conflict if intermediate collections don't exist.
 	// Create parent directories on demand and re-attempt upload.
@@ -114,15 +113,14 @@ func (c *WebDAVClient) PutObject(ctx context.Context, key string, body io.Reader
 		if err != nil {
 			return fmt.Errorf("webdav upload retry failed: %w", err)
 		}
-		defer retryRes.Body.Close()
-		_, _ = io.Copy(io.Discard, io.LimitReader(retryRes.Body, 4096))
-		if retryRes.StatusCode < 200 || retryRes.StatusCode >= 300 {
+		drainAndClose(retryRes.Body)
+		if !isSuccess(retryRes.StatusCode) {
 			return fmt.Errorf("webdav upload returned HTTP %d %s", retryRes.StatusCode, http.StatusText(retryRes.StatusCode))
 		}
 		return nil
 	}
 
-	if res.StatusCode < 200 || res.StatusCode >= 300 {
+	if !isSuccess(res.StatusCode) {
 		return fmt.Errorf("webdav upload returned HTTP %d %s", res.StatusCode, http.StatusText(res.StatusCode))
 	}
 	return nil
@@ -138,9 +136,8 @@ func (c *WebDAVClient) DeleteObject(ctx context.Context, key string) error {
 	if err != nil {
 		return fmt.Errorf("webdav delete failed: %w", err)
 	}
-	defer res.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 4096))
-	if res.StatusCode < 200 || res.StatusCode >= 300 {
+	drainAndClose(res.Body)
+	if !isSuccess(res.StatusCode) {
 		if res.StatusCode == http.StatusNotFound {
 			return nil
 		}
@@ -205,8 +202,9 @@ func (c *WebDAVClient) ListObjects(ctx context.Context, prefix string, visit fun
 	if res.StatusCode == http.StatusNotFound {
 		return nil
 	}
-	if res.StatusCode != http.StatusMultiStatus && (res.StatusCode < 200 || res.StatusCode >= 300) {
-		_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 4096))
+	// 207 Multi-Status is the normal answer to a PROPFIND, and isSuccess admits it.
+	if !isSuccess(res.StatusCode) {
+		_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, bodyDrainLimit))
 		return fmt.Errorf("webdav list returned HTTP %d %s", res.StatusCode, http.StatusText(res.StatusCode))
 	}
 
@@ -270,8 +268,7 @@ func (c *WebDAVClient) ensureParentCollections(ctx context.Context, key string) 
 		if err != nil {
 			return fmt.Errorf("webdav mkcol failed for %s: %w", current, err)
 		}
-		_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 4096))
-		_ = res.Body.Close()
+		drainAndClose(res.Body)
 	}
 	return nil
 }

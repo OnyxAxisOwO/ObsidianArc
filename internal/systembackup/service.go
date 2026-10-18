@@ -25,16 +25,35 @@ type Service struct {
 	key     []byte
 	version string
 
-	mu       sync.Mutex
-	root     context.Context
+	mu   sync.Mutex
+	root context.Context
+	// Set under mu when the scheduler begins its final wait. Once it is set,
+	// beginRun refuses: an Add that races the Wait is outside what
+	// sync.WaitGroup allows.
+	stopping bool
 	startOne sync.Once
 	// The scheduler's done channel, set inside startOne and read only after it.
 	schedulerDone <-chan struct{}
-	// Scheduled runs, so the scheduler's done channel waits for them as well.
-	// Only the scheduler adds to it, and it is waited on only after the
-	// scheduler has returned, so an Add can never race the Wait.
+	// Every run that may still write: scheduled runs and runs started by hand
+	// from the admin page. The scheduler's done channel waits for all of them,
+	// because a backup's final status is written after shutdown has cancelled it
+	// and the database closes right after the wait.
 	runs sync.WaitGroup
 }
+
+// ErrStopping refuses a backup requested once shutdown is waiting for the runs
+// in flight. A run started then would be cancelled at once, and the wait would
+// not cover it.
+var ErrStopping = errors.New("the server is shutting down")
+
+// detachedWriteTimeout bounds the writes that must outlive a run's context:
+// its log lines, its final status and the cleanup of a probe object. They run on
+// WithoutCancel, so this is the only limit on how long shutdown waits for them.
+const detachedWriteTimeout = 10 * time.Second
+
+// digestLogChars is how much of the archive digest the run log prints. A prefix
+// is enough to match a log line to an archive without printing all 64 characters.
+const digestLogChars = 16
 
 func NewService(db *database.DB, masterKey []byte, version string) (*Service, error) {
 	box, err := secret.New(masterKey, "obsidian-arc/system-backup-credentials")
@@ -55,9 +74,9 @@ func (s *Service) Save(ctx context.Context, cfg Config) error { return s.store.S
 // boundary across replicas; this goroutine only decides when to ask for it.
 //
 // The returned channel closes once the scheduler has returned and every backup
-// it started has finished. A backup writes its final status to the database
-// after its context is cancelled, so the caller waits on the channel before
-// closing the database.
+// has finished, whether the scheduler started it or RunNow did. A backup writes
+// its final status to the database after its context is cancelled, so the
+// caller waits on the channel before closing the database.
 func (s *Service) Start(ctx context.Context) <-chan struct{} {
 	s.startOne.Do(func() {
 		s.mu.Lock()
@@ -68,6 +87,9 @@ func (s *Service) Start(ctx context.Context) <-chan struct{} {
 		go func() {
 			defer close(done)
 			s.schedule(ctx)
+			s.mu.Lock()
+			s.stopping = true
+			s.mu.Unlock()
 			s.runs.Wait()
 		}()
 	})
@@ -110,6 +132,9 @@ func (s *Service) startAutomatic(ctx context.Context) {
 		s.complete(ctx, token, "error", err.Error(), 0)
 		return
 	}
+	// Added directly rather than through beginRun: this is the scheduler's own
+	// goroutine, and stopping is only set after the scheduler has returned, so
+	// the final Wait cannot have begun.
 	s.runs.Add(1)
 	go func() {
 		defer s.runs.Done()
@@ -117,8 +142,25 @@ func (s *Service) startAutomatic(ctx context.Context) {
 	}()
 }
 
+// beginRun counts a backup in the shutdown wait. It refuses once the scheduler
+// has begun that wait, so a run cannot join after the database is already
+// being waited on for it.
+func (s *Service) beginRun() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.stopping {
+		return false
+	}
+	s.runs.Add(1)
+	return true
+}
+
 // RunNow claims the persistent lease before returning, then runs independently
 // of the HTTP request so closing the admin page cannot interrupt an upload.
+//
+// The run is counted before the claim. A refusal at shutdown then leaves no
+// lease behind, and an accepted run is waited for the same way a scheduled one
+// is, so shutdown cannot close the database under its final status write.
 func (s *Service) RunNow(ctx context.Context) error {
 	cfg, err := s.store.Load(ctx)
 	if err != nil {
@@ -127,11 +169,18 @@ func (s *Service) RunNow(ctx context.Context) error {
 	if err := ValidateConfig(cfg); err != nil {
 		return err
 	}
+	if !s.beginRun() {
+		return ErrStopping
+	}
 	token, err := s.store.claim(ctx, time.Now(), true)
 	if err != nil {
+		s.runs.Done()
 		return err
 	}
-	go s.runClaimed(s.runContext(), token, cfg)
+	go func() {
+		defer s.runs.Done()
+		s.runClaimed(s.runContext(), token, cfg)
+	}()
 	return nil
 }
 
@@ -176,7 +225,7 @@ func (s *Service) TestConnection(ctx context.Context) error {
 		return err
 	}
 	found, listErr := probeListed(ctx, backend, key)
-	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), detachedWriteTimeout)
 	defer cancel()
 	deleteErr := backend.DeleteObject(cleanupCtx, key)
 	if listErr != nil {
@@ -215,67 +264,12 @@ func (s *Service) runClaimed(parent context.Context, token string, cfg Config) {
 	// why a run timed out is the one written after the deadline has passed, and
 	// it used to be dropped for exactly those runs.
 	log := func(msg string) {
-		logCtx, cancelLog := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		logCtx, cancelLog := context.WithTimeout(context.WithoutCancel(ctx), detachedWriteTimeout)
 		defer cancelLog()
 		_ = s.store.appendLog(logCtx, token, msg)
 	}
 
-	log("Staging database snapshot...")
-	file, err := os.CreateTemp("", "obsidian-arc-instance-backup-*.arcbackup")
-	if err == nil {
-		_ = file.Chmod(0600)
-		defer func() {
-			_ = file.Close()
-			_ = os.Remove(file.Name())
-		}()
-		err = writeArchive(ctx, s.db, file, s.key, s.version)
-	}
-	var uploadedAt int64
-	if err == nil {
-		err = file.Sync()
-	}
-	var size int64
-	var digest string
-	if err == nil {
-		size, digest, err = hashFile(file)
-	}
-	if err == nil {
-		hashPrefix := digest
-		if len(hashPrefix) > 16 {
-			hashPrefix = hashPrefix[:16]
-		}
-		// Not "encrypted": the archive is a plain zip. Only the values the
-		// instance key sealed in the database stay sealed inside it, and an
-		// operator reading this log must not conclude the bucket holds nothing
-		// readable.
-		log(fmt.Sprintf("Snapshot archived (size: %s, digest: %s).", formatByteSize(size), hashPrefix))
-	}
-	if err == nil {
-		var status Status
-		status, err = s.store.Status(ctx)
-		if err == nil {
-			var backend StorageBackend
-			backend, err = s.newBackend(ctx, cfg)
-			if err == nil {
-				objectKey := backupObjectKey(cfg, status.InstanceID, time.Now())
-				log(fmt.Sprintf("Uploading archive to storage (%s, key: %s)...", cfg.Type, objectKey))
-				err = backend.PutObject(ctx, objectKey, io.NewSectionReader(file, 0, size), size, digest)
-				if err == nil {
-					uploadedAt = time.Now().UnixMilli()
-					log(fmt.Sprintf("Upload completed. Checking retention policy (%d hours)...", effectiveRetentionHours(cfg)))
-					// The archive is already stored, so a failed prune is a warning on
-					// this run, not a failed run. Reporting it as one would show an
-					// operator a failed backup that exists, and the next run retries.
-					pruned, pruneErr := pruneExpired(ctx, backend, cfg, status.InstanceID, time.Now())
-					if pruneErr != nil {
-						log(fmt.Sprintf("Retention policy could not be applied: %s", pruneErr.Error()))
-					} else {
-						log(fmt.Sprintf("Retention policy applied (pruned %d expired backup(s)).", pruned))
-					}
-				}
-			}
-		}
-	}
+	uploadedAt, err := s.stageAndUpload(ctx, cfg, log)
 	if err != nil {
 		slog.ErrorContext(ctx, "instance backup failed", "error", err)
 		log(fmt.Sprintf("Backup failed: %s", err.Error()))
@@ -286,8 +280,71 @@ func (s *Service) runClaimed(parent context.Context, token string, cfg Config) {
 	s.complete(ctx, token, "success", "", uploadedAt)
 }
 
+// stageAndUpload archives the instance into a private temporary file and uploads
+// it. The returned time is zero unless the archive reached storage, so a run
+// that failed before the upload says so, and one that failed after it still
+// records when the archive landed.
+func (s *Service) stageAndUpload(ctx context.Context, cfg Config, log func(string)) (int64, error) {
+	log("Staging database snapshot...")
+	file, err := os.CreateTemp("", "obsidian-arc-instance-backup-*.arcbackup")
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		_ = file.Close()
+		_ = os.Remove(file.Name())
+	}()
+	_ = file.Chmod(0600)
+	if err := writeArchive(ctx, s.db, file, s.key, s.version); err != nil {
+		return 0, err
+	}
+	if err := file.Sync(); err != nil {
+		return 0, err
+	}
+	size, digest, err := hashFile(file)
+	if err != nil {
+		return 0, err
+	}
+	// Not "encrypted": the archive is a plain zip. Only the values the
+	// instance key sealed in the database stay sealed inside it, and an
+	// operator reading this log must not conclude the bucket holds nothing
+	// readable.
+	log(fmt.Sprintf("Snapshot archived (size: %s, digest: %s).", formatByteSize(size), digest[:min(len(digest), digestLogChars)]))
+
+	status, err := s.store.Status(ctx)
+	if err != nil {
+		return 0, err
+	}
+	backend, err := s.newBackend(ctx, cfg)
+	if err != nil {
+		return 0, err
+	}
+	objectKey := backupObjectKey(cfg, status.InstanceID, time.Now())
+	log(fmt.Sprintf("Uploading archive to storage (%s, key: %s)...", cfg.Type, objectKey))
+	if err := backend.PutObject(ctx, objectKey, io.NewSectionReader(file, 0, size), size, digest); err != nil {
+		return 0, err
+	}
+	uploadedAt := time.Now().UnixMilli()
+	log(fmt.Sprintf("Upload completed. Checking retention policy (%d hours)...", effectiveRetentionHours(cfg)))
+	applyRetention(ctx, log, cfg, backend, status.InstanceID)
+	return uploadedAt, nil
+}
+
+// applyRetention prunes the instance's backups past the retention window. It
+// runs once the archive is stored, so a failed prune is a warning on this run,
+// not a failed run. Reporting it as one would show an operator a failed backup
+// that exists, and the next run retries.
+func applyRetention(ctx context.Context, log func(string), cfg Config, backend StorageBackend, instanceID string) {
+	pruned, err := pruneExpired(ctx, backend, cfg, instanceID, time.Now())
+	if err != nil {
+		log(fmt.Sprintf("Retention policy could not be applied: %s", err.Error()))
+		return
+	}
+	log(fmt.Sprintf("Retention policy applied (pruned %d expired backup(s)).", pruned))
+}
+
 func (s *Service) complete(ctx context.Context, token, state, failure string, uploadedAt int64) {
-	completeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	completeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), detachedWriteTimeout)
 	defer cancel()
 	if err := s.store.finish(completeCtx, token, state, failure, time.Now(), uploadedAt); err != nil {
 		slog.ErrorContext(completeCtx, "could not record instance backup result", "error", err)

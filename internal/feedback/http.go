@@ -88,7 +88,8 @@ func (h *Handlers) list(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	// Counted from the rows already in hand rather than with a second query:
-	// ListFor returns the newest fifty, and the day's ten are inside that.
+	// ListFor returns the newest listedNewest, which is at least MaxPerDay, so
+	// the day's reports are all inside that list.
 	remaining := MaxPerDay
 	cutoff := time.Now().UnixMilli() - DayWindow.Milliseconds()
 	for _, record := range records {
@@ -224,19 +225,23 @@ func challengeError(err error) error {
 func TranslateError(err error) error {
 	switch {
 	case errors.Is(err, ErrNotFound):
-		return httpx.NotFound("No such feedback.")
+		return httpx.NotFoundCode("feedback_not_found", "No such feedback.")
 	case errors.Is(err, ErrInvalidTitle):
-		return httpx.BadRequest("A title of 1-120 characters is required.")
+		return httpx.BadRequestCode("feedback_title_invalid",
+			"A title of 1-%d characters is required.", MaxTitleChars).
+			WithDetails(map[string]any{"max": MaxTitleChars})
 	case errors.Is(err, ErrInvalidBody):
-		return httpx.BadRequest("Please describe it in 1-8000 characters.")
+		return httpx.BadRequestCode("feedback_body_invalid",
+			"Please describe it in 1-%d characters.", MaxBodyChars).
+			WithDetails(map[string]any{"max": MaxBodyChars})
 	case errors.Is(err, ErrInvalidKind):
-		return httpx.BadRequest("Feedback is either a bug or an idea.")
+		return httpx.BadRequestCode("feedback_kind_invalid", "Feedback is either a bug or an idea.")
 	case errors.Is(err, ErrInvalidPrio):
-		return httpx.BadRequest("Priority must be low, medium or high.")
+		return httpx.BadRequestCode("feedback_priority_invalid", "Priority must be low, medium or high.")
 	case errors.Is(err, ErrInvalidStatus):
-		return httpx.BadRequest("Status must be open or resolved.")
+		return httpx.BadRequestCode("feedback_status_invalid", "Status must be open or resolved.")
 	case errors.Is(err, ErrThreadFull):
-		return httpx.BadRequest("This conversation has reached its maximum length.")
+		return httpx.BadRequestCode("feedback_thread_full", "This conversation has reached its maximum length.")
 	case errors.Is(err, ErrTooMany):
 		return httpx.TooManyRequests("feedback_daily_limit",
 			"You have sent today's maximum number of reports. Please continue tomorrow.")

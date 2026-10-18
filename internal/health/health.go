@@ -18,10 +18,7 @@ package health
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"net/http"
-	"regexp"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -276,9 +273,15 @@ func (s *Store) Prune(ctx context.Context, before int64) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("health: prune: %w", err)
 	}
-	dropped, _ := result.RowsAffected()
-	if dropped > 0 {
+	// The rows are gone even when the driver cannot say how many it removed, so
+	// the revision moves in that case too. A count the driver could not give is
+	// reported as an error, not as zero rows dropped.
+	dropped, err := result.RowsAffected()
+	if err != nil || dropped > 0 {
 		s.revision.Add(1)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("health: prune: %w", err)
 	}
 	return dropped, nil
 }
@@ -305,106 +308,6 @@ func Probe(ctx context.Context, registry *adapter.Registry, upstream adapter.Pro
 		// answer through it, so nil is a panic rather than a shortcut.
 	}, func(adapter.Event) error { return nil })
 	return time.Since(started), err
-}
-
-// Code turns an upstream failure into the short token the page groups by.
-//
-// Deliberately coarse. An operator scanning a list wants "the key is wrong"
-// and "it is rate limiting us" to each be one line, not one line per minute
-// with a different request id in it.
-func Code(err error) string {
-	if err == nil {
-		return ""
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return "timeout"
-	}
-	if errors.Is(err, context.Canceled) {
-		return "cancelled"
-	}
-	// A transport timeout is recognised by its type. The text of a net error
-	// is the operating system's wording, which is not stable across platforms.
-	var timeout interface{ Timeout() bool }
-	if errors.As(err, &timeout) && timeout.Timeout() {
-		return "timeout"
-	}
-
-	// The typed kind and status are what the provider said, so they decide.
-	// Matching the rendered text got this wrong both ways: an adapter error
-	// renders as "kind: message" with no status, so a 401 whose body said
-	// "Incorrect API key" matched nothing, and a 400 quoting "5000 tokens"
-	// matched "500".
-	var upstream *adapter.Error
-	if errors.As(err, &upstream) {
-		return codeOfAdapterError(upstream)
-	}
-
-	message := strings.ToLower(err.Error())
-	switch {
-	case hasNumber(message, "401"), strings.Contains(message, "unauthorized"),
-		strings.Contains(message, "invalid api key"):
-		return "unauthorized"
-	case hasNumber(message, "403"), strings.Contains(message, "forbidden"):
-		return "forbidden"
-	case hasNumber(message, "404"), strings.Contains(message, "not found"):
-		return "model_not_found"
-	case hasNumber(message, "429"), strings.Contains(message, "rate limit"):
-		return "rate_limited"
-	case strings.Contains(message, "timeout"), strings.Contains(message, "deadline"):
-		return "timeout"
-	case strings.Contains(message, "no such host"), strings.Contains(message, "connection refused"),
-		strings.Contains(message, "dial "):
-		return "unreachable"
-	case hasNumber(message, "500"), hasNumber(message, "502"),
-		hasNumber(message, "503"), hasNumber(message, "504"):
-		return "upstream_error"
-	default:
-		return "error"
-	}
-}
-
-// statusPatterns holds one pattern per status code that Code asks for, compiled
-// once: Code runs on every failed probe, and compiling a pattern per call cost
-// more than the match. A code missing from this list is a bug in Code.
-var statusPatterns = func() map[string]*regexp.Regexp {
-	codes := []string{"401", "403", "404", "429", "500", "502", "503", "504"}
-	patterns := make(map[string]*regexp.Regexp, len(codes))
-	for _, code := range codes {
-		patterns[code] = regexp.MustCompile(`(?:^|\D)` + code + `(?:\D|$)`)
-	}
-	return patterns
-}()
-
-// hasNumber reports whether a status code appears as a number of its own. A
-// plain substring match read "4290" as a 429 and "5000" as a 500, which is how
-// a message quoting a token count was filed as a rate limit.
-func hasNumber(message, number string) bool {
-	return statusPatterns[number].MatchString(message)
-}
-
-// codeOfAdapterError maps the provider failure the adapter already classified.
-// An auth error with a 403 is a key for another service, which the operator
-// reads differently from a wrong key, so the status is consulted there.
-func codeOfAdapterError(e *adapter.Error) string {
-	switch e.Kind {
-	case adapter.ErrorAuth:
-		if e.Status == http.StatusForbidden {
-			return "forbidden"
-		}
-		return "unauthorized"
-	case adapter.ErrorRateLimit:
-		return "rate_limited"
-	case adapter.ErrorNetwork:
-		return "unreachable"
-	case adapter.ErrorUpstream:
-		return "upstream_error"
-	case adapter.ErrorCancelled:
-		return "cancelled"
-	}
-	if e.Status == http.StatusNotFound {
-		return "model_not_found"
-	}
-	return "error"
 }
 
 // truncate bounds one stored message, with the cut delegated to text.Truncate
@@ -489,117 +392,10 @@ func (s *Store) Reset(ctx context.Context) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("health: reset: %w", err)
 	}
-	dropped, _ := result.RowsAffected()
 	s.revision.Add(1)
-	return dropped, nil
-}
-
-// TimePoint is evidence aggregated into one time bucket for graphing.
-type TimePoint struct {
-	At     int64    `json:"at"`
-	Uptime *float64 `json:"uptime"`
-	Total  int      `json:"total"`
-}
-
-// Timeline groups recent evidence for each model into uniform time buckets so
-// that callers can render a trend without pulling thousands of raw samples.
-//
-// If resetAt is non-zero, evidence before resetAt is excluded from the buckets
-// while preserving the uniform time span across the requested window.
-func (s *Store) Timeline(ctx context.Context, since int64, resetAt int64, buckets int) (map[string][]TimePoint, error) {
-	if buckets <= 0 {
-		buckets = 24
-	}
-	now := time.Now().UnixMilli()
-	if resetAt > now {
-		resetAt = now
-	}
-	if since >= now {
-		since = now - 24*time.Hour.Milliseconds()
-	}
-	bucketSpan := (now - since) / int64(buckets)
-	if bucketSpan <= 0 {
-		bucketSpan = 1
-	}
-
-	evidenceSince := since
-	if resetAt > evidenceSince {
-		evidenceSince = resetAt
-	}
-
-	// The bucket is computed and counted by the database. Reading every row of
-	// the window to bucket it in Go made each uptime request cost one row per
-	// request the whole fleet served in the last 24 hours. The bucket is the
-	// same integer division as before, and the index is clamped in Go below so
-	// the expression needs no CASE or MIN, which the two engines spell apart.
-	rows, err := s.db.Query(ctx, `
-		SELECT model_id, idx, COUNT(*), SUM(ok) FROM (
-			SELECT model_id, (at - ?) / ? AS idx, ok FROM (
-				SELECT model_id, started_at AS at,
-				       CASE WHEN status = ? THEN 1 ELSE 0 END AS ok
-				FROM usage_records
-				WHERE started_at >= ? AND status IN (?, ?)
-				UNION ALL
-				SELECT model_id, at, CASE WHEN ok THEN 1 ELSE 0 END AS ok
-				FROM model_probes
-				WHERE at >= ?
-			) AS evidence
-		) AS buckets
-		GROUP BY model_id, idx`,
-		since, bucketSpan,
-		statusOK, evidenceSince, statusOK, statusError,
-		evidenceSince)
+	dropped, err := result.RowsAffected()
 	if err != nil {
-		return nil, fmt.Errorf("health: timeline: %w", err)
+		return 0, fmt.Errorf("health: reset: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
-
-	type count struct {
-		total int
-		ok    int
-	}
-	byModel := map[string][]count{}
-
-	for rows.Next() {
-		var modelID string
-		var idx, total, ok int64
-		if err := rows.Scan(&modelID, &idx, &total, &ok); err != nil {
-			return nil, fmt.Errorf("health: timeline: %w", err)
-		}
-		list, exists := byModel[modelID]
-		if !exists {
-			list = make([]count, buckets)
-			byModel[modelID] = list
-		}
-		// Evidence is never before since, so the low clamp is a guard; the high
-		// one folds the rounding remainder and any row stamped after now into
-		// the last bucket, as it always was.
-		if idx < 0 {
-			idx = 0
-		}
-		if idx >= int64(buckets) {
-			idx = int64(buckets - 1)
-		}
-		list[idx].total += int(total)
-		list[idx].ok += int(ok)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("health: timeline: %w", err)
-	}
-
-	result := make(map[string][]TimePoint, len(byModel))
-	for modelID, list := range byModel {
-		pts := make([]TimePoint, buckets)
-		for i := 0; i < buckets; i++ {
-			at := since + int64(i)*bucketSpan + bucketSpan/2
-			pt := TimePoint{At: at, Total: list[i].total}
-			if list[i].total > 0 {
-				u := float64(list[i].ok) / float64(list[i].total)
-				pt.Uptime = &u
-			}
-			pts[i] = pt
-		}
-		result[modelID] = pts
-	}
-	return result, nil
+	return dropped, nil
 }

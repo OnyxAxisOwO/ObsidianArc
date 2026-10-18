@@ -105,7 +105,7 @@ func (c *Checker) Run(ctx context.Context, policy Policy) {
 			continue
 		}
 
-		samples, err := c.Store.Samples(ctx, record.ID, since, 200)
+		samples, err := c.Store.Samples(ctx, record.ID, since, sweepSampleLimit)
 		if err != nil {
 			slog.ErrorContext(ctx, "health: read samples", "model", record.ID, "error", err)
 			continue
@@ -138,13 +138,28 @@ func (c *Checker) Run(ctx context.Context, policy Policy) {
 	}
 }
 
+// sweepSampleLimit bounds the samples one sweep reads for a model. A verdict
+// is computed over what is read, so the bound also limits how far back a
+// single sweep looks.
+const sweepSampleLimit = 200
+
+// disabledNoticeTimeout bounds the push that tells administrators a model was
+// switched off. It is detached from the sweep's context, and it must not hold
+// the sweep open for the models still to be checked.
+const disabledNoticeTimeout = 5 * time.Second
+
 func (c *Checker) probe(ctx context.Context, record model.Model) (Sample, bool) {
 	upstream, err := c.Providers.Resolve(ctx, record.ProviderID)
 	if err != nil {
 		// The provider is unreadable — a changed secret key, or it has been
 		// deleted out from under the model. That is a failure of this model
 		// from where a reader stands, so it is recorded as one.
-		_ = c.Store.Record(ctx, record.ID, false, "provider_unavailable", err.Error(), 0)
+		// A failed write is logged, as the probe's own write is below: the sample
+		// returned here is the evidence this round acts on, so the store and the
+		// log should not silently disagree with it.
+		if writeErr := c.Store.Record(ctx, record.ID, false, "provider_unavailable", err.Error(), 0); writeErr != nil {
+			slog.ErrorContext(ctx, "health: record probe", "model", record.ID, "error", writeErr)
+		}
 		return Sample{At: time.Now().UnixMilli(), Code: "provider_unavailable",
 			Message: err.Error(), Source: "system"}, true
 	}
@@ -227,7 +242,7 @@ func (c *Checker) apply(ctx context.Context, record model.Model, status Status, 
 	// shared context, and a slow notify write must not shorten the pass for
 	// the models still left to check after this one.
 	if c.Notify != nil {
-		pushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		pushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), disabledNoticeTimeout)
 		defer cancel()
 		if err := c.Notify.Push(pushCtx, nil, notify.Notification{
 			Audience: notify.AudienceAdmins, Permission: "availability",

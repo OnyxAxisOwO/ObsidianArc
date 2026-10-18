@@ -145,9 +145,12 @@ func (h *Handlers) export(w http.ResponseWriter, r *http.Request) error {
 		if errors.Is(err, ErrTooLarge) {
 			// 409, as the import answers a full account: the account is what is
 			// too large, and sending the same request again will not change it.
+			// The limits travel as details as well as in the sentence, so a reader's
+			// own wording can carry the same figures.
 			return httpx.Conflict("export_too_large", fmt.Sprintf(
 				"This account is too large for one export file: the server imports at most %d conversations, %d messages and %d MiB, and a larger file would be refused on the way back in. Delete some conversations and export again.",
-				MaxConversations, MaxMessagesPerImport, MaxDocumentBytes>>20))
+				MaxConversations, MaxMessagesPerImport, MaxDocumentBytes>>20)).
+				WithDetails(importLimits())
 		}
 		return httpx.Internal(err)
 	}
@@ -253,14 +256,17 @@ func (h *Handlers) importDocument(w http.ResponseWriter, r *http.Request) error 
 	result, err := h.service.Import(ctx, account, document)
 	if err != nil {
 		switch {
+		// Codes rather than sentences: a sentence written here is English on a
+		// Chinese screen, and the reader's wording is picked by the code.
 		case errors.Is(err, ErrWrongFormat):
-			return httpx.BadRequest("That file is not an Obsidian Arc export.")
+			return httpx.BadRequestCode("import_wrong_format", "That file is not an Obsidian Arc export.")
 		case errors.Is(err, ErrTooLarge):
-			return httpx.BadRequest(
+			return httpx.BadRequestCode("import_too_large",
 				"That export is larger than this server will import: at most %d conversations and %d messages.",
-				MaxConversations, MaxMessagesPerImport)
+				MaxConversations, MaxMessagesPerImport).WithDetails(importLimits())
 		case errors.Is(err, ErrNULCharacter):
-			return httpx.BadRequest("That export contains a NUL character (U+0000), which this server does not store.")
+			return httpx.BadRequestCode("import_nul_character",
+				"That export contains a NUL character (U+0000), which this server does not store.")
 		case errors.Is(err, user.ErrPreferencesTooLarge):
 			// Nothing has been written when the preferences are merged first, so
 			// the message can say so. 409 for the same reason as storage_full: the
@@ -289,6 +295,17 @@ func (h *Handlers) importDocument(w http.ResponseWriter, r *http.Request) error 
 		return httpx.Internal(err).WithDetails(importCounts(result))
 	}
 	return httpx.WriteJSON(w, http.StatusOK, result)
+}
+
+// importLimits is the size an export or import may reach, as the answer's
+// details, so a reader's sentence can quote the figures without parsing them out
+// of the English one.
+func importLimits() map[string]any {
+	return map[string]any{
+		"conversations": MaxConversations,
+		"messages":      MaxMessagesPerImport,
+		"mib":           MaxDocumentBytes >> 20,
+	}
 }
 
 // importCounts is what an import wrote before it stopped, in the answer a

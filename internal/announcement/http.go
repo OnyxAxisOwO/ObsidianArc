@@ -109,7 +109,7 @@ func (h *Handlers) markRead(w http.ResponseWriter, r *http.Request) error {
 	account := auth.MustUser(r.Context())
 	announcementID := r.PathValue("id")
 	if announcementID == "" {
-		return httpx.BadRequest("An announcement id is required.")
+		return httpx.BadRequestCode("announcement_id_required", "An announcement id is required.")
 	}
 
 	// The store answers ErrNotFound for both an unknown id and a draft, so the
@@ -147,13 +147,15 @@ func (h *Handlers) markSeen(w http.ResponseWriter, r *http.Request) error {
 func TranslateError(err error) error {
 	switch {
 	case errors.Is(err, ErrNotFound):
-		return httpx.NotFound("No such announcement.")
+		return httpx.NotFoundCode("announcement_not_found", "No such announcement.")
 	case errors.Is(err, ErrInvalidTitle):
-		return httpx.BadRequest("Title must be 1-120 characters.")
+		return httpx.BadRequestCode("announcement_title_invalid",
+			"Title must be 1-%d characters.", MaxTitleChars).
+			WithDetails(map[string]any{"max": MaxTitleChars})
 	case errors.Is(err, ErrInvalidBody):
-		return httpx.BadRequest("That announcement is too long.")
+		return httpx.BadRequestCode("announcement_too_long", "That announcement is too long.")
 	case errors.Is(err, ErrInvalidMode):
-		return httpx.BadRequest("Unknown display mode.")
+		return httpx.BadRequestCode("announcement_mode_invalid", "Unknown display mode.")
 	default:
 		return httpx.Internal(err)
 	}

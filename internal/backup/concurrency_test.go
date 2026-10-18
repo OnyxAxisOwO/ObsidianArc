@@ -259,7 +259,7 @@ func TestTextCeilingHoldsAcrossThreadsOfOneImport(t *testing.T) {
 	// Text that lands after the up-front read (another writer) is caught by
 	// the running figure rather than by the document's own size.
 	tally := &charTally{ceiling: 5000, stored: 4000}
-	written, err := f.service.importThread(ctx, f.account, threads[0], tally)
+	written, _, err := f.service.importThread(ctx, f.account, threads[0], tally)
 	if !errors.Is(err, ErrStorageFull) || written != 0 {
 		t.Fatalf("importThread past the ceiling = %d, %v; want ErrStorageFull", written, err)
 	}
