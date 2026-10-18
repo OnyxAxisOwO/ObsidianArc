@@ -1,7 +1,9 @@
 @use 'mixins' as *;
 /* The usage report and the chart vocabulary it shares with the overview:
-   cards, segmented switches, figures with a direction, a curve over a grid,
-   a week folded onto a clock, a table of who uses what, ranked boards.
+   cards, figures with a direction, a curve over a grid, a week folded onto
+   a clock, a table of who uses what, ranked boards. The segmented switch
+   began here too; the leaderboard draws it, so it is _segment.scss now and
+   loads with every first paint, where this file loads with the backoffice.
 
    Nothing here brings a colour of its own. Every fill is the accent mixed
    into a surface, so a chart is drawn in whatever colour the reader picked
@@ -31,59 +33,6 @@
   color: var(--ai-text-secondary);
   font-size: 11px;
   line-height: 1.5;
-}
-
-/* A few mutually exclusive choices as one pill. The track is the field fill
-   so it reads both on a card and on the page behind one; the height matches
-   a button's, so a switch and a button beside it share one line. */
-.oa-segment {
-  display: inline-flex;
-  flex-shrink: 0;
-  gap: 2px;
-  padding: 3px;
-  border-radius: 999px;
-  background: var(--ai-field-bg);
-}
-
-.oa-segment button {
-  height: 28px;
-  padding: 0 12px;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--ai-text-secondary);
-  font: inherit;
-  font-size: 11.5px;
-  font-weight: 500;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: background-color 0.15s ease, color 0.15s ease;
-}
-
-.oa-segment button:hover:not([aria-pressed='true']) {
-  background: var(--ai-state-hover);
-  color: var(--ai-text);
-}
-
-.oa-segment button[aria-pressed='true'] {
-  background: var(--ai-primary);
-  color: var(--ai-primary-text);
-}
-
-/* The other two pill groups had no focus rule at all, which left the
-   browser's outline on them: the ring is the one focus mark here. */
-.oa-segment button:focus-visible,
-.oa-segmented-option:focus-visible,
-.oa-settings-tab:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .oa-segment button,
-  .oa-settings-tab {
-    transition: none;
-  }
 }
 
 /* A control that is only words: "clear filters". It has the height of the

@@ -358,7 +358,9 @@ describe('phone and state rules in the stylesheet source', () => {
   it('caps the row stagger so a long page does not hold its last rows hidden', () => {
     // `backwards` fill keeps each row at opacity 0 for its whole delay, so an
     // uncapped index-based delay hid row 199 for about eight seconds.
-    const surfaces = sheet('_surfaces.scss');
+    // The backoffice's half of the surfaces is in its own file since the
+    // split; the two rows that stagger are one in each.
+    const surfaces = sheet('_surfaces.scss') + sheet('_admin-surfaces.scss');
 
     expect(surfaces).not.toMatch(/animation-delay:\s*calc\(var\(--item-idx/);
     expect(surfaces.match(/animation-delay:\s*min\(calc\(var\(--item-idx, 0\) \* 40ms\), 240ms\)/g)).toHaveLength(2);
@@ -367,7 +369,7 @@ describe('phone and state rules in the stylesheet source', () => {
   it('stacks the method above the path where the request column is narrow', () => {
     // At a phone's width the request column is a few dozen pixels; side by
     // side, the method label ran over the duration column.
-    const narrow = blocks(sheet('_surfaces.scss'), '@container logs (max-width: 400px)');
+    const narrow = blocks(sheet('_admin-surfaces.scss'), '@container logs (max-width: 400px)');
 
     expect(bodies(narrow, '.oa-log-request').join('')).toMatch(/flex-direction:\s*column/);
   });
@@ -556,7 +558,7 @@ describe('focus and motion on every copy of a control', () => {
     [...source.matchAll(/@media \(prefers-reduced-motion: reduce\) \{([\s\S]*?)\n\}/g)].map((m) => m[1]!).join('\n');
 
   it('rings and stills every pill group, and marks the chosen option with aria-pressed alone', () => {
-    const analytics = sheet('_analytics.scss');
+    const analytics = sheet('_segment.scss');
 
     expect(analytics).toMatch(/\.oa-segment button:focus-visible,\s*\.oa-segmented-option:focus-visible,\s*\.oa-settings-tab:focus-visible \{[^}]*box-shadow:\s*0 0 0 3px/);
     expect(reducedMotion(analytics)).toMatch(/\.oa-segment button,\s*\.oa-settings-tab \{\s*transition: none;/);

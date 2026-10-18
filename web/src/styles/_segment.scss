@@ -1,0 +1,57 @@
+/* The segmented switch, out of _analytics.scss: the usage report drew it
+   first, and the leaderboard draws it too, so it is the one part of that
+   file a first paint needs. It sits where _analytics.scss sat in the order,
+   after _surfaces.scss and _terminal.scss, so it wins the same ties it did. */
+
+/* A few mutually exclusive choices as one pill. The track is the field fill
+   so it reads both on a card and on the page behind one; the height matches
+   a button's, so a switch and a button beside it share one line. */
+.oa-segment {
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 999px;
+  background: var(--ai-field-bg);
+}
+
+.oa-segment button {
+  height: 28px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ai-text-secondary);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.oa-segment button:hover:not([aria-pressed='true']) {
+  background: var(--ai-state-hover);
+  color: var(--ai-text);
+}
+
+.oa-segment button[aria-pressed='true'] {
+  background: var(--ai-primary);
+  color: var(--ai-primary-text);
+}
+
+/* The other two pill groups had no focus rule at all, which left the
+   browser's outline on them: the ring is the one focus mark here. */
+.oa-segment button:focus-visible,
+.oa-segmented-option:focus-visible,
+.oa-settings-tab:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .oa-segment button,
+  .oa-settings-tab {
+    transition: none;
+  }
+}

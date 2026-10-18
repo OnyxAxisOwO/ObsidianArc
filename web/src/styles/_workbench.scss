@@ -273,10 +273,6 @@
   border-bottom: 1px solid var(--ai-border);
 }
 .oa-resource-definition > div:last-child { border: 0; padding-bottom: 0; }
-/* A plugin's manifest lists route patterns and migration names, which have no
-   spaces to wrap at; right-aligned like the other values, and broken anywhere
-   rather than pushing the panel wider than it was dragged to. */
-.oa-plugin-list { text-align: right; overflow-wrap: anywhere; font-size: 12px; }
 /* Tab strip inside Plugins screen for switching between Plugin Management and individual plugin pages. */
 .oa-plugin-tabstrip { display: flex; align-items: center; flex-shrink: 0; gap: 8px; width: 100%; max-width: 1040px; margin: 0 auto 20px; }
 .oa-plugin-tabs { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }

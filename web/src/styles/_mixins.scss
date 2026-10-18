@@ -130,3 +130,37 @@ $frosted-filter: blur(20px) saturate(1.6);
   outline: none;
   box-shadow: 0 0 0 3px var(--ai-focus-shadow);
 }
+
+// The pill a filter field and the bulk-ban reason both wear: one height, the
+// field fill and no border, so a row of them shares one top and bottom edge.
+// The bulk reason sits outside .oa-filters, where these selectors do not reach,
+// so it takes the pill by mixin rather than by a copy. $width is given only
+// there; the filter fields take the width of the row they sit in.
+// Here rather than in _surfaces.scss because the filter fields and the bulk
+// reason now live on both sides of the backoffice split (admin.scss), and a
+// partial that emits rules cannot be @used by the other side without
+// emitting them twice.
+@mixin filter-pill($width: null) {
+  box-sizing: border-box;
+  @if $width {
+    width: $width;
+    max-width: 100%;
+  }
+  height: 34px;
+  padding: 0 14px;
+  border: none;
+  border-radius: 999px;
+  background-color: var(--ai-field-bg);
+  color: var(--ai-text);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.4;
+  transition: background-color 0.15s ease;
+}
+
+// The ring a filter pill wears when it has focus, shared with the bulk reason.
+@mixin filter-pill-focus {
+  outline: none;
+  background-color: var(--ai-field-bg-hover);
+  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+}

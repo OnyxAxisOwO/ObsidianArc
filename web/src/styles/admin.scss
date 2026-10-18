@@ -1,0 +1,21 @@
+// What only the backoffice draws, imported by views/admin/AdminPage.vue so
+// that Vite emits it as the backoffice chunk's own stylesheet, fetched with
+// that chunk, rather than as part of the first paint every reader downloads.
+//
+// It loads after index.scss, and these partials used to follow everything in
+// it except `_terminal`, `_segment` and `_front`: so each rule here still
+// wins the ties it won before, provided none of those three styles the same
+// element at the same specificity. web/test/styles.test.ts holds the split.
+//
+// A rule belongs here only if every selector in it needs a class that only
+// the backoffice renders. One a screen outside it can draw stays in index.scss;
+// moved here, it would go unstyled for every reader who never opens the
+// backoffice.
+
+@use 'admin-surfaces';
+// The overview has its own layout; its rules stay out of the shared surfaces.
+@use 'dashboard';
+// The usage report and the chart pieces the overview borrows from it.
+@use 'analytics';
+// Grouped administration forms share only this local layout.
+@use 'workbench';

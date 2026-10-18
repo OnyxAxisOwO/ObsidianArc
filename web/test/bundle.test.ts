@@ -49,21 +49,25 @@ describe('code splitting invariants in production bundle', () => {
     expect(pluginFiles, `plugin chunks: ${pluginFiles.join(', ')}`).toHaveLength(pluginNames.length);
     const core = files.filter((f) => !pluginFiles.includes(f));
 
-    // Exactly eight besides the plugins', and deliberately exact: the project ships no fonts, no
-    // images and no other chunks, so a ninth file is either a split that
+    // Exactly nine besides the plugins', and deliberately exact: the project ships no fonts, no
+    // images and no other chunks, so a tenth file is either a split that
     // was not meant to happen or an asset nobody decided to ship. Route-level
     // splitting in particular produces a dozen of these on its own and is
     // switched off for everything but the backoffice and the terminal — see
     // src/router. It was five until the terminal moved out of the backoffice
     // into every account's menu, six until the front page arrived, and seven
     // when the landing page moved out of RootView's static imports.
+    // Nine since the backoffice's own stylesheet moved out of the entry's:
+    // AdminPage-*.css is the only stylesheet besides index-*.css, decided
+    // rather than produced (see src/styles/admin.scss).
     // A chunk shared between two plugins — a helper both import — shows up
-    // here as a ninth file: keep such helpers in the entry instead.
-    expect(core, `unexpected build output: ${core.join(', ')}`).toHaveLength(8);
+    // here as a tenth file: keep such helpers in the entry instead.
+    expect(core, `unexpected build output: ${core.join(', ')}`).toHaveLength(9);
 
     const indexJs = files.filter((f) => /^index-[^.]+\.js$/.test(f));
     const indexCss = files.filter((f) => /^index-[^.]+\.css$/.test(f));
     const adminJs = files.filter((f) => /^AdminPage-[^.]+\.js$/.test(f));
+    const adminCss = files.filter((f) => /^AdminPage-[^.]+\.css$/.test(f));
     const zhJs = files.filter((f) => /^i18n\.zh-[^.]+\.js$/.test(f));
     const mathJs = files.filter((f) => /^math-[^.]+\.js$/.test(f));
     const terminalJs = files.filter((f) => /^TerminalPanel-[^.]+\.js$/.test(f));
@@ -73,11 +77,79 @@ describe('code splitting invariants in production bundle', () => {
     expect(indexJs.length).toBe(1);
     expect(indexCss.length).toBe(1);
     expect(adminJs.length).toBe(1);
+    expect(adminCss.length).toBe(1);
     expect(zhJs.length).toBe(1);
     expect(mathJs.length).toBe(1);
     expect(terminalJs.length).toBe(1);
     expect(frontJs.length).toBe(1);
     expect(landingJs.length).toBe(1);
+  });
+
+  // The backoffice's stylesheet is fetched only with the backoffice, so a rule
+  // in it must be one no other screen can draw: every selector needs a class
+  // that no other chunk ever writes. A class that appears in the entry, or in
+  // another lazy chunk, would leave that screen unstyled for every reader who
+  // has not opened the backoffice first.
+  it('gives the backoffice stylesheet only rules no other screen can draw', () => {
+    const files = builtAssets();
+    const read = (re: RegExp) => fs.readFileSync(path.join(assetsDir, files.find((f) => re.test(f))!), 'utf8');
+    const adminCss = read(/^AdminPage-[^.]+\.css$/);
+    const indexCss = read(/^index-[^.]+\.css$/);
+    const elsewhere = files
+      .filter((f) => /\.js$/.test(f) && !/^AdminPage-/.test(f))
+      .map((f) => fs.readFileSync(path.join(assetsDir, f), 'utf8'))
+      .concat(fs.readFileSync(path.resolve(assetsDir, '../index.html'), 'utf8'))
+      .join('\n');
+    const drawnElsewhere = (name: string) =>
+      new RegExp(`(?<![\\w-])${name.replace(/[-]/g, '\\-')}(?![\\w-])`).test(elsewhere);
+
+    // Each one checked by hand: a modifier only the backoffice adds to a
+    // shared control, and a title only the backoffice fills with markup.
+    const reviewed = new Set(['.oa-filter-select.set', '.oa-group-row-title .oa-badge']);
+
+    const selectors: string[] = [];
+    let depth = 0;
+    let keyframes = -1;
+    let start = 0;
+    for (let i = 0; i < adminCss.length; i++) {
+      const c = adminCss[i];
+      if (c === '{') {
+        const prelude = adminCss.slice(start, i).trim();
+        if (prelude.startsWith('@keyframes')) keyframes = depth;
+        else if (!prelude.startsWith('@') && keyframes < 0) selectors.push(prelude);
+        depth++;
+        start = i + 1;
+      } else if (c === '}') {
+        depth--;
+        if (depth === keyframes) keyframes = -1;
+        start = i + 1;
+      } else if (c === ';' && depth === 0) {
+        start = i + 1;
+      }
+    }
+    expect(selectors.length).toBeGreaterThan(500);
+
+    const shared: string[] = [];
+    for (const list of selectors) {
+      if (reviewed.has(list)) continue;
+      for (const selector of list.split(/,(?![^(]*\))/)) {
+        const required = [
+          ...selector
+            .replace(/:(not|is|where)\((?:[^()]|\([^()]*\))*\)/g, '')
+            .replace(/\[[^\]]*\]/g, '')
+            .matchAll(/[.#](-?[A-Za-z_][\w-]*)/g),
+        ].map((m) => m[1]!);
+        if (!required.some((name) => !drawnElsewhere(name))) shared.push(selector);
+      }
+    }
+    expect(shared, 'rules in the backoffice stylesheet that another screen can draw').toEqual([]);
+
+    // And the split happened: the entry no longer carries the overview's
+    // rules, while the two pieces other screens draw stayed in it.
+    expect(adminCss).toContain('.oa-dashboard-card');
+    expect(indexCss).not.toContain('.oa-dashboard-card');
+    expect(indexCss).toContain('.oa-segment');
+    expect(indexCss).toMatch(/\.oa-plugin-list\{[^}]*text-align:right/);
   });
 
   it('keeps admin, Chinese translation, and math renderer out of the main bundle', () => {
@@ -249,8 +321,9 @@ describe('code splitting invariants in production bundle', () => {
   it('keeps the first paint within its gzip budget', () => {
     // 250 kB until the backoffice's English moved into its own chunk and took
     // about 29 kB off the entry; ratcheted down then, so the room it made is
-    // not quietly spent.
-    const FIRST_PAINT_GZIP_BUDGET = 225_000;
+    // not quietly spent. 225 kB until the backoffice's stylesheet followed it
+    // and took about 13.5 kB more.
+    const FIRST_PAINT_GZIP_BUDGET = 210_000;
     const gzipped = firstPaintGzipBytes();
     expect(gzipped, `first paint is ${gzipped} bytes gzipped, budget ${FIRST_PAINT_GZIP_BUDGET}`).toBeLessThanOrEqual(
       FIRST_PAINT_GZIP_BUDGET,

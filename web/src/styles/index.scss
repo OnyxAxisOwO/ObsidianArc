@@ -12,6 +12,11 @@
 // partials above it because its panels sit over them. `_terminal` and the
 // screen partials after it were written against the same vocabulary and
 // override a little of it where they must, so they come after `_surfaces`.
+//
+// What only the backoffice draws is in admin.scss, which AdminPage.vue
+// imports, so it reaches a reader with the backoffice chunk and not with the
+// first paint. That stylesheet loads after this one, so each of its rules
+// still comes after everything here, as it did when it was part of it.
 
 @use 'base';
 @use 'chat';
@@ -22,12 +27,10 @@
 // screen with four hundred lines of rules that nothing else consumes, where
 // `_surfaces` is the vocabulary every non-chat screen shares.
 @use 'terminal';
-// The overview has its own layout; its rules stay out of the shared surfaces.
-@use 'dashboard';
-// The usage report and the chart pieces the overview borrows from it.
-@use 'analytics';
-// Grouped administration forms share only this local layout.
-@use 'workbench';
+// The segmented switch: the one piece of the usage report's vocabulary a
+// screen outside the backoffice draws, in the place the report's file had.
+// The backoffice's own partials are not here: see admin.scss.
+@use 'segment';
 // The public front page. Last: it is one screen, it consumes the vocabulary
 // every file above defines, and it overrides a little of `_surfaces`.
 @use 'front';

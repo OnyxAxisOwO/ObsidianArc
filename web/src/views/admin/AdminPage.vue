@@ -10,6 +10,10 @@
 // dictionary, and every screen below reads it. Imported here rather than by
 // the router so it lands in this chunk instead of a file of its own.
 import '@/i18n.admin';
+// The same for what only the backoffice draws: Vite emits it as this chunk's
+// stylesheet and loads it before the chunk runs, so these screens never
+// paint unstyled, and a reader who never opens them never downloads it.
+import '@/styles/admin.scss';
 import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useMediaQuery } from '@vueuse/core';
 import { useRoute, useRouter, type RouteLocationRaw } from 'vue-router';
