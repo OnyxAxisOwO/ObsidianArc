@@ -103,7 +103,8 @@ func TestAMessageOfSpacesIsRefusedBeforeAnythingIsBilled(t *testing.T) {
 	if call := lab.fixture.upstream.lastCall(); call.path != "" {
 		t.Errorf("the provider was called, at %q", call.path)
 	}
-	list, err := lab.fixture.conversations.List(context.Background(), lab.fixture.account.ID, 0)
+	archived := false
+	list, err := lab.fixture.conversations.ListWithFilter(context.Background(), lab.fixture.account.ID, conversation.ListFilter{Limit: 0, Archived: &archived})
 	if err != nil {
 		t.Fatal(err)
 	}

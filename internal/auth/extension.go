@@ -247,7 +247,7 @@ func (s *Service) runGuards(ctx context.Context, action string, tokens map[strin
 				if errors.As(err, &refusal) {
 					reason = refusal.Reason
 				}
-				s.Hooks.OnChallengeFailure(ctx, g.Event, ip, username, reason)
+				s.Hooks.OnChallengeFailure(ctx, g.Event, "plugin:"+g.Plugin, ip, username, reason)
 			}
 			return Verdict{}, err
 		}

@@ -32,7 +32,7 @@ func (s *Service) verifyProof(ctx context.Context, ip, username string, solution
 	}
 	if solution == nil {
 		if s.Hooks.OnChallengeFailure != nil {
-			s.Hooks.OnChallengeFailure(ctx, "pow_challenge", ip, username, "缺少 PoW 解答")
+			s.Hooks.OnChallengeFailure(ctx, "pow_challenge", "", ip, username, "缺少 PoW 解答")
 		}
 		return pow.ErrMissingSolution
 	}
@@ -53,7 +53,7 @@ func (s *Service) verifyProof(ctx context.Context, ip, username string, solution
 			reason = "PoW 挑战已被使用"
 		}
 		if s.Hooks.OnChallengeFailure != nil {
-			s.Hooks.OnChallengeFailure(ctx, "pow_challenge", ip, username, reason)
+			s.Hooks.OnChallengeFailure(ctx, "pow_challenge", "", ip, username, reason)
 		}
 		return err
 	}

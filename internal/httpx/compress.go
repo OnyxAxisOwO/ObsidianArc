@@ -205,16 +205,21 @@ func mediaType(value string) string {
 // the wildcard. And the quality was matched as a string prefix, so
 // "gzip;q=0.001" read as a refusal: it is the faintest possible acceptance,
 // not a rejection.
-func acceptsGzip(header string) bool {
+func acceptsGzip(header string) bool { return AcceptsEncoding(header, "gzip") }
+
+// AcceptsEncoding is acceptsGzip for any content coding, named in lower case:
+// the static files choose between precompressed brotli and gzip by it, and
+// have to read the header exactly as this middleware does.
+func AcceptsEncoding(header, coding string) bool {
 	wildcard, seen := 0.0, false
 	for _, part := range strings.Split(header, ",") {
 		fields := strings.Split(part, ";")
 		switch strings.ToLower(strings.TrimSpace(fields[0])) {
-		case "gzip":
+		case coding:
 			return qualityOf(fields[1:]) > 0
 		case "*":
-			// Remembered rather than returned: a later gzip entry is more
-			// specific and decides on its own.
+			// Remembered rather than returned: a later entry naming the
+			// coding is more specific and decides on its own.
 			if !seen {
 				wildcard, seen = qualityOf(fields[1:]), true
 			}

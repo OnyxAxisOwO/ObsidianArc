@@ -366,7 +366,7 @@ func (s *Store) clearOtherDefaults(ctx context.Context, q database.Queryer, keep
 	return nil
 }
 
-type rowScanner interface{ Scan(dest ...any) error }
+type rowScanner = database.RowScanner
 
 func scan(row rowScanner) (Group, error) {
 	var record Group

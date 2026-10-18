@@ -15,9 +15,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
@@ -775,26 +777,22 @@ func (s *Store) ListForUser(ctx context.Context, groupID string, isAdmin bool) (
 
 // FindAPIModel resolves one API-facing model name without materialising full
 // model and provider rows for the whole catalogue on every generation.
+//
+// SQLite's LOWER folds ASCII alone, so the SQL prefilter below would miss a
+// name or a restriction that differs from the stored one only in the case of
+// a non-ASCII letter, while the listing, which compares in Go, matches it.
+// A request that spells such a letter is resolved in Go instead, over a narrow
+// projection of what the caller may use; the common case keeps the prefilter.
 func (s *Store) FindAPIModel(
 	ctx context.Context, groupID string, isAdmin bool, restrictions []string, wanted string,
 ) (string, error) {
+	if !isASCII(wanted) || slices.ContainsFunc(restrictions, func(r string) bool { return !isASCII(r) }) {
+		return s.findAPIModelFolded(ctx, groupID, isAdmin, restrictions, wanted)
+	}
+	availableFrom, availableArgs := usableModelsFrom(groupID, isAdmin)
 	available := `SELECT m.id, m.model_id, m.api_name, m.display_name, m.sort_order,
 		CASE WHEN m.api_name <> '' THEN m.api_name ELSE m.model_id END AS public_name
-		FROM models m
-		JOIN providers p ON p.id = m.provider_id
-		WHERE m.enabled = ? AND p.enabled = ? AND m.hidden = ?`
-	availableArgs := []any{true, true, false}
-	if !isAdmin {
-		available += ` AND EXISTS (
-			SELECT 1 FROM user_groups g
-			WHERE g.id = ?
-			  AND (g.allow_all_models = ? OR EXISTS (
-				SELECT 1 FROM group_models gm
-				WHERE gm.group_id = g.id AND gm.model_id = m.id AND gm.access = ?
-			  ))
-		)`
-		availableArgs = append(availableArgs, groupID, true, AccessUse)
-	}
+		` + availableFrom
 	if len(restrictions) > 0 {
 		available += ` AND (`
 		for i, restriction := range restrictions {
@@ -833,62 +831,197 @@ func (s *Store) FindAPIModel(
 	}
 	defer rows.Close()
 
-	// The rows arrive in sort order, so the first hit in a tier is the one
-	// the operator listed first. Taking the first hit of any tier let a
-	// display name at sort 0 shadow an API name at sort 5: a label should
-	// never beat a name.
-	const noMatch = 3
-	bestID, bestTier := "", noMatch
+	var found []APIRow
 	for rows.Next() {
-		var candidate struct {
-			ID          string
-			ModelID     string
-			APIName     string
-			DisplayName string
-			Claims      int
-		}
-		if err := rows.Scan(&candidate.ID, &candidate.ModelID, &candidate.APIName,
-			&candidate.DisplayName, &candidate.Claims); err != nil {
+		var id, modelID, apiName, displayName string
+		var claims int
+		if err := rows.Scan(&id, &modelID, &apiName, &displayName, &claims); err != nil {
 			return "", fmt.Errorf("model: scan API model: %w", err)
 		}
-		ref := candidate.APIName
-		if ref == "" {
-			ref = candidate.ModelID
-			if ref == "" {
-				ref = candidate.ID
-			} else if candidate.Claims > 1 {
-				ref += "-" + IDTail(candidate.ID)
-			}
-		}
-		// An unnamed row's display name defaults to its upstream id. Where several
-		// rows share that id, each would match the bare id at this tier and the
-		// first by sort order would answer, though the listing offers only their
-		// qualified refs. The bare id reaches none of them.
-		sharedBareID := candidate.APIName == "" && candidate.Claims > 1 &&
-			strings.EqualFold(candidate.DisplayName, candidate.ModelID)
-		tier := noMatch
-		switch {
-		case candidate.ID == wanted:
-			tier = 0
-		case strings.EqualFold(ref, wanted):
-			tier = 1
-		case !sharedBareID && strings.EqualFold(candidate.DisplayName, wanted):
-			tier = 2
-		}
-		if tier == 0 {
-			return candidate.ID, nil
-		}
-		if tier < bestTier {
-			bestID, bestTier = candidate.ID, tier
-		}
+		found = append(found, NewAPIRow(id, modelID, apiName, displayName, claims))
 	}
 	if err := rows.Err(); err != nil {
 		return "", fmt.Errorf("model: read API model candidates: %w", err)
 	}
-	if bestTier == noMatch {
-		return "", ErrNotFound
+	if i := PickAPIRow(found, wanted); i >= 0 {
+		return found[i].ID, nil
 	}
-	return bestID, nil
+	return "", ErrNotFound
+}
+
+// findAPIModelFolded is FindAPIModel with every name compared in Go, for the
+// spellings SQLite cannot fold. It reads what the caller may use and nothing
+// of the provider beyond whether it is on; the restriction and the claims are
+// applied to that set here, the way the SQL applies them to its own.
+func (s *Store) findAPIModelFolded(
+	ctx context.Context, groupID string, isAdmin bool, restrictions []string, wanted string,
+) (string, error) {
+	from, args := usableModelsFrom(groupID, isAdmin)
+	rows, err := s.db.Query(ctx,
+		`SELECT m.id, m.model_id, m.api_name, m.display_name `+from+`
+		 ORDER BY m.sort_order, m.display_name`, args...)
+	if err != nil {
+		return "", fmt.Errorf("model: find API model: %w", err)
+	}
+	defer rows.Close()
+	type row struct{ id, modelID, apiName, displayName string }
+	var usable []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.id, &r.modelID, &r.apiName, &r.displayName); err != nil {
+			return "", fmt.Errorf("model: scan API model: %w", err)
+		}
+		if len(restrictions) > 0 && !slices.ContainsFunc(restrictions, func(restriction string) bool {
+			return strings.EqualFold(r.id, restriction) || strings.EqualFold(r.displayName, restriction)
+		}) {
+			continue
+		}
+		usable = append(usable, r)
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("model: read API model candidates: %w", err)
+	}
+
+	claims := make(map[string]int, len(usable))
+	for _, r := range usable {
+		claims[PublicName(r.apiName, r.modelID)]++
+	}
+	found := make([]APIRow, 0, len(usable))
+	for _, r := range usable {
+		found = append(found, NewAPIRow(r.id, r.modelID, r.apiName, r.displayName, claims[PublicName(r.apiName, r.modelID)]))
+	}
+	if i := PickAPIRow(found, wanted); i >= 0 {
+		return found[i].ID, nil
+	}
+	return "", ErrNotFound
+}
+
+// usableModelsFrom is the FROM and WHERE of the models a caller may send to:
+// enabled, not hidden, on an enabled provider, and usable by their group.
+func usableModelsFrom(groupID string, isAdmin bool) (string, []any) {
+	from := `FROM models m
+		JOIN providers p ON p.id = m.provider_id
+		WHERE m.enabled = ? AND p.enabled = ? AND m.hidden = ?`
+	args := []any{true, true, false}
+	if !isAdmin {
+		from += ` AND EXISTS (
+			SELECT 1 FROM user_groups g
+			WHERE g.id = ?
+			  AND (g.allow_all_models = ? OR EXISTS (
+				SELECT 1 FROM group_models gm
+				WHERE gm.group_id = g.id AND gm.model_id = m.id AND gm.access = ?
+			  ))
+		)`
+		args = append(args, groupID, true, AccessUse)
+	}
+	return from, args
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
+}
+
+// APIRow is a model as the OpenAI-compatible surface names it. The listing
+// and the lookup both build one per row and rank it with Tier, so the two
+// cannot disagree about which model a name reaches.
+type APIRow struct {
+	ID          string
+	ModelID     string
+	APIName     string
+	DisplayName string
+	// The identifier the listing advertises the row under: APIRef.
+	Ref string
+	// Ref is not the upstream id, which for an unnamed row means other rows
+	// share that id and Ref carries the row's IDTail.
+	Qualified bool
+}
+
+// NewAPIRow builds a row's names, claims being how many of the rows the
+// caller may use answer to its public name.
+func NewAPIRow(id, modelID, apiName, displayName string, claims int) APIRow {
+	ref := APIRef(id, modelID, apiName, claims)
+	return APIRow{
+		ID: id, ModelID: modelID, APIName: apiName, DisplayName: displayName,
+		Ref: ref, Qualified: ref != modelID,
+	}
+}
+
+// PublicName is the name this instance answers to for a model, before any
+// qualifying: the API name an administrator set, or else the upstream id.
+func PublicName(apiName, modelID string) string {
+	if apiName != "" {
+		return apiName
+	}
+	return modelID
+}
+
+// APIRef is the identifier a row is advertised under, given how many usable
+// rows claim its public name. A chosen API name is never qualified, since a
+// unique index keeps it its own and qualifying it would defeat choosing it.
+// An upstream id two rows share — one model behind a primary and a fallback
+// provider — qualifies both, because which is "second" depends on a sort
+// order an administrator can change.
+func APIRef(id, modelID, apiName string, claims int) string {
+	name := PublicName(apiName, modelID)
+	switch {
+	case name == "":
+		return id
+	case apiName != "":
+		return apiName
+	case claims > 1:
+		return name + "-" + IDTail(id)
+	default:
+		return name
+	}
+}
+
+// How a row answers to a requested name, best first.
+const (
+	APITierID = iota
+	APITierRef
+	APITierDisplayName
+	APINoMatch
+)
+
+// Tier ranks how the row answers to wanted: by its row id, by the name the
+// listing gave out, or by its display name.
+func (r APIRow) Tier(wanted string) int {
+	// An unnamed row's display name defaults to its upstream id. Where several
+	// rows share that id, each would match the bare id at this tier and the
+	// first by sort order would answer, though the listing offers only their
+	// qualified refs. The bare id reaches none of them.
+	sharedBareID := r.APIName == "" && r.Qualified && strings.EqualFold(r.DisplayName, r.ModelID)
+	switch {
+	case r.ID == wanted:
+		return APITierID
+	case strings.EqualFold(r.Ref, wanted):
+		return APITierRef
+	case !sharedBareID && strings.EqualFold(r.DisplayName, wanted):
+		return APITierDisplayName
+	}
+	return APINoMatch
+}
+
+// PickAPIRow is the index of the row wanted reaches, or -1. The rows are in
+// sort order, so the first hit in a tier is the one the operator listed
+// first; taking the first hit of any tier let a display name at sort 0 shadow
+// an API name at sort 5, and a label should never beat a name.
+func PickAPIRow(rows []APIRow, wanted string) int {
+	best, bestTier := -1, APINoMatch
+	for i, row := range rows {
+		if tier := row.Tier(wanted); tier < bestTier {
+			best, bestTier = i, tier
+			if tier == APITierID {
+				break
+			}
+		}
+	}
+	return best
 }
 
 func splitQualifiedAPIRef(wanted string) (string, string, bool) {

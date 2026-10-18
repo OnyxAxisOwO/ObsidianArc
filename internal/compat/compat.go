@@ -471,71 +471,37 @@ func describeModel(record model.Model, ref string) modelObject {
 func publicRefs(records []model.Model) map[string]string {
 	claims := make(map[string]int, len(records))
 	for _, record := range records {
-		if name := publicName(record); name != "" {
+		if name := model.PublicName(record.APIName, record.ModelID); name != "" {
 			claims[name]++
 		}
 	}
 
+	// model.APIRef holds the rules, because the lookup a request goes through
+	// has to give out the same names this listing does.
 	refs := make(map[string]string, len(records))
 	for _, record := range records {
-		name := publicName(record)
-		switch {
-		case name == "":
-			refs[record.ID] = record.ID
-		case record.APIName != "":
-			// Somebody chose this one and a unique index keeps it theirs.
-			// Qualifying a chosen name would defeat choosing it.
-			refs[record.ID] = record.APIName
-		case claims[name] > 1:
-			// One upstream model reached through two providers — a primary
-			// and a fallback — is two rows under one id. Handing both the
-			// same identifier would make one unreachable, so both are
-			// qualified: both, not the second, because which one is "second"
-			// depends on a sort order an administrator can change.
-			refs[record.ID] = name + "-" + model.IDTail(record.ID)
-		default:
-			refs[record.ID] = name
-		}
+		refs[record.ID] = model.APIRef(record.ID, record.ModelID, record.APIName,
+			claims[model.PublicName(record.APIName, record.ModelID)])
 	}
 	return refs
 }
 
-// The name this instance answers to for a model, before any qualifying.
-func publicName(record model.Model) string {
-	if record.APIName != "" {
-		return record.APIName
-	}
-	return record.ModelID
-}
-
-// findListed resolves a model id against the listing in the order
-// model.FindAPIModel does: the row id, then the name the listing gave out, then
-// the display name. A pass per tier, not one pass in sort order, because a
-// display name at sort 0 would otherwise answer for a model whose advertised
-// id is that same string — the listing and this lookup would name different
-// models. `refs` is what the listing gave out — the API name where one is set,
-// and only that: the upstream id is not a fourth spelling.
+// findListed resolves a model id against the listing with model.PickAPIRow,
+// the ranking model.FindAPIModel uses, so a GET and a POST naming the same
+// model reach the same row. `refs` is what the listing gave out — the API
+// name where one is set, and only that: the upstream id is not a fourth
+// spelling.
 func findListed(available []model.Model, refs map[string]string, wanted string) (model.Model, bool) {
-	tiers := []func(model.Model) bool{
-		func(record model.Model) bool { return record.ID == wanted },
-		func(record model.Model) bool { return strings.EqualFold(refs[record.ID], wanted) },
-		// An unnamed row's display name defaults to its upstream id. Where
-		// several rows share that id the bare id is not offered by the listing,
-		// so it must not resolve here either; GET and POST have to agree on it.
-		// A row shares its id exactly when refs qualified it, so this reads refs
-		// rather than counting the claims a second time.
-		func(record model.Model) bool {
-			sharedBare := record.APIName == "" && refs[record.ID] != record.ModelID &&
-				strings.EqualFold(record.DisplayName, record.ModelID)
-			return !sharedBare && strings.EqualFold(record.DisplayName, wanted)
-		},
+	rows := make([]model.APIRow, 0, len(available))
+	for _, record := range available {
+		ref := refs[record.ID]
+		rows = append(rows, model.APIRow{
+			ID: record.ID, ModelID: record.ModelID, APIName: record.APIName,
+			DisplayName: record.DisplayName, Ref: ref, Qualified: ref != record.ModelID,
+		})
 	}
-	for _, matches := range tiers {
-		for _, record := range available {
-			if matches(record) {
-				return record, true
-			}
-		}
+	if i := model.PickAPIRow(rows, wanted); i >= 0 {
+		return available[i], true
 	}
 	return model.Model{}, false
 }

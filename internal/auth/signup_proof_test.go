@@ -34,7 +34,7 @@ func TestCheckSignupProofRefusesWhatRegisterRefusesAndLogsIt(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 	var logged []string
-	f.auth.Hooks.OnChallengeFailure = func(_ context.Context, event, ip, _, reason string) {
+	f.auth.Hooks.OnChallengeFailure = func(_ context.Context, event, _, ip, _, reason string) {
 		logged = append(logged, event+"/"+ip+"/"+reason)
 	}
 

@@ -235,14 +235,6 @@ func (s *Store) ListWithFilter(ctx context.Context, userID string, filter ListFi
 	return scanConversations(rows)
 }
 
-// List is the first page of a user's active conversations, newest first. The
-// tests read an account through it; the product paths page with ListPage or
-// ListWithFilter, so it has no production caller.
-func (s *Store) List(ctx context.Context, userID string, limit int) ([]Conversation, error) {
-	f := false
-	return s.ListWithFilter(ctx, userID, ListFilter{Limit: clampLimit(limit), Archived: &f})
-}
-
 // ListForExport is one page of every conversation a user owns, archived ones
 // included, after afterID ("" for the first page), in ID order.
 //

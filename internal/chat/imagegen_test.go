@@ -116,7 +116,8 @@ func TestAnImageModelIsStillAnOrdinaryChatModel(t *testing.T) {
 		t.Errorf("the turn went to %q, want the chat endpoint", path)
 	}
 
-	conversations, err := lab.fixture.conversations.List(context.Background(), lab.fixture.account.ID, 10)
+	archived := false
+	conversations, err := lab.fixture.conversations.ListWithFilter(context.Background(), lab.fixture.account.ID, conversation.ListFilter{Limit: 10, Archived: &archived})
 	if err != nil {
 		t.Fatal(err)
 	}

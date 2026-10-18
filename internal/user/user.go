@@ -1058,7 +1058,7 @@ func (s *Store) JoinColumns(alias string) string {
 // rather than reading one column as another.
 func (s *Store) ScanRow(row interface{ Scan(dest ...any) error }) (User, error) { return s.scan(row) }
 
-type rowScanner interface{ Scan(dest ...any) error }
+type rowScanner = database.RowScanner
 
 // scan reads what columns selects, then fills extra from whatever the query
 // selected after it.
@@ -1126,10 +1126,10 @@ func orDefault[T ~string](value, fallback T) T {
 }
 
 func (s *Store) translateUniqueViolation(err error, hadEmail bool) error {
-	message := strings.ToLower(err.Error())
-	if !strings.Contains(message, "unique") && !strings.Contains(message, "duplicate") {
+	if !database.IsUnique(err) {
 		return fmt.Errorf("user: write: %w", err)
 	}
+	message := strings.ToLower(err.Error())
 	if key := s.takenField(message); key != "" {
 		return &FieldError{Key: key, Reason: ErrFieldTaken}
 	}

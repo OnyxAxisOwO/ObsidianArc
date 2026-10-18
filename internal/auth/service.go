@@ -161,8 +161,12 @@ type Hooks struct {
 	// wiring, which is the package that knows what is configured: internal/oauth
 	// imports this one. Nil is none.
 	SignInProviderCount func() int
-	// Challenge failure hook for recording to security events.
-	OnChallengeFailure func(ctx context.Context, event, ip, username, reason string)
+	// Challenge failure hook for recording to security events. source is
+	// empty for the core's own challenges and "plugin:<name>" for a plugin's
+	// guard, so the log files a plugin's refusal under the plugin, the way a
+	// package's own security events are, and a plugin's guard cannot pass its
+	// refusals off as the core's.
+	OnChallengeFailure func(ctx context.Context, event, source, ip, username, reason string)
 	// Asks a model whether a sign-up looks like a person. Nil is off.
 	//
 	// A function rather than the reviewer itself: the review needs a model,
@@ -463,7 +467,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 		if captchaMode == settings.CaptchaModeTurnstile || captchaMode == settings.CaptchaModeBoth {
 			if err := s.Challenge.Check(ctx, in.Turnstile, in.IP); err != nil {
 				if s.Hooks.OnChallengeFailure != nil {
-					s.Hooks.OnChallengeFailure(ctx, "turnstile_challenge", in.IP, in.Username, "Turnstile 人机验证未通过")
+					s.Hooks.OnChallengeFailure(ctx, "turnstile_challenge", "", in.IP, in.Username, "Turnstile 人机验证未通过")
 				}
 				return user.User{}, "", err
 			}

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -15,6 +14,8 @@ import (
 	"time"
 
 	"github.com/tetratelabs/wazero"
+
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin/pkgtest"
 )
 
 var (
@@ -42,10 +43,7 @@ func guest(t *testing.T) []byte {
 		// past this build; left behind, every run would leave one in the temp dir.
 		defer os.RemoveAll(dir)
 		out := filepath.Join(dir, "guest.wasm")
-		cmd := exec.Command("go", "build", "-buildmode=c-shared", "-o", out, "./testdata/guest")
-		cmd.Env = append(os.Environ(), "GOOS=wasip1", "GOARCH=wasm")
-		if b, err := cmd.CombinedOutput(); err != nil {
-			guestErr = errors.New(string(b))
+		if guestErr = pkgtest.CompileWasm(".", "./testdata/guest", out); guestErr != nil {
 			return
 		}
 		guestWasm, guestErr = os.ReadFile(out)

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
@@ -74,8 +73,7 @@ func (s *Store) Link(ctx context.Context, q database.Queryer, userID string, ide
 		id.New(), identity.Provider, identity.Subject, userID,
 		identity.Email, identity.Login, now, now)
 	if err != nil {
-		message := strings.ToLower(err.Error())
-		if strings.Contains(message, "unique") || strings.Contains(message, "duplicate") {
+		if database.IsUnique(err) {
 			return ErrAlreadyLinked
 		}
 		return fmt.Errorf("oauth: link identity: %w", err)

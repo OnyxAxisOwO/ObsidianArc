@@ -446,7 +446,7 @@ func (s *Store) MarkAllRead(ctx context.Context, userID string) error {
 	return nil
 }
 
-type rowScanner interface{ Scan(dest ...any) error }
+type rowScanner = database.RowScanner
 
 func scan(row rowScanner) (Announcement, error) {
 	var record Announcement

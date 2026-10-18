@@ -135,7 +135,8 @@ func TestExportedDocumentImportsBackUnchanged(t *testing.T) {
 		t.Fatalf("import of the export: %v", err)
 	}
 
-	threads, err := f.conversations.List(ctx, f.stranger.ID, 50)
+	archived := false
+	threads, err := f.conversations.ListWithFilter(ctx, f.stranger.ID, conversation.ListFilter{Limit: 50, Archived: &archived})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +203,8 @@ func TestFailedTurnCodeSurvivesExportAndImport(t *testing.T) {
 
 	codes := map[string]string{}
 	for _, account := range []user.User{f.stranger, legacy} {
-		threads, err := f.conversations.List(ctx, account.ID, 50)
+		archived := false
+		threads, err := f.conversations.ListWithFilter(ctx, account.ID, conversation.ListFilter{Limit: 50, Archived: &archived})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -417,7 +419,8 @@ func TestExportOfStoredNULImportsBack(t *testing.T) {
 		t.Fatalf("import of an export that held a stored NUL: %v", err)
 	}
 
-	threads, err := f.conversations.List(ctx, f.stranger.ID, 50)
+	archived := false
+	threads, err := f.conversations.ListWithFilter(ctx, f.stranger.ID, conversation.ListFilter{Limit: 50, Archived: &archived})
 	if err != nil {
 		t.Fatal(err)
 	}

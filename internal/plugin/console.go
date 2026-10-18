@@ -11,18 +11,20 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/console"
 )
 
+var (
+	view     = PermissionView + "," + PermissionManage + "," + PermissionRemove
+	nameArg  = []console.Arg{{Name: "name", Hint: console.Text{EN: "plugin name", ZH: "插件名"}, Required: true}}
+	codeFlag = console.Flag{Name: "--code", Hint: console.Text{
+		EN: "a code from your authenticator, or a recovery code", ZH: "验证器中的验证码，或一个恢复码"},
+		Value: "CODE", Sensitive: true}
+)
+
 // The console's commands for the plugins screen. They live here, beside the
 // routes, for the reason a plugin's own commands live with the plugin: the
 // console's route-parity test reads admin.go, and these routes are mounted
 // from this package.
-func init() {
-	view := PermissionView + "," + PermissionManage + "," + PermissionRemove
-	nameArg := []console.Arg{{Name: "name", Hint: console.Text{EN: "plugin name", ZH: "插件名"}, Required: true}}
-	codeFlag := console.Flag{Name: "--code", Hint: console.Text{
-		EN: "a code from your authenticator, or a recovery code", ZH: "验证器中的验证码，或一个恢复码"},
-		Value: "CODE", Sensitive: true}
-
-	console.RegisterCore(console.Command{
+var commands = []console.Command{
+	{
 		Name:    "plugin list",
 		Group:   "instance",
 		Summary: console.Text{EN: "List the plugins this build carries", ZH: "列出本构建带有的插件"},
@@ -56,9 +58,8 @@ func init() {
 			}
 			return rt.Table([]string{"name", "version", "state", "title"}, rows)
 		},
-	})
-
-	console.RegisterCore(console.Command{
+	},
+	{
 		Name:    "plugin show",
 		Group:   "instance",
 		Summary: console.Text{EN: "Show one plugin's manifest", ZH: "查看插件清单"},
@@ -114,9 +115,8 @@ func init() {
 				{"migrations", joined(c["migrations"])},
 			})
 		},
-	})
-
-	console.RegisterCore(console.Command{
+	},
+	{
 		Name:    "plugin install",
 		Group:   "instance",
 		Summary: console.Text{EN: "Install a plugin", ZH: "安装插件"},
@@ -141,9 +141,8 @@ func init() {
 				"two_factor_code": rt.String("code"),
 			})
 		},
-	})
-
-	console.RegisterCore(console.Command{
+	},
+	{
 		Name:       "plugin enable",
 		Group:      "instance",
 		Summary:    console.Text{EN: "Switch an installed plugin on", ZH: "启用已安装的插件"},
@@ -156,9 +155,8 @@ func init() {
 		Run: func(_ context.Context, rt *console.Runtime) error {
 			return change(rt, "enable", nil)
 		},
-	})
-
-	console.RegisterCore(console.Command{
+	},
+	{
 		Name:    "plugin disable",
 		Group:   "instance",
 		Summary: console.Text{EN: "Switch a plugin off", ZH: "禁用插件"},
@@ -176,9 +174,8 @@ func init() {
 		Run: func(_ context.Context, rt *console.Runtime) error {
 			return change(rt, "disable", map[string]any{"two_factor_code": rt.String("code")})
 		},
-	})
-
-	console.RegisterCore(console.Command{
+	},
+	{
 		Name:    "plugin uninstall",
 		Group:   "instance",
 		Summary: console.Text{EN: "Uninstall a plugin", ZH: "卸载插件"},
@@ -205,7 +202,13 @@ func init() {
 				"two_factor_code": rt.String("code"), "purge": rt.Bool("purge"),
 			})
 		},
-	})
+	},
+}
+
+func init() {
+	for _, command := range commands {
+		console.RegisterCore(command)
+	}
 }
 
 func change(rt *console.Runtime, action string, body map[string]any) error {
@@ -221,11 +224,11 @@ func change(rt *console.Runtime, action string, body map[string]any) error {
 		return err
 	}
 	p := object(object(data)["plugin"])
+	colon := ": "
 	if rt.Session.Lang == "zh" {
-		rt.Printf("%s：%s\n", text(p["name"]), text(p["state"]))
-	} else {
-		rt.Printf("%s: %s\n", text(p["name"]), text(p["state"]))
+		colon = "："
 	}
+	rt.Printf("%s%s%s\n", text(p["name"]), colon, text(p["state"]))
 	return nil
 }
 

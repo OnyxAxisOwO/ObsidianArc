@@ -31,7 +31,7 @@ const columns = `f.id, f.user_id, f.kind, f.priority, f.status, f.title, f.body,
 // already touching the table it counts.
 const replyColumns = `p.id, p.feedback_id, p.user_id, p.from_staff, p.body, p.created_at`
 
-type rowScanner interface{ Scan(dest ...any) error }
+type rowScanner = database.RowScanner
 
 // scanFeedback reads `columns` in order, with whatever the caller's query
 // appended after them — one place that knows the order, rather than three

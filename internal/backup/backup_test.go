@@ -154,7 +154,8 @@ func TestRoundTripRestoresTheConversation(t *testing.T) {
 		t.Fatalf("result = %+v", result)
 	}
 
-	threads, err := f.conversations.List(ctx, f.stranger.ID, 50)
+	archived := false
+	threads, err := f.conversations.ListWithFilter(ctx, f.stranger.ID, conversation.ListFilter{Limit: 50, Archived: &archived})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +190,8 @@ func TestImportDoesNotReplaceWhatIsAlreadyThere(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	threads, err := f.conversations.List(ctx, f.account.ID, 50)
+	archived := false
+	threads, err := f.conversations.ListWithFilter(ctx, f.account.ID, conversation.ListFilter{Limit: 50, Archived: &archived})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +255,8 @@ func TestImportSkipsWhatItCannotUse(t *testing.T) {
 		t.Errorf("skipped = %d, want 3", result.Skipped)
 	}
 
-	threads, _ := f.conversations.List(ctx, f.account.ID, 50)
+	archived := false
+	threads, _ := f.conversations.ListWithFilter(ctx, f.account.ID, conversation.ListFilter{Limit: 50, Archived: &archived})
 	if len(threads) != 1 || threads[0].Title != "real" {
 		t.Errorf("wrote %+v", threads)
 	}
@@ -268,7 +271,8 @@ func TestOversizedImportIsRefusedBeforeWriting(t *testing.T) {
 		t.Fatal("accepted more conversations than the limit")
 	}
 
-	threads, _ := f.conversations.List(ctx, f.account.ID, 50)
+	archived := false
+	threads, _ := f.conversations.ListWithFilter(ctx, f.account.ID, conversation.ListFilter{Limit: 50, Archived: &archived})
 	if len(threads) != 0 {
 		t.Errorf("a refused import still wrote %d conversations", len(threads))
 	}
@@ -424,7 +428,8 @@ func TestExportCarriesEveryConversationNotJustOnePage(t *testing.T) {
 	// query rather than the cap having been lifted for everybody. The clamp
 	// catches a request above MaxListLimit, which is exactly the one the
 	// export used to make.
-	page, err := f.conversations.List(ctx, f.account.ID, 500)
+	archived := false
+	page, err := f.conversations.ListWithFilter(ctx, f.account.ID, conversation.ListFilter{Limit: 500, Archived: &archived})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -464,7 +469,8 @@ func TestRoundTripKeepsReasoningLongerThanTheContentLimit(t *testing.T) {
 	if _, err := f.service.Import(ctx, f.stranger, document); err != nil {
 		t.Fatalf("import: %v", err)
 	}
-	threads, err := f.conversations.List(ctx, f.stranger.ID, 50)
+	archived := false
+	threads, err := f.conversations.ListWithFilter(ctx, f.stranger.ID, conversation.ListFilter{Limit: 50, Archived: &archived})
 	if err != nil || len(threads) != 1 {
 		t.Fatalf("restored %d conversations (%v), want 1", len(threads), err)
 	}
@@ -506,7 +512,8 @@ func TestRoundTripKeepsTurnsWithoutContent(t *testing.T) {
 	if result.Conversations != 1 || result.Messages != 2 {
 		t.Fatalf("result = %+v, want the conversation with both of its turns", result)
 	}
-	threads, err := f.conversations.List(ctx, f.stranger.ID, 50)
+	archived := false
+	threads, err := f.conversations.ListWithFilter(ctx, f.stranger.ID, conversation.ListFilter{Limit: 50, Archived: &archived})
 	if err != nil || len(threads) != 1 {
 		t.Fatalf("restored %d conversations (%v), want 1", len(threads), err)
 	}

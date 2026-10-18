@@ -581,9 +581,9 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 				settingsService.Int(settings.ChatChallengeRequests, 0) > 0)
 	}
 
-	authService.Hooks.OnChallengeFailure = func(ctx context.Context, event, ip, username, reason string) {
+	authService.Hooks.OnChallengeFailure = func(ctx context.Context, event, source, ip, username, reason string) {
 		ev := securityevents.Event{
-			Event: event, Severity: securityevents.SeverityWarning,
+			Event: event, Source: source, Severity: securityevents.SeverityWarning,
 			Username: username, IP: ip, Decision: "refuse",
 			Reason: reason,
 		}
@@ -1472,71 +1472,138 @@ func (s *Server) StartJanitor(ctx context.Context) <-chan struct{} {
 	return done
 }
 
+// sweepTask is one of the sweep's clean-ups. Each runs whatever the ones
+// before it did: none depends on another, so a failure is logged in its own
+// words and the next one is tried. A task that reports its own failures, or
+// has none worth reporting, has no failure line and returns nil.
+type sweepTask struct {
+	failure string
+	run     func(context.Context) error
+}
+
 func (s *Server) sweep(ctx context.Context) {
 	sweepCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	// Expired sessions are already refused on read; the sweep is only about
-	// not letting the table grow forever.
-	_, _ = s.auth.Sessions().DeleteExpired(sweepCtx)
-	if err := s.users.ExpireMemberships(sweepCtx, nil, time.Now()); err != nil {
-		slog.ErrorContext(sweepCtx, "could not expire group memberships", "error", err)
-	}
-	s.sweepAttachments(sweepCtx)
-	// Authorisation codes live two minutes and tokens an hour; without this
-	// the two tables grow forever with rows nothing will read again.
-	if _, err := s.idp.Purge(sweepCtx); err != nil {
-		slog.ErrorContext(sweepCtx, "could not purge sign-in grants", "error", err)
-	}
-	// A spent sign-in state is only a record of a callback that already came
-	// back. Once its expiry has passed the state check refuses it, so the row
-	// is safe to drop.
-	if _, err := s.oauth.PruneStates(sweepCtx, time.Now().UnixMilli()); err != nil {
-		slog.ErrorContext(sweepCtx, "could not prune sign-in states", "error", err)
-	}
-	// Counter buckets whose window has long since rolled over. The ledger is
-	// never pruned: it is the audit trail. A failure is logged here because the
-	// request log cannot record it: the database that failed is the one it
-	// writes to.
-	if _, err := s.quota.PruneCounters(sweepCtx); err != nil {
-		slog.ErrorContext(sweepCtx, "could not prune usage counters", "error", err)
-	}
-	// The bell keeps about a month, unlike the security log: a notice is a
-	// nudge to look at something, not a record kept for its own sake.
-	if _, err := s.notify.Prune(sweepCtx, time.Now().Add(-30*24*time.Hour)); err != nil {
-		slog.ErrorContext(sweepCtx, "could not prune notifications", "error", err)
-	}
-	// The audit trail is kept for as long as the super administrator chose,
-	// and never less than the floor the setting enforces.
-	days := s.settings.Int(settings.AuditRetentionDays, audit.DefaultRetentionDays)
-	days = min(max(days, audit.MinRetentionDays), audit.MaxRetentionDays)
-	if _, err := s.audit.Prune(sweepCtx, time.Now().Add(-time.Duration(days)*24*time.Hour)); err != nil {
-		slog.ErrorContext(sweepCtx, "could not prune the audit trail", "error", err)
-	}
-	// Only today's draw on a pool is held against a limit; a few weeks are kept
-	// for the figures.
-	if err := s.bonus.PrunePoolUsage(sweepCtx, 35*24*time.Hour); err != nil {
-		slog.ErrorContext(sweepCtx, "could not prune pool usage", "error", err)
-	}
-	// Bonus a person is about to lose is worth a line in the bell, once.
-	expiring, err := s.bonus.TakeExpiring(sweepCtx, 3*24*time.Hour)
-	if err != nil {
-		slog.ErrorContext(sweepCtx, "could not look for expiring bonus", "error", err)
-	}
-	for _, e := range expiring {
-		if err := s.notify.Push(sweepCtx, nil, notify.Notification{
-			Audience: notify.AudienceUser, UserID: e.UserID, Kind: "bonus_expiring", Link: "/usage",
-			Params: map[string]any{"name": e.BarName, "amount": e.Remaining, "expires_at": e.ExpiresAt},
-		}); err != nil {
-			slog.ErrorContext(sweepCtx, "could not tell an account its bonus is expiring", "error", err, "user", e.UserID)
+	for _, task := range s.sweepTasks() {
+		if err := task.run(sweepCtx); err != nil && task.failure != "" {
+			slog.ErrorContext(sweepCtx, task.failure, "error", err)
 		}
-	}
-	// Invite rewards waiting on something no request announces — a signup
-	// restriction running out, say.
-	if err := s.invites.RewardPending(sweepCtx, s.auth.VerificationRequired()); err != nil {
-		slog.ErrorContext(sweepCtx, "could not resolve pending invite rewards", "error", err)
 	}
 	s.sweepHealth(ctx)
 	s.SweepPlugins(ctx)
+}
+
+// sweepTasks is the sweep's clean-ups, in the order they run.
+func (s *Server) sweepTasks() []sweepTask {
+	return []sweepTask{
+		{
+			// Expired sessions are already refused on read; the sweep is only
+			// about not letting the table grow forever.
+			run: func(ctx context.Context) error {
+				_, _ = s.auth.Sessions().DeleteExpired(ctx)
+				return nil
+			},
+		},
+		{
+			failure: "could not expire group memberships",
+			run: func(ctx context.Context) error {
+				return s.users.ExpireMemberships(ctx, nil, time.Now())
+			},
+		},
+		{
+			run: func(ctx context.Context) error {
+				s.sweepAttachments(ctx)
+				return nil
+			},
+		},
+		{
+			// Authorisation codes live two minutes and tokens an hour; without
+			// this the two tables grow forever with rows nothing will read again.
+			failure: "could not purge sign-in grants",
+			run: func(ctx context.Context) error {
+				_, err := s.idp.Purge(ctx)
+				return err
+			},
+		},
+		{
+			// A spent sign-in state is only a record of a callback that already
+			// came back. Once its expiry has passed the state check refuses it,
+			// so the row is safe to drop.
+			failure: "could not prune sign-in states",
+			run: func(ctx context.Context) error {
+				_, err := s.oauth.PruneStates(ctx, time.Now().UnixMilli())
+				return err
+			},
+		},
+		{
+			// Counter buckets whose window has long since rolled over. The
+			// ledger is never pruned: it is the audit trail. A failure is
+			// logged here because the request log cannot record it: the
+			// database that failed is the one it writes to.
+			failure: "could not prune usage counters",
+			run: func(ctx context.Context) error {
+				_, err := s.quota.PruneCounters(ctx)
+				return err
+			},
+		},
+		{
+			// The bell keeps about a month, unlike the security log: a notice
+			// is a nudge to look at something, not a record kept for its own
+			// sake.
+			failure: "could not prune notifications",
+			run: func(ctx context.Context) error {
+				_, err := s.notify.Prune(ctx, time.Now().Add(-30*24*time.Hour))
+				return err
+			},
+		},
+		{
+			// The audit trail is kept for as long as the super administrator
+			// chose, and never less than the floor the setting enforces.
+			failure: "could not prune the audit trail",
+			run: func(ctx context.Context) error {
+				days := s.settings.Int(settings.AuditRetentionDays, audit.DefaultRetentionDays)
+				days = min(max(days, audit.MinRetentionDays), audit.MaxRetentionDays)
+				_, err := s.audit.Prune(ctx, time.Now().Add(-time.Duration(days)*24*time.Hour))
+				return err
+			},
+		},
+		{
+			// Only today's draw on a pool is held against a limit; a few weeks
+			// are kept for the figures.
+			failure: "could not prune pool usage",
+			run: func(ctx context.Context) error {
+				return s.bonus.PrunePoolUsage(ctx, 35*24*time.Hour)
+			},
+		},
+		{
+			// Bonus a person is about to lose is worth a line in the bell,
+			// once. Its two failures say different things, so it logs them
+			// itself.
+			run: func(sweepCtx context.Context) error {
+				expiring, err := s.bonus.TakeExpiring(sweepCtx, 3*24*time.Hour)
+				if err != nil {
+					slog.ErrorContext(sweepCtx, "could not look for expiring bonus", "error", err)
+				}
+				for _, e := range expiring {
+					if err := s.notify.Push(sweepCtx, nil, notify.Notification{
+						Audience: notify.AudienceUser, UserID: e.UserID, Kind: "bonus_expiring", Link: "/usage",
+						Params: map[string]any{"name": e.BarName, "amount": e.Remaining, "expires_at": e.ExpiresAt},
+					}); err != nil {
+						slog.ErrorContext(sweepCtx, "could not tell an account its bonus is expiring", "error", err, "user", e.UserID)
+					}
+				}
+				return nil
+			},
+		},
+		{
+			// Invite rewards waiting on something no request announces — a
+			// signup restriction running out, say.
+			failure: "could not resolve pending invite rewards",
+			run: func(ctx context.Context) error {
+				return s.invites.RewardPending(ctx, s.auth.VerificationRequired())
+			},
+		},
+	}
 }
 
 // SweepPlugins gives each switched-on plugin package that asked for it (the

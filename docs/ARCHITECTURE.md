@@ -227,10 +227,22 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 27.16 MB (23.46 MB `-tags nosqlite`, Linux amd64, Go 1.27.2); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 205.69 kB to open the chat (179.28 JS + 26.41 CSS), sent by the server at gzip's best level; the build's gzip column reads 206.43 kB (179.58 JS + 26.85 CSS) |
+| Binary (SQLite + embedded SPA) | < 30 MB | 28.03 MB (24.33 MB `-tags nosqlite`, Linux amd64, Go 1.27.2); this repository ships no plugin |
+| Frontend, on the wire | < 135 kB | 205.67 kB to open the chat (179.16 JS + 26.52 CSS), counted as gzip: the build's level-9 copy, which the server sends as it is; 172.70 kB as brotli; the build's gzip column reads 206.43 kB (179.58 JS + 26.85 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-10-18 (UTC), after the build began compressing the
+assets itself. Every file under `assets/` gets a brotli copy at quality 11 and
+a gzip copy at level 9, in `dist/precompressed/`, and the server sends the one
+the request accepts instead of compressing each uncached asset as it goes out;
+brotli at that quality is far too slow to run per request. The first paint is
+still counted as gzip, now the build's copy rather than Go's encoder: 205.67 kB
+(179.16 JS + 26.52 CSS), down 0.02 kB. A browser that takes brotli receives
+172.70 kB (150.47 JS + 22.23 CSS). The copies add 0.86 MB to the binary, which
+is 28.03 MB (24.33 MB without SQLite), built the same way as below; the
+originals stay, for the client that takes neither and for range requests.
+Nothing else moved.
 
 Remeasured on 2026-10-18 (UTC), after the second batch of left-over review
 fixes. A provider sign-in that carries a challenge token or a proof now
