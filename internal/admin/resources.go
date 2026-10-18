@@ -7,7 +7,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 )
@@ -135,12 +134,8 @@ func (h *Handlers) resources(w http.ResponseWriter, r *http.Request) error {
 	// The same budget the usage reads take. Each poll is a full scan of the
 	// attachments table, so a caller polling in a loop should meet the limit
 	// rather than the database.
-	clientIP := r.RemoteAddr
-	if h.ClientIP != nil {
-		clientIP = h.ClientIP(r)
-	}
-	if h.UsageLimiter != nil && !h.UsageLimiter.Allow(clientIP+":"+auth.MustUser(ctx).ID) {
-		return httpx.TooManyRequests("rate_limited", "Too many usage requests. Please try again later.")
+	if err := h.allowUsageRead(r); err != nil {
+		return err
 	}
 
 	totals, err := h.storage(ctx)

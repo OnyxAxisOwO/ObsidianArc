@@ -147,6 +147,9 @@ type Handlers struct {
 	// Endpoints a plugin brought, mounted by Routes behind the same wrapper
 	// as the table there.
 	extra []Route
+	// Set once Routes has read extra. A route mounted after that would be
+	// accepted and then never served, with no error anywhere.
+	routed bool
 	// Which plugins are on. A switched-off plugin's routes answer 404, the
 	// same as a build without it.
 	gate plugingate.Gate
@@ -155,8 +158,10 @@ type Handlers struct {
 	fallback atomic.Pointer[func(w http.ResponseWriter, r *http.Request) bool]
 }
 
-// SetPluginGate is how the server says which plugins are on. Set before
-// Routes.
+// SetPluginGate is how the server says which plugins are on. Routes reads it
+// on each request rather than at mount time, so a gate set late still applies
+// from then on. Until it is set, a nil gate lets every plugin route through
+// (see plugingate), so the server sets it before it starts serving.
 func (h *Handlers) SetPluginGate(g plugingate.Gate) { h.gate = g }
 
 // PluginRoutes lists the endpoints plugin mounted, for its manifest.
@@ -186,6 +191,11 @@ type Route struct {
 func (h *Handlers) Mount(route Route) {
 	if !strings.Contains(route.Pattern, " /api/admin/") {
 		panic("admin: a plugin route must live under /api/admin/: " + route.Pattern)
+	}
+	// Refused loudly: a route accepted here after Routes ran would be silently
+	// absent from the table, and nothing would ever say so.
+	if h.routed {
+		panic("admin: a plugin route mounted after Routes would never be served: " + route.Pattern)
 	}
 	h.extra = append(h.extra, route)
 }
@@ -286,6 +296,7 @@ func (h *Handlers) SetFallback(fn func(w http.ResponseWriter, r *http.Request) b
 // around.
 func (h *Handlers) Routes(mux *http.ServeMux) {
 	protected := h.Protect
+	h.routed = true
 
 	mux.Handle("GET /api/admin/dashboard", protected("dashboard", h.dashboard))
 	mux.Handle("GET /api/admin/resources", protected("resources", h.resources))
@@ -364,8 +375,13 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /api/admin/usage/records", protected("usage", h.usageRecords))
 	mux.Handle("GET /api/admin/usage/allowances", protected("usage", h.usageAllowances))
 	mux.Handle("POST /api/admin/usage/reset", protected("usage", h.resetQuota))
-	mux.Handle("GET /api/admin/checkin", protected("usage", h.checkinSettings))
-	mux.Handle("PUT /api/admin/checkin", protected("usage", h.saveCheckinSettings))
+	// Like the bonus routes below, mounted only with the service behind them: the
+	// handlers call straight into it, so without one the request would panic
+	// rather than answer 404.
+	if h.Checkin != nil {
+		mux.Handle("GET /api/admin/checkin", protected("usage", h.checkinSettings))
+		mux.Handle("PUT /api/admin/checkin", protected("usage", h.saveCheckinSettings))
+	}
 	// Without a bonus store these routes are not mounted, so the mux answers
 	// 404 as the Bonus field promises. The handlers would otherwise
 	// dereference the nil store.

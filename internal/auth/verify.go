@@ -98,6 +98,26 @@ func (s *Service) replaceVerification(ctx context.Context, q database.Queryer, u
 	return s.insertVerification(ctx, q, userID, email, token, issuedAt)
 }
 
+// SettleAddressChange writes what a change of address means for the account's
+// confirmation, and drops every link issued for the address being left. Written
+// through the caller's queryer so it commits with the address itself.
+//
+// The owner's profile form, when the new address needs no proof, and an
+// administrator's edit settle a move this way. The links live in a table this
+// package owns, and the administrator's copy of the pair used to be written
+// from outside it.
+func (s *Service) SettleAddressChange(ctx context.Context, q database.Queryer, userID string, confirmed bool) error {
+	if _, err := q.Exec(ctx,
+		`UPDATE users SET email_verified = ?, updated_at = ? WHERE id = ?`,
+		confirmed, time.Now().UnixMilli(), userID); err != nil {
+		return fmt.Errorf("auth: settle confirmation: %w", err)
+	}
+	if _, err := q.Exec(ctx, `DELETE FROM email_verifications WHERE user_id = ?`, userID); err != nil {
+		return fmt.Errorf("auth: clear verifications: %w", err)
+	}
+	return nil
+}
+
 func (s *Service) insertVerification(ctx context.Context, q database.Queryer, userID, email, token string, issuedAt time.Time) error {
 	_, err := q.Exec(ctx,
 		`INSERT INTO email_verifications (id, user_id, email, expires_at, created_at, code_digest, code_expires_at, code_attempts)

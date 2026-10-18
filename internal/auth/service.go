@@ -886,14 +886,8 @@ func (s *Service) UpdateProfile(ctx context.Context, userID string, in user.Prof
 					// then refused the resend because there was no address, so the
 					// owner was shut out of sending anything until they typed one
 					// back in.
-					if _, err := tx.Exec(ctx,
-						`UPDATE users SET email_verified = ?, updated_at = ? WHERE id = ?`,
-						true, time.Now().UnixMilli(), userID); err != nil {
-						return fmt.Errorf("auth: settle confirmation: %w", err)
-					}
-					if _, err := tx.Exec(ctx,
-						`DELETE FROM email_verifications WHERE user_id = ?`, userID); err != nil {
-						return fmt.Errorf("auth: clear verifications: %w", err)
+					if err := s.SettleAddressChange(ctx, tx, userID, true); err != nil {
+						return err
 					}
 				} else {
 					// One posted link every couple of minutes, counted the same way

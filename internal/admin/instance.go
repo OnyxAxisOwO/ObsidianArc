@@ -49,12 +49,8 @@ func (h *Handlers) dashboard(w http.ResponseWriter, r *http.Request) error {
 	// The same budget and slot the usage reads take. A load runs about a dozen
 	// aggregates over the ledger, and without them a dashboard grant could drive
 	// the ledger as hard as the usage page, with no limit at all.
-	clientIP := r.RemoteAddr
-	if h.ClientIP != nil {
-		clientIP = h.ClientIP(r)
-	}
-	if h.UsageLimiter != nil && !h.UsageLimiter.Allow(clientIP+":"+actor.ID) {
-		return httpx.TooManyRequests("rate_limited", "Too many usage requests. Please try again later.")
+	if err := h.allowUsageRead(r); err != nil {
+		return err
 	}
 	release, err := httpx.AcquireAggregationSlot(ctx)
 	if err != nil {
@@ -1116,21 +1112,14 @@ func (h *Handlers) validateDefined(body map[string]string) error {
 	return nil
 }
 
-// secretKeys is every credential this build knows about, core and plugin —
-// a switched-off plugin's too: redacting a key nothing shows costs nothing,
-// and missing one would hand its credential out.
-func secretKeys() []string {
-	out := append([]string(nil), secretSettings...)
-	for _, d := range settings.AllDefinitions() {
-		if d.Secret {
-			out = append(out, d.Key)
-		}
-	}
-	return out
-}
-
-// secretKeys is the same list for this server: the compiled-in ones, and
-// those of plugins installed while it runs.
+// secretKeys is every credential this server knows: the compiled-in ones, and
+// those of plugins installed while it runs. A switched-off plugin's are included
+// too: redacting a key nothing shows costs nothing, and missing one would hand
+// its credential out.
+//
+// It reads this server's settings service rather than the process-wide
+// registry, because the registry does not see plugins installed at run time,
+// and their credentials are the ones most likely to be missing from it.
 func (h *Handlers) secretKeys() []string {
 	out := append([]string(nil), secretSettings...)
 	for _, d := range h.settings.AllDefinitions() {
@@ -1156,15 +1145,14 @@ var secretSettings = []string{
 // screen needs.
 const secretMask = "••••••••"
 
-// redacted copies the settings with every credential masked.
+// redactedWith copies the settings with each of secrets masked.
 //
 // A copy, because All() hands back the live map and masking it in place would
 // blank the running configuration. This is the endpoint an administrator
 // reads, so the mask is not about them — it is about the response existing at
 // all: a secret in a JSON body is a secret in a proxy log, a browser cache
-// and whatever the operator pasted the response into.
-func redacted(all map[string]string) map[string]string { return redactedWith(all, secretKeys()) }
-
+// and whatever the operator pasted the response into. The list is the
+// server's own (Handlers.secretKeys), never a registry-wide one.
 func redactedWith(all map[string]string, secrets []string) map[string]string {
 	out := make(map[string]string, len(all))
 	for key, value := range all {

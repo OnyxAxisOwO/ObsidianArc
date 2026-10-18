@@ -96,7 +96,10 @@ func (h *Handlers) audited(next http.Handler) http.Handler {
 			}
 			// Bounded as the other detached writes are: the response is not
 			// finished until this returns, so a database that stopped answering
-			// would hold the administrator's request open with it.
+			// would hold the administrator's request open with it. The price is
+			// that a write slower than the bound is dropped and only logged here.
+			// That is the one case in which the trail does not keep a write it
+			// was asked to record, and the logs-and-auditing guide has to say so.
 			recordCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), auditRecordTimeout)
 			err := h.Audit.Record(recordCtx, nil, entry)
 			cancel()

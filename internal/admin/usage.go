@@ -97,6 +97,20 @@ func (h *Handlers) resetQuota(w http.ResponseWriter, r *http.Request) error {
 	return httpx.BadRequest("Reset everyone, a group, or one account.")
 }
 
+// How long a cached usage answer is served. An answer is a dozen queries over
+// the ledger, and a page refreshes and every open tab asks for the same answer
+// again, so a short reuse window saves that repeat work. It stays short because
+// the ledger is written continuously and the figures are meant to be current.
+const usageCacheTTL = 15 * time.Second
+
+// Once a cache holds more entries than this, a write also drops the expired
+// ones, so the maps do not grow with every filter an administrator has tried.
+const usageCacheSweepLimit = 50
+
+func usageCacheExpired(createdAt, now time.Time) bool {
+	return now.Sub(createdAt) >= usageCacheTTL
+}
+
 type cachedUsageSummary struct {
 	createdAt time.Time
 	data      map[string]any
@@ -110,11 +124,8 @@ type cachedUsageBreakdown struct {
 func (h *Handlers) getSummaryCache(key string) map[string]any {
 	h.usageCacheMu.RLock()
 	defer h.usageCacheMu.RUnlock()
-	if h.usageSummaryCache == nil {
-		return nil
-	}
 	entry, ok := h.usageSummaryCache[key]
-	if !ok || time.Since(entry.createdAt) >= 15*time.Second {
+	if !ok || usageCacheExpired(entry.createdAt, time.Now()) {
 		return nil
 	}
 	return entry.data
@@ -133,9 +144,9 @@ func (h *Handlers) putSummaryLocked(key string, data map[string]any) {
 		h.usageSummaryCache = make(map[string]*cachedUsageSummary)
 	}
 	now := time.Now()
-	if len(h.usageSummaryCache) > 50 {
+	if len(h.usageSummaryCache) > usageCacheSweepLimit {
 		for k, v := range h.usageSummaryCache {
-			if now.Sub(v.createdAt) >= 15*time.Second {
+			if usageCacheExpired(v.createdAt, now) {
 				delete(h.usageSummaryCache, k)
 			}
 		}
@@ -150,11 +161,8 @@ func (h *Handlers) putSummaryLocked(key string, data map[string]any) {
 func (h *Handlers) getBreakdownCache(key string) []usage.Breakdown {
 	h.usageCacheMu.RLock()
 	defer h.usageCacheMu.RUnlock()
-	if h.usageBreakdownCache == nil {
-		return nil
-	}
 	entry, ok := h.usageBreakdownCache[key]
-	if !ok || time.Since(entry.createdAt) >= 15*time.Second {
+	if !ok || usageCacheExpired(entry.createdAt, time.Now()) {
 		return nil
 	}
 	return entry.rows
@@ -167,9 +175,9 @@ func (h *Handlers) setBreakdownCache(key string, rows []usage.Breakdown) {
 		h.usageBreakdownCache = make(map[string]*cachedUsageBreakdown)
 	}
 	now := time.Now()
-	if len(h.usageBreakdownCache) > 50 {
+	if len(h.usageBreakdownCache) > usageCacheSweepLimit {
 		for k, v := range h.usageBreakdownCache {
-			if now.Sub(v.createdAt) >= 15*time.Second {
+			if usageCacheExpired(v.createdAt, now) {
 				delete(h.usageBreakdownCache, k)
 			}
 		}
@@ -285,15 +293,28 @@ type Matrix struct {
 	Cells []usage.Cell `json:"cells"`
 }
 
-func (h *Handlers) usageSummary(w http.ResponseWriter, r *http.Request) error {
-	actor := auth.MustUser(r.Context())
+// allowUsageRead spends a token from the budget every ledger read shares, keyed
+// by the caller's address and account, and answers 429 when the budget is
+// empty. Each read that scans the ledger takes it, so moving between endpoints
+// does not get around the limit that any one of them enforces.
+//
+// A missing resolver falls back to the socket address, not to the empty string
+// clientIP answers, because that is the key the budget has always been spent
+// under when no resolver is wired; a different key would start a fresh budget.
+func (h *Handlers) allowUsageRead(r *http.Request) error {
 	clientIP := r.RemoteAddr
 	if h.ClientIP != nil {
 		clientIP = h.ClientIP(r)
 	}
-	rateKey := clientIP + ":" + actor.ID
-	if h.UsageLimiter != nil && !h.UsageLimiter.Allow(rateKey) {
+	if h.UsageLimiter != nil && !h.UsageLimiter.Allow(clientIP+":"+auth.MustUser(r.Context()).ID) {
 		return httpx.TooManyRequests("rate_limited", "Too many usage requests. Please try again later.")
+	}
+	return nil
+}
+
+func (h *Handlers) usageSummary(w http.ResponseWriter, r *http.Request) error {
+	if err := h.allowUsageRead(r); err != nil {
+		return err
 	}
 
 	filter, err := filterFrom(r)
@@ -452,14 +473,8 @@ func keysOf(rows []usage.Breakdown, n int) []string {
 // computes. It is what a panel about one model or one account asks, and it
 // should not cost what the whole page does.
 func (h *Handlers) usageBreakdown(w http.ResponseWriter, r *http.Request) error {
-	actor := auth.MustUser(r.Context())
-	clientIP := r.RemoteAddr
-	if h.ClientIP != nil {
-		clientIP = h.ClientIP(r)
-	}
-	rateKey := clientIP + ":" + actor.ID
-	if h.UsageLimiter != nil && !h.UsageLimiter.Allow(rateKey) {
-		return httpx.TooManyRequests("rate_limited", "Too many usage requests. Please try again later.")
+	if err := h.allowUsageRead(r); err != nil {
+		return err
 	}
 
 	filter, err := filterFrom(r)
@@ -514,14 +529,8 @@ func (h *Handlers) usageBreakdown(w http.ResponseWriter, r *http.Request) error 
 }
 
 func (h *Handlers) currentRPM(w http.ResponseWriter, r *http.Request) error {
-	actor := auth.MustUser(r.Context())
-	clientIP := r.RemoteAddr
-	if h.ClientIP != nil {
-		clientIP = h.ClientIP(r)
-	}
-	rateKey := clientIP + ":" + actor.ID
-	if h.UsageLimiter != nil && !h.UsageLimiter.Allow(rateKey) {
-		return httpx.TooManyRequests("rate_limited", "Too many usage requests. Please try again later.")
+	if err := h.allowUsageRead(r); err != nil {
+		return err
 	}
 
 	filter, err := filterFrom(r)
@@ -538,14 +547,8 @@ func (h *Handlers) currentRPM(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (h *Handlers) usageRecords(w http.ResponseWriter, r *http.Request) error {
-	actor := auth.MustUser(r.Context())
-	clientIP := r.RemoteAddr
-	if h.ClientIP != nil {
-		clientIP = h.ClientIP(r)
-	}
-	rateKey := clientIP + ":" + actor.ID
-	if h.UsageLimiter != nil && !h.UsageLimiter.Allow(rateKey) {
-		return httpx.TooManyRequests("rate_limited", "Too many usage requests. Please try again later.")
+	if err := h.allowUsageRead(r); err != nil {
+		return err
 	}
 
 	filter, err := filterFrom(r)
