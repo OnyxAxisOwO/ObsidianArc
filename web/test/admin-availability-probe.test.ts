@@ -3,22 +3,19 @@
 // told how many were left out, rather than having to subtract them.
 
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, type App } from 'vue';
+import { createApp, h, type App } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
 import { adminApi } from '../src/admin/api';
 import { ApiError } from '../src/api/client';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import AdminAvailability from '../src/views/admin/AdminAvailability.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
+import { settle } from './helpers';
 
 let app: App | undefined;
 let host: HTMLElement;
 let actions: HTMLElement;
 
-async function settle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await nextTick();
-}
 
 beforeEach(async () => {
   await changeLanguage('en');

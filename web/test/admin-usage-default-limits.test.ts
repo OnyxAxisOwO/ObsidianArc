@@ -10,6 +10,7 @@ import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import AdminUsage from '../src/views/admin/AdminUsage.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
+import { settle } from './helpers';
 
 vi.mock('@/api/client', () => ({
   ApiError: class ApiError extends Error {
@@ -31,10 +32,7 @@ vi.mock('@/api/client', () => ({
   },
 }));
 
-const settle = async (): Promise<void> => {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await nextTick();
-};
+;
 
 const usagePayload = {
   totals: { requests: 3, input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, total_tokens: 0, credits: 0, errors: 0 },

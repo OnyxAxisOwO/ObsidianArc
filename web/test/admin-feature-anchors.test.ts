@@ -13,7 +13,7 @@
 // check opens that panel first, with the data its v-if branches need.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, shallowRef, type App, type Component } from 'vue';
+import { createApp, h, shallowRef, type App, type Component } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
 import { adminApi, emptyPolicy, type Account } from '../src/admin/api';
 import { providePanelHost } from '../src/composables/usePanelHost';
@@ -22,6 +22,7 @@ import AdminProviders from '../src/views/admin/AdminProviders.vue';
 import AdminUsers from '../src/views/admin/AdminUsers.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
 import { ADMIN_FEATURES } from '../src/views/admin/features';
+import { settle } from './helpers';
 
 type Detail = Awaited<ReturnType<typeof adminApi.user>>;
 
@@ -30,10 +31,7 @@ let host: HTMLElement;
 let panels: HTMLElement;
 let actions: HTMLElement;
 
-const settle = async () => {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await nextTick();
-};
+;
 
 beforeEach(() => {
   host = document.createElement('div');

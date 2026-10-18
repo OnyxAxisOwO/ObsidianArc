@@ -4,12 +4,13 @@
 // escape as an unhandled rejection.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, type App } from 'vue';
+import { createApp, h, type App } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
 import * as authApi from '../src/api/auth';
 import { ApiError } from '../src/api/client';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import UnauthorizedModal from '../src/views/UnauthorizedModal.vue';
+import { settle } from './helpers';
 
 let app: App | undefined;
 let host: HTMLElement;
@@ -27,10 +28,6 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-async function settle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await nextTick();
-}
 
 async function mountModal() {
   const router = createRouter({

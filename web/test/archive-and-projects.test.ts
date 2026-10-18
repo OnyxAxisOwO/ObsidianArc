@@ -30,6 +30,7 @@ afterEach(() => {
   document.body.textContent = '';
 });
 
+// A frame as well as the microtasks: the menus these screens open are OaMenu and OaSelect, which act on an animation frame (see OaMenu.vue and OaSelect.vue).
 async function settle(): Promise<void> {
   await Promise.resolve();
   await new Promise((resolve) => requestAnimationFrame(resolve));

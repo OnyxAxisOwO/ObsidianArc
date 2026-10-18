@@ -5,7 +5,7 @@
 // page is already open, the one onMounted alone cannot catch.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, reactive, shallowRef, type App } from 'vue';
+import { createApp, h, reactive, shallowRef, type App } from 'vue';
 import { adminApi } from '../src/admin/api';
 import { ApiError } from '../src/api/client';
 import type { Feedback, FeedbackReply, FeedbackThread } from '../src/api/feedback';
@@ -13,6 +13,7 @@ import { changeLanguage, t } from '../src/composables/useI18n';
 import { providePanelHost } from '../src/composables/usePanelHost';
 import AdminFeedback from '../src/views/admin/AdminFeedback.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
+import { settle } from './helpers';
 
 let app: App | undefined;
 let host: HTMLElement;
@@ -34,10 +35,6 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-async function settle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await nextTick();
-}
 
 function record(over: Partial<Feedback> = {}): Feedback {
   return {

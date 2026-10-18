@@ -3,10 +3,11 @@
 // are joined must not let one notice's dismissal hide a different notice.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { createApp, h, nextTick, type App } from 'vue';
+import { createApp, h, type App } from 'vue';
 import HomeNotice from '@/announce/HomeNotice.vue';
 import { changeLanguage } from '@/composables/useI18n';
 import { site, siteInfo } from '@/stores/session';
+import { settle } from './helpers';
 
 const DISMISSED_KEY = 'obsidian-arc-home-notice-dismissed';
 
@@ -31,10 +32,6 @@ function say(notice: Partial<Notice>): void {
   };
 }
 
-async function settle(): Promise<void> {
-  await nextTick();
-  await nextTick();
-}
 
 let app: App | null = null;
 let host: HTMLElement;

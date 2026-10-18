@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, shallowRef, type App } from 'vue';
+import { createApp, h, shallowRef, type App } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
 import AdminLeaderboard from '../src/views/admin/AdminLeaderboard.vue';
 import { adminApi } from '../src/admin/api';
@@ -7,6 +7,7 @@ import * as leaderboardApi from '../src/api/leaderboard';
 import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { provideAdminView } from '../src/views/admin/adminView';
+import { settle } from './helpers';
 
 let app: App | undefined;
 let host: HTMLElement;
@@ -28,10 +29,6 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-async function settle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await nextTick();
-}
 
 async function mount(): Promise<void> {
   // The workbench reads the route's hash, so the page needs a router to read it from.

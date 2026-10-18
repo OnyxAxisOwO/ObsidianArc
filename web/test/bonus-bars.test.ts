@@ -13,6 +13,7 @@ import { api } from '@/api/client';
 import type { BonusBar } from '@/api/bonus';
 import OaBonusBars from '@/components/OaBonusBars.vue';
 import { changeLanguage, t } from '@/composables/useI18n';
+import { settle } from './helpers';
 
 vi.mock('@/api/client', () => ({
   ApiError: class ApiError extends Error {
@@ -57,10 +58,6 @@ function bar(over: Partial<BonusBar> = {}): BonusBar {
   };
 }
 
-async function settle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await nextTick();
-}
 
 /** Mounts the bars under a host that can bump the refresh key, as the panel does. */
 async function mount(): Promise<{ refresh: () => Promise<void> }> {

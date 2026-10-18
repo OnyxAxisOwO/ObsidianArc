@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, shallowRef, type App } from 'vue';
+import { createApp, h, shallowRef, type App } from 'vue';
 import { createMemoryHistory, createRouter, type Router } from 'vue-router';
 import AdminAudit from '../src/views/admin/AdminAudit.vue';
 import { adminApi, type AuditEntry, type AuditFacets } from '../src/admin/api';
@@ -8,6 +8,7 @@ import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { provideAdminView } from '../src/views/admin/adminView';
 import { auditText as at } from '../src/views/admin/audit-text';
+import { settle } from './helpers';
 
 let app: App | undefined;
 let host: HTMLElement;
@@ -41,10 +42,6 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-async function settle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await nextTick();
-}
 
 async function mountAt(address: string): Promise<Router> {
   const router = createRouter({

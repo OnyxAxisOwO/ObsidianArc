@@ -73,6 +73,8 @@ async function mount(component: Component, props: Record<string, unknown> = {}):
   await settle();
 }
 
+// The last match, not the first: OaPanel appends each new panel at the end of
+// its host, so with a second panel open its buttons come after the first's.
 function button(root: ParentNode, label: string): HTMLButtonElement {
   const found = [...root.querySelectorAll<HTMLButtonElement>('button')]
     .filter((node) => node.textContent?.trim() === label);
@@ -123,10 +125,11 @@ describe('the plugins screen', () => {
     await mount(AdminPlugins);
 
     expect(card('alpha').textContent).toContain(t('pluginStateAvailable'));
-    expect(button(card('alpha'), t('pluginInstall'))).toBeTruthy();
+    // button() throws when the label is missing, so calling it is the check.
+    button(card('alpha'), t('pluginInstall'));
     expect(card('beta').textContent).toContain(t('pluginStateEnabled'));
-    expect(button(card('beta'), t('pluginDisable'))).toBeTruthy();
-    expect(button(card('beta'), t('pluginUninstall'))).toBeTruthy();
+    button(card('beta'), t('pluginDisable'));
+    button(card('beta'), t('pluginUninstall'));
     // A row for a plugin this build lacks says so, and offers nothing.
     expect(card('gone').textContent).toContain(t('pluginMissing'));
     expect(card('gone').querySelectorAll('button')).toHaveLength(0);
@@ -375,7 +378,7 @@ describe('a plugin package', () => {
     expect(enabled).toHaveBeenCalledWith('demo');
     expect(card('demo').querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked).toBe(true);
     // A package offers Remove where a built-in plugin offers Uninstall, and no Install.
-    expect(button(card('demo'), t('pluginRemove'))).toBeTruthy();
+    button(card('demo'), t('pluginRemove'));
     expect(() => button(card('demo'), t('pluginUninstall'))).toThrow();
 
     // Switching off asks first: the click alone changes nothing.

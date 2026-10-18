@@ -321,6 +321,8 @@ describe('Image Lab challenges', () => {
     await settle();
     // Only now, so mounting and settling keep their real timers.
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    // Microtasks only: setTimeout is faked for this block, so settle()'s macrotask
+    // would never return. Six rounds cover the promise hops the open panel takes.
     const flush = async () => { for (let i = 0; i < 6; i++) { await Promise.resolve(); await nextTick(); } };
     try {
       (panels.querySelector('.oa-panel-foot .oa-btn.primary') as HTMLButtonElement).click();

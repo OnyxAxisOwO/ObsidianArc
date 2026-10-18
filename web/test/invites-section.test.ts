@@ -8,6 +8,7 @@ import { changeLanguage, t, tn } from '../src/composables/useI18n';
 import { absoluteTime } from '../src/lib/format';
 import * as markdown from '../src/chat/markdown';
 import InvitesSection from '../src/views/settings/InvitesSection.vue';
+import { settle } from './helpers';
 
 // The "Invites" settings card: claiming somebody else's code (always
 // present), and — when personal invites are on — an account's own code, its
@@ -56,16 +57,6 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-async function settle(): Promise<void> {
-  for (let i = 0; i < 3; i++) {
-    if (vi.isFakeTimers()) {
-      await vi.advanceTimersByTimeAsync(0);
-    } else {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
-    await nextTick();
-  }
-}
 
 async function mount(component: Component, props: Record<string, unknown> = {}): Promise<void> {
   const panels = document.createElement('div');
@@ -180,12 +171,11 @@ describe('the invites card', () => {
 
     vi.useFakeTimers();
     try {
-      // First click
       copyButtons[0]!.click();
       await vi.advanceTimersByTimeAsync(10);
       expect(copyButtons[0]!.textContent?.trim()).toBe(t('copied'));
 
-      // Rapid second click after 500ms
+      // Each click restarts the 1500ms reset, so the label holds from the last one.
       await vi.advanceTimersByTimeAsync(500);
       copyButtons[0]!.click();
       await vi.advanceTimersByTimeAsync(10);

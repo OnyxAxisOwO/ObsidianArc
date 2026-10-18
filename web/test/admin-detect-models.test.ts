@@ -4,11 +4,9 @@ import { adminApi } from '../src/admin/api';
 import { ApiError } from '../src/api/client';
 import { t } from '../src/composables/useI18n';
 import AdminDetectModels, { type DetectedModel } from '../src/views/admin/AdminDetectModels.vue';
+import { settle } from './helpers';
 
-const settle = async () => {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await nextTick();
-};
+;
 
 const catalogue = () => ({
   models: [

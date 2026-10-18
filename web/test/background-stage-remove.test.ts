@@ -9,11 +9,9 @@ import { changeLanguage, t } from '../src/composables/useI18n';
 import type { SiteBackground } from '../src/theme/theme';
 import { setThemeMode } from '../src/theme/theme';
 import BackgroundStage from '../src/views/admin/BackgroundStage.vue';
+import { PAST_OVERLAY_FADE_MS, settle, wait } from './helpers';
 
-const settle = async () => {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await nextTick();
-};
+;
 
 let app: App | undefined;
 let host: HTMLElement;
@@ -89,7 +87,7 @@ describe('removing a login background', () => {
     field.dispatchEvent(new Event('input'));
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
     // The sheet fades for 200ms before it reports the close.
-    await new Promise((resolve) => setTimeout(resolve, 260));
+    await wait(PAST_OVERLAY_FADE_MS);
     await settle();
     expect(source()).toBeNull();
 

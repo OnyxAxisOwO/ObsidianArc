@@ -1,17 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, nextTick, type App } from 'vue';
+import { createApp, type App } from 'vue';
 import { fetchUsage, type UsageSummary } from '../src/api/usage';
 import ComposerMenu from '../src/chat/ComposerMenu.vue';
+import { settle } from './helpers';
 
 vi.mock('@/api/usage', () => ({ fetchUsage: vi.fn() }));
 
 const summary = { unlimited: true, windows: [] } as unknown as UsageSummary;
 
 /** Lets the fetch promise settle and Vue apply what it changed. */
-async function settle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await nextTick();
-}
 
 describe('ComposerMenu usage reading', () => {
   let app: App | null = null;

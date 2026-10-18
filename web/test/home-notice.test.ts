@@ -5,10 +5,11 @@
 // wording — an operator who changes the notice is saying something new.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, type App } from 'vue';
+import { createApp, h, type App } from 'vue';
 import HomeNotice from '@/announce/HomeNotice.vue';
 import { changeLanguage, t } from '@/composables/useI18n';
 import { site, siteInfo } from '@/stores/session';
+import { settle } from './helpers';
 
 let app: App | null = null;
 let host: HTMLElement;
@@ -22,10 +23,6 @@ function say(notice: Partial<Notice>): void {
   };
 }
 
-async function settle(): Promise<void> {
-  await nextTick();
-  await nextTick();
-}
 
 async function mount(props: Record<string, unknown> = {}): Promise<void> {
   app = createApp({ render: () => h(HomeNotice, props) });

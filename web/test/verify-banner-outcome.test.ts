@@ -11,6 +11,7 @@ import type { Account } from '@/api/auth';
 import VerifyBanner from '@/announce/VerifyBanner.vue';
 import { changeLanguage, t } from '@/composables/useI18n';
 import { adopt, forget, site, siteInfo } from '@/stores/session';
+import { settle } from './helpers';
 
 const ACCOUNT: Account = {
   id: 'u1', username: 'ada', email: 'ada@example.com', nickname: 'Ada', avatar: '', bio: '',
@@ -23,10 +24,6 @@ const ACCOUNT: Account = {
 let app: App | null = null;
 let host: HTMLElement;
 
-async function settle(): Promise<void> {
-  await nextTick();
-  await nextTick();
-}
 
 async function submitCode(code: string): Promise<void> {
   app = createApp({ render: () => h(VerifyBanner) });

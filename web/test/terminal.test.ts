@@ -21,6 +21,7 @@ vi.mock('../src/api/console', () => ({
 }));
 
 import { completeConsoleLine, execConsoleLine, fetchConsoleSpec } from '../src/api/console';
+import { settle } from './helpers';
 
 const BANNER = 'Obsidian Arc console — vtest';
 
@@ -46,10 +47,6 @@ function mockExec(outputText: string): void {
 let app: App | undefined;
 let host: HTMLElement;
 
-async function settle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await nextTick();
-}
 
 async function mountTerminal(): Promise<void> {
   app = createApp({

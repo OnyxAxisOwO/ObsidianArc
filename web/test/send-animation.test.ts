@@ -618,8 +618,12 @@ describe('Telegram-style message send flight animation', () => {
 
     expect(spinnerBody).toMatch(/display:\s*inline-block/);
     expect(spinnerBody).toMatch(/box-sizing:\s*border-box/);
-    expect(spinnerBody).toMatch(/width:\s*14px/);
-    expect(spinnerBody).toMatch(/height:\s*14px/);
+    // The size is not pinned to 14px: any equal width and height keeps the box
+    // square, and it is the square that stops the wobble.
+    const width = spinnerBody.match(/(?:^|[\s;])width:\s*(\d+)px/)?.[1];
+    const height = spinnerBody.match(/(?:^|[\s;])height:\s*(\d+)px/)?.[1];
+    expect(width).toBeDefined();
+    expect(height).toBe(width);
     expect(spinnerBody).toMatch(/transform-origin:\s*center center/);
 
   });

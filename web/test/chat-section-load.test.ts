@@ -8,6 +8,7 @@ import { api } from '../src/api/client';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { forget } from '../src/stores/session';
 import ChatSection from '../src/views/settings/ChatSection.vue';
+import { settle } from './helpers';
 
 let app: App | undefined;
 
@@ -23,11 +24,6 @@ afterEach(() => {
   forget();
 });
 
-async function settle(): Promise<void> {
-  for (let i = 0; i < 3; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
-}
 
 it('names the load failure as the only model choice when the model list request is rejected', async () => {
   vi.spyOn(api, 'get').mockRejectedValue(new Error('network down'));

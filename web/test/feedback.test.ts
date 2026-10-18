@@ -10,6 +10,7 @@ import { changeLanguage, t } from '../src/composables/useI18n';
 import FeedbackPanel from '../src/views/FeedbackPanel.vue';
 import AdminFeedback from '../src/views/admin/AdminFeedback.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
+import { settle } from './helpers';
 
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
@@ -34,10 +35,6 @@ afterEach(() => {
   site.value = null;
 });
 
-async function settle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await nextTick();
-}
 
 async function mount(component: Component): Promise<void> {
   app = createApp({

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, shallowRef, type App, type Component } from 'vue';
+import { createApp, h, shallowRef, type App, type Component } from 'vue';
 import * as authApi from '../src/api/auth';
 import type { Account } from '../src/api/auth';
 import * as consentApi from '../src/api/consent';
@@ -21,14 +21,18 @@ import VerifyView from '../src/views/VerifyView.vue';
 import AccountSection from '../src/views/settings/AccountSection.vue';
 import { installPlugins } from '../src/plugins/registry';
 import example, { type ExampleCheck } from './fixtures/example.plugin';
-import { stubLocation } from './helpers';
+import { settle, stubLocation } from './helpers';
+import { makeAccount } from './fixtures/account';
 
 // A plugin's account field, as the forms label and refuse it.
 const refField = example.fields!['ref']!;
 
 // Signing in with an account from elsewhere, and letting somebody else's site
-// sign people in with an account here. Two features pointing opposite ways,
-// tested together because the screens they touch are the same three.
+// sign people in with an account here. Those point opposite ways, so they are
+// tested together, against the same three screens. The describes after them
+// share this file's stub server and mount setup, which is why they live here;
+// each names the feature it covers. The proof of work and the OIDC binding also
+// have files of their own (pow.test.ts, bind-oidc.test.ts) for what those drive.
 
 // A route as the router resolves one: `meta` is always there, as the settings
 // screen's connect link reads it.
@@ -63,10 +67,6 @@ afterEach(() => {
   forget();
 });
 
-async function settle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await nextTick();
-}
 
 function button(root: ParentNode, label: string): HTMLButtonElement {
   const found = [...root.querySelectorAll<HTMLButtonElement>('button')]
@@ -1232,7 +1232,7 @@ describe('registering with proof-of-work (PoW)', () => {
     });
 
     const regSpy = vi.spyOn(authApi, 'register').mockResolvedValue({
-      user: { id: 'u1', username: 'alice', role: 'user', status: 'active', email_verified: true, allow_stats: true, allow_delete_conversations: true, api_restricted: false, api_restricted_until: 0, api_restriction_source: '', created_at: 0, updated_at: 0, last_login_at: 0, group_id: '', group_name: '', group_expires_at: 0, email: '', nickname: '', avatar: '', bio: '' },
+      user: makeAccount({ id: 'u1', username: 'alice', created_at: 0, updated_at: 0, group_id: '', group_name: '', email: '', nickname: '' }),
     });
 
     await mount(AuthView, { mode: 'register' });
@@ -1264,7 +1264,7 @@ describe('registering with proof-of-work (PoW)', () => {
 
     const fetchSpy = vi.spyOn(authApi, 'fetchPoWChallenge');
     const regSpy = vi.spyOn(authApi, 'register').mockResolvedValue({
-      user: { id: 'u1', username: 'bob', role: 'user', status: 'active', email_verified: true, allow_stats: true, allow_delete_conversations: true, api_restricted: false, api_restricted_until: 0, api_restriction_source: '', created_at: 0, updated_at: 0, last_login_at: 0, group_id: '', group_name: '', group_expires_at: 0, email: '', nickname: '', avatar: '', bio: '' },
+      user: makeAccount({ id: 'u1', username: 'bob', created_at: 0, updated_at: 0, group_id: '', group_name: '', email: '', nickname: '' }),
     });
 
     await mount(AuthView, { mode: 'register' });

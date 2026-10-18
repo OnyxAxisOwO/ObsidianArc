@@ -6,8 +6,9 @@
 // overwriting the reader's choice.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, defineComponent, h, nextTick, ref, type App } from 'vue';
+import { createApp, defineComponent, h, ref, type App } from 'vue';
 import OaCollapsible from '@/components/OaCollapsible.vue';
+import { settle } from './helpers';
 
 let app: App | null = null;
 let host: HTMLElement;
@@ -25,10 +26,6 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-async function settle(): Promise<void> {
-  await nextTick();
-  await nextTick();
-}
 
 interface Handle { reveal(): void; toggle(): void; expanded: boolean }
 

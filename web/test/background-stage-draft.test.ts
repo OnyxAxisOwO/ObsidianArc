@@ -9,11 +9,9 @@ import { adminApi } from '../src/admin/api';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { setThemeMode, type SiteBackground } from '../src/theme/theme';
 import BackgroundStage from '../src/views/admin/BackgroundStage.vue';
+import { PAST_OVERLAY_FADE_MS, settle, wait } from './helpers';
 
-const settle = async () => {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await nextTick();
-};
+;
 // Reading a response body takes more than one turn of the event loop.
 const flush = async () => {
   for (let i = 0; i < 5; i++) await settle();
@@ -88,7 +86,7 @@ describe('the HTML background editor', () => {
     typeIn(source()!, 'my unsaved draft');
     pressEscape();
     // The sheet fades for 200ms before it reports the close.
-    await new Promise((resolve) => setTimeout(resolve, 260));
+    await wait(PAST_OVERLAY_FADE_MS);
     await flush();
     expect(source()).toBeNull();
 
@@ -155,7 +153,7 @@ describe('the HTML background editor', () => {
     editButton().click();
     await settle();
     pressEscape();
-    await new Promise((resolve) => setTimeout(resolve, 260));
+    await wait(PAST_OVERLAY_FADE_MS);
     await flush();
 
     // The page is gone, and the editor is opened again for the variant that no longer has one.
@@ -211,7 +209,7 @@ describe('the HTML background editor', () => {
     await flush();
     typeIn(source()!, 'desktop only');
     pressEscape();
-    await new Promise((resolve) => setTimeout(resolve, 260));
+    await wait(PAST_OVERLAY_FADE_MS);
     await flush();
 
     const phoneScreen = [...host.querySelectorAll<HTMLButtonElement>('.oa-bg-switch button')]

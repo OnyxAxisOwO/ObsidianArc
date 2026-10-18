@@ -3,6 +3,7 @@ import { createApp, h, ref, type App } from 'vue';
 import OaSelect from '../src/components/OaSelect.vue';
 import OaSelectField from '../src/components/OaSelectField.vue';
 import { placeList } from '../src/lib/select-placement';
+import { PAST_SELECT_CLOSE_MS, wait } from './helpers';
 
 // jsdom has no layout, so neither of these exists. The control calls both
 // while opening; what is under test is everything around them.
@@ -86,7 +87,7 @@ describe('the option list', () => {
       await settle();
       expect(list()!.querySelectorAll('[role="option"]')).toHaveLength(1);
       input!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-      await new Promise((resolve) => setTimeout(resolve, 180));
+      await wait(PAST_SELECT_CLOSE_MS);
     }
   });
   it('keeps its placement when filtering does not move the trigger', async () => {

@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, shallowRef, type App } from 'vue';
+import { createApp, h, shallowRef, type App } from 'vue';
 import AdminResources from '../src/views/admin/AdminResources.vue';
 import { adminApi, type Resources } from '../src/admin/api';
 import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage } from '../src/composables/useI18n';
 import { provideAdminView } from '../src/views/admin/adminView';
+import { settle } from './helpers';
 
 let app: App | undefined;
 let host: HTMLElement;
@@ -20,10 +21,6 @@ function snapshot(processSec: number): Resources {
   } as unknown as Resources;
 }
 
-async function settle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await nextTick();
-}
 
 async function mountWith(processSec: number): Promise<void> {
   vi.spyOn(adminApi, 'resources').mockResolvedValue(snapshot(processSec));

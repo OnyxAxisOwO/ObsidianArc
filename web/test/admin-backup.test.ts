@@ -52,6 +52,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+// Microtasks only: some tests here run under fake timers, and settling must not advance a clock the test is driving.
 async function settle(): Promise<void> {
   await Promise.resolve();
   await nextTick();

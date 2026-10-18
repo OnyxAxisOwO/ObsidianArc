@@ -158,6 +158,16 @@ const EMPTY_BODIES: Array<[RegExp, unknown]> = [
   }],
 ];
 
+// The table is read top-down, and `/usage` also matches `/usage/records`, so
+// the records entry has to come first. Nothing else enforces that: a route
+// added above its more specific neighbour would silently take its answer.
+describe('the empty answers', () => {
+  it('answers a usage-records URL with the records shape, not the totals', () => {
+    const match = EMPTY_BODIES.find(([pattern]) => pattern.test('/api/admin/usage/records'));
+    expect(match?.[1]).toEqual({ records: [], total: 0 });
+  });
+});
+
 function stubServer(): void {
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
@@ -227,7 +237,9 @@ describe('the application, mounted', () => {
   it('shows a permission message and does not fetch an ungranted administrator page', async () => {
     adopt({ ...ACCOUNT, role: 'admin', admin_permissions: ['users'] });
     await mountAt('/admin/providers');
-    expect(host.querySelector('.oa-permission-empty')?.textContent).toContain(t('permissionDeniedTitle'));
+    // The denial is role="alert" in AdminPage.vue; the class is a styling hook
+    // and would break silently if the screen renamed it.
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain(t('permissionDeniedTitle'));
     expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes('/api/admin/providers'))).toBe(false);
     await router.push('/admin/users');
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -409,7 +421,7 @@ describe('the application, mounted', () => {
   });
 });
 
-describe('what moves, and what does not', () => {
+describe('the screens the mounted application draws', () => {
   async function search(selector: string, value: string): Promise<HTMLInputElement> {
     const input = host.querySelector<HTMLInputElement>(selector)!;
     input.value = value;

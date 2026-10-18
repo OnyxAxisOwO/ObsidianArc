@@ -4,11 +4,12 @@
 // press goes to the right endpoint and tells the host to read again.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, defineComponent, h, nextTick, type App } from 'vue';
+import { createApp, defineComponent, h, type App } from 'vue';
 import { api } from '@/api/client';
 import type { CheckinStatus } from '@/api/checkin';
 import OaCheckin from '@/components/OaCheckin.vue';
 import { changeLanguage, t } from '@/composables/useI18n';
+import { settle } from './helpers';
 
 vi.mock('@/api/client', () => ({
   ApiError: class ApiError extends Error {
@@ -54,10 +55,6 @@ function status(over: Partial<CheckinStatus> = {}): CheckinStatus {
   };
 }
 
-async function settle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await nextTick();
-}
 
 async function mount(): Promise<void> {
   app = createApp(defineComponent({ render: () => h(OaCheckin, { onChanged: () => { changed += 1; } }) }));

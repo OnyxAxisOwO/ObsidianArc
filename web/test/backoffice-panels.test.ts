@@ -7,7 +7,7 @@ import type { Account } from '../src/api/auth';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { installPlugins } from '../src/plugins/registry';
 import type { ArcPlugin } from '../src/plugins/types';
-import { until } from './helpers';
+import { settle, until } from './helpers';
 
 // A panel from the account menu, opened while the backoffice is on screen.
 //
@@ -110,11 +110,6 @@ function pause(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function settle(): Promise<void> {
-  await pause(0);
-  await pause(0);
-  await nextTick();
-}
 
 async function mountAt(path: string): Promise<void> {
   // A second address in one test is a second application, not a second route

@@ -3,7 +3,7 @@
 // it behind: a lone surrogate renders as a replacement glyph.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, shallowRef, type App } from 'vue';
+import { createApp, h, shallowRef, type App } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
 import { adminApi } from '../src/admin/api';
 import type { Announcement } from '../src/api/announcements';
@@ -11,6 +11,7 @@ import { changeLanguage } from '../src/composables/useI18n';
 import { providePanelHost } from '../src/composables/usePanelHost';
 import AdminAnnouncements from '../src/views/admin/AdminAnnouncements.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
+import { settle } from './helpers';
 
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
@@ -33,10 +34,6 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-async function settle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await nextTick();
-}
 
 function announcement(body: string): Announcement {
   return {

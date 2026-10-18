@@ -6,6 +6,7 @@ import { changeLanguage, t } from '../src/composables/useI18n';
 import { providePanelHost } from '../src/composables/usePanelHost';
 import { provideAdminView } from '../src/views/admin/adminView';
 import AdminProviders from '../src/views/admin/AdminProviders.vue';
+import { settle } from './helpers';
 
 const provider: Provider = {
   id: 'prov-1', name: 'Pool', kind: 'openai', base_url: 'https://api.example.com/v1',
@@ -36,10 +37,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-const settle = async () => {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await nextTick();
-};
+;
 
 async function openProvider(): Promise<void> {
   app = createApp({ setup() {

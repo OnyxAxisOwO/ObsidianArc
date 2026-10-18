@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, nextTick, type App } from 'vue';
+import { createApp, type App } from 'vue';
 
 import type { Conversation } from '../src/api/chat';
+import { settle } from './helpers';
 
 // Every turn changes the rail's conversations, and the project tab refreshes
 // each open project when they do. It used to swap the list already on screen
@@ -33,12 +34,6 @@ const { conversations } = await import('../src/chat/useChat');
 let app: App | null = null;
 let host: HTMLElement;
 
-async function settle(): Promise<void> {
-  for (let i = 0; i < 4; i += 1) {
-    await Promise.resolve();
-    await nextTick();
-  }
-}
 
 describe('the project list after a turn', () => {
   beforeEach(() => {

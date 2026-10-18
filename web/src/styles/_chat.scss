@@ -1153,6 +1153,9 @@
   color: var(--ai-text-secondary);
 }
 
+// An even, square box drawn border-box and turning about its centre. The
+// earlier 13px box wobbled off-centre as it turned, which is what
+// send-animation.test.ts's "avoids sub-pixel wobble" guards (see 1eb9f00).
 .ai-chat-spinner {
   display: inline-block;
   vertical-align: middle;

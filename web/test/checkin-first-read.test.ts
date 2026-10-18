@@ -4,10 +4,11 @@
 // never appeared.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, defineComponent, h, nextTick, type App } from 'vue';
+import { createApp, defineComponent, h, type App } from 'vue';
 import { ApiError, api } from '@/api/client';
 import OaCheckin from '@/components/OaCheckin.vue';
 import { changeLanguage, t } from '@/composables/useI18n';
+import { settle } from './helpers';
 
 vi.mock('@/api/client', () => ({
   ApiError: class ApiError extends Error {
@@ -41,10 +42,6 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-async function settle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await nextTick();
-}
 
 describe('OaCheckin when its first read fails', () => {
   it('says why, in the alert role, instead of drawing nothing', async () => {

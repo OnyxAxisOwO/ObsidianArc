@@ -4,21 +4,18 @@
 // number is typed, and only the number that was typed is sent.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, type App } from 'vue';
+import { createApp, h, type App } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
 import { adminApi } from '../src/admin/api';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import AdminAvailability from '../src/views/admin/AdminAvailability.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
+import { settle } from './helpers';
 
 let app: App | undefined;
 let host: HTMLElement;
 let actions: HTMLElement;
 
-async function settle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await nextTick();
-}
 
 function numberField(label: string): HTMLInputElement {
   const field = [...host.querySelectorAll<HTMLElement>('.oa-field')]

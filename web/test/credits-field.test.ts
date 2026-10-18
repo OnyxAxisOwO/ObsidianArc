@@ -2,17 +2,13 @@
 // readout used to divide by its zero cost and print "Infinity turns".
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, type App } from 'vue';
+import { createApp, h, type App } from 'vue';
 import { adminApi, type AdminModel } from '../src/admin/api';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import CreditsField from '../src/views/admin/CreditsField.vue';
+import { settle } from './helpers';
 
-const settle = async () => {
-  for (let i = 0; i < 3; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await nextTick();
-  }
-};
+;
 
 let app: App | undefined;
 let host: HTMLElement;

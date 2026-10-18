@@ -15,20 +15,16 @@ import { installPlugins } from '../src/plugins/registry';
 import { providePanelHost } from '../src/composables/usePanelHost';
 import AdminUsers from '../src/views/admin/AdminUsers.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
+import { settle } from './helpers';
+import { makeAccount } from './fixtures/account';
 
-const settle = async () => {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await nextTick();
-};
+;
 
-const account = (id: string, over: Partial<Account> = {}): Account => ({
-  id, username: `user-${id}`, email: `${id}@example.test`, nickname: `Nick ${id}`, avatar: '', bio: '',
-  role: 'user', group_id: '', group_expires_at: 0, group_name: '',
-  status: 'active', ban_reason: '', created_at: 1, updated_at: 1, last_login_at: 0,
-  email_verified: true, allow_stats: true, allow_delete_conversations: true,
-  api_restricted: false, api_restricted_until: 0, api_restriction_source: '',
+const account = (id: string, over: Partial<Account> = {}): Account => makeAccount({
+  id, username: `user-${id}`, email: `${id}@example.test`, nickname: `Nick ${id}`,
+  group_id: '', group_name: '', ban_reason: '',
   ...over,
-}) as Account;
+});
 
 type Detail = Awaited<ReturnType<typeof adminApi.user>>;
 const detailOf = (row: Account): Detail => ({

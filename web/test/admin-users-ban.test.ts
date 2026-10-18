@@ -9,6 +9,8 @@ import { t } from '../src/composables/useI18n';
 import AdminUsers from '../src/views/admin/AdminUsers.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
 import example from './fixtures/example.plugin';
+import { PAST_SEARCH_DEBOUNCE_MS, settle, wait } from './helpers';
+import { makeAccount } from './fixtures/account';
 
 const deferred = <T,>() => {
   let resolve!: (value: T) => void;
@@ -16,19 +18,13 @@ const deferred = <T,>() => {
   return { promise, resolve };
 };
 
-const settle = async () => {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await nextTick();
-};
+;
 
-const account = (id: string, over: Partial<Account> = {}): Account => ({
-  id, username: `user-${id}`, email: '', nickname: '', avatar: '', bio: '',
-  role: 'user', group_id: '', group_expires_at: 0, group_name: '',
-  status: 'active', ban_reason: '', created_at: 1, updated_at: 1, last_login_at: 0,
-  email_verified: true, allow_stats: true, allow_delete_conversations: true,
-  api_restricted: false, api_restricted_until: 0, api_restriction_source: '',
+const account = (id: string, over: Partial<Account> = {}): Account => makeAccount({
+  id, username: `user-${id}`, email: '', nickname: '',
+  group_id: '', group_name: '', ban_reason: '',
   ...over,
-}) as Account;
+});
 
 type Detail = Awaited<ReturnType<typeof adminApi.user>>;
 // Only what the panel reads; the figures themselves are not what is under test.
@@ -380,7 +376,7 @@ describe('AdminUsers, banning with a reason', () => {
 
     app!.unmount();
     app = undefined;
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await wait(PAST_SEARCH_DEBOUNCE_MS);
     expect(searches()).toBe(before);
   });
 });

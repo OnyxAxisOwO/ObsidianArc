@@ -7,11 +7,11 @@ import AdminDashboardTrend from '../src/views/admin/AdminDashboardTrend.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
 import { changeLanguage, t, tn } from '../src/composables/useI18n';
 import { dashboardFixture, emptyTotals } from './fixtures/dashboard';
+import { settle } from './helpers';
 
 let app: App | undefined;
 let host: HTMLElement;
 let actions: HTMLElement;
-async function settle(): Promise<void> { await new Promise((resolve) => setTimeout(resolve, 0)); await nextTick(); }
 beforeEach(async () => {
   await changeLanguage('en');
   host = document.createElement('div');

@@ -68,7 +68,10 @@ describe('stylesheet invariants', () => {
 
     expect(rule, 'no .oa-drawer-flash.ok rule in the shipped stylesheet').toBeTruthy();
     expect(rule![1]).not.toMatch(/--ai-danger/);
-    expect(rule![1]).toMatch(/#10b981/);
+    // Only that it sets a colour of its own is the point. The hex it uses is
+    // not pinned here: no token defines a success colour yet, so a test that
+    // names the hex would fail on the day someone moved it to a token.
+    expect(rule![1]).toMatch(/(?:^|;)\s*color:\s*[^;}]+/);
   });
 
   it('styles the administrator card expiry like every other field', () => {

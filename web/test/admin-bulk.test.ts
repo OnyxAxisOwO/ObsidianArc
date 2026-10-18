@@ -10,6 +10,7 @@ import AdminAnnouncements from '../src/views/admin/AdminAnnouncements.vue';
 import { pickJSONFile, saveAsFile } from '../src/api/backup';
 import AdminModels from '../src/views/admin/AdminModels.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
+import { PAST_PANEL_ZOOM_MS, settle, wait } from './helpers';
 
 // The import reads a file from the operator's disk; the test hands it a JSON
 // body directly. Everything else in the backup module stays real.
@@ -19,10 +20,7 @@ vi.mock('../src/api/backup', async (importOriginal) => ({
   saveAsFile: vi.fn(),
 }));
 
-const settle = async () => {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await nextTick();
-};
+;
 
 describe('OaTable multi-select', () => {
   let app: App | null = null;
@@ -276,7 +274,7 @@ describe('AdminModels, several at once and in place', () => {
 
     // It slides out, and only then is it gone.
     expect(panels.querySelector('.oa-panel')).not.toBeNull();
-    await new Promise((resolve) => setTimeout(resolve, 400));
+    await wait(PAST_PANEL_ZOOM_MS);
     expect(panels.querySelector('.oa-panel')).toBeNull();
   });
 

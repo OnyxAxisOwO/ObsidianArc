@@ -6,11 +6,11 @@ import { changeLanguage, t } from '../src/composables/useI18n';
 import AdminSettings from '../src/views/admin/AdminSettings.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
 import settingsFixture from './fixtures/settings.json';
+import { settle } from './helpers';
 
 let app: App | undefined;
 let host: HTMLElement;
 let actions: HTMLElement;
-async function settle(): Promise<void> { await vi.advanceTimersByTimeAsync(0); await nextTick(); }
 beforeEach(async () => {
   await changeLanguage('en');
   // A successful save leaves a delayed label reset; keep it inside this test.

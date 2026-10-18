@@ -13,15 +13,34 @@ import { nextTick } from 'vue';
 /** Wall-clock time, for a component's own timer that a test lets run out. */
 export const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+// Waits that run a component's own timer out, each a little past the duration
+// it is written for, so the timer has fired before the test looks. These are
+// the component's durations as the source states them; a change there is a
+// change here.
+
+/** OaOverlay.vue reports a close 200ms after its fade starts. */
+export const PAST_OVERLAY_FADE_MS = 260;
+/** OaPanel.vue's ZOOM_MS is 340: a panel slides out that long before it is gone. */
+export const PAST_PANEL_ZOOM_MS = 400;
+/** OaSelect.vue's CLOSE_MS is 160. */
+export const PAST_SELECT_CLOSE_MS = 180;
+/** AdminUsers.vue debounces its search by 250ms. */
+export const PAST_SEARCH_DEBOUNCE_MS = 300;
+
 /**
  * Lets a mounted screen finish what a mock answers at once: each round lets
  * the resolved promises run and Vue draw what they changed. Four rounds is the
  * most any screen here chains — a load that starts another load once it has
  * the first answer — and the rounds cost nothing when there is less to do.
+ *
+ * Under fake timers the round is advanced by the fake clock instead: a
+ * setTimeout(0) that the test never advances would never fire, and the wait
+ * would hang rather than fail.
  */
 export async function settle(): Promise<void> {
   for (let i = 0; i < 4; i += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(0);
+    else await new Promise((resolve) => setTimeout(resolve, 0));
     await nextTick();
   }
 }

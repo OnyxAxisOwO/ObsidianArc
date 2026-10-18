@@ -11,6 +11,7 @@ import AdminDashboard from '../src/views/admin/AdminDashboard.vue';
 import AdminUpdateDialog from '../src/views/admin/AdminUpdateDialog.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
 import { dashboardFixture } from './fixtures/dashboard';
+import { settle } from './helpers';
 
 const SKIPPED_KEY = 'obsidian-arc-admin-update-skipped';
 
@@ -18,10 +19,6 @@ let app: App | undefined;
 let host: HTMLElement;
 let actions: HTMLElement;
 
-async function settle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await nextTick();
-}
 
 function status(overrides: Partial<UpdateStatus> = {}): UpdateStatus {
   return {

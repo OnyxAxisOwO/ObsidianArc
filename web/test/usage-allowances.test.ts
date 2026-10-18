@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, type App } from 'vue';
+import { createApp, h, type App } from 'vue';
 import UsageAllowances from '../src/views/admin/usage/UsageAllowances.vue';
 import { adminApi, type AllowanceList, type AllowanceRow } from '../src/admin/api';
 import { t } from '../src/composables/useI18n';
+import { settle } from './helpers';
 
 let app: App | null = null;
 let host: HTMLElement;
@@ -34,18 +35,15 @@ const answer = (rows: AllowanceRow[]): AllowanceList => ({
   rows, total: rows.length, listed: rows.length, loaded: rows.length, capped: false, display: 'remaining', low: 1, exhausted: 1,
 });
 
-async function settle(): Promise<void> {
-  for (let i = 0; i < 4; i++) { await Promise.resolve(); await nextTick(); }
-}
 
 describe('UsageAllowances', () => {
   it('draws one row per account, a window with no limit as such, and asks again when the state changes', async () => {
-    vi.spyOn(adminApi, 'groupOptions').mockResolvedValue({ groups: [{ id: 'g1', name: 'Pro' }] } as never);
+    vi.spyOn(adminApi, 'groupOptions').mockResolvedValue({ groups: [{ id: 'g1', name: 'Pro' }] });
     const ask = vi.spyOn(adminApi, 'usageAllowances')
       .mockResolvedValueOnce(answer([row('gone', 1), row('free', null)]))
       .mockResolvedValueOnce(answer([row('gone', 1)]));
 
-    app = createApp({ render: () => h(UsageAllowances as never, { groupId: '' }) });
+    app = createApp({ render: () => h(UsageAllowances, { groupId: '' }) });
     app.mount(host);
     await settle();
 
@@ -72,7 +70,7 @@ describe('UsageAllowances', () => {
       ...answer([row('a', 1), row('b', 0.5)]), total: 7000, listed: 2, loaded: 2, capped: true,
     });
 
-    app = createApp({ render: () => h(UsageAllowances as never, { groupId: '' }) });
+    app = createApp({ render: () => h(UsageAllowances, { groupId: '' }) });
     app.mount(host);
     await settle();
 
@@ -91,7 +89,7 @@ describe('UsageAllowances', () => {
       .mockResolvedValueOnce({ ...answer([row('a', 1)]), total: 7000, listed: 1, loaded: 5000, capped: true })
       .mockResolvedValueOnce({ ...answer([row('a', 1)]), total: 1, listed: 1, loaded: 5000, capped: true });
 
-    app = createApp({ render: () => h(UsageAllowances as never, { groupId: '' }) });
+    app = createApp({ render: () => h(UsageAllowances, { groupId: '' }) });
     app.mount(host);
     await settle();
 
@@ -115,7 +113,7 @@ describe('UsageAllowances', () => {
       .mockRejectedValueOnce(new Error('upstream down'))
       .mockResolvedValueOnce({ ...answer(page('b')), total: 120, listed: 120 });
 
-    app = createApp({ render: () => h(UsageAllowances as never, { groupId: '' }) });
+    app = createApp({ render: () => h(UsageAllowances, { groupId: '' }) });
     app.mount(host);
     await settle();
     // The scroller is the element the rows sit in; a scroll event on it is what

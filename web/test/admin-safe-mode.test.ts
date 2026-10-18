@@ -1,5 +1,8 @@
+// Two kinds of test live here: the store's own rules, and each screen's masking
+// of what the store hides. They share the fixtures and the mounted screens, so
+// they stay in one file rather than each repeating the setup.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, shallowRef, type App } from 'vue';
+import { createApp, h, type Component, nextTick, shallowRef, type App } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
 import { adminApi, emptyPolicy, type AdminModel, type Provider } from '../src/admin/api';
 import type { Account } from '../src/api/auth';
@@ -140,6 +143,51 @@ describe('Admin Safe Mode store & utilities', () => {
   });
 });
 
+// The store reads the saved state once, when its module loads, so each case
+// loads it again behind a storage that is broken in one way, rather than
+// reusing the copy this file imported at the top.
+describe('safe mode when local storage is broken', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.resetModules();
+  });
+
+  async function loadStore(storage: Partial<Storage>) {
+    vi.stubGlobal('localStorage', storage);
+    vi.resetModules();
+    return import('../src/admin/safeMode');
+  }
+
+  it('starts with safe mode off when reading the saved state throws', async () => {
+    const store = await loadStore({
+      getItem: () => { throw new DOMException('blocked', 'SecurityError'); },
+      setItem: () => {},
+    });
+
+    expect(store.safeModeEnabled.value).toBe(false);
+    expect(store.safeModeCategories.value.users).toBe(true);
+  });
+
+  it('falls back to the defaults when the saved state is not JSON', async () => {
+    const store = await loadStore({ getItem: () => '{"enabled": tru', setItem: () => {} });
+
+    expect(store.safeModeEnabled.value).toBe(false);
+    expect(store.safeModeCategories.value.logs).toBe(true);
+  });
+
+  it('keeps the toggle working on this page when saving throws', async () => {
+    const store = await loadStore({
+      getItem: () => null,
+      setItem: () => { throw new DOMException('full', 'QuotaExceededError'); },
+    });
+
+    store.toggleSafeMode(true);
+    await nextTick();
+
+    expect(store.isMasked('users')).toBe(true);
+  });
+});
+
 describe('AdminSafeMode component', () => {
   let app: App | undefined;
   let host: HTMLElement;
@@ -168,7 +216,6 @@ describe('AdminSafeMode component', () => {
     expect(triggerBtn).not.toBeNull();
     expect(triggerBtn.classList.contains('is-active')).toBe(false);
 
-    // Open dropdown menu
     triggerBtn.click();
     await nextTick();
 
@@ -190,12 +237,10 @@ describe('AdminSafeMode component', () => {
     const categoryRows = menu.querySelectorAll<HTMLButtonElement>('.oa-safe-mode-row');
     expect(categoryRows.length).toBe(SAFE_CATEGORIES.length);
 
-    // Click the first category row (users)
     categoryRows[0]!.click();
     await nextTick();
     expect(safeModeCategories.value.users).toBe(false);
 
-    // Click select all
     const selectAllBtn = menu.querySelector<HTMLButtonElement>('.oa-safe-mode-action-btn')!;
     selectAllBtn.click();
     await nextTick();
@@ -352,7 +397,9 @@ describe('UsageBoard safe mode masking', () => {
     ];
     app = createApp({
       render() {
-        return h(UsageBoard as any, { rows: dummyRows, kind: 'user', metric: 'tokens', emptyText: 'none' });
+        // A defaulted optional prop puts this component outside h()'s overloads under
+        // exactOptionalPropertyTypes, so the component is passed as a plain Component.
+        return h(UsageBoard as Component, { rows: dummyRows, kind: 'user', metric: 'tokens', emptyText: 'none' });
       },
     });
     app.mount(host);
@@ -405,7 +452,7 @@ describe('UsageMatrix safe mode masking', () => {
     const models = [{ ...emptyTotals, key: 'model-1', label: 'GPT-5', detail: 'OpenAI', total_tokens: 5000, last_at: 0 }];
     app = createApp({
       render() {
-        return h(UsageMatrix as any, {
+        return h(UsageMatrix, {
           matrix, users, models, metric: 'total_tokens',
           format: (value: number) => String(value),
         });
@@ -458,14 +505,14 @@ describe('OaUsageWindow safe mode masking', () => {
       limit_requests: 100, limit_tokens: null, limit_credits: null,
       resets_at: Date.now() + 3_600_000,
     };
-    app = createApp({ render() { return h(OaUsageWindow as any, { window: window_, masked: false }); } });
+    app = createApp({ render() { return h(OaUsageWindow as Component, { window: window_, masked: false }); } });
     app.mount(host);
     await nextTick();
     expect(host.textContent).toContain('40 / 100');
     expect(host.querySelector('.oa-meter')).not.toBeNull();
     app.unmount();
 
-    app = createApp({ render() { return h(OaUsageWindow as any, { window: window_, masked: true }); } });
+    app = createApp({ render() { return h(OaUsageWindow as Component, { window: window_, masked: true }); } });
     app.mount(host);
     await nextTick();
     expect(host.textContent).not.toContain('40 / 100');
@@ -499,7 +546,7 @@ describe('AdminDashboardTrend safe mode masking', () => {
     const series = [{ ...emptyTotals, at, requests: 500, total_tokens: 987654 }];
     const totals = { ...emptyTotals, requests: 500, total_tokens: 987654 };
     app = createApp({
-      render() { return h(AdminDashboardTrend as any, { series, totals, bucketMs: 21_600_000 }); },
+      render() { return h(AdminDashboardTrend, { series, totals, bucketMs: 21_600_000 }); },
     });
     app.mount(host);
     await nextTick();

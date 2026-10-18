@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, shallowRef, type App, type Component } from 'vue';
+import { createApp, h, shallowRef, type App, type Component } from 'vue';
 import AdminInvites from '../src/views/admin/AdminInvites.vue';
 import { adminApi, type InviteCode, type InviteStats, type InviteUse } from '../src/admin/api';
 import * as authApi from '../src/api/auth';
@@ -9,6 +9,7 @@ import { provideAdminView } from '../src/views/admin/adminView';
 import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { siteInfo } from '../src/stores/session';
+import { settle } from './helpers';
 
 let app: App | undefined;
 let host: HTMLElement;
@@ -30,10 +31,6 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-async function settle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await nextTick();
-}
 
 async function mount(component: Component): Promise<void> {
   app = createApp({ setup() {

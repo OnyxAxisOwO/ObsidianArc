@@ -9,6 +9,7 @@ import { settingsRefusalText } from '../src/lib/refusal';
 import { adopt, forget } from '../src/stores/session';
 import AdminSecurity from '../src/views/admin/AdminSecurity.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
+import { settle } from './helpers';
 
 const ADMIN: Account = {
   id: 'u1', username: 'root', email: 'root@example.com', nickname: 'Root', avatar: '', bio: '',
@@ -31,10 +32,6 @@ let app: App | undefined;
 let host: HTMLElement;
 let actions: HTMLElement;
 
-async function settle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await nextTick();
-}
 
 function type(input: HTMLInputElement, value: string): void {
   input.value = value;

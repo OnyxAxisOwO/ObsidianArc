@@ -9,6 +9,7 @@ import { ApiError, api } from '../src/api/client';
 import * as keysAPI from '../src/api/keys';
 import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
+import { settle } from './helpers';
 
 const KEY: keysAPI.ApiKey = {
   id: 'key-1', name: 'My laptop', prefix: 'sk-test', disabled: false,
@@ -18,10 +19,6 @@ const KEY: keysAPI.ApiKey = {
 let app: App | null = null;
 let panelHost: HTMLElement;
 
-async function settle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await nextTick();
-}
 
 async function mount(): Promise<void> {
   const host = document.createElement('div');

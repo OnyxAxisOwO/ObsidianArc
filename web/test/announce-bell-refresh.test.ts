@@ -9,6 +9,7 @@ import { createApp, nextTick, type App } from 'vue';
 import AnnounceBell from '@/announce/AnnounceBell.vue';
 import { fetchAnnouncement, fetchAnnouncements, markAllRead, type Announcement, type AnnouncementFeed } from '@/api/announcements';
 import { notificationList, notificationsUnread, stopNotifications } from '@/stores/notifications';
+import { settle } from './helpers';
 
 vi.mock('@/api/announcements', () => ({
   fetchAnnouncements: vi.fn(),
@@ -47,9 +48,6 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   return { promise, resolve };
 }
 
-function settle(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 0)).then(() => nextTick());
-}
 
 let app: App | null = null;
 let host: HTMLElement;

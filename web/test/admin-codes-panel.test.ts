@@ -2,13 +2,14 @@
 // button tells the operator when a copy was refused.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, shallowRef, type App } from 'vue';
+import { createApp, h, shallowRef, type App } from 'vue';
 import AdminCodes from '../src/views/admin/AdminCodes.vue';
 import { adminApi, type RedemptionCode } from '../src/admin/api';
 import * as markdown from '../src/chat/markdown';
 import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { provideAdminView } from '../src/views/admin/adminView';
+import { settle } from './helpers';
 
 let app: App | undefined;
 let host: HTMLElement;
@@ -31,10 +32,6 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-async function settle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await nextTick();
-}
 
 async function mount(): Promise<void> {
   app = createApp({ setup() {

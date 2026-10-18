@@ -11,10 +11,11 @@
 // grouping and click handlers are the real code under test.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, ref, type App } from 'vue';
+import { createApp, h, ref, type App } from 'vue';
 import { api } from '@/api/client';
 import { providePanelHost } from '@/composables/usePanelHost';
 import UsagePanel from '@/views/UsagePanel.vue';
+import { settle } from './helpers';
 
 vi.mock('@/api/client', () => ({
   ApiError: class ApiError extends Error {
@@ -71,10 +72,6 @@ function mountPanel(): void {
   app.mount(host);
 }
 
-async function settle(): Promise<void> {
-  await vi.advanceTimersByTimeAsync(0);
-  await nextTick();
-}
 
 const emptyTotals = {
   requests: 0,

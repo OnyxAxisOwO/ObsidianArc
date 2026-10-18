@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { createApp, h, nextTick, type App } from 'vue';
+import { createApp, h, type Component, nextTick, type App } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
 import UsageBoard from '../src/views/admin/usage/UsageBoard.vue';
 import AdminDashboard from '../src/views/admin/AdminDashboard.vue';
@@ -37,7 +37,11 @@ describe('Non-linear animation & expand/collapse transitions', () => {
       host.textContent = '';
       app = createApp({
         render() {
-          return h(UsageBoard as any, { rows: list, kind: 'model', metric: 'requests', limit: 6, emptyText: 'No models' });
+          // A defaulted optional prop makes this component's props miss h()'s overload under
+          // exactOptionalPropertyTypes, so the call takes the component as a plain Component.
+          // A defaulted optional prop puts this component outside h()'s overloads under
+          // exactOptionalPropertyTypes, so the component is passed as a plain Component.
+          return h(UsageBoard as Component, { rows: list, kind: 'model', metric: 'requests', limit: 6, emptyText: 'No models' });
         },
       });
       app.mount(host);
@@ -123,8 +127,8 @@ describe('Non-linear animation & expand/collapse transitions', () => {
   it('OaMenu mounts and triggers open animation with non-linear transform', async () => {
     app = createApp({
       render() {
-        return h(OaMenu as any, null, {
-          trigger: ({ toggle }: any) => h('button', { class: 'trigger-btn', onClick: toggle }, 'Menu'),
+        return h(OaMenu, null, {
+          trigger: ({ toggle }: { toggle: () => void }) => h('button', { class: 'trigger-btn', onClick: toggle }, 'Menu'),
           default: () => h('div', { class: 'menu-content' }, 'Content'),
         });
       },
@@ -154,11 +158,11 @@ describe('Non-linear animation & expand/collapse transitions', () => {
     // Simulate iPhone viewport: width = 390
     vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(390);
 
-    const menuRef = { value: null as any };
+    const menuRef = { value: null as InstanceType<typeof OaMenu> | null };
     app = createApp({
       render() {
-        return h(OaMenu as any, { ref: (r: any) => { menuRef.value = r; } }, {
-          trigger: ({ toggle }: any) => h('button', { class: 'bell-btn', onClick: toggle }, 'Bell'),
+        return h(OaMenu, { ref: (r) => { menuRef.value = r as InstanceType<typeof OaMenu> | null; } }, {
+          trigger: ({ toggle }: { toggle: () => void }) => h('button', { class: 'bell-btn', onClick: toggle }, 'Bell'),
           default: () => h('div', { class: 'menu-content' }, 'Announcements'),
         });
       },
@@ -191,7 +195,7 @@ describe('Non-linear animation & expand/collapse transitions', () => {
     // Mock menu width of 280px (.oa-menu-announce min-width)
     Object.defineProperty(panel, 'offsetWidth', { configurable: true, value: 280 });
 
-    menuRef.value.fit();
+    menuRef.value!.fit();
 
     // Default right: 0 would put left at 212 - 280 = -68px (overflows screen by 76px).
     // Shifting right by 76px brings left to GUTTER (8px).
@@ -208,11 +212,11 @@ describe('Non-linear animation & expand/collapse transitions', () => {
     // Ultra narrow viewport (e.g. 260px)
     vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(260);
 
-    const menuRef = { value: null as any };
+    const menuRef = { value: null as InstanceType<typeof OaMenu> | null };
     app = createApp({
       render() {
-        return h(OaMenu as any, { ref: (r: any) => { menuRef.value = r; } }, {
-          trigger: ({ toggle }: any) => h('button', { class: 'trigger-btn', onClick: toggle }, 'Trigger'),
+        return h(OaMenu, { ref: (r) => { menuRef.value = r as InstanceType<typeof OaMenu> | null; } }, {
+          trigger: ({ toggle }: { toggle: () => void }) => h('button', { class: 'trigger-btn', onClick: toggle }, 'Trigger'),
           default: () => h('div', { class: 'menu-content' }, 'Content'),
         });
       },
@@ -227,7 +231,7 @@ describe('Non-linear animation & expand/collapse transitions', () => {
     const panel = host.querySelector<HTMLElement>('.oa-menu')!;
     Object.defineProperty(panel, 'offsetWidth', { configurable: true, value: 280 });
 
-    menuRef.value.fit();
+    menuRef.value!.fit();
 
     // room = 260 - 2 * 8 = 244px
     expect(panel.style.maxWidth).toBe('244px');
@@ -237,11 +241,11 @@ describe('Non-linear animation & expand/collapse transitions', () => {
   it('OaMenu does not flap maxWidth/minWidth on subsequent fit() calls when clamped to room', async () => {
     vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(260);
 
-    const menuRef = { value: null as any };
+    const menuRef = { value: null as InstanceType<typeof OaMenu> | null };
     app = createApp({
       render() {
-        return h(OaMenu as any, { ref: (r: any) => { menuRef.value = r; } }, {
-          trigger: ({ toggle }: any) => h('button', { class: 'trigger-btn', onClick: toggle }, 'Trigger'),
+        return h(OaMenu, { ref: (r) => { menuRef.value = r as InstanceType<typeof OaMenu> | null; } }, {
+          trigger: ({ toggle }: { toggle: () => void }) => h('button', { class: 'trigger-btn', onClick: toggle }, 'Trigger'),
           default: () => h('div', { class: 'menu-content' }, 'Content'),
         });
       },
@@ -256,7 +260,7 @@ describe('Non-linear animation & expand/collapse transitions', () => {
     const panel = host.querySelector<HTMLElement>('.oa-menu')!;
     Object.defineProperty(panel, 'offsetWidth', { configurable: true, value: 280 });
 
-    menuRef.value.fit();
+    menuRef.value!.fit();
     expect(panel.style.maxWidth).toBe('244px');
     expect(panel.style.minWidth).toBe('0px');
 
@@ -264,7 +268,7 @@ describe('Non-linear animation & expand/collapse transitions', () => {
     Object.defineProperty(panel, 'offsetWidth', { configurable: true, value: 244 });
 
     // Calling fit() again (e.g. from ResizeObserver) must not wipe out maxWidth
-    menuRef.value.fit();
+    menuRef.value!.fit();
     expect(panel.style.maxWidth).toBe('244px');
     expect(panel.style.minWidth).toBe('0px');
   });
@@ -272,11 +276,11 @@ describe('Non-linear animation & expand/collapse transitions', () => {
   it('OaMenu anchors transformOrigin to bottom when menu has oa-menu-up', async () => {
     vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(390);
 
-    const menuRef = { value: null as any };
+    const menuRef = { value: null as InstanceType<typeof OaMenu> | null };
     app = createApp({
       render() {
-        return h(OaMenu as any, { ref: (r: any) => { menuRef.value = r; }, menuClass: 'oa-menu-up' }, {
-          trigger: ({ toggle }: any) => h('button', { class: 'up-btn', onClick: toggle }, 'Up'),
+        return h(OaMenu, { ref: (r) => { menuRef.value = r as InstanceType<typeof OaMenu> | null; }, menuClass: 'oa-menu-up' }, {
+          trigger: ({ toggle }: { toggle: () => void }) => h('button', { class: 'up-btn', onClick: toggle }, 'Up'),
           default: () => h('div', { class: 'menu-content' }, 'Content'),
         });
       },
@@ -305,7 +309,7 @@ describe('Non-linear animation & expand/collapse transitions', () => {
     const panel = host.querySelector<HTMLElement>('.oa-menu')!;
     Object.defineProperty(panel, 'offsetWidth', { configurable: true, value: 280 });
 
-    menuRef.value.fit();
+    menuRef.value!.fit();
 
     expect(panel.style.right).toBe('-76px');
     // Vertical origin must be bottom for upward opening menu
@@ -315,11 +319,11 @@ describe('Non-linear animation & expand/collapse transitions', () => {
   it('OaMenu with oa-menu-left shifts left when overflowing right screen boundary', async () => {
     vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(390);
 
-    const menuRef = { value: null as any };
+    const menuRef = { value: null as InstanceType<typeof OaMenu> | null };
     app = createApp({
       render() {
-        return h(OaMenu as any, { ref: (r: any) => { menuRef.value = r; }, menuClass: 'oa-menu-left' }, {
-          trigger: ({ toggle }: any) => h('button', { class: 'left-btn', onClick: toggle }, 'Left'),
+        return h(OaMenu, { ref: (r) => { menuRef.value = r as InstanceType<typeof OaMenu> | null; }, menuClass: 'oa-menu-left' }, {
+          trigger: ({ toggle }: { toggle: () => void }) => h('button', { class: 'left-btn', onClick: toggle }, 'Left'),
           default: () => h('div', { class: 'menu-content' }, 'Content'),
         });
       },
@@ -349,7 +353,7 @@ describe('Non-linear animation & expand/collapse transitions', () => {
     const panel = host.querySelector<HTMLElement>('.oa-menu')!;
     Object.defineProperty(panel, 'offsetWidth', { configurable: true, value: 280 });
 
-    menuRef.value.fit();
+    menuRef.value!.fit();
 
     // unscaledLeft = 200, unscaledRight = 200 + 280 = 480.
     // viewWidth - GUTTER = 390 - 8 = 382.
@@ -366,11 +370,11 @@ describe('Non-linear animation & expand/collapse transitions', () => {
     // Start narrow
     const innerWidthSpy = vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(260);
 
-    const menuRef = { value: null as any };
+    const menuRef = { value: null as InstanceType<typeof OaMenu> | null };
     app = createApp({
       render() {
-        return h(OaMenu as any, { ref: (r: any) => { menuRef.value = r; } }, {
-          trigger: ({ toggle }: any) => h('button', { class: 'trigger-btn', onClick: toggle }, 'Trigger'),
+        return h(OaMenu, { ref: (r) => { menuRef.value = r as InstanceType<typeof OaMenu> | null; } }, {
+          trigger: ({ toggle }: { toggle: () => void }) => h('button', { class: 'trigger-btn', onClick: toggle }, 'Trigger'),
           default: () => h('div', { class: 'menu-content' }, 'Content'),
         });
       },
@@ -399,14 +403,14 @@ describe('Non-linear animation & expand/collapse transitions', () => {
     const panel = host.querySelector<HTMLElement>('.oa-menu')!;
     Object.defineProperty(panel, 'offsetWidth', { configurable: true, value: 244 });
 
-    menuRef.value.fit();
+    menuRef.value!.fit();
     expect(panel.style.maxWidth).toBe('244px');
 
     // Window expands to wide screen
     innerWidthSpy.mockReturnValue(1000);
     Object.defineProperty(panel, 'offsetWidth', { configurable: true, value: 280 });
 
-    menuRef.value.fit();
+    menuRef.value!.fit();
     expect(panel.style.maxWidth).toBe('');
     expect(panel.style.minWidth).toBe('');
     expect(panel.style.left).toBe('');

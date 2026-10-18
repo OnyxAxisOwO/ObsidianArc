@@ -14,6 +14,7 @@ import { provideAdminView } from '../src/views/admin/adminView';
 import { adopt, forget, site, siteInfo } from '../src/stores/session';
 import { refusalText } from '../src/lib/refusal';
 import { verificationErrorText } from '../src/lib/verification-error';
+import { settle } from './helpers';
 
 const ACCOUNT: Account = {
   id: 'u1', username: 'ada', email: 'ada@example.com', nickname: 'Ada', avatar: '', bio: '',
@@ -37,10 +38,6 @@ let testRouter: ReturnType<typeof createRouter> | undefined;
 let host: HTMLElement;
 let actions: HTMLElement;
 
-async function settle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await nextTick();
-}
 
 function fieldInput(root: ParentNode, label: string): HTMLInputElement {
   const field = [...root.querySelectorAll<HTMLElement>('.oa-field')]

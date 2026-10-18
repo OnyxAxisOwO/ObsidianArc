@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, shallowRef, type App, type Component } from 'vue';
+import { createApp, h, shallowRef, type App, type Component } from 'vue';
 import AdminCodes from '../src/views/admin/AdminCodes.vue';
 import AdminUsers from '../src/views/admin/AdminUsers.vue';
 import GroupMembers from '../src/views/admin/GroupMembers.vue';
@@ -11,6 +11,7 @@ import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { MASK_PLACEHOLDER, safeModeCategories, safeModeEnabled } from '../src/admin/safeMode';
 import { adopt, forget } from '../src/stores/session';
+import { settle } from './helpers';
 
 vi.mock('../src/api/backup', () => ({ saveAsFile: vi.fn() }));
 
@@ -36,10 +37,6 @@ afterEach(() => {
   vi.mocked(saveAsFile).mockClear();
 });
 
-async function settle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await nextTick();
-}
 
 async function mount(component: Component, props = {}): Promise<void> {
   app = createApp({ setup() {
@@ -205,6 +202,27 @@ describe('administrator roles on the user detail panel', () => {
     await settle();
     expect(panels.textContent).toContain('Database is busy');
     expect(panels.textContent).not.toContain(t('loading'));
+  });
+
+  // A keys request that failed is not an account without keys: the panel says
+  // the keys could not be read, where the empty line would say there are none.
+  it('says the keys could not be read, rather than that there are none', async () => {
+    adopt({ ...member, id: 'operator', role: 'super_admin', admin_permissions: [] });
+    vi.spyOn(adminApi, 'groupOptions').mockResolvedValue({ groups: [] });
+    vi.spyOn(adminApi, 'users').mockResolvedValue({ users: [member], total: 1 });
+    vi.spyOn(adminApi, 'userKeys').mockRejectedValue(new Error('keys unavailable'));
+    vi.spyOn(adminApi, 'user').mockResolvedValue({
+      user: member, policy: emptyPolicy('user', member.id), usage: { windows: [], unlimited: true },
+      lifetime: { requests: 0, input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, total_tokens: 0, credits: 0, errors: 0, users: 0, models: 0, duration_ms: 0 },
+      cards: { total: 0, available: 0, used: 0, expired: 0, cards: [] },
+    });
+    await mount(AdminUsers);
+
+    host.querySelector<HTMLTableRowElement>('tbody tr')!.click();
+    await settle();
+
+    expect(panels.textContent).toContain('keys unavailable');
+    expect(panels.textContent).not.toContain(t('keysEmpty'));
   });
 
 });

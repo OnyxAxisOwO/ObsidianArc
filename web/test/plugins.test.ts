@@ -20,6 +20,7 @@ import { provideAdminView } from '../src/views/admin/adminView';
 import PluginList from '../src/views/admin/PluginList.vue';
 import PluginUserActions from '../src/views/admin/PluginUserActions.vue';
 import example from './fixtures/example.plugin';
+import { settle } from './helpers';
 
 // The plugin framework's browser half: which plugins load, how the core
 // forms draw what a plugin declares, and that a plugin's settings travel
@@ -38,10 +39,6 @@ let app: App | undefined;
 let host: HTMLElement;
 let actions: HTMLElement;
 
-async function settle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await nextTick();
-}
 
 async function mount(component: Component, props: Record<string, unknown> = {}): Promise<void> {
   const router = createRouter({

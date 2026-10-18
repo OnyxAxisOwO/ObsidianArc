@@ -19,7 +19,7 @@ import { provideOpenRecord } from '../src/views/admin/openRecord';
 import PluginList from '../src/views/admin/PluginList.vue';
 import PluginActionCard from '../src/views/admin/PluginActionCard.vue';
 import { safeModeCategories, safeModeEnabled } from '../src/admin/safeMode';
-import { settle } from './helpers';
+import { PAST_PANEL_ZOOM_MS, settle, wait } from './helpers';
 
 const deferred = <T,>() => {
   let resolve!: (value: T) => void;
@@ -541,7 +541,7 @@ describe('a record whose detail is still loading when the reader moves on', () =
     panelHost.querySelector<HTMLButtonElement>(`button[aria-label="${t('close')}"]`)!.click();
     // The panel closes after its 340ms exit, so the close lands only once that
     // has run; B's detail must arrive after it, with the reader already gone.
-    await new Promise((resolve) => setTimeout(resolve, 400));
+    await wait(PAST_PANEL_ZOOM_MS);
     expect(panelHost.querySelector('.oa-plugin-record')).toBeNull();
 
     detailB.resolve({ title: 'Record B', fields: [] });
