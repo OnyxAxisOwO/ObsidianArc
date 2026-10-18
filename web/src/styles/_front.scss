@@ -532,13 +532,19 @@
   animation: oaFrontFade 0.7s cubic-bezier(0.16, 1, 0.3, 1) 0.68s forwards;
 }
 
-.oa-front-speaks-label {
-  flex-shrink: 0;
+// The caption a speaker's name and a figure's caption share, written once so
+// the two cannot drift apart.
+@mixin front-caption {
   color: var(--ai-text-secondary);
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.oa-front-speaks-label {
+  flex-shrink: 0;
+  @include front-caption;
 }
 
 /* Faded at both ends so the names arrive and leave rather than being cut. The
@@ -886,11 +892,7 @@
 }
 
 .oa-front-pane figcaption {
-  color: var(--ai-text-secondary);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  @include front-caption;
 }
 
 .oa-front-code,

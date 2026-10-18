@@ -54,6 +54,32 @@
   gap: $gap;
 }
 
+// A row of buttons: one 8px gap, centred on the line, wrapping when the window
+// is narrow. Rows that carry the same declarations in another order keep their
+// own copy, so the compiled stylesheet stays byte for byte the same.
+@mixin button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+// The measure every full page is laid out against. A variable rather than a
+// mixin argument because the number is shared by rules that are not all
+// columns (a grid skeleton, a panel head), and one place to change it is what
+// keeps those pages lined up with each other.
+$page-width: 1480px;
+
+// A page as a centred column at the page measure. Each page still names its
+// own size container afterwards, because its container queries point at it.
+@mixin page-column {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: $page-width;
+  margin: 0 auto;
+}
+
 // The frosted material for surfaces that always carry it: a blur with its
 // saturation put back, so the glass shows the colour behind it rather than a
 // grey wash. A Sass value rather than a custom property because nothing

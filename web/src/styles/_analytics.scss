@@ -1037,11 +1037,7 @@
 /* --- the report page ------------------------------------------------------------------- */
 
 .oa-report {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  max-width: 1480px;
-  margin: 0 auto;
+  @include page-column;
   container: report / inline-size;
 }
 
@@ -1168,7 +1164,7 @@
 .oa-report-loading {
   display: grid;
   gap: 16px;
-  max-width: 1480px;
+  max-width: $page-width;
   margin: 0 auto;
 }
 

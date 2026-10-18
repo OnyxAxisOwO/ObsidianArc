@@ -1,10 +1,12 @@
+@use 'mixins' as *;
+
 /* These rules belong to the grouped admin pages only. Shared fields retain
    their appearance settings, while cards give long forms a readable width.
    The page head these used to enlarge is now every section's, in
    _surfaces.scss. */
 /* .oa-workbench is set to 1040px further down, which wins over the 1480px
    given here, so only .oa-resource-page takes the wider measure. */
-.oa-workbench, .oa-resource-page { max-width: 1480px; margin: 0 auto; container: workbench / inline-size; }
+.oa-workbench, .oa-resource-page { max-width: $page-width; margin: 0 auto; container: workbench / inline-size; }
 /* The pages made of groups sit in the middle, head, categories and cards
    alike, at the width a form wants. Left-aligned at the same width they left
    the search box adrift at the far edge of a wide window, a long way from
@@ -187,7 +189,7 @@
 .oa-plugin-row .oa-plugin-notice { margin-top: 6px; }
 /* In a card the facts are read as a list, not shown as figures. */
 .oa-control-card .oa-resource-definition dd { font-size: 13px; font-weight: 600; }
-.oa-control-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.oa-control-actions { @include button-row; }
 .oa-control-actions a { text-decoration: none; }
 .oa-control-save-state { display: inline-flex; gap: 6px; align-items: center; color: var(--ai-text-secondary); font-size: 11px; white-space: nowrap; }
 .oa-control-save-state.dirty { color: var(--ai-text); }
@@ -456,7 +458,9 @@
 .oa-resource-avatar {
   width: 30px;
   height: 30px;
-  border-radius: 11px;
+  /* Round, like the account initials everywhere else in the interface (see
+     the note on .oa-consent-party in _app.scss). Only the shape changes here. */
+  border-radius: 50%;
   display: grid;
   place-items: center;
   flex-shrink: 0;

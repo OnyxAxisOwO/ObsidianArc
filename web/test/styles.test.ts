@@ -138,6 +138,16 @@ describe('component rules in the stylesheet source', () => {
     expect(workspace).toMatch(/\.oa-field input:focus,/);
   });
 
+  it('draws the resource page account initials round, like every other account avatar', () => {
+    // The resource page's initials were the only square account mark, so an
+    // operator reading two pages saw two different kinds of account. The
+    // change is the shape alone; size and colour are left as they were.
+    const avatar = /\.oa-resource-avatar \{([^}]*)\}/.exec(source('_workbench.scss'))?.[1] ?? '';
+
+    expect(avatar).toMatch(/border-radius:\s*50%/);
+    expect(avatar).not.toMatch(/border-radius:\s*11px/);
+  });
+
   it('gives the terminal its own width only in the three-column layout', () => {
     // Below 1101px the panel is a fixed overlay sized by _surfaces.scss; a
     // bare width: auto here would shrink it to fit its content.

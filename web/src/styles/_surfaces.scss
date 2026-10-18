@@ -344,13 +344,17 @@
   margin-bottom: 14px;
 }
 
-/* The height the buttons have, so a row of filters, a search and an action
-   shares one top and one bottom edge. It used to come from padding around
-   the text, which made the pills 34 pixels and the buttons beside them 31. */
-.oa-filters input[type='search'],
-.oa-filters input[type='text'],
-.oa-filter-select {
+// The pill a filter field and the bulk-ban reason both wear: one height, the
+// field fill and no border, so a row of them shares one top and bottom edge.
+// The bulk reason sits outside .oa-filters, where these selectors do not reach,
+// so it takes the pill by mixin rather than by a copy. $width is given only
+// there; the filter fields take the width of the row they sit in.
+@mixin filter-pill($width: null) {
   box-sizing: border-box;
+  @if $width {
+    width: $width;
+    max-width: 100%;
+  }
   height: 34px;
   padding: 0 14px;
   border: none;
@@ -363,6 +367,27 @@
   transition: background-color 0.15s ease;
 }
 
+// The ring a filter pill wears when it has focus, shared with the bulk reason.
+@mixin filter-pill-focus {
+  outline: none;
+  background-color: var(--ai-field-bg-hover);
+  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+}
+
+/* The height the buttons have, so a row of filters, a search and an action
+   shares one top and one bottom edge. It used to come from padding around
+   the text, which made the pills 34 pixels and the buttons beside them 31. */
+.oa-filters input[type='search'],
+.oa-filters input[type='text'],
+.oa-filter-select {
+  @include filter-pill;
+}
+
+/* The arrow is a copy of .oa-field .oa-select's in _workspace.scss, and the
+   two stay apart on purpose: a filter select is not inside an .oa-field, so
+   it cannot inherit that arrow. A selector list shared with it there would
+   have its padding-right taken back by the padding shorthand in the list
+   above, which loads later. */
 .oa-filter-select {
   display: inline-flex;
   align-items: center;
@@ -386,9 +411,7 @@
 
 .oa-filters input:focus,
 .oa-filter-select:focus-visible {
-  outline: none;
-  background-color: var(--ai-field-bg-hover);
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+  @include filter-pill-focus;
 }
 
 .oa-filters input[type='search'] {
@@ -1700,10 +1723,7 @@
 }
 
 .oa-button-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
+  @include button-row;
 }
 
 .oa-connection {
@@ -2570,11 +2590,7 @@
 /* --- the request log -------------------------------------------------------- */
 
 .oa-log-page {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  max-width: 1480px;
-  margin: 0 auto;
+  @include page-column;
   container: logs / inline-size;
 }
 
@@ -4100,7 +4116,7 @@
 .oa-panel.fullscreen:has(.oa-uptime-content) .oa-panel-head,
 .oa-panel.fullscreen:has(.oa-uptime-body) .oa-panel-head,
 .oa-panel.fullscreen:has(.oa-board-body) .oa-panel-head {
-  max-width: 1480px;
+  max-width: $page-width;
   margin: 0 auto;
 }
 
@@ -4114,12 +4130,19 @@
   gap: 16px;
 }
 
-.oa-panel.fullscreen .oa-uptime-content {
-  max-width: 1480px;
+// The column a full-screen panel's body is read in: the page measure, centred,
+// with room at the sides and below. The uptime and leaderboard bodies both take
+// it, so it is written once; a change to one of them is a change to both.
+@mixin fullscreen-column {
+  max-width: $page-width;
   width: 100%;
   margin: 0 auto;
   padding: 8px 24px 24px;
   box-sizing: border-box;
+}
+
+.oa-panel.fullscreen .oa-uptime-content {
+  @include fullscreen-column;
 }
 
 .oa-uptime-banner {
@@ -4405,11 +4428,7 @@
 }
 
 .oa-panel.fullscreen .oa-board-content {
-  max-width: 1480px;
-  width: 100%;
-  margin: 0 auto;
-  padding: 8px 24px 24px;
-  box-sizing: border-box;
+  @include fullscreen-column;
 }
 
 .oa-board-controls {
@@ -4912,22 +4931,9 @@
 }
 
 /* The reason typed for a bulk ban: the pill the filter fields use, so the bar
-   reads as one row of controls. Its own rules because the filter selectors only
-   reach inside .oa-filters. */
+   reads as one row of controls. */
 .oa-bulk-reason {
-  box-sizing: border-box;
-  width: 180px;
-  max-width: 100%;
-  height: 34px;
-  padding: 0 14px;
-  border: none;
-  border-radius: 999px;
-  background-color: var(--ai-field-bg);
-  color: var(--ai-text);
-  font: inherit;
-  font-size: 12.5px;
-  line-height: 1.4;
-  transition: background-color 0.15s ease;
+  @include filter-pill(180px);
 }
 
 .oa-bulk-reason:hover {
@@ -4935,9 +4941,7 @@
 }
 
 .oa-bulk-reason:focus {
-  outline: none;
-  background-color: var(--ai-field-bg-hover);
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+  @include filter-pill-focus;
 }
 
 .oa-bulk-error {

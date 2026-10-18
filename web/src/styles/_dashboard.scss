@@ -1,3 +1,5 @@
+@use 'mixins' as *;
+
 /* The appearance panel's surfaces and accent also own this page: neutral,
    coloured and wallpaper themes must all retain the same visual hierarchy.
    The curve, the week-on-a-clock and the switches come from _analytics.scss,
@@ -5,7 +7,7 @@
    So do the kicker, a card's title and a figure's note: their dashboard
    class names are listed on the report's rules there rather than copied. */
 .oa-admin-main-dashboard .oa-admin-body { padding-top: 26px; }
-.oa-dashboard { display: flex; flex-direction: column; gap: 16px; max-width: 1480px; margin: 0 auto; container: dashboard / inline-size; }
+.oa-dashboard { @include page-column; container: dashboard / inline-size; }
 .oa-dashboard-intro { display: flex; justify-content: space-between; align-items: flex-end; gap: 20px; padding: 4px 2px 10px; }
 .oa-dashboard-intro h1 {
   margin: 0 0 6px;
@@ -427,7 +429,7 @@ a.oa-dashboard-resource:hover { background: var(--ai-state-hover); }
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 16px;
-  max-width: 1480px;
+  max-width: $page-width;
   margin: 0 auto;
   container: dashboard / inline-size;
 }
