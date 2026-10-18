@@ -127,11 +127,7 @@ func (s *Store) List(ctx context.Context, filter Filter) ([]Entry, int64, error)
 	out := []Entry{}
 	for rows.Next() {
 		var entry Entry
-		if err := rows.Scan(&entry.ID, &entry.At, &entry.Method, &entry.Path,
-			&entry.Status, &entry.DurationMS, &entry.Bytes,
-			&entry.UserID, &entry.Username, &entry.Channel, &entry.IP,
-			&entry.UserAgent, &entry.RequestID,
-			&entry.ModelID, &entry.ModelName, &entry.ErrorCode); err != nil {
+		if err := rows.Scan(entry.scanTargets()...); err != nil {
 			return nil, 0, fmt.Errorf("reqlog: scan: %w", err)
 		}
 		out = append(out, entry)
@@ -180,10 +176,10 @@ func (s *Store) Facets(ctx context.Context, since int64) (Facets, error) {
 		args = []any{since}
 	}
 
-	read := func(key, label, extra string) ([]Option, error) {
+	read := func(key, label string) ([]Option, error) {
 		rows, err := s.db.Query(ctx,
 			`SELECT `+key+`, MAX(`+label+`), COUNT(*) FROM request_log
-			 WHERE `+key+` <> ''`+extra+window+`
+			 WHERE `+key+` <> ''`+window+`
 			 GROUP BY `+key+` ORDER BY COUNT(*) DESC, `+key, args...)
 		if err != nil {
 			return nil, fmt.Errorf("reqlog: facet %s: %w", key, err)
@@ -205,13 +201,13 @@ func (s *Store) Facets(ctx context.Context, since int64) (Facets, error) {
 	}
 
 	var err error
-	if out.Users, err = read("user_id", "username", ""); err != nil {
+	if out.Users, err = read("user_id", "username"); err != nil {
 		return out, err
 	}
-	if out.Models, err = read("model_id", "model_name", ""); err != nil {
+	if out.Models, err = read("model_id", "model_name"); err != nil {
 		return out, err
 	}
-	if out.ErrorCodes, err = read("error_code", "error_code", ""); err != nil {
+	if out.ErrorCodes, err = read("error_code", "error_code"); err != nil {
 		return out, err
 	}
 

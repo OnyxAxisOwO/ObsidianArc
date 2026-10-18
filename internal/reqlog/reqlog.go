@@ -67,7 +67,7 @@ const (
 	bufferSize = 2000
 	// Rows per INSERT. Large enough that a burst costs few round trips, small
 	// enough that one statement stays well inside any driver's parameter
-	// limit — thirteen columns times this.
+	// limit — columnCount parameters times this.
 	batchSize = 100
 	// How long a partial batch waits for company before being written. Short
 	// enough that the log is current when an operator looks at it.
@@ -220,13 +220,28 @@ const columns = `id, at, method, path, status, duration_ms, bytes,
 
 const columnCount = 16
 
+// scanTargets is the one place besides columns that knows their order; a test
+// holds the two to the same length, and the row tuple is built from the count.
+func (e *Entry) scanTargets() []any {
+	return []any{&e.ID, &e.At, &e.Method, &e.Path,
+		&e.Status, &e.DurationMS, &e.Bytes,
+		&e.UserID, &e.Username, &e.Channel, &e.IP,
+		&e.UserAgent, &e.RequestID,
+		&e.ModelID, &e.ModelName, &e.ErrorCode}
+}
+
+// rowPlaceholder is one row's "(?, …)" tuple, built once from the count so it
+// cannot fall out of step with columns.
+var rowPlaceholder = "(" + strings.TrimSuffix(strings.Repeat("?, ", columnCount), ", ") + ")"
+
 func (s *Store) write(ctx context.Context, batch []Entry) error {
 	placeholders := make([]string, 0, len(batch))
 	args := make([]any, 0, len(batch)*columnCount)
 
+	// The arguments are values, not scanTargets' pointers: drivers are not
+	// all obliged to dereference a pointer argument the same way.
 	for _, entry := range batch {
-		placeholders = append(placeholders,
-			"(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+		placeholders = append(placeholders, rowPlaceholder)
 		args = append(args,
 			entry.ID, entry.At, entry.Method, entry.Path, entry.Status,
 			entry.DurationMS, entry.Bytes, entry.UserID, entry.Username,

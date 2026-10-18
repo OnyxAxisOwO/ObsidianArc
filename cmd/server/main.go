@@ -126,8 +126,8 @@ func run() error {
 		"data_dir", cfg.DataDir,
 		"dev", cfg.Dev,
 	)
-	if cfg.GeneratedSecret() {
-		slog.Warn("using a generated secret key from the data directory; set OBSIDIAN_SECRET_KEY to share one across instances",
+	if cfg.SecretFromDataDir() {
+		slog.Warn("using the secret key stored in the data directory; set OBSIDIAN_SECRET_KEY to share one across instances",
 			"file", cfg.DataDir+string(os.PathSeparator)+config.SecretKeyFile)
 	}
 
