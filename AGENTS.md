@@ -435,7 +435,7 @@ installs, updates and removes).
 change moves one of those numbers, re-measure and update it in the same change.
 They drifted to nearly double once because nobody re-ran the build.
 
-Current: 28.03 MB binary (this repository ships no plugin; 2.8 MB of it is
+Current: 28.44 MB binary (this repository ships no plugin; 2.8 MB of it is
 the plugin runtime, 0.86 MB the build's brotli and gzip copies of the
 assets); 205.67 kB on the wire to open the chat, as gzip (the build's gzip
 column reads 206.43 kB; a browser that takes brotli receives 172.70 kB), against a target of 135. The target used to be 80 and
