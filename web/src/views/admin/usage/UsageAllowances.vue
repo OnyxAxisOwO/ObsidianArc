@@ -21,6 +21,7 @@ import { QUOTA_WINDOW_NAME } from '@/admin/quota';
 import OaScrollArea from '@/components/OaScrollArea.vue';
 import OaUsageWindow from '@/components/OaUsageWindow.vue';
 import { t } from '@/composables/useI18n';
+import { useLatestRequest } from '@/composables/useLatestRequest';
 import { isMasked, maskUser } from '@/admin/safeMode';
 import type { UsageDisplay } from '@/api/usage';
 import { useScrollFade } from './useScrollFade';
@@ -65,7 +66,7 @@ const { onScroll: fade, reset: resetFade, scrollClass } = useScrollFade(overflow
 
 // Answers can come back in a different order from the questions that asked
 // for them, and the one that matters is the last one asked.
-let ticket = 0;
+const pageRequest = useLatestRequest();
 let disposed = false;
 
 function query(offset: number): URLSearchParams {
@@ -77,12 +78,12 @@ function query(offset: number): URLSearchParams {
 }
 
 async function load(append: boolean): Promise<void> {
-  const mine = ++ticket;
+  const mine = pageRequest.begin();
   loading.value = true;
   if (!append) appendFailed.value = false;
   try {
     const answer = await adminApi.usageAllowances(query(append ? rows.value.length : 0));
-    if (disposed || mine !== ticket) return;
+    if (disposed || !pageRequest.isCurrent(mine)) return;
     if (append) {
       const seen = new Set(rows.value.map((row) => row.id));
       rows.value = [...rows.value, ...(answer.rows ?? []).filter((row) => !seen.has(row.id))];
@@ -101,7 +102,7 @@ async function load(append: boolean): Promise<void> {
     failed.value = false;
     appendFailed.value = false;
   } catch {
-    if (!disposed && mine === ticket) {
+    if (!disposed && pageRequest.isCurrent(mine)) {
       if (append) {
         appendFailed.value = true;
       } else {
@@ -111,7 +112,7 @@ async function load(append: boolean): Promise<void> {
       }
     }
   } finally {
-    if (!disposed && mine === ticket) loading.value = false;
+    if (!disposed && pageRequest.isCurrent(mine)) loading.value = false;
   }
 }
 

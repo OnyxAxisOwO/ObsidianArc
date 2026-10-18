@@ -31,6 +31,7 @@ import OaTable from '@/components/OaTable.vue';
 import OaTextField from '@/components/OaTextField.vue';
 import type { Column, SortState } from '@/components/table-types';
 import { t, tn, type StringKey } from '@/composables/useI18n';
+import { useLatestRequest } from '@/composables/useLatestRequest';
 import { maskProvider, maskUser } from '@/admin/safeMode';
 import { absoluteTime, relativeTime } from '@/lib/format';
 import { IconCheck, IconGift } from '@/icons';
@@ -312,28 +313,28 @@ const grantsLoading = ref(false);
 // Each request supersedes the ones before it: a page asked for before the
 // operator reopened the bar, or before a second press, must not land on the
 // list that is shown now.
-let grantsTicket = 0;
+const grantsTicket = useLatestRequest();
 
 async function loadGrants(barID: string, offset: number): Promise<void> {
   // A page already on its way asks for the same offset; a second press would
   // fetch it again and append it twice.
   if (offset && grantsLoading.value) return;
-  const mine = ++grantsTicket;
+  const mine = grantsTicket.begin();
   grantsLoading.value = true;
   grantsError.value = '';
   try {
     const result = await adminApi.bonusGrants(barID, offset);
-    if (mine !== grantsTicket || existing.value?.id !== barID) return;
+    if (!grantsTicket.isCurrent(mine) || existing.value?.id !== barID) return;
     const known = new Set(grants.value.map((row) => row.id));
     grants.value = offset
       ? [...grants.value, ...result.grants.filter((row) => !known.has(row.id))]
       : result.grants;
     grantsTotal.value = result.total;
   } catch (failure) {
-    if (mine !== grantsTicket) return;
+    if (!grantsTicket.isCurrent(mine)) return;
     grantsError.value = failureText(failure);
   } finally {
-    if (mine === grantsTicket) grantsLoading.value = false;
+    if (grantsTicket.isCurrent(mine)) grantsLoading.value = false;
   }
 }
 

@@ -1,25 +1,23 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import type { Conversation } from '@/api/chat';
 import OaConfirmButton from '@/components/OaConfirmButton.vue';
 import OaIconButton from '@/components/OaIconButton.vue';
-import OaMenu from '@/components/OaMenu.vue';
-import OaMenuItem from '@/components/OaMenuItem.vue';
 import OaResizer from '@/components/OaResizer.vue';
 import OaScrollArea from '@/components/OaScrollArea.vue';
 import OaSearchField from '@/components/OaSearchField.vue';
 import { matchesSearch } from '@/lib/search';
 import { t } from '@/composables/useI18n';
+import { useLatestTimeout } from '@/composables/useLatestTimeout';
 import { usePanelHost } from '@/composables/usePanelHost';
-import { IconArchive, IconEdit, IconMoreVertical, IconPlus, IconTrash } from '@/icons';
+import { IconPlus, IconTrash } from '@/icons';
+import ConversationRow from './ConversationRow.vue';
 import ProjectList from './ProjectList.vue';
 import {
-  activeID, archiveConversation, canArchive, canDelete, clearEverything,
-  conversations, openConversation, pendingID, RAIL_LIMIT, railFull, removeConversation, rename,
+  activeID, archiveConversation, canDelete, clearEverything,
+  conversations, openConversation, pendingID, RAIL_LIMIT, railFull, removeConversation, RISE_MS,
   startNewConversation,
 } from './useChat';
-import { useArmedItem } from './useArmedItem';
 import { useRowMenu } from './useRowMenu';
 
 // The rail's width drives its own collapsed margin as well as its size, so
@@ -34,17 +32,9 @@ const query = ref('');
 const filteredConversations = computed(() => conversations.value.filter((entry) =>
   matchesSearch(query.value, entry.title || t('newChat'))));
 
-const { openUp: openUpMap, trigger: handleMenuTrigger, contextMenu: onRowContextMenu } = useRowMenu();
-
-const { armed: armedDelete, press: pressDelete } = useArmedItem();
-
-// The first press leaves the menu open, so the second press is still there to
-// be made. Only a press that carries the delete out closes it.
-function deleteFromMenu(conversation: Conversation, close: () => void): void {
-  if (!pressDelete(conversation.id)) return;
-  close();
-  void removeConversation(conversation);
-}
+// The armed delete inside it is cleared with this list, so it is made here in
+// setup rather than by each row.
+const rowMenu = useRowMenu();
 
 // The transcript takes file drops and the rail does not, but the browser's own
 // default for a dropped file is to open it in this tab, which throws the chat
@@ -60,11 +50,10 @@ function cancelFileDrop(event: DragEvent): void {
 // A short rise on the row that just became current, so switching reads as a
 // different conversation rather than the list quietly repainting.
 const switched = ref(false);
-let timer = 0;
+const settle = useLatestTimeout();
 watch(activeID, () => {
   switched.value = true;
-  window.clearTimeout(timer);
-  timer = window.setTimeout(() => { switched.value = false; }, 400);
+  settle(() => { switched.value = false; }, RISE_MS);
 });
 
 let route: ReturnType<typeof useRoute> | undefined;
@@ -129,61 +118,18 @@ function onNewChat(): void {
       <OaScrollArea wrap-class="ai-chat-list-wrap" scroll-class="ai-chat-list">
         <p v-if="!conversations.length" class="ai-chat-list-empty">{{ t('noHistory') }}</p>
         <p v-else-if="!filteredConversations.length" class="ai-chat-list-empty" role="status">{{ t('noSearchResults') }}</p>
-        <div
+        <ConversationRow
           v-for="conversation in filteredConversations"
           :key="conversation.id"
-          class="ai-chat-list-item"
-          :class="{
-            active: conversation.id === activeID,
-            switched: conversation.id === activeID && switched,
-          }"
-          @contextmenu.prevent="onRowContextMenu($event)"
-        >
-          <button
-            type="button"
-            class="ai-chat-list-open"
-            @click="onSelectConversation(conversation.id)"
-            @dblclick="rename(conversation)"
-          >
-            <span class="ai-chat-list-title">{{ conversation.title || t('newChat') }}</span>
-          </button>
-          <!-- The row that is still being written into, so a composer that is
-               busy while the reader is somewhere else has a visible reason. -->
-          <span
-            v-if="conversation.id === pendingID"
-            class="ai-chat-list-live"
-            :title="t('thinking')"
-          ><span class="ai-chat-spinner" /></span>
-          <OaMenu group-class="ai-chat-item-menu" :menu-class="'ai-chat-context-menu' + (openUpMap[conversation.id] ? ' open-up' : '')">
-            <template #trigger="{ open: menuOpen, toggle }">
-              <OaIconButton
-                class="ai-chat-list-more"
-                :class="{ active: menuOpen }"
-                :label="t('moreOptions')"
-                aria-haspopup="menu"
-                :aria-expanded="menuOpen ? 'true' : 'false'"
-                @click.stop="handleMenuTrigger($event, conversation.id, toggle)"
-              >
-                <IconMoreVertical :size="13" />
-              </OaIconButton>
-            </template>
-            <template #default="{ close }">
-              <OaMenuItem :title="t('rename')" @click.stop="close(); rename(conversation)">
-                <template #leading><IconEdit :size="13" /></template>
-              </OaMenuItem>
-              <OaMenuItem v-if="canArchive" :title="t('archive')" @click.stop="close(); archiveConversation(conversation)">
-                <template #leading><IconArchive :size="13" /></template>
-              </OaMenuItem>
-              <OaMenuItem
-                v-if="canDelete"
-                :title="armedDelete === conversation.id ? t('confirmDelete') : t('deleteChat')"
-                @click.stop="deleteFromMenu(conversation, close)"
-              >
-                <template #leading><IconTrash :size="13" /></template>
-              </OaMenuItem>
-            </template>
-          </OaMenu>
-        </div>
+          :conversation="conversation"
+          :menu="rowMenu"
+          :active="conversation.id === activeID"
+          :pending="conversation.id === pendingID"
+          :switched="conversation.id === activeID && switched"
+          @open="onSelectConversation(conversation.id)"
+          @archive="archiveConversation(conversation)"
+          @remove="removeConversation(conversation)"
+        />
         <!-- The search filters the rail, and a full rail is only the latest
              conversations; without this an older one reads as not existing. -->
         <p v-if="railFull && query.trim()" class="ai-chat-list-empty" role="note">

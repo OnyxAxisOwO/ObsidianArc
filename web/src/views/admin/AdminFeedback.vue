@@ -38,6 +38,7 @@ import OaTextArea from '@/components/OaTextArea.vue';
 import type { Stat } from '@/components/stat';
 import type { PageState } from '@/components/table-types';
 import { t } from '@/composables/useI18n';
+import { useLatestRequest } from '@/composables/useLatestRequest';
 import { IconRefresh } from '@/icons';
 import { absoluteTime, relativeTime } from '@/lib/format';
 import { rememberedPageSize } from '@/lib/page-size';
@@ -81,13 +82,13 @@ const panelError = ref('');
 const openError = ref('');
 
 /** Newest request wins, so a slow page cannot land on top of a fast one. */
-let ticket = 0;
+const pageRequest = useLatestRequest();
 /**
  * The same rule for the panel. A thread can arrive after the operator has
  * picked another report or closed the panel, and must not put the old one
  * back on screen.
  */
-let openTicket = 0;
+const openTicket = useLatestRequest();
 
 // Typing is the one filter that changes on every keystroke, so it waits for
 // the typist to stop rather than asking the server about every letter. The
@@ -129,12 +130,12 @@ function query(): URLSearchParams {
 }
 
 async function load(): Promise<void> {
-  const mine = ++ticket;
+  const mine = pageRequest.begin();
   loading.value = true;
   listError.value = '';
   try {
     const data = await adminApi.feedback(query());
-    if (mine !== ticket) return;
+    if (!pageRequest.isCurrent(mine)) return;
     // A page past the end, because the list shrank under it (a row deleted,
     // a sliding window moving on), is asked again for its last page rather
     // than left empty: with one page left the pager shows no way back.
@@ -156,14 +157,14 @@ async function load(): Promise<void> {
       opened.value = data.feedback.find((row) => row.id === current.id) ?? current;
     }
   } catch (failure) {
-    if (mine !== ticket) return;
+    if (!pageRequest.isCurrent(mine)) return;
     const message = failureText(failure);
     // The first load has nothing to keep on screen, so it is the whole page
     // that failed; a later one still has a list worth leaving up.
     if (!summary.value) error.value = message;
     else listError.value = message;
   } finally {
-    if (mine === ticket) loading.value = false;
+    if (pageRequest.isCurrent(mine)) loading.value = false;
   }
 }
 
@@ -194,7 +195,7 @@ function page(next: PageState): void {
  */
 async function open(target: Feedback | string): Promise<void> {
   const feedbackID = typeof target === 'string' ? target : target.id;
-  const mine = ++openTicket;
+  const mine = openTicket.begin();
   // A bare id can arrive while another report's panel is still up. Its title
   // and any error must not stay on screen under the new id, and clearing the
   // panel is what sends a failure to the list's error line instead.
@@ -220,16 +221,16 @@ async function open(target: Feedback | string): Promise<void> {
       // list cannot say whether it was waiting. The server's counts can.
       void load();
     }
-    if (mine !== openTicket) return;
+    if (!openTicket.isCurrent(mine)) return;
     thread.value = fetched;
     opened.value = fetched.feedback;
   } catch (failure) {
-    if (mine !== openTicket) return;
+    if (!openTicket.isCurrent(mine)) return;
     const message = failureText(failure);
     if (opened.value) panelError.value = message;
     else openError.value = message;
   } finally {
-    if (mine === openTicket) threadLoading.value = false;
+    if (openTicket.isCurrent(mine)) threadLoading.value = false;
   }
 }
 
@@ -238,7 +239,7 @@ async function open(target: Feedback | string): Promise<void> {
  * flag that the in-flight open would otherwise have cleared.
  */
 function closeReport(): void {
-  openTicket += 1;
+  openTicket.invalidate();
   opened.value = null;
   thread.value = null;
   threadLoading.value = false;

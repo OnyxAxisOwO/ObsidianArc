@@ -13,6 +13,7 @@ import {
   noteSessionEnded,
   type RequestOptions,
 } from '../api/client';
+import { readSSE } from '../api/sse';
 import type { Account, Role, AccountStatus } from '../api/auth';
 import type { Announcement, DisplayMode } from '../api/announcements';
 import type { Conversation, Message } from '../api/chat';
@@ -1474,60 +1475,29 @@ async function streamProbeAllModels(
   }
   if (!response.body) throw new ApiError(0, 'stream', t('probeAllModelsFailed'));
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let finished: ProbeProgress | null = null;
-
-  try {
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-
-      let boundary = /\r?\n\r?\n/.exec(buffer);
-      while (boundary) {
-        const result = probeFrame(buffer.slice(0, boundary.index), onProgress);
-        if (result) finished = result;
-        buffer = buffer.slice(boundary.index + boundary[0].length);
-        boundary = /\r?\n\r?\n/.exec(buffer);
-      }
+  // Widened by hand: the callback assigns it, and TypeScript does not see
+  // assignments made inside a callback, so it would narrow this to null.
+  let finished = null as ProbeProgress | null;
+  // A frame that is not JSON is dropped rather than failing the whole probe,
+  // but counted, so a run that lost frames says so instead of looking clean.
+  let unreadable = 0;
+  // readSSE cancels the body before it rethrows, so an error frame or an
+  // abort closes the connection now rather than when the collector gets to it.
+  await readSSE(response.body, ({ event, data }) => {
+    let payload: ProbeProgress;
+    try {
+      payload = JSON.parse(data) as ProbeProgress;
+    } catch {
+      unreadable += 1;
+      return;
     }
-  } catch (failure) {
-    // A frame that threw, or an abort, would otherwise leave the body held
-    // until the garbage collector reached it. Cancelling is what closes it now.
-    void reader.cancel().catch(() => undefined);
-    throw failure;
-  }
+    if (event === 'error') throw new ApiError(500, 'probe', t('probeAllModelsFailed'));
+    if (event === 'progress') onProgress(payload);
+    else if (event === 'done') finished = payload;
+  });
+  if (unreadable) console.warn(`model probe: ${unreadable} unreadable frame(s) dropped`);
   if (!finished) throw new ApiError(0, 'stream', t('probeAllModelsFailed'));
   return finished;
-}
-
-function probeFrame(
-  frame: string,
-  onProgress: (progress: ProbeProgress) => void,
-): ProbeProgress | null {
-  let event = '';
-  // A frame can carry several data lines; the spec joins them with newlines,
-  // not by running them together.
-  const data: string[] = [];
-  for (const line of frame.split(/\r?\n/)) {
-    if (line.startsWith('event:')) event = line.slice(6).trim();
-    else if (line.startsWith('data:')) data.push(line.slice(5).trim());
-  }
-  if (!data.length) return null;
-
-  let payload: ProbeProgress;
-  try {
-    payload = JSON.parse(data.join('\n')) as ProbeProgress;
-  } catch {
-    return null;
-  }
-  if (event === 'error') {
-    throw new ApiError(500, 'probe', t('probeAllModelsFailed'));
-  }
-  if (event === 'progress') onProgress(payload);
-  return event === 'done' ? payload : null;
 }
 
 export type { Account, Role, AccountStatus, Conversation, Message };

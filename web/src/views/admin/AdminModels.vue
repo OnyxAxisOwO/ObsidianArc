@@ -29,6 +29,7 @@ import { copyToClipboard } from '@/chat/markdown';
 import { t } from '@/composables/useI18n';
 import { useBulk } from '@/composables/useBulk';
 import { usePanelSlot } from '@/composables/usePanelSlot';
+import { useLatestRequest } from '@/composables/useLatestRequest';
 import { compactNumber } from '@/lib/format';
 import { canAdmin } from '@/stores/session';
 import { maskProvider } from '@/admin/safeMode';
@@ -277,18 +278,18 @@ const status = computed(() => (existing.value ? health.value.get(existing.value.
  * for an operator who may read usage at all; nothing is shown otherwise.
  */
 const users = ref<UsageBreakdown[] | null>(null);
-let usersRequest = 0;
+const usersRequest = useLatestRequest();
 async function loadUsers(modelID: string): Promise<void> {
-  const ticket = ++usersRequest;
+  const ticket = usersRequest.begin();
   users.value = null;
   if (!canAdmin('usage')) return;
   try {
     const since = Date.now() - 30 * DAY_MS;
     const { rows } = await adminApi.usageBreakdown('user', { model_id: modelID, since, metric: 'tokens' });
-    if (ticket === usersRequest) users.value = rows;
+    if (usersRequest.isCurrent(ticket)) users.value = rows;
   } catch {
     // A panel that cannot say who uses the model still edits it.
-    if (ticket === usersRequest) users.value = [];
+    if (usersRequest.isCurrent(ticket)) users.value = [];
   }
 }
 

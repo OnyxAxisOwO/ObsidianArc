@@ -9,16 +9,11 @@ import { apiErrorText } from '@/lib/api-error';
 import { listConversations, type Conversation } from '@/api/chat';
 import OaConfirmButton from '@/components/OaConfirmButton.vue';
 import OaIconButton from '@/components/OaIconButton.vue';
-import OaMenu from '@/components/OaMenu.vue';
-import OaMenuItem from '@/components/OaMenuItem.vue';
 import OaScrollArea from '@/components/OaScrollArea.vue';
 import OaTextArea from '@/components/OaTextArea.vue';
 import OaTextField from '@/components/OaTextField.vue';
 import { t } from '@/composables/useI18n';
-import {
-  IconArchive, IconCheck, IconChevronRight, IconEdit, IconGear,
-  IconMoreVertical, IconPlus, IconTrash,
-} from '@/icons';
+import { IconCheck, IconChevronRight, IconGear, IconPlus, IconTrash } from '@/icons';
 import {
   createProject, deleteProject, loadProjects, projectList, projectMax,
   renameProject, updateProjectInstructions,
@@ -28,11 +23,11 @@ import { pendingProjectID, setProject } from '@/stores/workspace';
 // a failed rename and a failed send are the same kind of interruption, and
 // the reader is already watching this one spot for it.
 import {
-  activeID, archiveConversation, canArchive, canDelete, conversations,
-  flash, openConversation, pendingID, removeConversation, rename,
+  activeID, archiveConversation, conversations,
+  flash, openConversation, pendingID, removeConversation,
   startProjectConversation,
 } from './useChat';
-import { useArmedItem } from './useArmedItem';
+import ConversationRow from './ConversationRow.vue';
 import { useRowMenu } from './useRowMenu';
 
 onMounted(() => void loadProjects());
@@ -53,7 +48,8 @@ function reportFailure(error: unknown): void {
 const expandedProjects = ref<Record<string, boolean>>({});
 const projectConversations = ref<Record<string, Conversation[]>>({});
 const loadingProjects = ref<Record<string, boolean>>({});
-const { openUp: openUpMap, trigger: handleMenuTrigger, contextMenu: onRowContextMenu } = useRowMenu();
+// Made in setup, as the rail's is: the armed delete it holds is cleared with this list.
+const rowMenu = useRowMenu();
 
 // The watch below refetches on every change to the conversations, so two
 // requests for one project can overlap. Only the newest may write: an older
@@ -119,15 +115,6 @@ async function archiveProjectConv(project: Project, conv: Conversation): Promise
 async function removeProjectConv(project: Project, conv: Conversation): Promise<void> {
   if (!(await removeConversation(conv))) return;
   dropProjectConv(project, conv);
-}
-
-const { armed: armedDelete, press: pressDelete } = useArmedItem();
-
-// As in the rail: the first press arms the delete and leaves the menu open.
-function deleteFromMenu(project: Project, conv: Conversation, close: () => void): void {
-  if (!pressDelete(conv.id)) return;
-  close();
-  void removeProjectConv(project, conv);
 }
 
 watch(conversations, () => {
@@ -343,56 +330,18 @@ async function remove(project: Project): Promise<void> {
               </span>
 
               <template v-else-if="projectConversations[project.id]?.length">
-                <div
+                <ConversationRow
                   v-for="conv in projectConversations[project.id]"
                   :key="conv.id"
-                  class="ai-chat-list-item ai-project-conv-item"
-                  :class="{ active: conv.id === activeID }"
-                  @contextmenu.prevent="onRowContextMenu($event)"
-                >
-                  <button
-                    type="button"
-                    class="ai-chat-list-open"
-                    @click="openProjectConv(project.id, conv.id)"
-                    @dblclick="rename(conv)"
-                  >
-                    <span class="ai-chat-list-title">{{ conv.title || t('newChat') }}</span>
-                  </button>
-                  <span
-                    v-if="conv.id === pendingID"
-                    class="ai-chat-list-live"
-                    :title="t('thinking')"
-                  ><span class="ai-chat-spinner" /></span>
-                  <OaMenu group-class="ai-chat-item-menu" :menu-class="'ai-chat-context-menu' + (openUpMap[conv.id] ? ' open-up' : '')">
-                    <template #trigger="{ open: menuOpen, toggle }">
-                      <OaIconButton
-                        class="ai-chat-list-more"
-                        :class="{ active: menuOpen }"
-                        :label="t('moreOptions')"
-                        aria-haspopup="menu"
-                        :aria-expanded="menuOpen ? 'true' : 'false'"
-                        @click.stop="handleMenuTrigger($event, conv.id, toggle)"
-                      >
-                        <IconMoreVertical :size="13" />
-                      </OaIconButton>
-                    </template>
-                    <template #default="{ close }">
-                      <OaMenuItem :title="t('rename')" @click.stop="close(); rename(conv)">
-                        <template #leading><IconEdit :size="13" /></template>
-                      </OaMenuItem>
-                      <OaMenuItem v-if="canArchive" :title="t('archive')" @click.stop="close(); archiveProjectConv(project, conv)">
-                        <template #leading><IconArchive :size="13" /></template>
-                      </OaMenuItem>
-                      <OaMenuItem
-                        v-if="canDelete"
-                        :title="armedDelete === conv.id ? t('confirmDelete') : t('deleteChat')"
-                        @click.stop="deleteFromMenu(project, conv, close)"
-                      >
-                        <template #leading><IconTrash :size="13" /></template>
-                      </OaMenuItem>
-                    </template>
-                  </OaMenu>
-                </div>
+                  class="ai-project-conv-item"
+                  :conversation="conv"
+                  :menu="rowMenu"
+                  :active="conv.id === activeID"
+                  :pending="conv.id === pendingID"
+                  @open="openProjectConv(project.id, conv.id)"
+                  @archive="archiveProjectConv(project, conv)"
+                  @remove="removeProjectConv(project, conv)"
+                />
               </template>
               <p v-else class="ai-project-empty-convs">{{ t('noProjectConversations') }}</p>
             </div>

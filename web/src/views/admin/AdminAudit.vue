@@ -23,6 +23,7 @@ import type { Choice } from '@/components/choice';
 import type { PageState } from '@/components/table-types';
 import { BACKOFFICE_PANEL_PARAM } from '@/composables/usePanelExit';
 import { t, type StringKey } from '@/composables/useI18n';
+import { useLatestRequest } from '@/composables/useLatestRequest';
 import { absoluteTime, localeTag } from '@/lib/format';
 import { rememberedPageSize } from '@/lib/page-size';
 import { HOUR_MS } from '@/lib/time';
@@ -99,8 +100,8 @@ const total = ref(0);
 const facetsError = ref('');
 const listError = ref('');
 const loading = ref(true);
-let listTicket = 0;
-let facetTicket = 0;
+const listTicket = useLatestRequest();
+const facetTicket = useLatestRequest();
 
 function since(): number {
   const entry = WINDOWS.find((window) => window.value === query.value.window);
@@ -124,13 +125,13 @@ function listQuery(): URLSearchParams {
 // The facets and the trail go out together, as the request log's do: the trail
 // does not read the facets, so waiting for them only held the rows back.
 async function reload(): Promise<void> {
-  const ticket = ++facetTicket;
+  const ticket = facetTicket.begin();
   facetsError.value = '';
   const at = since();
   const facetsDone = adminApi.auditFacets(at > 0 ? { since: at } : undefined).then(
-    (next) => { if (ticket === facetTicket) facets.value = next; },
+    (next) => { if (facetTicket.isCurrent(ticket)) facets.value = next; },
     (failure: unknown) => {
-      if (ticket !== facetTicket) return;
+      if (!facetTicket.isCurrent(ticket)) return;
       // Without facets the filter controls cannot be drawn, so they give way to
       // the failure; the retry asks for both again.
       facets.value = null;
@@ -141,12 +142,12 @@ async function reload(): Promise<void> {
 }
 
 async function paint(): Promise<void> {
-  const ticket = ++listTicket;
+  const ticket = listTicket.begin();
   loading.value = true;
   listError.value = '';
   try {
     const data = await adminApi.audit(listQuery());
-    if (ticket !== listTicket) return;
+    if (!listTicket.isCurrent(ticket)) return;
     // A page past the end, because the list shrank under it (a row deleted,
     // a sliding window moving on), is asked again for its last page rather
     // than left empty: with one page left the pager shows no way back.
@@ -157,11 +158,11 @@ async function paint(): Promise<void> {
     entries.value = data.entries;
     total.value = data.total;
   } catch (failure) {
-    if (ticket !== listTicket) return;
+    if (!listTicket.isCurrent(ticket)) return;
     entries.value = [];
     listError.value = failureText(failure);
   } finally {
-    if (ticket === listTicket) loading.value = false;
+    if (listTicket.isCurrent(ticket)) loading.value = false;
   }
 }
 
@@ -333,17 +334,17 @@ const actionChoices = computed(() =>
 
 const opened = ref<AuditEntry | null>(null);
 const detailError = ref('');
-let detailTicket = 0;
+const detailTicket = useLatestRequest();
 
 async function open(entry: AuditEntry): Promise<void> {
   opened.value = entry;
   detailError.value = '';
-  const ticket = ++detailTicket;
+  const ticket = detailTicket.begin();
   try {
     const { entry: full } = await adminApi.auditEntry(entry.id);
-    if (ticket === detailTicket) opened.value = full;
+    if (detailTicket.isCurrent(ticket)) opened.value = full;
   } catch (failure) {
-    if (ticket === detailTicket) detailError.value = failureText(failure);
+    if (detailTicket.isCurrent(ticket)) detailError.value = failureText(failure);
   }
 }
 

@@ -41,6 +41,7 @@ import { DAY, HOUR } from './usage/scale';
 import { toDateTimeLocal, failureText } from './shared';
 import { useBulk } from '@/composables/useBulk';
 import { usePanelSlot } from '@/composables/usePanelSlot';
+import { useLatestRequest } from '@/composables/useLatestRequest';
 import { IconTrash } from '@/icons';
 import { absoluteTime, compactNumber, localeTag, relativeTime } from '@/lib/format';
 import { rememberedPageSize } from '@/lib/page-size';
@@ -70,7 +71,7 @@ const groups = ref<Pick<Group, 'id' | 'name'>[]>([]);
 const users = ref<Account[]>([]);
 const total = ref(0);
 const paging = ref<PageState>({ page: 1, pageSize: rememberedPageSize() });
-let request = 0;
+const request = useLatestRequest();
 function changePage(next: PageState): void { paging.value = next; void list(); }
 function filterList(): void { paging.value.page = 1; void list(); }
 const listError = ref('');
@@ -104,10 +105,10 @@ onBeforeUnmount(() => { disposed = true; });
 // Typing filters after a pause rather than on each keystroke: one request per
 // word, not one per letter.
 const debouncedList = useDebounceFn(() => { if (!disposed) void list(); }, 250);
-watch(() => filters.value.q, () => { paging.value.page = 1; ++request; void debouncedList(); });
+watch(() => filters.value.q, () => { paging.value.page = 1; request.invalidate(); void debouncedList(); });
 
 async function list(): Promise<void> {
-  const ticket = ++request;
+  const ticket = request.begin();
   Object.assign(state, filters.value);
   listing.value = true;
   listError.value = '';
@@ -120,7 +121,7 @@ async function list(): Promise<void> {
 
   try {
     const result = await adminApi.users(query);
-    if (ticket !== request || disposed) return;
+    if (!request.isCurrent(ticket) || disposed) return;
     if (result.total > 0 && (paging.value.page - 1) * paging.value.pageSize >= result.total) {
       paging.value.page = Math.ceil(result.total / paging.value.pageSize);
       await list(); return;
@@ -129,10 +130,10 @@ async function list(): Promise<void> {
     total.value = result.total;
     listedTotal.value = result.total;
   } catch (failure) {
-    if (ticket !== request) return;
+    if (!request.isCurrent(ticket)) return;
     listError.value = failureText(failure);
   } finally {
-    if (ticket === request) listing.value = false;
+    if (request.isCurrent(ticket)) listing.value = false;
   }
 }
 
@@ -167,7 +168,7 @@ const loadingDetail = ref(false);
 // Whether the form below holds this account. Until it does the panel shows
 // nothing editable: an empty form saved by mistake would clear real fields.
 const detailReady = ref(false);
-let opening = 0;
+const opening = useLatestRequest();
 const mode = ref<PanelMode>('account');
 const busy = ref(false);
 const panelError = ref('');
@@ -417,7 +418,7 @@ async function open(id: string): Promise<void> {
   // total, nothing moved in the meantime, and a failure was written above
   // the list — out of sight of a reader scrolled down to the row — so the
   // click looked like it had done nothing at all.
-  const ticket = ++opening;
+  const ticket = opening.begin();
   const listed = users.value.find((candidate) => candidate.id === id);
   account.value = listed ?? null;
   baseline.value = null;
@@ -440,7 +441,7 @@ async function open(id: string): Promise<void> {
   try {
     detail = await adminApi.user(id);
   } catch (failure) {
-    if (ticket !== opening) return;
+    if (!opening.isCurrent(ticket)) return;
     loadingDetail.value = false;
     panelError.value = failureText(failure);
     // Without a row to show there is no panel to put the error in.
@@ -449,7 +450,7 @@ async function open(id: string): Promise<void> {
   }
   // A second click while the first was loading wins; the late answer about
   // the first account must not overwrite the panel now showing another.
-  if (ticket !== opening) return;
+  if (!opening.isCurrent(ticket)) return;
   loadingDetail.value = false;
 
   const row = detail.user;

@@ -102,6 +102,34 @@ describe('markdown renderer', () => {
     });
   });
 
+  // Remembering that a marker has no closing must not change what a closed
+  // one becomes: the cases below were rendered the same way before it.
+  describe('emphasis that closes, beside emphasis that does not', () => {
+    const text = (value: string) => ({ type: 'text', value });
+    it('closes an em after an opener that never closes', () => {
+      expect(parseInline('a * b *c*')).toEqual([text('a * b '), { type: 'em', children: [text('c')] }]);
+      expect(parseInline('*a *b*')).toEqual([{ type: 'em', children: [text('a *b')] }]);
+    });
+    it('keeps strong, em and del apart when one of them is unclosed', () => {
+      expect(parseInline('**x *y* ~~z')).toEqual([{ type: 'em', children: [text('*x *y')] }, text(' ~~z')]);
+      expect(parseInline('~~a ~~b~~ **c**')).toEqual([
+        { type: 'del', children: [text('a ~~b')] }, text(' '), { type: 'strong', children: [text('c')] },
+      ]);
+    });
+    it('still refuses snake_case after an unclosed underscore', () => {
+      // The first closing sits inside a word and is refused, which is not a
+      // scan that found nothing: the later opener must still be tried.
+      expect(parseInline('_a b snake_case_name _c_')).toEqual([
+        text('_a b snake_case_name '), { type: 'em', children: [text('c')] },
+      ]);
+      expect(parseInline('_ a snake_case _x_')).toEqual([text('_ a snake_case '), { type: 'em', children: [text('x')] }]);
+    });
+    it('closes a later opener when only the earlier one was refused at its first character', () => {
+      expect(parseInline('* a *b*')).toEqual([text('* a '), { type: 'em', children: [text('b')] }]);
+      expect(parseInline('~~ a ~~b~~')).toEqual([text('~~ a '), { type: 'del', children: [text('b')] }]);
+    });
+  });
+
   describe('pathological input resilience (timeout tests)', () => {
     it('does not hang on deeply nested blockquotes', () => {
       const start = Date.now();
@@ -116,6 +144,31 @@ describe('markdown renderer', () => {
       const input = '*'.repeat(500) + 'text' + '*'.repeat(500);
       const inlines = parseInline(input);
       expect(inlines.length).toBeGreaterThan(0);
+      expect(Date.now() - start).toBeLessThan(500);
+    });
+
+    // An unclosed marker scans to the end of the paragraph for a closing that
+    // is not there. One such scan is linear; one per opener was quadratic.
+    for (const [name, unit] of [
+      ['*', 'a *b c '],
+      ['**', 'a **b c '],
+      ['~~', 'a ~~b c '],
+      ['_', 'a _b c '],
+      ['__', 'a __b c '],
+    ] as const) {
+      it(`stays linear on a long paragraph of unclosed ${name}`, () => {
+        const input = unit.repeat(Math.ceil(200_000 / unit.length));
+        const start = Date.now();
+        const inlines = parseInline(input);
+        expect(Date.now() - start).toBeLessThan(500);
+        expect(inlines.length).toBeGreaterThan(0);
+      });
+    }
+
+    it('stays linear on the ten thousand character case the em scan was reported on', () => {
+      const input = 'a *b c '.repeat(1430);
+      const start = Date.now();
+      expect(parseInline(input)).toEqual([{ type: 'text', value: input }]);
       expect(Date.now() - start).toBeLessThan(500);
     });
 

@@ -29,6 +29,7 @@ import OaTextField from '@/components/OaTextField.vue';
 import type { Column, PageState } from '@/components/table-types';
 import { celebrate } from '@/composables/useConfetti';
 import { t, tn, type StringKey } from '@/composables/useI18n';
+import { useLatestRequest } from '@/composables/useLatestRequest';
 import { IconClose } from '@/icons';
 import { compactNumber, localeTag, relativeTime, tokenFigure } from '@/lib/format';
 import { rememberedPageSize } from '@/lib/page-size';
@@ -148,11 +149,11 @@ const error = ref('');
 // a message about the defaults must not vanish fifteen seconds after it shows.
 const policyReadError = ref('');
 const loaded = ref(false);
-let recordRequest = 0;
+const recordRequest = useLatestRequest();
 // The summary fetch needs a ticket of its own. A request that outlives a
 // range or filter change must not paint its stale numbers over the newer
 // one's — loadRecords has always done this; this is the other half.
-let summaryRequest = 0;
+const summaryRequest = useLatestRequest();
 let periodSince = 0;
 let periodUntil = 0;
 let offsetMs = 0;
@@ -230,24 +231,24 @@ function abortRecords(): void {
 }
 
 async function loadRecords(quiet = false, signal?: AbortSignal): Promise<void> {
-  const ticket = ++recordRequest;
+  const ticket = recordRequest.begin();
   recordsBusy.value = true;
   try {
     const params = sliceQuery();
     params.set('limit', String(recordPage.value.pageSize));
     params.set('offset', String((recordPage.value.page - 1) * recordPage.value.pageSize));
     const result = await adminApi.usageRecords(params, signal ? { signal } : undefined);
-    if (ticket !== recordRequest || signal?.aborted) return;
+    if (!recordRequest.isCurrent(ticket) || signal?.aborted) return;
     records.value = result.records ?? [];
     recordTotal.value = result.total;
     recordError.value = '';
   } catch (failure) {
     if (signal?.aborted || isAbortError(failure)) return;
-    if (!quiet && ticket === recordRequest) {
+    if (!quiet && recordRequest.isCurrent(ticket)) {
       recordError.value = failureText(failure);
     }
   } finally {
-    if (ticket === recordRequest) recordsBusy.value = false;
+    if (recordRequest.isCurrent(ticket)) recordsBusy.value = false;
     if (recordController?.signal === signal) {
       recordController = null;
     }
@@ -308,7 +309,7 @@ async function load(): Promise<void> {
   offsetMs = -new Date().getTimezoneOffset() * 60_000;
   recordPage.value.page = 1;
 
-  const ticket = ++summaryRequest;
+  const ticket = summaryRequest.begin();
   // The ledger page is not waited for. Nothing in the report depends on it,
   // and over a long range its count is often the slower of the two; it has
   // its own busy state and its own error, and clears its own controller.
@@ -318,11 +319,11 @@ async function load(): Promise<void> {
   void refreshRPM();
   try {
     const summary = await adminApi.usage(summaryQuery(), { signal: currentSummaryCtrl.signal });
-    if (ticket !== summaryRequest || currentSummaryCtrl.signal.aborted) return;
+    if (!summaryRequest.isCurrent(ticket) || currentSummaryCtrl.signal.aborted) return;
     applyReport(summary);
   } catch (failure) {
     if (currentSummaryCtrl.signal.aborted || isAbortError(failure)) return;
-    if (ticket === summaryRequest) error.value = failureText(failure);
+    if (summaryRequest.isCurrent(ticket)) error.value = failureText(failure);
   } finally {
     if (summaryController === currentSummaryCtrl) {
       summaryController = null;
@@ -787,16 +788,16 @@ function setPreset(preset: Preset): void {
 
 // A filter change asks at once while a tick's request may still be out; the
 // older answer is about the old filters and must not land after the newer.
-let rpmRequest = 0;
+const rpmRequest = useLatestRequest();
 
 async function refreshRPM(): Promise<void> {
   if (visibility.value === 'hidden') return;
-  const ticket = ++rpmRequest;
+  const ticket = rpmRequest.begin();
   try {
     // Narrowed by the filters, as every figure beside it is. The server fixes
     // the window at the last minute whatever period is sent.
     const res = await adminApi.rpm(sliceQuery());
-    if (ticket === rpmRequest) currentRPM.value = res.rpm;
+    if (rpmRequest.isCurrent(ticket)) currentRPM.value = res.rpm;
   } catch {
     // Keep existing RPM on transient error
   }
@@ -835,9 +836,9 @@ function refreshQuietly(): void {
   if (!summaryController) {
     const currentSummaryCtrl = new AbortController();
     summaryController = currentSummaryCtrl;
-    const ticket = ++summaryRequest;
+    const ticket = summaryRequest.begin();
     void adminApi.usage(summaryQuery(), { signal: currentSummaryCtrl.signal }).then((summary) => {
-      if (ticket !== summaryRequest || currentSummaryCtrl.signal.aborted) return;
+      if (!summaryRequest.isCurrent(ticket) || currentSummaryCtrl.signal.aborted) return;
       applyReport(summary);
       error.value = '';
     }).catch(() => {

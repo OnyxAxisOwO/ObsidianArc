@@ -88,6 +88,12 @@ export interface ComposerAttachment {
 
 export const conversations = ref<Conversation[]>([]);
 export const activeID = ref('');
+/**
+ * How long a switch's rise stays on, for the transcript and the rail's row.
+ * A little over the 0.34s the rise animations in _chat.scss run, so their last
+ * frame is not cut off by the class going.
+ */
+export const RISE_MS = 400;
 export const messages = ref<Message[]>([]);
 export const busy = ref(false);
 export const editingID = ref('');
@@ -792,11 +798,24 @@ function dropActive(): void {
   if (watching()) pendingView.value = -1;
 }
 
-export async function rename(conversation: Conversation): Promise<void> {
-  const next = window.prompt(t('renamePrompt'), conversation.title);
-  if (next === null) return;
+/**
+ * The conversation whose title is being edited in its row. One for both lists,
+ * so starting a rename in one row ends any other, wherever it was begun.
+ */
+export const renamingID = ref('');
+
+/**
+ * Saves the title typed into a row. Ending the edit comes first: the field
+ * goes as it is submitted, and a blur from its going must find nothing left to
+ * submit. An emptied field or an unchanged title is a cancel, not a request.
+ */
+export async function rename(conversation: Conversation, next: string): Promise<void> {
+  if (renamingID.value !== conversation.id) return;
+  renamingID.value = '';
+  const title = next.trim();
+  if (!title || title === conversation.title) return;
   try {
-    const { conversation: updated } = await renameConversation(conversation.id, next.trim());
+    const { conversation: updated } = await renameConversation(conversation.id, title);
     conversation.title = updated.title;
     // The rail and the header read their own copies, which are not the objects
     // a project row was given, so the rail's entry is renamed as well.

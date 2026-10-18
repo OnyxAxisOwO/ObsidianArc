@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { renameConversation, type Conversation } from '../src/api/chat';
-import { active, activeID, conversations, flash, rename } from '../src/chat/useChat';
+import { active, activeID, conversations, flash, rename, renamingID } from '../src/chat/useChat';
 import { t } from '../src/composables/useI18n';
 
 vi.mock('@/api/chat', () => ({
@@ -37,6 +37,8 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.mocked(renameConversation).mockReset();
+  renamingID.value = '';
   conversations.value = [];
   activeID.value = '';
   flash.value = '';
@@ -47,10 +49,10 @@ describe('renaming a conversation', () => {
     // The project list fetches its own copies of its conversations, so the row
     // it renames is not the object the rail and the header read.
     const projectRow = conversation('c1', 'Old');
-    vi.spyOn(window, 'prompt').mockReturnValue('New');
     vi.mocked(renameConversation).mockResolvedValue({ conversation: conversation('c1', 'New') });
 
-    await rename(projectRow);
+    renamingID.value = 'c1';
+    await rename(projectRow, '  New ');
 
     expect(projectRow.title).toBe('New');
     expect(conversations.value[0]?.title).toBe('New');
@@ -58,13 +60,31 @@ describe('renaming a conversation', () => {
   });
 
   it('shows the translated generic failure, not the raw English of a network error', async () => {
-    vi.spyOn(window, 'prompt').mockReturnValue('New');
     vi.mocked(renameConversation).mockRejectedValue(new TypeError('Failed to fetch'));
 
-    await rename(conversation('c1', 'Old'));
+    renamingID.value = 'c1';
+    await rename(conversation('c1', 'Old'), 'New');
 
     expect(flash.value).toBe(t('failed'));
     expect(flash.value).not.toContain('TypeError');
     expect(conversations.value[0]?.title).toBe('Old');
+  });
+
+  it('sends nothing for an unchanged or emptied title, and ends the edit either way', async () => {
+    for (const typed of ['Old', '   ']) {
+      renamingID.value = 'c1';
+      await rename(conversation('c1', 'Old'), typed);
+      expect(renamingID.value).toBe('');
+    }
+    expect(renameConversation).not.toHaveBeenCalled();
+  });
+
+  it('submits once when the field is submitted and then blurs as it goes', async () => {
+    vi.mocked(renameConversation).mockResolvedValue({ conversation: conversation('c1', 'New') });
+    const row = conversation('c1', 'Old');
+    renamingID.value = 'c1';
+    await Promise.all([rename(row, 'New'), rename(row, 'New')]);
+    expect(renameConversation).toHaveBeenCalledTimes(1);
+    expect(renameConversation).toHaveBeenCalledWith('c1', 'New');
   });
 });

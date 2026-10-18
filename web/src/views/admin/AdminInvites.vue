@@ -37,6 +37,7 @@ import OaTextField from '@/components/OaTextField.vue';
 import type { Column, PageState } from '@/components/table-types';
 import type { Stat } from '@/components/stat';
 import { t } from '@/composables/useI18n';
+import { useLatestRequest } from '@/composables/useLatestRequest';
 import { IconChart, IconSend, IconUsers } from '@/icons';
 import { compactNumber, relativeTime } from '@/lib/format';
 import { rememberedPageSize } from '@/lib/page-size';
@@ -248,7 +249,7 @@ const total = ref(0);
 const paging = ref<PageState>({ page: 1, pageSize: rememberedPageSize() });
 const listing = ref(false);
 const listError = ref('');
-let listRequest = 0;
+const listRequest = useLatestRequest();
 
 const filters = ref({ kind: 'all', status: 'all', q: '' });
 
@@ -263,7 +264,7 @@ const debouncedList = useDebounceFn(() => { if (!disposed) void list(); }, SEARC
 watch(() => filters.value.q, () => { paging.value.page = 1; void debouncedList(); });
 
 async function list(): Promise<void> {
-  const ticket = ++listRequest;
+  const ticket = listRequest.begin();
   listing.value = true;
   listError.value = '';
   const query = new URLSearchParams({
@@ -275,7 +276,7 @@ async function list(): Promise<void> {
   if (filters.value.q.trim()) query.set('q', filters.value.q.trim());
   try {
     const result = await adminApi.invites(query);
-    if (ticket !== listRequest) return;
+    if (!listRequest.isCurrent(ticket)) return;
     if (result.total > 0 && (paging.value.page - 1) * paging.value.pageSize >= result.total) {
       paging.value.page = Math.ceil(result.total / paging.value.pageSize);
       await list(); return;
@@ -283,10 +284,10 @@ async function list(): Promise<void> {
     codes.value = result.codes ?? [];
     total.value = result.total;
   } catch (failure) {
-    if (ticket !== listRequest) return;
+    if (!listRequest.isCurrent(ticket)) return;
     listError.value = failureText(failure);
   } finally {
-    if (ticket === listRequest) listing.value = false;
+    if (listRequest.isCurrent(ticket)) listing.value = false;
   }
 }
 

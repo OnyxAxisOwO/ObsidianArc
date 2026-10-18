@@ -195,6 +195,21 @@ function codeSpanFinder(source: string): (index: number) => CodeSpan | null {
   };
 }
 
+type Marker = '~~' | '**' | '__' | '*' | '_';
+
+// Compiled once rather than on every marker: an answer about globs or
+// pointers has hundreds of them in a paragraph. None is global, so a nested
+// call reusing one inside a match leaves no lastIndex behind.
+const DEL = /^~~(?=\S)([\s\S]*?\S)~~/;
+const STRONG = {
+  '*': /^\*\*(?=\S)([\s\S]*?\S)\*\*/,
+  _: /^__(?=\S)([\s\S]*?\S)__/,
+};
+const EM = {
+  '*': /^\*(?=\S)([\s\S]*?\S)\*(?!\*)/,
+  _: /^_(?=\S)([\s\S]*?\S)_(?!_)/,
+};
+
 export function parseInline(text: string): Inline[] {
   const source = String(text ?? '');
   const nodes: Inline[] = [];
@@ -202,6 +217,17 @@ export function parseInline(text: string): Inline[] {
   let index = 0;
   // Built on the first backtick, so a paragraph without code pays nothing.
   let findCode: ((at: number) => CodeSpan | null) | null = null;
+  // Markers known to have no closing anywhere after the current position. A
+  // closing is judged by its own position alone, so a later opener's possible
+  // closings are a subset of an earlier one's: once an opener has scanned to
+  // the end and found none, every later opener of that kind would too, and
+  // each would scan to the end again — quadratic in a paragraph of unclosed
+  // `*`. Set only when the scan itself failed, not when the opener was
+  // refused at its first character, which says nothing about what follows.
+  const unclosed: Partial<Record<Marker, true>> = {};
+  const noteUnclosed = (marker: Marker, width: number) => {
+    if (!/\s/.test(source[index + width] ?? '')) unclosed[marker] = true;
+  };
 
   const flush = () => {
     if (buffer) {
@@ -273,30 +299,37 @@ export function parseInline(text: string): Inline[] {
       }
     }
 
-    if (char === '~' && source[index + 1] === '~') {
-      const del = /^~~(?=\S)([\s\S]*?\S)~~/.exec(rest);
+    if (char === '~' && source[index + 1] === '~' && !unclosed['~~']) {
+      const del = DEL.exec(rest);
       if (del) {
         push({ type: 'del', children: parseInline(del[1] ?? '') });
         index += del[0].length;
         continue;
       }
+      noteUnclosed('~~', 2);
     }
 
     // An underscore inside a word is snake_case, not emphasis — the single
     // most common false positive when a model talks about code or CSS.
     if ((char === '*' || char === '_') && !(char === '_' && isWordChar(source[index - 1]))) {
-      const marker = char === '*' ? '\\*' : '_';
-      const strong = new RegExp(`^${marker}${marker}(?=\\S)([\\s\\S]*?\\S)${marker}${marker}`).exec(rest);
-      if (strong) {
-        push({ type: 'strong', children: parseInline(strong[1] ?? '') });
-        index += strong[0].length;
-        continue;
+      const double = char === '*' ? '**' : '__';
+      if (!unclosed[double]) {
+        const strong = STRONG[char].exec(rest);
+        if (strong) {
+          push({ type: 'strong', children: parseInline(strong[1] ?? '') });
+          index += strong[0].length;
+          continue;
+        }
+        if (source[index + 1] === char) noteUnclosed(double, 2);
       }
-      const em = new RegExp(`^${marker}(?=\\S)([\\s\\S]*?\\S)${marker}(?!${marker})`).exec(rest);
-      if (em && !(char === '_' && isWordChar(source[index + em[0].length]))) {
-        push({ type: 'em', children: parseInline(em[1] ?? '') });
-        index += em[0].length;
-        continue;
+      if (!unclosed[char]) {
+        const em = EM[char].exec(rest);
+        if (em && !(char === '_' && isWordChar(source[index + em[0].length]))) {
+          push({ type: 'em', children: parseInline(em[1] ?? '') });
+          index += em[0].length;
+          continue;
+        }
+        if (!em) noteUnclosed(char, 1);
       }
     }
 

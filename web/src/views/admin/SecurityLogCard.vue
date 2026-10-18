@@ -9,6 +9,7 @@ import OaBadge from '@/components/OaBadge.vue';
 import OaPagination from '@/components/OaPagination.vue';
 import type { PageState } from '@/components/table-types';
 import { t } from '@/composables/useI18n';
+import { useLatestRequest } from '@/composables/useLatestRequest';
 import { IconFile } from '@/icons';
 import { absoluteTime } from '@/lib/format';
 import { rememberedPageSize } from '@/lib/page-size';
@@ -27,20 +28,20 @@ const page = ref<PageState>({ page: 1, pageSize: rememberedPageSize() });
 const loading = ref(false);
 // A page turned while the last one is still on its way: only the newest
 // answer may land.
-let request = 0;
+const request = useLatestRequest();
 
 async function load(): Promise<void> {
-  const ticket = ++request;
+  const ticket = request.begin();
   loading.value = true;
   try {
     const result = await adminApi.securityEvents({ limit: page.value.pageSize, offset: (page.value.page - 1) * page.value.pageSize });
-    if (ticket !== request) return;
+    if (!request.isCurrent(ticket)) return;
     events.value = result.events ?? [];
     total.value = result.total;
   } catch (failure) {
     emit('failed', failureText(failure));
   } finally {
-    if (ticket === request) loading.value = false;
+    if (request.isCurrent(ticket)) loading.value = false;
   }
 }
 

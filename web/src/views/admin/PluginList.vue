@@ -13,6 +13,7 @@ import OaCellStack from '@/components/OaCellStack.vue';
 import OaTable from '@/components/OaTable.vue';
 import type { Column, PageState } from '@/components/table-types';
 import { t } from '@/composables/useI18n';
+import { useLatestRequest } from '@/composables/useLatestRequest';
 import { IconFile } from '@/icons';
 import type { AdminListSpec, ListCell, RecordDetail } from '@/plugins/types';
 import AdminControlCard from './AdminControlCard.vue';
@@ -34,8 +35,8 @@ const openError = ref('');
 // Each load and each open takes a ticket and only the newest answer is shown:
 // a page change or a second row click does not wait for the one before it, so
 // the older answer can land last.
-let pageRequest = 0;
-let openRequest = 0;
+const pageRequest = useLatestRequest();
+const openRequest = useLatestRequest();
 
 const columns = computed<Array<Column<Row>>>(() => props.spec.columns.map((column) => ({
   key: column.key,
@@ -45,16 +46,16 @@ const columns = computed<Array<Column<Row>>>(() => props.spec.columns.map((colum
 })));
 
 async function load(): Promise<void> {
-  const ticket = ++pageRequest;
+  const ticket = pageRequest.begin();
   listError.value = '';
   try {
     const result = await props.spec.load(
       (paging.value.page - 1) * paging.value.pageSize, paging.value.pageSize);
-    if (ticket !== pageRequest) return;
+    if (!pageRequest.isCurrent(ticket)) return;
     rows.value = result.rows;
     total.value = result.total;
   } catch (failure) {
-    if (ticket !== pageRequest) return;
+    if (!pageRequest.isCurrent(ticket)) return;
     listError.value = failureText(failure);
   }
 }
@@ -94,7 +95,7 @@ watch(openOwner, (owner) => {
 // Closing also retires an open still in flight. Without that, a record the
 // reader had already dismissed would appear once its detail arrived.
 function close(): void {
-  openRequest += 1;
+  openRequest.invalidate();
   opened.value = null;
   openedRow.value = null;
   if (openOwner.value === self) openOwner.value = null;
@@ -102,17 +103,17 @@ function close(): void {
 
 async function open(row: Row): Promise<void> {
   if (!props.spec.detail) return;
-  const ticket = ++openRequest;
+  const ticket = openRequest.begin();
   openError.value = '';
   try {
     const detail = await props.spec.detail(row);
-    if (ticket !== openRequest) return;
+    if (!openRequest.isCurrent(ticket)) return;
     openOwner.value = self;
     opened.value = detail;
     openedRow.value = row;
     openedKey.value = ticket;
   } catch (failure) {
-    if (ticket !== openRequest) return;
+    if (!openRequest.isCurrent(ticket)) return;
     openError.value = failureText(failure);
   }
 }
@@ -123,14 +124,14 @@ async function acted(): Promise<void> {
   // Read before the load: an open that starts while the table is read again
   // must be seen as newer than this refresh, or the record it fetched would
   // overwrite the one it opened.
-  const before = openRequest;
+  const before = openRequest.current();
   const row = openedRow.value;
   await load();
-  if (!row || !props.spec.detail || openRequest !== before) return;
+  if (!row || !props.spec.detail || !openRequest.isCurrent(before)) return;
   try {
     const detail = await props.spec.detail(row);
     // Closing the panel during the fetch must not reopen it on this record.
-    if (openRequest === before && openedRow.value === row) opened.value = detail;
+    if (openRequest.isCurrent(before) && openedRow.value === row) opened.value = detail;
   } catch {
     // The panel keeps what it showed; the action's own answer is on it.
   }

@@ -11,6 +11,7 @@ import { useResizeObserver } from '@vueuse/core';
 import OaIconButton from '@/components/OaIconButton.vue';
 import OaScrollArea from '@/components/OaScrollArea.vue';
 import { t, type StringKey } from '@/composables/useI18n';
+import { useLatestTimeout } from '@/composables/useLatestTimeout';
 import { IconMenu, IconPlus } from '@/icons';
 import ChatComposer from './ChatComposer.vue';
 import ChatChallenge from './ChatChallenge.vue';
@@ -19,7 +20,7 @@ import ChatPending from './ChatPending.vue';
 import ChatSidebar from './ChatSidebar.vue';
 import {
   active, addImages, addTextFiles, busy, chatChallenge, dragging, draft, flash, historyOpen, isEmpty, justSentID,
-  messages, pending, scrollTick, showPending, startNewConversation, status, submit, suggestions, switchTick,
+  messages, RISE_MS, scrollTick, showPending, startNewConversation, status, submit, suggestions, switchTick,
 } from './useChat';
 import {
   cancelAllFlights, captureComposerRect, lastComposerRect, markFlying, playSendAnimation,
@@ -47,6 +48,7 @@ const composer = ref<InstanceType<typeof ChatComposer> | null>(null);
 const transcriptRef = ref<HTMLElement | null>(null);
 const autoScroll = ref(true);
 const rising = ref(false);
+const settleRise = useLatestTimeout();
 
 function scroller(): HTMLElement | null {
   return scroll.value?.scroller ?? null;
@@ -99,7 +101,8 @@ watch(switchTick, () => {
   void nextTick(() => {
     scrollToBottom();
     rising.value = true;
-    window.setTimeout(() => { rising.value = false; }, 400);
+    // The newest switch owns the rise: an earlier one's timer must not end it early.
+    settleRise(() => { rising.value = false; }, RISE_MS);
   });
 });
 
@@ -268,7 +271,7 @@ defineExpose({ focus: () => composer.value?.focus() });
 
       <div ref="transcriptRef" class="ai-chat-transcript">
         <ChatMessage v-for="message in messages" :key="message.id" :message="message" />
-        <ChatPending v-if="showPending && pending" :pending="pending" />
+        <ChatPending v-if="showPending" />
       </div>
 
       <div v-if="!messages.length && status.configured" class="ai-chat-empty">
