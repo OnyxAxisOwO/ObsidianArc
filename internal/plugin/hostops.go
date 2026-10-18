@@ -52,7 +52,12 @@ type callState struct {
 	// The endpoints the running console command declares, as "METHOD /path"
 	// with {name} standing for one segment. console.call reaches these and no
 	// others: they are what help shows the operator the command calls.
-	endpoints []string
+	// legacyCall is a package built before that was enforced (requires.api
+	// below arcx.DeclaredEndpointsAPI): it keeps the rule it was built for, a
+	// write needs a command that declares one, so an upgrade of the server
+	// does not refuse a call it made yesterday.
+	endpoints  []string
+	legacyCall bool
 	// What the invocation has written to the log, and how many rows it has
 	// put in the notification and security tables. Both are per invocation:
 	// a call may run for fifteen seconds, and nothing else bounds what it
@@ -1236,7 +1241,11 @@ func (m *Manager) consoleOp(c *wasm.Call, st *callState, op string, raw json.Raw
 		// The method alone is not enough: a command that declared one write could
 		// otherwise send any method to any administrative path, a DELETE among
 		// them, without the --yes a destructive command is asked for.
-		if !declaresEndpoint(st.endpoints, a.Method, a.Path) {
+		if st.legacyCall {
+			if !rt.MayCall(a.Method) {
+				return nil, badArg("console.call: %s is not an endpoint this command declares", a.Method)
+			}
+		} else if !declaresEndpoint(st.endpoints, a.Method, a.Path) {
 			return nil, badArg("console.call: %s %s is not an endpoint this command declares", a.Method, a.Path)
 		}
 		data, _, err := rt.Call(a.Method, a.Path, a.Body)

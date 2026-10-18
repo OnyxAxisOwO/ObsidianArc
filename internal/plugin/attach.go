@@ -236,6 +236,16 @@ func (m *Manager) swapPackages(fn func(map[string]*loaded)) {
 	m.pkgs.Store(&next)
 }
 
+// commandState is what one run of a console command shares with the host: the
+// endpoints it declared, and whether the package was built before those bound
+// what console.call may reach.
+func commandState(rt *console.Runtime, man *arcx.Manifest, c arcx.ConsoleCommand) *callState {
+	return &callState{
+		console: rt, endpoints: c.Endpoints,
+		legacyCall: man.Requires.API < arcx.DeclaredEndpointsAPI,
+	}
+}
+
 // guardEvent is the event a guard's refusal is filed under. A manifest may name
 // any event, and a refusal filed under one the server writes itself would read
 // as the server's own entry, so such a name is filed under the package's.
@@ -454,7 +464,7 @@ func (m *Manager) runCommand(ctx context.Context, l *loaded, c arcx.ConsoleComma
 		} `json:"out"`
 	}
 	info := wasm.CallInfo{Lang: rt.Session.Lang, IP: rt.Session.IP, Actor: actorOf(rt.Session.Actor)}
-	st := &callState{console: rt, endpoints: c.Endpoints}
+	st := commandState(rt, l.pkg.Manifest, c)
 	err := m.invoke(ctx, l, info, "console", arg, &out, st)
 	if err != nil {
 		return commandFailure(err, st.consoleErrs)

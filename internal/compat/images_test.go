@@ -368,3 +368,43 @@ func TestImagesGenerationsTakesADataURLReference(t *testing.T) {
 		t.Errorf("status = %d, want 400 saying it could not be read: %s", w.Code, w.Body.String())
 	}
 }
+
+// An operator who raised the picture limit raised what an edit may send, not
+// what is held in memory while its form is read: the pictures past the fixed
+// threshold go to temporary files, and the edit still arrives whole.
+func TestImagesEditsPastTheMemoryThresholdStillArrive(t *testing.T) {
+	fix := newFixture(t)
+	imageModel(t, fix, "painter", 0)
+	fix.upstream.reply(`{"created":1700000000,"data":[{"b64_json":"aGVsbG8="}]}`)
+	fix.handlers.MaxUploadBytes = func() int64 { return 20 << 20 }
+
+	picture := make([]byte, 16<<20)
+	copy(picture, "\x89PNG\r\n\x1a\n")
+	if 2*int64(len(picture)) <= editMemoryBytes {
+		t.Fatalf("the pictures fit in %d bytes and would never reach the disk", editMemoryBytes)
+	}
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	_ = writer.WriteField("model", "painter")
+	_ = writer.WriteField("prompt", "combine these")
+	for _, name := range []string{"a.png", "b.png"} {
+		part, err := writer.CreateFormFile("image[]", name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = part.Write(picture)
+	}
+	_ = writer.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/edits", &body)
+	req.Header.Set("Authorization", "Bearer "+fix.token)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	w := httptest.NewRecorder()
+	fix.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	if got := strings.Count(fix.upstream.receivedRaw(), `name="image"`); got != 2 {
+		t.Errorf("upstream received %d reference images, want 2", got)
+	}
+}

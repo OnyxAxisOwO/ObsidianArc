@@ -40,7 +40,17 @@ const Format = 1
 // the rest and sensitive keys to console arguments. A level-4 package keeps
 // installing, so one that depends on the new keys says 5, and an older server
 // refuses it at install instead of silently ignoring them.
-const APILevel = 5
+//
+// 6 holds console.call to the endpoints the command declares, by method and
+// path, where before a command that declared any write could send any method
+// to any administrative path. That would refuse calls an installed package
+// already makes, so it applies from DeclaredEndpointsAPI up and an older
+// package keeps the method-only rule.
+const APILevel = 6
+
+// DeclaredEndpointsAPI is the first level whose console commands may call only
+// the endpoints they declare.
+const DeclaredEndpointsAPI = 6
 
 // Text is one string in both of the interface's languages. An empty ZH falls
 // back to EN when the interface is drawn.

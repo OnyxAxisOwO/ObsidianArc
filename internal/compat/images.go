@@ -12,6 +12,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/chat"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
@@ -25,6 +26,13 @@ import (
 func editBodyLimit(ceiling int64) int64 {
 	return ceiling*int64(chat.MaxReferenceImages) + 256*1024
 }
+
+// editMemoryBytes is how much of an edit's form is held in memory before its
+// file parts go to temporary files. It stays at what the built-in picture limit
+// needs rather than following the operator's: each picture is read into memory
+// again to be sent on, so a form held whole besides would keep every picture
+// twice, and at the highest setting that is hundreds of megabytes a request.
+var editMemoryBytes = editBodyLimit(int64(conversation.MaxAttachmentBytes))
 
 type imageGenerationRequest struct {
 	Prompt         string   `json:"prompt"`
@@ -74,7 +82,7 @@ func (h *Handlers) imagesGenerations(w http.ResponseWriter, r *http.Request, who
 		// file parts go to temporary files on disk as large as the sender
 		// likes — including parts this handler never reads.
 		r.Body = http.MaxBytesReader(w, r.Body, maxEditBytes)
-		if err := r.ParseMultipartForm(maxEditBytes); err != nil {
+		if err := r.ParseMultipartForm(editMemoryBytes); err != nil {
 			var tooLarge *http.MaxBytesError
 			if errors.As(err, &tooLarge) {
 				return apiError{

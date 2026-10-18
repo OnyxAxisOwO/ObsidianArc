@@ -67,7 +67,6 @@ afterEach(() => {
   forget();
 });
 
-
 function button(root: ParentNode, label: string): HTMLButtonElement {
   const found = [...root.querySelectorAll<HTMLButtonElement>('button')]
     .find((node) => node.textContent?.trim() === label);
