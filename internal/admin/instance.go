@@ -933,6 +933,9 @@ func (h *Handlers) putLoginBackground(w http.ResponseWriter, r *http.Request) er
 	}
 
 	var body struct {
+		// Sent by the admin screen but never trusted: the stored type is sniffed
+		// from the bytes. It stays declared because the decoder is strict, and
+		// rejecting the field the screen sends would fail every upload.
 		Mime string `json:"mime"`
 		Data string `json:"data"`
 		// A page instead of a picture. Present means this is one; the two
@@ -982,7 +985,7 @@ func (h *Handlers) putLoginBackground(w http.ResponseWriter, r *http.Request) er
 		return httpx.BadRequest("Image data is not valid base64.")
 	}
 
-	at, err := h.settings.SetLoginBackground(r.Context(), variant, body.Mime, data)
+	at, err := h.settings.SetLoginBackground(r.Context(), variant, data)
 	if err != nil {
 		switch {
 		case errors.Is(err, settings.ErrLoginBackgroundUnsupported):
@@ -1014,6 +1017,7 @@ func (h *Handlers) deleteLoginBackground(w http.ResponseWriter, r *http.Request)
 
 func (h *Handlers) putLogo(w http.ResponseWriter, r *http.Request) error {
 	var body struct {
+		// Sent by the admin screen but never trusted; see putLoginBackground.
 		Mime string `json:"mime"`
 		Data string `json:"data"`
 	}
@@ -1035,7 +1039,7 @@ func (h *Handlers) putLogo(w http.ResponseWriter, r *http.Request) error {
 		return httpx.BadRequest("Image data is not valid base64.")
 	}
 
-	at, err := h.settings.SetSiteLogo(r.Context(), body.Mime, data)
+	at, err := h.settings.SetSiteLogo(r.Context(), data)
 	if err != nil {
 		switch {
 		case errors.Is(err, settings.ErrLogoUnsupported):

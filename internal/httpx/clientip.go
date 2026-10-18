@@ -282,7 +282,7 @@ func pageLoad(r *http.Request) bool {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		return false
 	}
-	return !strings.HasPrefix(r.URL.Path, "/api/") && !strings.HasPrefix(r.URL.Path, "/v1/")
+	return !isAPIPath(r.URL.Path)
 }
 
 // cloudflareReportsPlainHTTP reports whether a request from a trusted peer

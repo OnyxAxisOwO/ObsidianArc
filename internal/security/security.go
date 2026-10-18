@@ -69,7 +69,9 @@ const (
 	EventPasswordReset  = "password_reset"
 	EventAccountDeleted = "account_deleted"
 
-	maxReasonChars = 500
+	// MaxReasonChars bounds the reason an event keeps. A caller that cuts a reason
+	// before it arrives must use this figure, so the two cannot disagree.
+	MaxReasonChars = 500
 	MaxPageSize    = 200
 )
 
@@ -96,7 +98,7 @@ func (s *Store) Record(ctx context.Context, q database.Queryer, event Event) err
 	event.IP = text.TrimAndTruncate(strings.TrimSpace(text.Clean(event.IP)), 80)
 	event.Source = text.TrimAndTruncate(strings.TrimSpace(text.Clean(event.Source)), 80)
 	event.Decision = text.TrimAndTruncate(strings.TrimSpace(text.Clean(event.Decision)), 40)
-	event.Reason = text.TrimAndTruncate(strings.TrimSpace(text.Clean(event.Reason)), maxReasonChars)
+	event.Reason = text.TrimAndTruncate(strings.TrimSpace(text.Clean(event.Reason)), MaxReasonChars)
 	if event.Event == "" {
 		return fmt.Errorf("security: event type is required")
 	}

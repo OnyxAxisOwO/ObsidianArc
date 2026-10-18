@@ -10,6 +10,7 @@ package settings
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"regexp"
 	"sort"
@@ -1067,6 +1068,7 @@ type Service struct {
 	values           map[string]string
 	loginBackgrounds map[string]Background
 	siteLogoAt       int64
+	siteLogoMime     string
 
 	// Orders each save's cache update with the database write it follows. Two
 	// writers to one key can commit A then B and update the cache B then A,
@@ -1134,7 +1136,8 @@ func (s *Service) Load(ctx context.Context) error {
 
 	// No row is the normal state of a site without a logo, and leaves logoAt 0.
 	var logoAt int64
-	logoErr := s.db.QueryRow(ctx, `SELECT updated_at FROM site_logo WHERE id = 'default'`).Scan(&logoAt)
+	var logoMime string
+	logoErr := s.db.QueryRow(ctx, `SELECT mime, updated_at FROM site_logo WHERE id = 'default'`).Scan(&logoMime, &logoAt)
 	if logoErr != nil && !database.IsNotFound(logoErr) {
 		return fmt.Errorf("settings: load site logo: %w", logoErr)
 	}
@@ -1143,6 +1146,7 @@ func (s *Service) Load(ctx context.Context) error {
 	s.values = values
 	s.loginBackgrounds = bgs
 	s.siteLogoAt = logoAt
+	s.siteLogoMime = logoMime
 	s.mu.Unlock()
 	return nil
 }
@@ -1231,22 +1235,18 @@ func (s *Service) All() map[string]string {
 }
 
 func (s *Service) Set(ctx context.Context, key, value string) error {
+	values := map[string]string{key: value}
 	s.writeMu.Lock()
-	_, err := s.db.Exec(ctx,
-		`INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
-		 ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
-		key, value, time.Now().UnixMilli())
+	err := s.WriteMany(ctx, s.db, values)
 	if err == nil {
 		if s.afterWrite != nil {
 			s.afterWrite(key)
 		}
-		s.mu.Lock()
-		s.values[key] = value
-		s.mu.Unlock()
+		s.putLocked(values)
 	}
 	s.writeMu.Unlock()
 	if err != nil {
-		return fmt.Errorf("settings: set %s: %w", key, err)
+		return err
 	}
 	s.changed([]string{key})
 	return nil
@@ -1368,6 +1368,12 @@ func (s *Service) resync(keys []string, fallback map[string]string) {
 	if err != nil {
 		// The write this follows has already committed and there is no caller
 		// to return an error to, so every key falls back as if it had no row.
+		// Remember's fallback is the value a plugin install wrote, which an
+		// administrator's later save may have superseded, so the cache can show
+		// the older value until the next write or a restart. The log is the only
+		// trace of that; nothing else reports a failed re-read.
+		slog.Error("settings: could not re-read rows a committed write changed; falling back as if they were absent",
+			"keys", keys, "error", err)
 		stored = nil
 	}
 	s.mu.Lock()
@@ -1393,7 +1399,10 @@ func (s *Service) storedLocked(keys []string) (map[string]string, error) {
 		return nil, nil
 	}
 	// The commit has already happened, so a cancelled request must not leave
-	// the cache behind the database.
+	// the cache behind the database. There is no deadline either: a read that
+	// gave up would take the same fallback as a missing row, and the cache
+	// would then disagree with rows that exist. A slow database therefore
+	// holds writeMu until it answers, which is the price of that certainty.
 	ctx := context.Background()
 	out := make(map[string]string, len(keys))
 	for _, key := range keys {
