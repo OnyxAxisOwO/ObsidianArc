@@ -95,10 +95,7 @@ func init() {
 			body.str(rt, "current-password", "current_password")
 
 			if empty {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("没有需要修改的内容：请至少给出一个选项")
-				}
-				return rt.Errorf("nothing to change: give at least one flag")
+				return rt.Fail(Text{EN: "nothing to change: give at least one flag", ZH: "没有需要修改的内容：请至少给出一个选项"})
 			}
 
 			data, _, err := rt.Call(http.MethodPatch, "/api/profile", map[string]any(body))
@@ -149,22 +146,14 @@ func init() {
 			current := rt.String("current-password")
 			next := rt.String("new-password")
 			if current == "" || next == "" {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("需要同时给出 --current-password 和 --new-password")
-				}
-				return rt.Errorf("both --current-password and --new-password are required")
+				return rt.Fail(Text{EN: "both --current-password and --new-password are required", ZH: "需要同时给出 --current-password 和 --new-password"})
 			}
 
 			if _, _, err := rt.Call(http.MethodPost, "/api/profile/password",
 				map[string]any{"current_password": current, "new_password": next}); err != nil {
 				return err
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("密码已更新，其他会话已全部结束。\n")
-			} else {
-				rt.Printf("password updated; every other session has been ended.\n")
-			}
-			return nil
+			return rt.confirm(Text{EN: "password updated; every other session has been ended.", ZH: "密码已更新，其他会话已全部结束。"})
 		},
 	})
 
@@ -189,30 +178,17 @@ func init() {
 			if rt.Present("code") {
 				code := rt.String("code")
 				if code == "" {
-					if rt.Session.Lang == "zh" {
-						return rt.Errorf("--code 不能为空")
-					}
-					return rt.Errorf("--code cannot be empty")
+					return rt.Fail(Text{EN: "--code cannot be empty", ZH: "--code 不能为空"})
 				}
 				if _, _, err := rt.Call(http.MethodPost, "/api/profile/verify/code", map[string]any{"code": code}); err != nil {
 					return err
 				}
-				if rt.Session.Lang == "zh" {
-					rt.Printf("邮箱已验证。\n")
-				} else {
-					rt.Printf("email verified.\n")
-				}
-				return nil
+				return rt.confirm(Text{EN: "email verified.", ZH: "邮箱已验证。"})
 			}
 			if _, _, err := rt.Call(http.MethodPost, "/api/profile/verify/resend", nil); err != nil {
 				return err
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("验证邮件已发送。\n")
-			} else {
-				rt.Printf("verification email sent.\n")
-			}
-			return nil
+			return rt.confirm(Text{EN: "verification email sent.", ZH: "验证邮件已发送。"})
 		},
 	})
 }

@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/console"
 )
 
 // ReadLine drives Start/NextRune/Feed to completion. Only these tests want a
@@ -499,6 +501,12 @@ func TestRuneWidthTreatsCJKAsTwoColumns(t *testing.T) {
 		{'文', 2},
 		{'ｗ', 2}, // fullwidth Latin
 		{0, 0},
+		// Emoji and combining marks are what the table used to disagree on: a
+		// line with one of them put the cursor a column off.
+		{'🎉', 2},
+		{'́', 0}, // combining acute accent
+		{'‍', 0}, // zero width joiner
+		{'〈', 2}, // left-pointing angle bracket
 	}
 	for _, c := range cases {
 		if got := runeWidth(c.r); got != c.want {
@@ -507,6 +515,17 @@ func TestRuneWidthTreatsCJKAsTwoColumns(t *testing.T) {
 	}
 	if got := displayWidth([]rune("中文ab")); got != 6 {
 		t.Errorf("displayWidth(中文ab) = %d, want 6", got)
+	}
+}
+
+// The editor and the table must measure a character the same way, or a
+// cursor move over a line ends on a different column than the line was drawn
+// to. This walks the characters a person can type and holds the two together.
+func TestLineEditorAndTableMeasureEveryCharacterAlike(t *testing.T) {
+	for _, r := range []rune{'a', '中', 'ｗ', '🎉', '👍', '́', '‍', '️', '〈', '　', 'é'} {
+		if got, want := runeWidth(r), console.RuneWidth(r); got != want {
+			t.Errorf("runeWidth(%U) = %d, but the table width is %d", r, got, want)
+		}
 	}
 }
 

@@ -46,11 +46,7 @@ func init() {
 			if rt.effectiveJSON() {
 				return nil
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("\n项目数：%d，上限：%v\n", len(rows), asNum(m["max"]))
-			} else {
-				rt.Printf("\nprojects: %d, max: %v\n", len(rows), asNum(m["max"]))
-			}
+			rt.Say(Text{EN: fmt.Sprintf("\nprojects: %d, max: %v\n", len(rows), asNum(m["max"])), ZH: fmt.Sprintf("\n项目数：%d，上限：%v\n", len(rows), asNum(m["max"]))})
 			return nil
 		},
 	})
@@ -124,10 +120,7 @@ func init() {
 		Run: func(_ context.Context, rt *Runtime) error {
 			name := strings.TrimSpace(rt.String("name"))
 			if name == "" {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("项目需要一个名称：请提供 --name")
-				}
-				return rt.Errorf("a project needs a name: provide --name")
+				return rt.Fail(Text{EN: "a project needs a name: provide --name", ZH: "项目需要一个名称：请提供 --name"})
 			}
 			body := map[string]any{"name": name}
 			if rt.Present("instructions") {
@@ -178,10 +171,7 @@ func init() {
 			body.str(rt, "name", "name")
 			body.str(rt, "instructions", "instructions")
 			if len(body) == 0 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("没有需要修改的内容：请至少给出一个选项")
-				}
-				return rt.Errorf("nothing to change: give at least one flag")
+				return rt.Fail(Text{EN: "nothing to change: give at least one flag", ZH: "没有需要修改的内容：请至少给出一个选项"})
 			}
 			data, _, err := rt.Call(http.MethodPatch, "/api/projects/"+url.PathEscape(ref), map[string]any(body))
 			if err != nil {
@@ -221,12 +211,7 @@ func init() {
 			if _, _, err := rt.Call(http.MethodDelete, "/api/projects/"+url.PathEscape(ref), nil); err != nil {
 				return err
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已删除。\n")
-			} else {
-				rt.Printf("deleted.\n")
-			}
-			return nil
+			return rt.confirm(Text{EN: "deleted.", ZH: "已删除。"})
 		},
 	})
 }

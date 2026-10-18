@@ -77,10 +77,7 @@ func init() {
 		Endpoints:   []string{"POST /api/account/import"},
 		Run: func(_ context.Context, rt *Runtime) error {
 			if rt.NArg() == 0 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("需要一份导出文档")
-				}
-				return rt.Errorf("an export document is required")
+				return rt.Fail(Text{EN: "an export document is required", ZH: "需要一份导出文档"})
 			}
 			body, err := parseJSONBody(rt, strings.Join(rt.Args(), " "))
 			if err != nil {

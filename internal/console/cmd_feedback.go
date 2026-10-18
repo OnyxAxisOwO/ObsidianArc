@@ -2,6 +2,7 @@ package console
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -65,13 +66,11 @@ func init() {
 				return nil
 			}
 			summary := asMap(m["summary"])
-			if rt.Session.Lang == "zh" {
-				rt.Printf("\n共 %v 条，未处理 %v 条（其中高优先级 %v 条）；本页 %d 条。\n",
-					formatNumber(asNum(m["total"])), formatNumber(asNum(summary["open"])), formatNumber(asNum(summary["high_open"])), len(rows))
-			} else {
-				rt.Printf("\n%v matching, %v still open (%v of them high priority); %d on this page.\n",
-					formatNumber(asNum(m["total"])), formatNumber(asNum(summary["open"])), formatNumber(asNum(summary["high_open"])), len(rows))
-			}
+			total, open, high := formatNumber(asNum(m["total"])), formatNumber(asNum(summary["open"])), formatNumber(asNum(summary["high_open"]))
+			rt.Say(Text{
+				EN: fmt.Sprintf("\n%v matching, %v still open (%v of them high priority); %d on this page.\n", total, open, high, len(rows)),
+				ZH: fmt.Sprintf("\n共 %v 条，未处理 %v 条（其中高优先级 %v 条）；本页 %d 条。\n", total, open, high, len(rows)),
+			})
 			return nil
 		},
 	})
@@ -198,10 +197,7 @@ func init() {
 			}
 			text := rt.String("text")
 			if strings.TrimSpace(text) == "" {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("需要 --text 写点什么。")
-				}
-				return rt.Errorf("--text is required")
+				return rt.Fail(Text{EN: "--text is required", ZH: "需要 --text 写点什么。"})
 			}
 			data, _, err := rt.Call(http.MethodPost,
 				"/api/admin/feedback/"+url.PathEscape(ref)+"/replies",
@@ -238,10 +234,7 @@ func init() {
 		Endpoints:   []string{"DELETE /api/admin/feedback/{id}/replies/{reply}"},
 		Run: func(_ context.Context, rt *Runtime) error {
 			if rt.NArg() < 2 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("需要反馈 id 和回复 id。")
-				}
-				return rt.Errorf("a feedback id and a reply id are required")
+				return rt.Fail(Text{EN: "a feedback id and a reply id are required", ZH: "需要反馈 id 和回复 id。"})
 			}
 			path := "/api/admin/feedback/" + url.PathEscape(rt.Arg(0)) + "/replies/" + url.PathEscape(rt.Arg(1))
 			if _, _, err := rt.Call(http.MethodDelete, path, nil); err != nil {
@@ -250,11 +243,7 @@ func init() {
 			if rt.effectiveJSON() {
 				return rt.Fields(nil)
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已删除回复 %s。\n", rt.Arg(1))
-			} else {
-				rt.Printf("deleted reply %s.\n", rt.Arg(1))
-			}
+			rt.Say(Text{EN: fmt.Sprintf("deleted reply %s.\n", rt.Arg(1)), ZH: fmt.Sprintf("已删除回复 %s。\n", rt.Arg(1))})
 			return nil
 		},
 	})
@@ -285,11 +274,7 @@ func init() {
 			if rt.effectiveJSON() {
 				return rt.Fields(nil)
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已删除 %s。\n", ref)
-			} else {
-				rt.Printf("deleted %s.\n", ref)
-			}
+			rt.Say(Text{EN: fmt.Sprintf("deleted %s.\n", ref), ZH: fmt.Sprintf("已删除 %s。\n", ref)})
 			return nil
 		},
 	})
@@ -331,11 +316,7 @@ func init() {
 			if rt.effectiveJSON() {
 				return rt.Fields([][2]string{{"id", asStr(f["id"])}})
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已提交，编号 %s。\n", asStr(f["id"]))
-			} else {
-				rt.Printf("sent, id %s.\n", asStr(f["id"]))
-			}
+			rt.Say(Text{EN: fmt.Sprintf("sent, id %s.\n", asStr(f["id"])), ZH: fmt.Sprintf("已提交，编号 %s。\n", asStr(f["id"]))})
 			return nil
 		},
 	})

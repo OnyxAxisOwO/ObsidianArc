@@ -6,10 +6,12 @@ import (
 	"io"
 	"strconv"
 	"strings"
+
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/console"
 )
 
 // lineEditor is a small, dependency-free readline. golang.org/x/term offers
-// a raw-mode line reader, but the contract keeps this package to exactly
+// a raw-mode line reader, but this package takes no dependency beyond
 // golang.org/x/crypto/ssh, so the editing loop, the escape-sequence parser
 // and the cursor arithmetic below are all hand-written.
 //
@@ -225,7 +227,7 @@ func (ed *lineEditor) finishLine(line string) string {
 // prompt comes back empty. It is not added to history: the history is what Up
 // shows, and a line that was never run should not be offered again.
 func (ed *lineEditor) refuseLine() {
-	_, _ = ed.w.Write([]byte(fmt.Sprintf(noticeLineNotRun.in(ed.lang), maxLineRunes)))
+	_, _ = ed.w.Write([]byte(fmt.Sprintf(noticeLineNotRun.For(ed.lang), maxLineRunes)))
 	ed.buf = nil
 	ed.pos = 0
 	ed.histIdx = -1
@@ -264,7 +266,7 @@ func (ed *lineEditor) insert(r rune) {
 		ed.dropped = true
 		if !ed.overflowed {
 			ed.overflowed = true
-			_, _ = ed.w.Write([]byte(fmt.Sprintf(noticeLineTooLong.in(ed.lang), maxLineRunes)))
+			_, _ = ed.w.Write([]byte(fmt.Sprintf(noticeLineTooLong.For(ed.lang), maxLineRunes)))
 			ed.redraw()
 		}
 		return
@@ -816,30 +818,14 @@ func displayWidth(runes []rune) int {
 	return total
 }
 
-// runeWidth is a condensed East Asian Width table: wide/fullwidth ranges
-// return 2, everything else (including combining and control characters,
-// which this editor never puts in the buffer) returns 1 or 0.
+// runeWidth is the cell width of one rune as the line editor counts it. Control
+// characters take none, so a stray control byte never moves the cursor;
+// everything else is measured by the table RenderTable uses, so the cursor and
+// the output it edits agree on every character, emoji and combining marks
+// included.
 func runeWidth(r rune) int {
-	switch {
-	case r == 0:
+	if r == 0 || r < 0x20 || r == 0x7F {
 		return 0
-	case r < 0x20 || r == 0x7F:
-		return 0
-	case r >= 0x1100 && r <= 0x115F, // Hangul Jamo
-		r == 0x2329, r == 0x232A,
-		r >= 0x2E80 && r <= 0x303E, // CJK Radicals .. CJK Symbols and Punctuation
-		r >= 0x3041 && r <= 0x33FF, // Hiragana .. CJK Compatibility
-		r >= 0x3400 && r <= 0x4DBF, // CJK Unified Ideographs Extension A
-		r >= 0x4E00 && r <= 0x9FFF, // CJK Unified Ideographs
-		r >= 0xA000 && r <= 0xA4CF, // Yi
-		r >= 0xAC00 && r <= 0xD7A3, // Hangul Syllables
-		r >= 0xF900 && r <= 0xFAFF, // CJK Compatibility Ideographs
-		r >= 0xFE30 && r <= 0xFE4F, // CJK Compatibility Forms
-		r >= 0xFF00 && r <= 0xFF60, // Fullwidth Forms
-		r >= 0xFFE0 && r <= 0xFFE6,
-		r >= 0x20000 && r <= 0x2FFFD, // CJK Extension B and beyond
-		r >= 0x30000 && r <= 0x3FFFD:
-		return 2
 	}
-	return 1
+	return console.RuneWidth(r)
 }

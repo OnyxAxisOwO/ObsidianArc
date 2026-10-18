@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -20,10 +21,7 @@ func parseHeaders(rt *Runtime, raw string) (map[string]string, error) {
 		k, v, ok := strings.Cut(entry, "=")
 		k = strings.TrimSpace(k)
 		if !ok || k == "" {
-			if rt.Session.Lang == "zh" {
-				return nil, rt.Errorf("--headers 要写成 名称=值，得到 %q", entry)
-			}
-			return nil, rt.Errorf("--headers takes name=value, got %q", entry)
+			return nil, rt.Fail(Text{EN: fmt.Sprintf("--headers takes name=value, got %q", entry), ZH: fmt.Sprintf("--headers 要写成 名称=值，得到 %q", entry)})
 		}
 		out[k] = strings.TrimSpace(v)
 	}
@@ -50,10 +48,7 @@ func parseTiers(rt *Runtime, raw string) ([]map[string]any, error) {
 			// reads as a tier that has no budget at all.
 			budget, err := strconv.Atoi(strings.TrimSpace(parts[n-1]))
 			if err != nil {
-				if rt.Session.Lang == "zh" {
-					return nil, rt.Errorf("--tiers 的预算必须是整数：%q", entry)
-				}
-				return nil, rt.Errorf("--tiers entry %q: the budget must be a whole number", entry)
+				return nil, rt.Fail(Text{EN: fmt.Sprintf("--tiers entry %q: the budget must be a whole number", entry), ZH: fmt.Sprintf("--tiers 的预算必须是整数：%q", entry)})
 			}
 			tier["budget"] = budget
 		}
@@ -118,16 +113,16 @@ func init() {
 				}
 			}
 			if p == nil {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("没有这个服务商。")
-				}
-				return rt.Errorf("no such provider.")
+				return rt.Fail(Text{EN: "no such provider.", ZH: "没有这个服务商。"})
 			}
 			jsonMode := rt.effectiveJSON()
 			var headers []string
 			for k, v := range asMap(p["headers"]) {
 				headers = append(headers, k+"="+asStr(v))
 			}
+			// A map has no order of its own. Sorted, the same provider prints its
+			// headers in the same order every time it is shown.
+			sort.Strings(headers)
 			if err := rt.FieldsOf(p, [][2]string{
 				{"id", asStr(p["id"])}, {"name", asStr(p["name"])}, {"kind", asStr(p["kind"])},
 				{"base_url", asStr(p["base_url"])}, {"allow_insecure", yesNo(asBoolVal(p["allow_insecure"]))},
@@ -190,20 +185,14 @@ func init() {
 		Run: func(_ context.Context, rt *Runtime) error {
 			for _, req := range []string{"name", "kind", "base-url"} {
 				if !rt.Present(req) || rt.String(req) == "" {
-					if rt.Session.Lang == "zh" {
-						return rt.Errorf("需要 --%s", req)
-					}
-					return rt.Errorf("--%s is required", req)
+					return rt.Fail(Text{EN: fmt.Sprintf("--%s is required", req), ZH: fmt.Sprintf("需要 --%s", req)})
 				}
 			}
 			// Refused here, before any lookup or request: with both flags the typed
 			// key would win and the copy would vanish without a word, and with
 			// neither the server refuses only after the round trip.
 			if rt.Present("api-key") == rt.Present("copy-key-from") {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("请只给出 --api-key 或 --copy-key-from 之一")
-				}
-				return rt.Errorf("give exactly one of --api-key or --copy-key-from")
+				return rt.Fail(Text{EN: "give exactly one of --api-key or --copy-key-from", ZH: "请只给出 --api-key 或 --copy-key-from 之一"})
 			}
 			body := bodyBuilder{
 				"name":     rt.String("name"),
@@ -298,10 +287,7 @@ func init() {
 			body.intv(rt, "sort-order", "sort_order")
 
 			if len(body) == 0 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("没有需要修改的内容：请至少给出一个选项")
-				}
-				return rt.Errorf("nothing to change: give at least one flag")
+				return rt.Fail(Text{EN: "nothing to change: give at least one flag", ZH: "没有需要修改的内容：请至少给出一个选项"})
 			}
 			data, _, err := rt.Call(http.MethodPatch, "/api/admin/providers/"+url.PathEscape(pid), map[string]any(body))
 			if err != nil {
@@ -343,12 +329,7 @@ func init() {
 			if rt.effectiveJSON() {
 				return rt.Fields(nil)
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已删除。\n")
-			} else {
-				rt.Printf("deleted.\n")
-			}
-			return nil
+			return rt.confirm(Text{EN: "deleted.", ZH: "已删除。"})
 		},
 	})
 
@@ -457,10 +438,7 @@ func init() {
 				}
 			}
 			if m == nil {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("没有这个模型。")
-				}
-				return rt.Errorf("no such model.")
+				return rt.Fail(Text{EN: "no such model.", ZH: "没有这个模型。"})
 			}
 			jsonMode := rt.effectiveJSON()
 			if err := rt.FieldsOf(m, [][2]string{
@@ -610,10 +588,7 @@ func init() {
 		Endpoints:  []string{"POST /api/admin/models"},
 		Run: func(_ context.Context, rt *Runtime) error {
 			if !rt.Present("provider") || rt.String("provider") == "" {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("需要 --provider")
-				}
-				return rt.Errorf("--provider is required")
+				return rt.Fail(Text{EN: "--provider is required", ZH: "需要 --provider"})
 			}
 			pid, err := resolveProviderRef(rt, rt.String("provider"))
 			if err != nil {
@@ -662,10 +637,7 @@ func init() {
 				return err
 			}
 			if len(body) == 0 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("没有需要修改的内容：请至少给出一个选项")
-				}
-				return rt.Errorf("nothing to change: give at least one flag")
+				return rt.Fail(Text{EN: "nothing to change: give at least one flag", ZH: "没有需要修改的内容：请至少给出一个选项"})
 			}
 			data, _, err := rt.Call(http.MethodPatch, "/api/admin/models/"+url.PathEscape(mid), map[string]any(body))
 			if err != nil {
@@ -701,12 +673,7 @@ func init() {
 			if rt.effectiveJSON() {
 				return rt.Fields(nil)
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已删除。\n")
-			} else {
-				rt.Printf("deleted.\n")
-			}
-			return nil
+			return rt.confirm(Text{EN: "deleted.", ZH: "已删除。"})
 		},
 	})
 
@@ -727,10 +694,7 @@ func init() {
 		Endpoints:  []string{"PUT /api/admin/models/order"},
 		Run: func(_ context.Context, rt *Runtime) error {
 			if rt.NArg() == 0 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("至少需要一个模型引用")
-				}
-				return rt.Errorf("at least one model ref is required")
+				return rt.Fail(Text{EN: "at least one model ref is required", ZH: "至少需要一个模型引用"})
 			}
 			var ids []string
 			for _, ref := range rt.Args() {
@@ -746,12 +710,7 @@ func init() {
 			if rt.effectiveJSON() {
 				return rt.Fields(nil)
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已更新排序。\n")
-			} else {
-				rt.Printf("order updated.\n")
-			}
-			return nil
+			return rt.confirm(Text{EN: "order updated.", ZH: "已更新排序。"})
 		},
 	})
 
@@ -775,10 +734,7 @@ func init() {
 		Endpoints:  []string{"POST /api/admin/models/import"},
 		Run: func(_ context.Context, rt *Runtime) error {
 			if rt.NArg() == 0 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("需要一份 JSON 文档")
-				}
-				return rt.Errorf("a JSON document is required")
+				return rt.Fail(Text{EN: "a JSON document is required", ZH: "需要一份 JSON 文档"})
 			}
 			body, err := parseJSONBody(rt, strings.Join(rt.Args(), " "))
 			if err != nil {
@@ -801,26 +757,9 @@ func init() {
 	})
 }
 
-// parseGroupGrants turns "group-a:use,group-b:view" into the
-// []{group_id,access} shape POST/PATCH /api/admin/models takes for
-// group_grants, resolving each left-hand side through resolveGroupRef.
+// parseGroupGrants turns "group-a:use,group-b:view" into the []{group_id,access}
+// rows a model's group_grants takes, resolving each left-hand side through
+// resolveGroupRef.
 func parseGroupGrants(rt *Runtime, raw string) ([]map[string]any, error) {
-	// Never nil: an empty --groups must reach the server as [] (see parseTiers).
-	out := []map[string]any{}
-	for _, entry := range splitCSV(raw) {
-		ref, access, ok := strings.Cut(entry, ":")
-		if !ok {
-			access = "use"
-		}
-		gid, err := resolveGroupRef(rt, strings.TrimSpace(ref))
-		if err != nil {
-			return nil, err
-		}
-		access = strings.TrimSpace(access)
-		if access == "" {
-			access = "use"
-		}
-		out = append(out, map[string]any{"group_id": gid, "access": access})
-	}
-	return out, nil
+	return parseGrantList(rt, raw, "group_id", resolveGroupRef)
 }

@@ -72,10 +72,7 @@ func init() {
 			settings := asMap(asMap(data)["settings"])
 			v, ok := settings[key]
 			if !ok {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("没有这个键，或你无权读取它。")
-				}
-				return rt.Errorf("no such key, or you do not have permission to read it.")
+				return rt.Fail(Text{EN: "no such key, or you do not have permission to read it.", ZH: "没有这个键，或你无权读取它。"})
 			}
 			// The settings envelope is the last Call's body; under --json the
 			// picked key is the answer, not the whole map.
@@ -121,10 +118,7 @@ func init() {
 		},
 		Run: func(_ context.Context, rt *Runtime) error {
 			if rt.NArg() < 2 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("需要键和值")
-				}
-				return rt.Errorf("a key and a value are required")
+				return rt.Fail(Text{EN: "a key and a value are required", ZH: "需要键和值"})
 			}
 			key := rt.Arg(0)
 			value := strings.Join(rt.Args()[1:], " ")
@@ -162,10 +156,7 @@ func init() {
 		Endpoints:   []string{"POST /api/admin/settings/import"},
 		Run: func(_ context.Context, rt *Runtime) error {
 			if rt.NArg() == 0 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("需要一份 JSON 文档")
-				}
-				return rt.Errorf("a JSON document is required")
+				return rt.Fail(Text{EN: "a JSON document is required", ZH: "需要一份 JSON 文档"})
 			}
 			body, err := parseJSONBody(rt, strings.Join(rt.Args(), " "))
 			if err != nil {
@@ -258,10 +249,7 @@ func init() {
 		Endpoints:  []string{"POST /api/admin/announcements"},
 		Run: func(_ context.Context, rt *Runtime) error {
 			if !rt.Present("title") || rt.String("title") == "" {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("需要 --title")
-				}
-				return rt.Errorf("--title is required")
+				return rt.Fail(Text{EN: "--title is required", ZH: "需要 --title"})
 			}
 			body := bodyBuilder{"title": rt.String("title")}
 			body.str(rt, "body", "body")
@@ -320,10 +308,7 @@ func init() {
 				}
 			}
 			if cur == nil {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("没有这个公告。")
-				}
-				return rt.Errorf("no such announcement.")
+				return rt.Fail(Text{EN: "no such announcement.", ZH: "没有这个公告。"})
 			}
 			body := map[string]any{
 				"title": asStr(cur["title"]), "body": asStr(cur["body"]), "display_mode": asStr(cur["display_mode"]),
@@ -379,12 +364,7 @@ func init() {
 			if rt.effectiveJSON() {
 				return rt.Fields(nil)
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已删除。\n")
-			} else {
-				rt.Printf("deleted.\n")
-			}
-			return nil
+			return rt.confirm(Text{EN: "deleted.", ZH: "已删除。"})
 		},
 	})
 
@@ -467,10 +447,7 @@ func init() {
 		Endpoints:  []string{"POST /api/admin/security/review"},
 		Run: func(_ context.Context, rt *Runtime) error {
 			if !rt.Present("username") || rt.String("username") == "" {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("需要 --username")
-				}
-				return rt.Errorf("--username is required")
+				return rt.Fail(Text{EN: "--username is required", ZH: "需要 --username"})
 			}
 			body := bodyBuilder{"username": rt.String("username")}
 			body.str(rt, "email", "email")
@@ -637,10 +614,7 @@ func init() {
 		Endpoints:  []string{"PUT /api/admin/login-background/{variant}"},
 		Run: func(_ context.Context, rt *Runtime) error {
 			if rt.NArg() < 2 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("需要变种名称和图片路径或数据")
-				}
-				return rt.Errorf("variant and image are required")
+				return rt.Fail(Text{EN: "variant and image are required", ZH: "需要变种名称和图片路径或数据"})
 			}
 			variant := rt.Arg(0)
 			mime, data, err := imageArg(rt, rt.Arg(1))
@@ -659,11 +633,7 @@ func init() {
 				return rt.Fields(nil)
 			}
 			urlStr := asStr(asMap(respData)["url"])
-			if rt.Session.Lang == "zh" {
-				rt.Printf("登录背景图已更新：%s\n", urlStr)
-			} else {
-				rt.Printf("Login background updated: %s\n", urlStr)
-			}
+			rt.Say(Text{EN: fmt.Sprintf("Login background updated: %s\n", urlStr), ZH: fmt.Sprintf("登录背景图已更新：%s\n", urlStr)})
 			return nil
 		},
 	})
@@ -696,11 +666,7 @@ func init() {
 			if rt.effectiveJSON() {
 				return rt.Fields(nil)
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已清除变种 %s 的登录背景图。\n", variant)
-			} else {
-				rt.Printf("Cleared login background for %s.\n", variant)
-			}
+			rt.Say(Text{EN: fmt.Sprintf("Cleared login background for %s.\n", variant), ZH: fmt.Sprintf("已清除变种 %s 的登录背景图。\n", variant)})
 			return nil
 		},
 	})
@@ -722,10 +688,7 @@ func init() {
 		Endpoints:  []string{"PUT /api/admin/logo"},
 		Run: func(_ context.Context, rt *Runtime) error {
 			if rt.NArg() < 1 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("需要图片路径或数据")
-				}
-				return rt.Errorf("image is required")
+				return rt.Fail(Text{EN: "image is required", ZH: "需要图片路径或数据"})
 			}
 			mime, data, err := imageArg(rt, rt.Arg(0))
 			if err != nil {
@@ -743,11 +706,7 @@ func init() {
 				return rt.Fields(nil)
 			}
 			urlStr := asStr(asMap(respData)["url"])
-			if rt.Session.Lang == "zh" {
-				rt.Printf("站点 Logo 已更新：%s\n", urlStr)
-			} else {
-				rt.Printf("Site logo updated: %s\n", urlStr)
-			}
+			rt.Say(Text{EN: fmt.Sprintf("Site logo updated: %s\n", urlStr), ZH: fmt.Sprintf("站点 Logo 已更新：%s\n", urlStr)})
 			return nil
 		},
 	})
@@ -773,12 +732,7 @@ func init() {
 			if rt.effectiveJSON() {
 				return rt.Fields(nil)
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已清除站点 Logo，恢复为默认图标。\n")
-			} else {
-				rt.Printf("Cleared site logo, restored default icon.\n")
-			}
-			return nil
+			return rt.confirm(Text{EN: "Cleared site logo, restored default icon.", ZH: "已清除站点 Logo，恢复为默认图标。"})
 		},
 	})
 }
@@ -809,8 +763,5 @@ func imageArg(rt *Runtime, raw string) (mime, data string, err error) {
 }
 
 func imageArgError(rt *Runtime) error {
-	if rt.Session.Lang == "zh" {
-		return rt.Errorf("图片需要以 base64 或 data: URL 给出；服务器不会读取文件路径。")
-	}
-	return rt.Errorf("the image must be base64 or a data: URL; the server does not read file paths")
+	return rt.Fail(Text{EN: "the image must be base64 or a data: URL; the server does not read file paths", ZH: "图片需要以 base64 或 data: URL 给出；服务器不会读取文件路径。"})
 }

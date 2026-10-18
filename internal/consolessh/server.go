@@ -126,6 +126,19 @@ type Config struct {
 	// may come from one. 0 means 64; negative means no limit.
 	MaxUnauthenticated int
 
+	// HandshakeTimeout bounds the unauthenticated part of a connection, from
+	// accept to a completed SSH handshake, and each database callback the
+	// handshake makes. 0 means 30s. Tests shorten it on the Config they start a
+	// server with, so the server's goroutines never read a value that is being
+	// written.
+	HandshakeTimeout time.Duration
+	// SessionStartTimeout bounds how long a signed-in connection may go without
+	// a session, and how long an opened session may go without a shell or an
+	// exec. 0 means 30s.
+	SessionStartTimeout time.Duration
+	// WriteStallTimeout bounds one write to the client. 0 means 30s.
+	WriteStallTimeout time.Duration
+
 	// Logf receives the listener's operational warnings: Accept retrying,
 	// connections turned away at a cap. nil means the process log at warning
 	// level, so leaving it unset does not leave them unread.
@@ -426,7 +439,7 @@ func (s *Server) passwordCallback(conn ssh.ConnMetadata, password []byte) (*ssh.
 	// that rehashes the stored hash gets the fingerprint of the hash it checked,
 	// so its own connection ends at its first command; that happens once per
 	// account per parameter change and is accepted.
-	ctx, cancel := handshakeContext()
+	ctx, cancel := s.handshakeContext()
 	defer cancel()
 	account, credential, err := s.cfg.Authenticate(ctx, conn.User(), string(password), ip)
 	if err != nil {
@@ -462,7 +475,7 @@ func (s *Server) passwordCallback(conn ssh.ConnMetadata, password []byte) (*ssh.
 				}
 				// The prompt is answered later in the same handshake, so the password
 				// step's context has been cancelled by then; the code gets its own.
-				codeCtx, codeCancel := handshakeContext()
+				codeCtx, codeCancel := s.handshakeContext()
 				defer codeCancel()
 				if err := s.cfg.SecondFactor(codeCtx, account, answers[0], ip); err != nil {
 					return nil, errAuthFailed
@@ -522,7 +535,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	// against a listener on the public internet. Cleared once the handshake
 	// is done, because a console session is legitimately idle for long
 	// stretches and the idle timeout is what governs it from then on.
-	_ = conn.SetDeadline(time.Now().Add(handshakeTimeout))
+	_ = conn.SetDeadline(time.Now().Add(s.handshakeTimeout()))
 
 	ip := hostOnly(conn.RemoteAddr())
 	// Counted from accept to the end of the handshake, whichever way it ends.
@@ -565,7 +578,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	// A connection with no live session is in no slot, so nothing else would
 	// end it: one that signs in and opens nothing, or that ran a one-shot exec
 	// and went quiet, would otherwise stay open for as long as its client liked.
-	idle := newConnIdle(sessionStartTimeout, s.cfg.IdleTimeout, func() { _ = sconn.Close() })
+	idle := newConnIdle(s.sessionStartTimeout(), s.cfg.IdleTimeout, func() { _ = sconn.Close() })
 	defer idle.stop()
 
 	credential := credentialFromPermissions(sconn.Permissions)
@@ -624,26 +637,43 @@ func (s *Server) handleConn(conn net.Conn) {
 	}
 }
 
-// handshakeTimeout bounds the unauthenticated part of a connection: from
-// accept to a completed SSH handshake. A variable so a test can make it short.
-var handshakeTimeout = 30 * time.Second
+// The defaults for the timeouts a Config leaves at zero. They are applied
+// where the timeout is read, not in New, so a Server built without New, as some
+// tests build one, gets the same values.
+const (
+	defaultHandshakeTimeout  = 30 * time.Second
+	defaultSessionStart      = 30 * time.Second
+	defaultWriteStallTimeout = 30 * time.Second
+)
+
+func (s *Server) handshakeTimeout() time.Duration {
+	if s.cfg.HandshakeTimeout > 0 {
+		return s.cfg.HandshakeTimeout
+	}
+	return defaultHandshakeTimeout
+}
+
+func (s *Server) sessionStartTimeout() time.Duration {
+	if s.cfg.SessionStartTimeout > 0 {
+		return s.cfg.SessionStartTimeout
+	}
+	return defaultSessionStart
+}
+
+func (s *Server) writeStallTimeout() time.Duration {
+	if s.cfg.WriteStallTimeout > 0 {
+		return s.cfg.WriteStallTimeout
+	}
+	return defaultWriteStallTimeout
+}
 
 // handshakeContext bounds one callback the handshake makes into the database.
 // The connection deadline reaches the socket, not a query that is blocked
 // inside Authenticate, so without this a stalled database pins a preauth slot
 // for as long as it stalls, and up to MaxUnauthenticated of them.
-func handshakeContext() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), handshakeTimeout)
+func (s *Server) handshakeContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), s.handshakeTimeout())
 }
-
-// sessionStartTimeout bounds how long a signed-in connection may go without a
-// session, and how long an opened session may go without a shell or an exec.
-// A variable so a test can make it short.
-var sessionStartTimeout = handshakeTimeout
-
-// writeStallTimeout bounds one write to the client. A variable so a test can
-// make it short.
-var writeStallTimeout = 30 * time.Second
 
 // maxConnectionsPerAccount is how many connections one account may hold open at
 // once, whether or not they have opened a session.
@@ -821,14 +851,12 @@ func (s *Server) acquirePreauth(addr net.Addr) (string, bool) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.preauth >= s.cfg.MaxUnauthenticated || s.preauthIP[key] >= maxPreauthPerIP {
+	// The total is tested first, so a connection refused by the total takes
+	// nothing from its address's share.
+	if s.preauth >= s.cfg.MaxUnauthenticated || !takeCount(&s.preauthIP, key, maxPreauthPerIP) {
 		return "", false
 	}
-	if s.preauthIP == nil {
-		s.preauthIP = make(map[string]int)
-	}
 	s.preauth++
-	s.preauthIP[key]++
 	return key, true
 }
 
@@ -839,11 +867,7 @@ func (s *Server) releasePreauth(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.preauth--
-	if s.preauthIP[key] <= 1 {
-		delete(s.preauthIP, key)
-		return
-	}
-	s.preauthIP[key]--
+	giveCount(s.preauthIP, key)
 }
 
 // addSession registers a session for Shutdown to close. It reports false once
@@ -934,14 +958,6 @@ func newSSHSession(server *Server, conn ssh.Conn, channel ssh.Channel, actor use
 	}
 }
 
-// close ends the session by closing the whole SSH connection, not just this
-// channel. ssh.Channel.Close only sends a close message and waits for the
-// peer's own close in reply before a blocked local Read unblocks — the
-// mux's teardown (golang.org/x/crypto/ssh's mux.loop, on the read side)
-// only EOFs every channel's buffer once the underlying net.Conn itself
-// errors out. Closing the connection is what makes Shutdown's deadline and
-// the idle timeout actually deterministic instead of depending on a
-// possibly-gone client to cooperate.
 // closeChannel ends a finished one-shot command cleanly.
 //
 // The output is complete and the exit status is sent, so the right thing to
@@ -989,13 +1005,21 @@ var errReauthorizeFailed = errors.New("consolessh: could not re-read the account
 func endNotice(lang string, err error) string {
 	switch {
 	case errors.Is(err, errCredentialChanged):
-		return noticeCredentialChanged.in(lang)
+		return noticeCredentialChanged.For(lang)
 	case errors.Is(err, errReauthorizeFailed):
-		return noticeRetry.in(lang)
+		return noticeRetry.For(lang)
 	}
-	return noticeRevoked.in(lang)
+	return noticeRevoked.For(lang)
 }
 
+// close ends the session by closing the whole SSH connection, not just this
+// channel. ssh.Channel.Close only sends a close message and waits for the
+// peer's own close in reply before a blocked local Read unblocks — the
+// mux's teardown (golang.org/x/crypto/ssh's mux.loop, on the read side)
+// only EOFs every channel's buffer once the underlying net.Conn itself
+// errors out. Closing the connection is what makes Shutdown's deadline and
+// the idle timeout actually deterministic instead of depending on a
+// possibly-gone client to cooperate.
 func (sess *sshSession) close() {
 	sess.closeOnce.Do(sess.abort)
 }
@@ -1029,7 +1053,7 @@ func recoverSession(sess *sshSession) {
 		// Telling the client must not be able to take the process down either.
 		defer func() { _ = recover() }()
 		_ = sess.stalled(func() error {
-			_, err := sess.channel.Write([]byte(noticeInternalError.in(sess.language())))
+			_, err := sess.channel.Write([]byte(noticeInternalError.For(sess.language())))
 			return err
 		})
 	}()
@@ -1082,7 +1106,7 @@ func (sess *sshSession) serve(requests <-chan *ssh.Request) {
 	// A session that never asks for a shell or an exec holds its slots, the
 	// global one and the account's, and nothing else would give them back until
 	// the client chose to leave. Stopped by either request.
-	started := time.AfterFunc(sessionStartTimeout, sess.close)
+	started := time.AfterFunc(sess.server.sessionStartTimeout(), sess.close)
 	defer started.Stop()
 
 	for req := range requests {
@@ -1253,9 +1277,9 @@ func (sess *sshSession) reply(req *ssh.Request, ok bool) {
 // reading leaves its write blocked in the SSH window reservation, which has no
 // deadline and no context, so nothing else in the session can end it. Closing
 // the connection is what releases that write, and the timer does it once a
-// write has taken longer than writeStallTimeout.
+// write has taken longer than the server's WriteStallTimeout.
 func (sess *sshSession) stalled(write func() error) error {
-	timer := time.AfterFunc(writeStallTimeout, sess.abort)
+	timer := time.AfterFunc(sess.server.writeStallTimeout(), sess.abort)
 	defer timer.Stop()
 	return write()
 }
@@ -1293,8 +1317,10 @@ func (sess *sshSession) exitStatus(status uint32) {
 	})
 }
 
-// zhPrefixes are LANG/LC_ALL values whose language subtag is Chinese. The
-// console only distinguishes en/zh, matching Session.Lang and web/src/i18n.
+// langFromEnv reads a LANG or LC_ALL value as the console's language. Anything
+// starting with zh is Chinese and anything starting with en is English; the
+// console only distinguishes those two, matching Session.Lang and web/src/i18n.
+// Any other locale says nothing, so the caller keeps the language it had.
 func langFromEnv(value string) (string, bool) {
 	v := strings.ToLower(value)
 	if strings.HasPrefix(v, "zh") {
@@ -1448,7 +1474,7 @@ func (sess *sshSession) runExec(ctx context.Context, cancel context.CancelFunc, 
 	}
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		status = 1
-		_, _ = fmt.Fprintf(sess.errOutput(), noticeCommandStopped.in(sess.language()), sess.server.cfg.ExecTimeout)
+		_, _ = fmt.Fprintf(sess.errOutput(), noticeCommandStopped.For(sess.language()), sess.server.cfg.ExecTimeout)
 	}
 	sess.exitStatus(status)
 }
@@ -1634,7 +1660,7 @@ func (sess *sshSession) runInteractive() {
 					continue
 				}
 				if typeAhead.push(ev.r) {
-					_, _ = sess.output().Write([]byte(noticeTypeAhead.in(lang)))
+					_, _ = sess.output().Write([]byte(noticeTypeAhead.For(lang)))
 				}
 				continue
 			}
@@ -1668,7 +1694,7 @@ func (sess *sshSession) runInteractive() {
 			if running {
 				continue
 			}
-			_, _ = sess.output().Write([]byte(noticeIdle.in(lang)))
+			_, _ = sess.output().Write([]byte(noticeIdle.For(lang)))
 			return
 
 		case <-sess.dead:

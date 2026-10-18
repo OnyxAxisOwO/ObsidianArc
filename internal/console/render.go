@@ -12,13 +12,13 @@ import (
 	"unicode/utf8"
 )
 
-// ANSI SGR codes this package ever emits — section 1.5 of the contract is
-// explicit that the palette is at most dim, bold, three status colours and
-// underline for a table header. Only red, for an error, is used today; the
-// other two status colours are added here when something prints one, so this
-// list stays what the package actually emits. The emulator's own theme
-// (which follows the app's --ai-* tokens on the web terminal) decides the
-// actual hue; these are just the standard SGR defaults.
+// ANSI SGR codes this package ever emits. The palette stays small on purpose:
+// dim, bold, three status colours and underline for a table header. Only red,
+// for an error, is used today; the other two status colours are added here
+// when something prints one, so this list stays what the package actually
+// emits. The emulator's own theme (which follows the app's --ai-* tokens on the
+// web terminal) decides the actual hue; these are just the standard SGR
+// defaults.
 const (
 	ansiReset     = "\x1b[0m"
 	ansiBold      = "\x1b[1m"
@@ -122,6 +122,11 @@ func cellWidth(s string) int {
 	return n
 }
 
+// RuneWidth is runeCells for the line editor in consolessh. The editor moves its
+// cursor by it, so the cursor and the output it edits agree on how far each
+// character reaches; a second width table there is how they came to disagree.
+func RuneWidth(r rune) int { return runeCells(r) }
+
 // runeCells is the width of one rune in cells: 2 for an East Asian Wide or
 // Fullwidth character, 0 for a combining or format character, 1 otherwise. The
 // ranges are the ones an administrator's text is made of, not all of Unicode,
@@ -146,6 +151,7 @@ func runeCells(r rune) int {
 // stop at the first span that starts past r.
 var wideSpans = [][2]rune{
 	{0x1100, 0x115f},   // Hangul Jamo
+	{0x2329, 0x232a},   // angle brackets, East Asian Wide since Unicode 9
 	{0x2e80, 0x303e},   // CJK radicals, symbols and punctuation
 	{0x3041, 0x33ff},   // kana and CJK compatibility
 	{0x3400, 0x4dbf},   // CJK extension A
@@ -310,8 +316,8 @@ func RenderFields(w io.Writer, colour bool, pairs [][2]string) {
 }
 
 // RenderJSON pretty-prints an already-encoded JSON response body verbatim —
-// the contract's requirement that --json show exactly what the server
-// answered, nothing rebuilt from it. A body that somehow is not valid JSON
+// the --json requirement that the output be exactly what the server answered,
+// nothing rebuilt from it. A body that somehow is not valid JSON
 // (should never happen for an admin response) is written through unchanged
 // rather than dropped.
 func RenderJSON(w io.Writer, raw []byte) error {

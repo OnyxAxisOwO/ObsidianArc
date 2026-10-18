@@ -66,7 +66,7 @@ func init() {
 			windows := make([]window, 0, len(raw))
 			for _, v := range raw {
 				w := asMap(v)
-				pressure, has := windowPressure(w)
+				pressure, has := windowRatio(w)
 				pct := "-"
 				if has {
 					pct = fmt.Sprintf("%.0f%%", pressure*100)
@@ -208,12 +208,7 @@ func init() {
 			if _, _, err := rt.Call(http.MethodPost, "/api/usage/cards/"+url.PathEscape(ref)+"/use", nil); err != nil {
 				return err
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已使用。\n")
-			} else {
-				rt.Printf("used.\n")
-			}
-			return nil
+			return rt.confirm(Text{EN: "used.", ZH: "已使用。"})
 		},
 	})
 
@@ -240,10 +235,7 @@ func init() {
 		Run: func(_ context.Context, rt *Runtime) error {
 			code := rt.String("code")
 			if code == "" {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("需要 --code")
-				}
-				return rt.Errorf("--code is required")
+				return rt.Fail(Text{EN: "--code is required", ZH: "需要 --code"})
 			}
 			body := map[string]any{"code": code}
 			if v := rt.String("turnstile"); v != "" {
@@ -264,12 +256,14 @@ func init() {
 	})
 }
 
-// windowPressure is web/src/api/usage.ts's windowPressure, ported: the
-// tightest ratio across whichever dimensions this window actually limits, as
-// 0-1. A window with no limit on any dimension (has == false) is not "0%
+// windowRatio is web/src/api/usage.ts's windowPressure, ported: the tightest
+// ratio across whichever dimensions this window actually limits, as 0-1 and not
+// capped. A window with no limit on any dimension (has == false) is not "0%
 // pressure" — it is not measurable at all, and credit show's sort treats the
 // two differently rather than showing an unenforced window as the safest one.
-func windowPressure(w map[string]any) (pressure float64, has bool) {
+// The account's own bars and the credit listing both read a window this way, so
+// the rule is written once, here.
+func windowRatio(w map[string]any) (ratio float64, has bool) {
 	consider := func(used, limit any) {
 		if limit == nil {
 			return
@@ -278,12 +272,12 @@ func windowPressure(w map[string]any) (pressure float64, has bool) {
 		if lim <= 0 {
 			return
 		}
-		if r := asNum(used) / lim; !has || r > pressure {
-			pressure, has = r, true
+		if r := asNum(used) / lim; !has || r > ratio {
+			ratio, has = r, true
 		}
 	}
 	consider(w["used_requests"], w["limit_requests"])
 	consider(w["used_tokens"], w["limit_tokens"])
 	consider(w["used_credits"], w["limit_credits"])
-	return pressure, has
+	return ratio, has
 }

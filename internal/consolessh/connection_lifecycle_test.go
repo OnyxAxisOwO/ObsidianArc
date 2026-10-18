@@ -127,12 +127,9 @@ func TestRegistrationAfterShutdownIsRefused(t *testing.T) {
 // database. A password check that never answers must still fail the sign-in
 // within the handshake timeout, rather than holding a preauth slot for good.
 func TestAStalledPasswordCheckEndsWithinTheHandshakeTimeout(t *testing.T) {
-	previous := handshakeTimeout
-	handshakeTimeout = 200 * time.Millisecond
-	t.Cleanup(func() { handshakeTimeout = previous })
-
 	srv := startTestServer(t, Config{
-		Console: newTestConsole(t),
+		HandshakeTimeout: 200 * time.Millisecond,
+		Console:          newTestConsole(t),
 		Authenticate: func(ctx context.Context, _, _, _ string) (user.User, string, error) {
 			<-ctx.Done()
 			return user.User{}, "", ctx.Err()

@@ -73,10 +73,10 @@ func resolveInviteRef(rt *Runtime, ref string) (string, error) {
 	// "no such invite code" is only true once every match has been seen.
 	for offset, pages := 0, 0; ; pages++ {
 		if pages == inviteSearchMaxPages {
-			if rt.Session.Lang == "zh" {
-				return "", fmt.Errorf("匹配的邀请码超过 %d 个，请给出完整的邀请码", inviteSearchMaxPages*inviteSearchPageSize)
-			}
-			return "", fmt.Errorf("more than %d codes match: give the full code", inviteSearchMaxPages*inviteSearchPageSize)
+			return "", rt.Fail(Text{
+				EN: fmt.Sprintf("more than %d codes match: give the full code", inviteSearchMaxPages*inviteSearchPageSize),
+				ZH: fmt.Sprintf("匹配的邀请码超过 %d 个，请给出完整的邀请码", inviteSearchMaxPages*inviteSearchPageSize),
+			})
 		}
 		q := url.Values{
 			"kind": {"all"}, "status": {"all"}, "q": {norm},
@@ -101,10 +101,7 @@ func resolveInviteRef(rt *Runtime, ref string) (string, error) {
 	if id.Valid(ref) {
 		return ref, nil
 	}
-	if rt.Session.Lang == "zh" {
-		return "", fmt.Errorf("没有这个邀请码")
-	}
-	return "", fmt.Errorf("no such invite code")
+	return "", rt.Fail(Text{EN: fmt.Sprintf("no such invite code"), ZH: fmt.Sprintf("没有这个邀请码")})
 }
 
 // parseDateFlag reads an inclusive calendar date ("2006-01-02"): the code
@@ -119,10 +116,7 @@ func parseDateFlag(rt *Runtime, flag string) (int64, error) {
 	raw := rt.String(flag)
 	t, err := time.ParseInLocation("2006-01-02", raw, time.Local)
 	if err != nil {
-		if rt.Session.Lang == "zh" {
-			return 0, fmt.Errorf("--%s 需要 YYYY-MM-DD 格式的日期", flag)
-		}
-		return 0, fmt.Errorf("--%s needs a date in YYYY-MM-DD format", flag)
+		return 0, rt.Fail(Text{EN: fmt.Sprintf("--%s needs a date in YYYY-MM-DD format", flag), ZH: fmt.Sprintf("--%s 需要 YYYY-MM-DD 格式的日期", flag)})
 	}
 	return t.AddDate(0, 0, 1).UnixMilli(), nil
 }
@@ -148,10 +142,7 @@ func parseGroupDays(rt *Runtime, raw string) (days, daysMax int, err error) {
 }
 
 func badGroupDays(rt *Runtime) error {
-	if rt.Session.Lang == "zh" {
-		return fmt.Errorf("--group-days 需要一个整数，或 N-M 形式的区间")
-	}
-	return fmt.Errorf("--group-days needs an integer, or a range like N-M")
+	return rt.Fail(Text{EN: "--group-days needs an integer, or a range like N-M", ZH: "--group-days 需要一个整数，或 N-M 形式的区间"})
 }
 
 // inviteCodeRow renders one Code the same way in `invite list` and
@@ -250,11 +241,8 @@ func init() {
 				return err
 			}
 			if !rt.effectiveJSON() {
-				if rt.Session.Lang == "zh" {
-					rt.Printf("\n共 %v 个\n", formatNumber(asNum(asMap(data)["total"])))
-				} else {
-					rt.Printf("\n%v total\n", formatNumber(asNum(asMap(data)["total"])))
-				}
+				total := formatNumber(asNum(asMap(data)["total"]))
+				rt.Say(Text{EN: fmt.Sprintf("\n%v total\n", total), ZH: fmt.Sprintf("\n共 %v 个\n", total)})
 			}
 			return nil
 		},
@@ -320,10 +308,7 @@ func init() {
 		Endpoints:  []string{"POST /api/admin/invites"},
 		Run: func(_ context.Context, rt *Runtime) error {
 			if rt.Present("days") && rt.Present("expires") {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("--days 和 --expires 最多给一个")
-				}
-				return rt.Errorf("give at most one of --days or --expires")
+				return rt.Fail(Text{EN: "give at most one of --days or --expires", ZH: "--days 和 --expires 最多给一个"})
 			}
 
 			body := bodyBuilder{}
@@ -347,10 +332,7 @@ func init() {
 			case rt.Present("days"):
 				days := rt.Int("days")
 				if days < 1 || days > maxInviteDays {
-					if rt.Session.Lang == "zh" {
-						return rt.Errorf("--days 必须在 1 到 %d 之间", maxInviteDays)
-					}
-					return rt.Errorf("--days must be between 1 and %d", maxInviteDays)
+					return rt.Fail(Text{EN: fmt.Sprintf("--days must be between 1 and %d", maxInviteDays), ZH: fmt.Sprintf("--days 必须在 1 到 %d 之间", maxInviteDays)})
 				}
 				body["expires_at"] = time.Now().AddDate(0, 0, days).UnixMilli()
 			}
@@ -482,11 +464,7 @@ func init() {
 				return err
 			}
 			if total := int(asNum(asMap(data)["total"])); total > len(rows) && !rt.effectiveJSON() {
-				if rt.Session.Lang == "zh" {
-					rt.Printf("仅显示最新的 %d 条，共 %d 条。\n", len(rows), total)
-				} else {
-					rt.Printf("showing the newest %d of %d.\n", len(rows), total)
-				}
+				rt.Say(Text{EN: fmt.Sprintf("showing the newest %d of %d.\n", len(rows), total), ZH: fmt.Sprintf("仅显示最新的 %d 条，共 %d 条。\n", len(rows), total)})
 			}
 			return nil
 		},

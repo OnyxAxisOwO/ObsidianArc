@@ -114,12 +114,20 @@ func readHostKey(path string) (ssh.Signer, bool, error) {
 	return nil, false, nil
 }
 
+// linkHostKey is os.Link. A variable so a test can make the link fail the way a
+// full disk or a filesystem without hard links does.
+var linkHostKey = os.Link
+
 // createHostKey stores data at path only if nothing is there yet, and reports
 // whether it did. The bytes are staged in a temp file and hard-linked into
 // place: the link publishes the whole key or fails because the name is taken,
-// so a crash cannot leave a partial key and two starts cannot both win. A
-// filesystem without hard links falls back to a rename, which keeps the file
-// whole but cannot tell two starts apart.
+// so a crash cannot leave a partial key and two starts cannot both win.
+//
+// A link can also fail for a reason that says nothing about the name, such as a
+// full disk or a filesystem without hard links. The fallback is a rename, which
+// keeps the file whole but would replace a key another start published in the
+// meantime, so it runs only when the name is still empty; otherwise the key
+// already there is the one to keep.
 func createHostKey(path string, data []byte) (bool, error) {
 	staged, err := stageFile(path, data)
 	if err != nil {
@@ -127,11 +135,14 @@ func createHostKey(path string, data []byte) (bool, error) {
 	}
 	defer func() { _ = os.Remove(staged) }()
 
-	err = os.Link(staged, path)
+	err = linkHostKey(staged, path)
 	switch {
 	case err == nil:
 		return true, nil
 	case errors.Is(err, fs.ErrExist):
+		return false, nil
+	}
+	if _, statErr := os.Lstat(path); statErr == nil {
 		return false, nil
 	}
 	if err := os.Rename(staged, path); err != nil {

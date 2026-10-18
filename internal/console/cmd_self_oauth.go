@@ -2,6 +2,7 @@ package console
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 )
@@ -72,11 +73,11 @@ func init() {
 			// Whether there is also a password is the fact that decides
 			// whether any of these may be removed, so it belongs beside the
 			// table rather than inside it.
-			if rt.Session.Lang == "zh" {
-				rt.Printf("\n已设置密码：%s\n", yesNo(asBoolVal(body["has_password"])))
-			} else {
-				rt.Printf("\npassword set: %s\n", yesNo(asBoolVal(body["has_password"])))
-			}
+			hasPassword := yesNo(asBoolVal(body["has_password"]))
+			rt.Say(Text{
+				EN: fmt.Sprintf("\npassword set: %s\n", hasPassword),
+				ZH: fmt.Sprintf("\n已设置密码：%s\n", hasPassword),
+			})
 			return nil
 		},
 	})
@@ -110,12 +111,7 @@ func init() {
 				"/api/auth/oauth/connections/"+url.PathEscape(provider), nil); err != nil {
 				return err
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已解绑。\n")
-			} else {
-				rt.Printf("disconnected.\n")
-			}
-			return nil
+			return rt.confirm(Text{EN: "disconnected.", ZH: "已解绑。"})
 		},
 	})
 }

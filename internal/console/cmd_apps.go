@@ -2,6 +2,7 @@ package console
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -82,11 +83,7 @@ func init() {
 				return nil
 			}
 			issuer := asStr(asMap(data)["issuer"])
-			if rt.Session.Lang == "zh" {
-				rt.Printf("\nissuer：%s\n", issuer)
-			} else {
-				rt.Printf("\nissuer: %s\n", issuer)
-			}
+			rt.Say(Text{EN: fmt.Sprintf("\nissuer: %s\n", issuer), ZH: fmt.Sprintf("\nissuer：%s\n", issuer)})
 			return nil
 		},
 	})
@@ -138,10 +135,7 @@ func init() {
 					{"created", formatMS(app["created_at"])},
 				})
 			}
-			if rt.Session.Lang == "zh" {
-				return rt.Errorf("没有这个应用。")
-			}
-			return rt.Errorf("no such application.")
+			return rt.Fail(Text{EN: "no such application.", ZH: "没有这个应用。"})
 		},
 	})
 
@@ -181,10 +175,7 @@ func init() {
 			name := rt.String("name")
 			redirect := rt.String("redirect")
 			if name == "" || redirect == "" {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("需要 --name 和 --redirect")
-				}
-				return rt.Errorf("--name and --redirect are required")
+				return rt.Fail(Text{EN: "--name and --redirect are required", ZH: "需要 --name 和 --redirect"})
 			}
 
 			body := map[string]any{
@@ -220,12 +211,7 @@ func init() {
 			if rt.effectiveJSON() {
 				return nil
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("\nclient secret 只显示这一次，请立即保存。\n")
-			} else {
-				rt.Printf("\nthe client secret is shown once; save it now.\n")
-			}
-			return nil
+			return rt.confirm(Text{EN: "\nthe client secret is shown once; save it now.", ZH: "\nclient secret 只显示这一次，请立即保存。"})
 		},
 	})
 
@@ -277,10 +263,7 @@ func init() {
 				body["scopes"] = strings.Fields(strings.ReplaceAll(scopes, ",", " "))
 			}
 			if len(body) == 0 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("没有要修改的内容。")
-				}
-				return rt.Errorf("nothing to change.")
+				return rt.Fail(Text{EN: "nothing to change.", ZH: "没有要修改的内容。"})
 			}
 
 			data, _, err := rt.Call(http.MethodPatch,
@@ -337,12 +320,7 @@ func init() {
 			if rt.effectiveJSON() {
 				return nil
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("\n只显示这一次，请立即保存。\n")
-			} else {
-				rt.Printf("\nshown once; save it now.\n")
-			}
-			return nil
+			return rt.confirm(Text{EN: "\nshown once; save it now.", ZH: "\n只显示这一次，请立即保存。"})
 		},
 	})
 
@@ -376,12 +354,7 @@ func init() {
 			if rt.effectiveJSON() {
 				return rt.Fields(nil)
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已删除。\n")
-			} else {
-				rt.Printf("deleted.\n")
-			}
-			return nil
+			return rt.confirm(Text{EN: "deleted.", ZH: "已删除。"})
 		},
 	})
 }

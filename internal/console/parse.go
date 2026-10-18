@@ -1,6 +1,7 @@
 package console
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -309,10 +310,10 @@ func refuseSurplusArgs(cmd *Command, parsed ParsedArgs, lang string) error {
 	if declared > 0 && cmd.Args[declared-1].Rest {
 		return nil
 	}
-	if lang == "zh" {
-		return fmt.Errorf("%s 只接受 %d 个参数，此行给出了 %d 个。含空格的值请加引号。", cmd.Name, declared, len(parsed.Args))
-	}
-	return fmt.Errorf("%s takes %d argument(s), and the line has %d. Quote a value that has spaces.", cmd.Name, declared, len(parsed.Args))
+	return errors.New(Text{
+		EN: fmt.Sprintf("%s takes %d argument(s), and the line has %d. Quote a value that has spaces.", cmd.Name, declared, len(parsed.Args)),
+		ZH: fmt.Sprintf("%s 只接受 %d 个参数，此行给出了 %d 个。含空格的值请加引号。", cmd.Name, declared, len(parsed.Args)),
+	}.For(lang))
 }
 
 // valueKind is what a Flag.Value placeholder says a flag's value must be. The

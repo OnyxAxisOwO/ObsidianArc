@@ -7,16 +7,6 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// shortenSessionStart makes the no-session deadline short for one test. It is
-// read by the server's goroutines, so it is set before the server starts and
-// put back after the cleanups that stop them.
-func shortenSessionStart(t *testing.T, d time.Duration) {
-	t.Helper()
-	previous := sessionStartTimeout
-	sessionStartTimeout = d
-	t.Cleanup(func() { sessionStartTimeout = previous })
-}
-
 // dialAs authenticates without the cleanup dialInsecure adds, so a test can
 // watch the connection itself end.
 func dialAs(t *testing.T, srv *Server, username, password string) (*ssh.Client, error) {
@@ -48,9 +38,8 @@ func endsWithin(client *ssh.Client, within time.Duration) bool {
 // goroutine and its descriptor for as long as it likes. Nothing timed that out:
 // the idle timeout only starts once a shell does.
 func TestAnAuthenticatedConnectionThatOpensNoSessionEnds(t *testing.T) {
-	shortenSessionStart(t, 100*time.Millisecond)
 	accounts := map[string]testAccount{"admin": {password: "s3cret-pass", account: adminUser("admin")}}
-	srv := startTestServer(t, Config{Console: newTestConsole(t), Authenticate: fakeAuthenticate(accounts)})
+	srv := startTestServer(t, Config{SessionStartTimeout: 100 * time.Millisecond, Console: newTestConsole(t), Authenticate: fakeAuthenticate(accounts)})
 
 	client, err := dialAs(t, srv, "admin", "s3cret-pass")
 	if err != nil {
@@ -65,9 +54,8 @@ func TestAnAuthenticatedConnectionThatOpensNoSessionEnds(t *testing.T) {
 // the console's slots until its connection goes, so an account's four of them
 // could keep every administrator out.
 func TestASessionThatNeverStartsEnds(t *testing.T) {
-	shortenSessionStart(t, 100*time.Millisecond)
 	accounts := map[string]testAccount{"admin": {password: "s3cret-pass", account: adminUser("admin")}}
-	srv := startTestServer(t, Config{Console: newTestConsole(t), Authenticate: fakeAuthenticate(accounts)})
+	srv := startTestServer(t, Config{SessionStartTimeout: 100 * time.Millisecond, Console: newTestConsole(t), Authenticate: fakeAuthenticate(accounts)})
 
 	client, err := dialAs(t, srv, "admin", "s3cret-pass")
 	if err != nil {

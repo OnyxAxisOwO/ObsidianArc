@@ -79,20 +79,12 @@ func init() {
 				// The branch below never reads an id, so one given beside --others would be
 				// dropped without a word. The line is refused instead.
 				if rt.NArg() > 0 {
-					if rt.Session.Lang == "zh" {
-						return rt.Errorf("会话 id 与 --others 只能给一个")
-					}
-					return rt.Errorf("give a session id or --others, not both")
+					return rt.Fail(Text{EN: "give a session id or --others, not both", ZH: "会话 id 与 --others 只能给一个"})
 				}
 				if _, _, err := rt.Call(http.MethodPost, "/api/profile/sessions/revoke-others", nil); err != nil {
 					return err
 				}
-				if rt.Session.Lang == "zh" {
-					rt.Printf("已退出其他设备。\n")
-				} else {
-					rt.Printf("signed out of your other devices.\n")
-				}
-				return nil
+				return rt.confirm(Text{EN: "signed out of your other devices.", ZH: "已退出其他设备。"})
 			}
 			sessionID, err := requireRef(rt, "session id (or --others)")
 			if err != nil {
@@ -101,12 +93,7 @@ func init() {
 			if _, _, err := rt.Call(http.MethodDelete, "/api/profile/sessions/"+url.PathEscape(sessionID), nil); err != nil {
 				return err
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已退出该设备。\n")
-			} else {
-				rt.Printf("signed out of that device.\n")
-			}
-			return nil
+			return rt.confirm(Text{EN: "signed out of that device.", ZH: "已退出该设备。"})
 		},
 	})
 }

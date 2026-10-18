@@ -120,11 +120,10 @@ type doneFrame struct {
 	Lang string `json:"lang"`
 }
 
-// sseOut adapts an io.Writer expected by Execute to the SSE wire shape:
-// every Write becomes one `event: out` frame, flushed immediately by
-// httpx.SSE.Event itself — which is also what makes cancelling the fetch
-// visible mid-command for `watch`, the one command whose Run writes more
-// than once.
+// sseOut adapts the io.Writer Execute writes to into the SSE wire shape: every
+// Write becomes one `event: out` frame, flushed at once by httpx.SSE.Event.
+// Execute buffers a line's output, so a frame is a chunk of it, and a watch
+// flushes after each run, which is what lets its runs appear as they end.
 type sseOut struct{ sse *httpx.SSE }
 
 func (o sseOut) Write(p []byte) (int, error) {

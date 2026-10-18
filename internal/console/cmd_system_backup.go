@@ -176,12 +176,7 @@ func init() {
 			if _, _, err := rt.Call(http.MethodPost, "/api/admin/backup/test", map[string]any{}); err != nil {
 				return err
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("存储连接测试成功。\n")
-			} else {
-				rt.Printf("backup storage test passed.\n")
-			}
-			return nil
+			return rt.confirm(Text{EN: "backup storage test passed.", ZH: "存储连接测试成功。"})
 		},
 	})
 
