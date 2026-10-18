@@ -2784,12 +2784,20 @@
   white-space: nowrap;
 }
 
-.oa-event-time {
+.oa-event-time,
+/* The audit log's timestamp is the security log's, copied when it was built;
+   one rule keeps the two logs reading alike. */
+.oa-audit-time {
   flex: none;
-  margin-left: auto;
   color: var(--ai-text-secondary);
   font-size: 11.5px;
   font-variant-numeric: tabular-nums;
+}
+
+/* Only the security log needs the push: nothing in its head takes the free
+   space, whereas the audit row's body is flex: 1 and already does. */
+.oa-event-time {
+  margin-left: auto;
 }
 
 .oa-event-meta {
@@ -2952,13 +2960,6 @@
   flex: none;
   align-items: baseline;
   gap: 14px;
-}
-
-.oa-audit-time {
-  flex: none;
-  color: var(--ai-text-secondary);
-  font-size: 11.5px;
-  font-variant-numeric: tabular-nums;
 }
 
 .oa-audit-ip {
@@ -3738,13 +3739,18 @@
   transition: border-color 0.15s ease, background-color 0.15s ease, color 0.15s ease;
 }
 
-.oa-reference-dropzone:hover:not(.disabled) {
+.oa-reference-dropzone:hover:not(.disabled),
+/* The tile is the same "add a reference" control once a thumbnail exists, so
+   it answers hover and a file over it exactly as the empty-state card does.
+   It is a button, hence :disabled where the card, a div, needs a class. */
+.oa-reference-add-tile:hover:not(:disabled) {
   border-color: var(--ai-text-secondary);
   background: var(--ai-field-bg-hover);
   color: var(--ai-text);
 }
 
-.oa-reference-dropzone.dragging {
+.oa-reference-dropzone.dragging,
+.oa-reference-add-tile.dragging {
   border-color: var(--ai-primary);
   background: var(--ai-surface-container);
   color: var(--ai-primary);
@@ -3884,18 +3890,6 @@
   cursor: pointer;
   flex-shrink: 0;
   transition: border-color 0.15s ease, background-color 0.15s ease, color 0.15s ease;
-}
-
-.oa-reference-add-tile:hover:not(:disabled) {
-  border-color: var(--ai-text-secondary);
-  background: var(--ai-field-bg-hover);
-  color: var(--ai-text);
-}
-
-.oa-reference-add-tile.dragging {
-  border-color: var(--ai-primary);
-  background: var(--ai-surface-container);
-  color: var(--ai-primary);
 }
 
 .oa-reference-add-tile:disabled {
@@ -4191,7 +4185,11 @@
   gap: 2px;
 }
 
-.oa-uptime-banner-title {
+.oa-uptime-banner-title,
+/* The leaderboard's own-standing summary is the same block as the uptime
+   banner — a heading over one line of secondary text — so it shares the
+   heading rather than keeping a copy that could drift from it. */
+.oa-board-me-title {
   font-size: 14px;
   font-weight: 500;
   color: var(--ai-text);
@@ -4480,12 +4478,6 @@
   flex-direction: column;
   gap: 3px;
   min-width: 0;
-}
-
-.oa-board-me-title {
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--ai-text);
 }
 
 .oa-board-list {
@@ -4912,8 +4904,9 @@
   border-radius: 18px;
   background: var(--ai-surface-card);
   box-shadow: var(--ai-shadow-md);
-  -webkit-backdrop-filter: blur(20px) saturate(1.6);
-  backdrop-filter: blur(20px) saturate(1.6);
+  /* No backdrop-filter: the fill is opaque, so a blur behind it is never
+     seen and only costs a compositing layer — and the bar has no fade during
+     which it could show through. */
 }
 
 .oa-bulk-row {

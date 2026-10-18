@@ -266,7 +266,9 @@
 /* Installing a plugin by dragging its package onto the page. The card is the
    discoverable half — a click chooses a file — and the overlay is what the
    window shows while a file is over it, so a drop a little off the card is
-   still a drop. */
+   still a drop. Filled rather than dashed like the image-reference drop
+   zones: it is a button first, with a title and a hint, and a fill is what
+   marks a control here. */
 .oa-plugin-dropcard { display: flex; flex-direction: column; align-items: center; gap: 6px; width: 100%; padding: 22px 16px; margin-bottom: 18px; border: none; outline: none; border-radius: 16px; background: var(--ai-field-bg); color: var(--ai-text-secondary); cursor: pointer; font: inherit; text-align: center; transition: background-color .15s ease, color .15s ease; }
 .oa-plugin-dropcard:hover:not(:disabled) { background: var(--ai-field-bg-hover); color: var(--ai-text); }
 .oa-plugin-dropcard:focus-visible { box-shadow: 0 0 0 3px var(--ai-focus-shadow); }
