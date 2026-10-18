@@ -94,21 +94,43 @@ const NEW_ACCOUNT = makeAccount({
 });
 
 
-// A provider sign-in that carries a token or a proof leaves as a form post.
-// jsdom does not navigate on submit, so the submit is caught and what the
-// form would have sent is kept for the test to read.
+// The address the stubbed start answers with, so a test can see the page left
+// for it by its own navigation.
+const PROVIDER_AUTHORIZE = 'https://github.com/login/oauth/authorize?state=s';
+
+// A provider sign-in that carries a token or a proof is a JSON post the page
+// answers by navigating itself — never a form, whose redirect to the provider
+// Chrome blocks under the shell's form-action 'self'. The post is caught at
+// fetch, what it sent is kept for the test to read, and no form is ever
+// submitted.
 function stubFormPost(): {
-  posts: { method: string; action: string; fields: Record<string, string> }[];
+  posts: { method: string; action: string; fields: Record<string, unknown> }[];
   restore: () => void;
 } {
-  const posts: { method: string; action: string; fields: Record<string, string> }[] = [];
-  const spy = vi.spyOn(HTMLFormElement.prototype, 'submit').mockImplementation(function (this: HTMLFormElement) {
-    const fields: Record<string, string> = {};
-    for (const input of Array.from(this.querySelectorAll('input'))) fields[input.name] = input.value;
-    posts.push({ method: this.method, action: new URL(this.action, 'http://localhost').pathname, fields });
-    this.remove();
+  const posts: { method: string; action: string; fields: Record<string, unknown> }[] = [];
+  const submit = vi.spyOn(HTMLFormElement.prototype, 'submit').mockImplementation(() => {
+    throw new Error('a provider sign-in must not be a form submission');
   });
-  return { posts, restore: () => spy.mockRestore() };
+  const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const path = String(input);
+    if (!path.startsWith('/api/auth/oauth/start/')) throw new Error(`unexpected request to ${path}`);
+    posts.push({
+      method: (init?.method ?? 'GET').toLowerCase(),
+      action: path,
+      fields: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>,
+    });
+    return new Response(JSON.stringify({ redirect: PROVIDER_AUTHORIZE }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  });
+  return {
+    posts,
+    restore: () => {
+      submit.mockRestore();
+      fetchSpy.mockRestore();
+    },
+  };
 }
 
 describe('password sign-in errors', () => {
@@ -1309,13 +1331,14 @@ describe('registering with proof-of-work (PoW)', () => {
       providerLink().click();
       await settle();
 
-      // A form post, so the proof travels in the body and not the address.
-      expect(assign).not.toHaveBeenCalled();
+      // A post, so the proof travels in the body and not the address; the
+      // page then leaves for the provider by its own navigation.
       expect(posts).toHaveLength(1);
       expect(posts[0]!.method).toBe('post');
       expect(posts[0]!.action).toBe('/api/auth/oauth/start/github');
-      expect(posts[0]!.fields['register']).toBe('1');
-      expect(JSON.parse(posts[0]!.fields['pow']!)).toMatchObject({ nonce: 3, signature: 'test-sig' });
+      expect(posts[0]!.fields['register']).toBe(true);
+      expect(posts[0]!.fields['pow']).toMatchObject({ nonce: 3, signature: 'test-sig' });
+      expect(assign).toHaveBeenCalledExactlyOnceWith(PROVIDER_AUTHORIZE);
     } finally {
       restore();
       restoreLocation();
@@ -1331,15 +1354,17 @@ describe('registering with proof-of-work (PoW)', () => {
     route.path = '/register';
     await mount(AuthView, { mode: 'register' });
 
+    const { restore: restoreLocation } = stubLocation();
     const { posts, restore } = stubFormPost();
     try {
       providerLink().click();
       await settle();
 
       expect(fetchSpy).toHaveBeenCalledTimes(2);
-      expect(JSON.parse(posts[0]!.fields['pow']!)).toMatchObject({ signature: 'fresh-sig' });
+      expect(posts[0]!.fields['pow']).toMatchObject({ signature: 'fresh-sig' });
     } finally {
       restore();
+      restoreLocation();
     }
   });
 
@@ -1371,6 +1396,7 @@ describe('registering with proof-of-work (PoW)', () => {
     route.path = '/register';
     await mount(AuthView, { mode: 'register' });
 
+    const { restore: restoreLocation } = stubLocation();
     const { posts, restore } = stubFormPost();
     try {
       providerLink().click();
@@ -1380,6 +1406,28 @@ describe('registering with proof-of-work (PoW)', () => {
       expect(posts).toHaveLength(1);
     } finally {
       restore();
+      restoreLocation();
+    }
+  });
+
+  // A start the server cannot read is said on the page, which has not left.
+  it('shows the refusal when the start itself is refused', async () => {
+    site.value = { ...siteInfo.value, pow_on_signup: true, oauth: [{ id: 'github', name: 'GitHub' }] };
+    vi.spyOn(authApi, 'fetchPoWChallenge')
+      .mockResolvedValue(await challengeWithAnswer(Math.floor(Date.now() / 1000) + 300, 'test-sig'));
+    vi.spyOn(oauthApi, 'startSignIn').mockRejectedValue(new ApiError(0, 'network', t('connectionFailed')));
+    route.path = '/register';
+    await mount(AuthView, { mode: 'register' });
+
+    const { assign, restore: restoreLocation } = stubLocation();
+    try {
+      providerLink().click();
+      await settle();
+
+      expect(assign).not.toHaveBeenCalled();
+      expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('connectionFailed'));
+    } finally {
+      restoreLocation();
     }
   });
 });

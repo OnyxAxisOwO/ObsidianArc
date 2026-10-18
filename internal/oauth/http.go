@@ -25,7 +25,9 @@ import (
 // browser leaves for the provider and comes back, and both ends of that trip
 // have to be something a person can land on. So these two answer with a
 // redirect even when they fail — a page that says what went wrong in the
-// reader's own language, rather than a JSON error rendered raw in a tab.
+// reader's own language, rather than a JSON error rendered raw in a tab. The
+// start's post is the one exception in form, not in substance: it answers with
+// the same address as JSON, and the page goes there itself (see leave).
 //
 // The other two are API calls like any other, and answer like them.
 
@@ -71,10 +73,14 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	// Public, and necessarily so: nobody signing in has a session yet, and
 	// the provider sends the browser back with nothing but the code.
 	mux.HandleFunc("GET /api/auth/oauth/start/{provider}", h.start)
-	// The same door as a form post, which is how the sign-in page goes through
-	// it now: the challenge token and the proof are one-use, but in a query
-	// string they are written into proxy logs, history and the Referer. The GET
-	// stays for a page still running an older bundle, and for the plain link.
+	// The same door as a JSON post, which is how the sign-in page goes through
+	// it when it carries a challenge token or a proof: both are one-use, but in
+	// a query string they are written into proxy logs, history and the Referer.
+	// The post answers with the address to leave for rather than a redirect,
+	// because the shell's CSP says form-action 'self' and Chrome holds a form's
+	// redirects to it, so a form posted here could never reach the provider.
+	// The GET stays for a page still running an older bundle, and for the plain
+	// link.
 	mux.HandleFunc("POST /api/auth/oauth/start/{provider}", h.start)
 	mux.HandleFunc("GET /api/auth/oauth/callback/{provider}", h.callback)
 
@@ -159,9 +165,9 @@ func proofFrom(raw string) *pow.Solution {
 	return &solution
 }
 
-// startFormBytes bounds the sign-in form: four short fields, the longest a
+// startPostBytes bounds the sign-in post: four short fields, the longest a
 // proof-of-work solution of a few hundred bytes.
-const startFormBytes = 16 * 1024
+const startPostBytes = 16 * 1024
 
 func (h *Handlers) start(w http.ResponseWriter, r *http.Request) {
 	provider := ByID(r.PathValue("provider"))
@@ -170,17 +176,30 @@ func (h *Handlers) start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A form post carries its fields in the body and a navigation in the
-	// query; each reads only its own, so a post cannot be steered by a query
-	// string glued onto its action.
+	// A post carries its fields in the body and a navigation in the query;
+	// each reads only its own, so a post cannot be steered by a query string
+	// glued onto its address.
 	param := r.URL.Query().Get
 	if r.Method == http.MethodPost {
-		r.Body = http.MaxBytesReader(w, r.Body, startFormBytes)
-		if err := r.ParseForm(); err != nil {
-			httpx.WriteError(w, r, httpx.BadRequest("The sign-in form could not be read."))
+		var body struct {
+			Next      string          `json:"next"`
+			Turnstile string          `json:"turnstile"`
+			PoW       json.RawMessage `json:"pow"`
+			Register  bool            `json:"register"`
+		}
+		if err := httpx.DecodeJSON(w, r, &body, startPostBytes); err != nil {
+			httpx.WriteError(w, r, err)
 			return
 		}
-		param = r.PostForm.Get
+		fields := map[string]string{
+			"next":      body.Next,
+			"turnstile": body.Turnstile,
+			"pow":       string(body.PoW),
+		}
+		if body.Register {
+			fields["register"] = "1"
+		}
+		param = func(key string) string { return fields[key] }
 	}
 
 	// The link this navigation used to start is retired, and refused rather than
@@ -251,16 +270,20 @@ func (h *Handlers) start(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, back, "failed")
 		return
 	}
-	http.Redirect(w, r, target, redirectStatus(r))
+	h.leave(w, r, target)
 }
 
-// redirectStatus is 303 for the form post, which says in so many words that
-// the browser follows with a GET, and the 302 a navigation always had.
-func redirectStatus(r *http.Request) int {
+// leave sends the browser on to target: a 302 for a navigation, and for the
+// page's post an answer naming the address, which the page then navigates to
+// itself. A form post answered with a redirect off this site is blocked by the
+// shell's form-action 'self' in Chrome; a navigation page script makes is not
+// a form's, and nothing in the policy holds it.
+func (h *Handlers) leave(w http.ResponseWriter, r *http.Request, target string) {
 	if r.Method == http.MethodPost {
-		return http.StatusSeeOther
+		_ = httpx.WriteJSON(w, http.StatusOK, map[string]string{"redirect": target})
+		return
 	}
-	return http.StatusFound
+	http.Redirect(w, r, target, http.StatusFound)
 }
 
 // connect starts connecting a provider to the account that asks, and answers
@@ -755,7 +778,7 @@ func (h *Handlers) failWithReason(w http.ResponseWriter, r *http.Request, back, 
 	if reason != "" {
 		u = withQuery(u, "ban_reason", reason)
 	}
-	http.Redirect(w, r, u, redirectStatus(r))
+	h.leave(w, r, u)
 }
 
 // signInBack is the page a sign-in that failed returns to: the page it was

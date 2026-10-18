@@ -2,6 +2,7 @@ package oauth
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -157,18 +158,51 @@ func TestAProviderSignUpThroughTheRegisterPageStillOpensAnAccount(t *testing.T) 
 	}
 }
 
-// postStart sends the sign-in page's form, the way the page now goes through
-// the door: the one-use token and proof in the body, not the address.
-func postStart(mux *http.ServeMux, path string, form url.Values) *httptest.ResponseRecorder {
-	request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+// postStart sends what the sign-in page sends when it carries a challenge:
+// the one-use token and proof in a JSON body, not the address.
+func postStart(mux *http.ServeMux, path string, body map[string]any) *httptest.ResponseRecorder {
+	encoded, _ := json.Marshal(body)
+	request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(string(encoded)))
+	request.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
 	mux.ServeHTTP(recorder, request)
 	return recorder
 }
 
-// The register page's form post passes the challenge from its body and opens
-// the account, exactly as the query-string navigation does.
+// leftFor reads where a posted start told the page to go. The answer must not
+// be a redirect: the shell's CSP says form-action 'self', and Chrome blocks a
+// form whose redirect leaves the site, so the page navigates by itself.
+func leftFor(t *testing.T, begun *httptest.ResponseRecorder) string {
+	t.Helper()
+	if begun.Code != http.StatusOK || begun.Header().Get("Location") != "" {
+		t.Fatalf("start = %d (Location %q) %s, want a 200 naming the address, never a redirect",
+			begun.Code, begun.Header().Get("Location"), begun.Body.String())
+	}
+	var answer struct {
+		Redirect string `json:"redirect"`
+	}
+	if err := json.Unmarshal(begun.Body.Bytes(), &answer); err != nil || answer.Redirect == "" {
+		t.Fatalf("start answered %q, want {redirect}", begun.Body.String())
+	}
+	return answer.Redirect
+}
+
+// The navigation door keeps its 302: a GET is a navigation, not a form, so
+// form-action does not apply to it, and an older page still uses it.
+func TestTheNavigatedStartStillRedirects(t *testing.T) {
+	f := newFixture(t)
+	populate(t, f)
+	f.configure(t, "github")
+	_, mux := handlers(t, f)
+
+	begun := get(mux, "/api/auth/oauth/start/github", nil, nil)
+	if begun.Code != http.StatusFound || begun.Header().Get("Location") == "" {
+		t.Fatalf("start = %d (Location %q), want a 302 to the provider", begun.Code, begun.Header().Get("Location"))
+	}
+}
+
+// The register page's post passes the challenge from its body and opens the
+// account, exactly as the query-string navigation does.
 func TestAProviderSignUpPostedFromTheRegisterPageOpensAnAccount(t *testing.T) {
 	f := newFixture(t)
 	populate(t, f)
@@ -177,15 +211,12 @@ func TestAProviderSignUpPostedFromTheRegisterPageOpensAnAccount(t *testing.T) {
 	h, mux := handlers(t, f)
 	h.SignupChallenge = (&signupSwitch{on: true}).gate()
 
-	begun := postStart(mux, "/api/auth/oauth/start/github", url.Values{
-		"register": {"1"}, "turnstile": {"good"}, "next": {"/settings"},
+	begun := postStart(mux, "/api/auth/oauth/start/github", map[string]any{
+		"register": true, "turnstile": "good", "next": "/settings",
 	})
-	if begun.Code != http.StatusSeeOther {
-		t.Fatalf("start = %d %s, want a 303 the browser follows with a GET", begun.Code, begun.Body.String())
-	}
-	target, err := url.Parse(begun.Header().Get("Location"))
+	target, err := url.Parse(leftFor(t, begun))
 	if err != nil || target.Query().Get("state") == "" {
-		t.Fatalf("start sent the browser to %q", begun.Header().Get("Location"))
+		t.Fatalf("start sent the browser to %q", target)
 	}
 	back := get(mux, "/api/auth/oauth/callback/github?code=the-code&state="+target.Query().Get("state"),
 		begun.Result().Cookies(), nil)
@@ -197,9 +228,9 @@ func TestAProviderSignUpPostedFromTheRegisterPageOpensAnAccount(t *testing.T) {
 	}
 }
 
-// A post reads only its body. A token glued onto the form's address is not
-// read, so the challenge is failed and the browser goes back to the page it
-// came from, with a 303.
+// A post reads only its body. A token glued onto the post's address is not
+// read, so the challenge is failed and the page is sent back to where it came
+// from, still by an answer rather than a redirect.
 func TestAPostedStartDoesNotReadTheQueryString(t *testing.T) {
 	f := newFixture(t)
 	populate(t, f)
@@ -207,13 +238,10 @@ func TestAPostedStartDoesNotReadTheQueryString(t *testing.T) {
 	h, mux := handlers(t, f)
 	h.SignupChallenge = (&signupSwitch{on: true}).gate()
 
-	begun := postStart(mux, "/api/auth/oauth/start/github?turnstile=good", url.Values{
-		"register": {"1"}, "turnstile": {"bad"},
+	begun := postStart(mux, "/api/auth/oauth/start/github?turnstile=good", map[string]any{
+		"register": true, "turnstile": "bad",
 	})
-	if begun.Code != http.StatusSeeOther {
-		t.Fatalf("start = %d, want 303", begun.Code)
-	}
-	if location := begun.Header().Get("Location"); !strings.Contains(location, "oauth_error=challenge_failed") ||
+	if location := leftFor(t, begun); !strings.Contains(location, "oauth_error=challenge_failed") ||
 		!strings.HasPrefix(location, "/register") {
 		t.Fatalf("start sent the browser to %q, want the register page told the challenge failed", location)
 	}

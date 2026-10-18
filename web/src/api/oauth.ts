@@ -3,11 +3,11 @@ import { api } from './client';
 
 // Signing in with an account somebody already holds at GitHub or Google.
 //
-// The sign-in itself is not a request from here. It is a navigation: the
-// browser leaves for the provider and comes back to a callback that sets the
-// session cookie, so there is nothing to fetch and nothing to await. What
-// this module has is the address to leave for, and the two calls the settings
-// screen makes about connections that already exist.
+// The sign-in itself is a navigation: the browser leaves for the provider and
+// comes back to a callback that sets the session cookie. What this module has
+// is the address to leave for (or, when a one-use token rides along, the
+// request that answers with it), and the calls the settings screen makes about
+// connections that already exist.
 
 /** One provider account linked to this account. */
 export interface OAuthConnection {
@@ -70,15 +70,21 @@ export function signInURL(
 }
 
 /**
- * Starts a sign-in as a form post rather than a navigation to signInURL.
+ * Starts a sign-in as a request rather than a navigation to signInURL, and
+ * then leaves for the address the server answers with.
  *
  * Used when the request carries a challenge token or a proof of work: both
  * are one-use, but in an address they land in proxy logs, the browser's
- * history and the Referer the provider's page is sent. A form post keeps them
- * in the body, and the server answers it with the same redirect. The plain
- * link stays for a sign-in that carries neither.
+ * history and the Referer the provider's page is sent, so they travel in the
+ * body. Not as a form post: the shell's CSP says form-action 'self', and
+ * Chrome holds every redirect of a form's navigation to it, so a form whose
+ * answer redirects to the provider never leaves the page. The navigation made
+ * here is the page's own, which form-action does not govern. A refusal at the
+ * door is an address too (back to this page, with the reason), so the page is
+ * left the same way whatever the door said. The plain link stays for a
+ * sign-in that carries neither.
  */
-export function submitSignIn(
+export async function startSignIn(
   provider: string,
   options: {
     next?: string;
@@ -86,25 +92,17 @@ export function submitSignIn(
     pow?: PoWSolution;
     register?: boolean;
   } = {},
-): void {
-  const form = document.createElement('form');
-  form.method = 'POST';
-  form.action = `/api/auth/oauth/start/${encodeURIComponent(provider)}`;
-  form.hidden = true;
-  const fields: Record<string, string> = {};
-  if (options.next) fields['next'] = options.next;
-  if (options.turnstile) fields['turnstile'] = options.turnstile;
-  if (options.pow) fields['pow'] = JSON.stringify(options.pow);
-  if (options.register) fields['register'] = '1';
-  for (const [name, value] of Object.entries(fields)) {
-    const input = document.createElement('input');
-    input.type = 'hidden';
-    input.name = name;
-    input.value = value;
-    form.append(input);
-  }
-  document.body.append(form);
-  form.submit();
+): Promise<void> {
+  const { redirect } = await api.post<{ redirect: string }>(
+    `/api/auth/oauth/start/${encodeURIComponent(provider)}`,
+    {
+      ...(options.next ? { next: options.next } : {}),
+      ...(options.turnstile ? { turnstile: options.turnstile } : {}),
+      ...(options.pow ? { pow: options.pow } : {}),
+      ...(options.register ? { register: true } : {}),
+    },
+  );
+  window.location.assign(redirect);
 }
 
 /**

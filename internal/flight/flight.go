@@ -1,8 +1,16 @@
+// Copyright 2013 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+//
+// This file is adapted from golang.org/x/sync/singleflight, so it keeps that
+// package's notice and its LICENSE beside it, which the BSD licence asks of
+// any copy of the source.
+
 // Package flight merges concurrent calls for the same key into one: the first
 // caller runs the function and everyone who arrives while it runs gets its
 // result.
 //
-// It exists so that the four places that need this do not need a fifth direct
+// It exists so that the places that need this do not need a fifth direct
 // dependency for it. The behaviour is golang.org/x/sync/singleflight's, on
 // purpose and in detail, because the callers were written against that:
 // results and errors are shared, the key is free again the moment the call

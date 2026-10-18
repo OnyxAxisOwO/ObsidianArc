@@ -75,6 +75,33 @@ func TestAProviderSignUpThroughTheRegisterPageCarriesItsProofOfWork(t *testing.T
 	}
 }
 
+// The register page posts its proof as a JSON object in the body; that is the
+// same pass as the one in the address, and opens the account.
+func TestAProofPostedAsJSONOpensTheAccount(t *testing.T) {
+	f := newFixture(t)
+	populate(t, f)
+	withProofOfWork(t, f)
+	f.configure(t, "github")
+	stubGitHubAs(t, "4218", "octocat")
+	_, mux := handlers(t, f)
+
+	begun := postStart(mux, "/api/auth/oauth/start/github", map[string]any{
+		"register": true, "pow": json.RawMessage(proofQuery(t, f)),
+	})
+	target, err := url.Parse(leftFor(t, begun))
+	if err != nil || target.Query().Get("state") == "" {
+		t.Fatalf("start sent the browser to %q, want the provider", target)
+	}
+	back := get(mux, "/api/auth/oauth/callback/github?code=the-code&state="+target.Query().Get("state"),
+		begun.Result().Cookies(), nil)
+	if location := back.Header().Get("Location"); location != "/" {
+		t.Fatalf("callback = %q, want the sign-in to finish", location)
+	}
+	if total := accountCount(t, f); total != 2 {
+		t.Errorf("accounts = %d, want the new one opened", total)
+	}
+}
+
 // A start that cannot show a proof that answers the challenge is refused at the
 // door: the browser goes back to the register page with no provider round trip,
 // and no sign-in is kept.

@@ -7,7 +7,9 @@ import { settle } from './helpers';
 
 // A project the rail could not read says so in the reader's words. The
 // server's sentence for its own fault is English written for its log, and a
-// 5xx used to reach the chat's flash as written.
+// 5xx used to reach the chat's flash as written. A session that ended has a
+// sentence of its own, and a refusal the server worded for the reader is shown
+// as written.
 
 let failure: unknown = null;
 
@@ -63,6 +65,12 @@ describe('a project that could not be read', () => {
     failure = new TypeError('Failed to fetch');
     await openProject();
     expect(flash.value).toBe(t('failed'));
+  });
+
+  it('shows the session-ended sentence once the session has gone', async () => {
+    failure = new ApiError(401, 'session_required', 'Sign in again.');
+    await openProject();
+    expect(flash.value).toBe(t('errSessionEnded'));
   });
 
   it('keeps the server’s sentence for a refusal the reader can act on', async () => {
