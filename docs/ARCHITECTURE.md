@@ -226,9 +226,20 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
 | Binary (SQLite + embedded SPA) | < 30 MB | 27.10 MB (23.40 MB `-tags nosqlite`, Linux amd64, Go 1.27.2); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 205.41 kB to open the chat (179.16 JS + 26.25 CSS), sent by the server at gzip's best level; the build's gzip column reads 206.10 kB (179.46 JS + 26.65 CSS) |
+| Frontend, on the wire | < 135 kB | 202.10 kB to open the chat (179.23 JS + 22.87 CSS), sent by the server at gzip's best level; the build's gzip column reads 202.72 kB (179.52 JS + 23.20 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-10-18 (UTC), after the front page's and the landing
+page's stylesheets moved out of the entry: `_front.scss` and the new
+`_landing.scss` are imported by their views, so they arrive as
+`FrontPage-*.css` and `LandingView-*.css` with those chunks. 202.10 kB to open
+the chat (179.23 JS + 22.87 CSS), down 3.31 kB; the build's estimate is
+202.72 kB, and the bundle test's budget is ratcheted from 207 kB to 204 kB.
+The front page is now 4.13 kB plus 3.89 kB of stylesheet, which is
+0.57 kB more in all for its visitors than when the sheet rode in the entry,
+and the landing page 3.12 kB plus 0.62 kB. Everything else unchanged. The
+binary was not rebuilt for this; its figure is the one below.
 
 Remeasured on 2026-10-18 (UTC), after a second round of stylesheet merges:
 the three identical entrance keyframes are one (`oaRise`), the easing curves
@@ -708,9 +719,11 @@ transport — is also admin-only code, and all 8.35 kB of its frontend landed in
 chunk, which nobody who cannot open it ever fetches. What reached the first
 paint is the two things this project deliberately does not split: its English
 strings, because `en` in `i18n.ts` is the type that makes the Chinese
-dictionary provably complete, and its stylesheet, because there is one. Those
+dictionary provably complete, and its stylesheet, because there was one then. Those
 are 0.97 kB of JS and 0.86 kB of CSS. Splitting either is the careful job named below, not
-something to do while adding a screen.
+something to do while adding a screen. Both have been split since: the
+backoffice's English and its stylesheet now travel in its chunk, and so do the
+terminal's, the front page's and the landing page's stylesheets.
 
 The console had added 1.07 MB, all of it `golang.org/x/crypto/ssh`. That is a
 package of a module `go.mod` already required for Argon2id, so it adds no
@@ -734,18 +747,18 @@ The six pieces most people never need are split off: the administration
 backoffice (with its own English and its own stylesheet), the terminal (with
 its stylesheet), the Chinese dictionary, the LaTeX renderer, the public front
 page, and the landing page (the intro or trial a signed-out visitor sees on an
-instance that chose one).
+instance that chose one), each of those last two with its stylesheet.
 What each reader actually downloads, as the server sends it (2026-10-18):
 
 | | gzipped |
 | --- | --- |
-| English, not an administrator | 204.97 kB |
-| Chinese, not an administrator | 256.16 kB |
-| …and a conversation containing a formula | 259.95 kB |
-| Chinese administrator, backoffice open | 441.99 kB |
-| Anybody, once they open the terminal | +9.68 kB |
-| A visitor to an instance whose front door is the front page | +4.14 kB |
-| A signed-out visitor to an instance whose front door is the intro or trial | +3.12 kB |
+| English, not an administrator | 202.10 kB |
+| Chinese, not an administrator | 253.70 kB |
+| …and a conversation containing a formula | 257.49 kB |
+| Chinese administrator, backoffice open | 439.45 kB |
+| Anybody, once they open the terminal | +9.72 kB |
+| A visitor to an instance whose front door is the front page | +8.02 kB |
+| A signed-out visitor to an instance whose front door is the intro or trial | +3.74 kB |
 
 Route-level splitting would shave the first paint further and is deliberately
 switched off for everything but the backoffice and the terminal: /settings, /keys, /usage and
@@ -758,8 +771,16 @@ to the backoffice's stylesheet (`styles/admin.scss`, emitted as
 renders, and `test/bundle.test.ts` checks every one against the built output.
 `_surfaces.scss` stays in the entry, because it carries the shared design
 system — panels, fields, tables, the About screen. The terminal's rules arrive
-with the terminal in `TerminalPanel-*.css`; the front page's are still in the
-entry.
+with the terminal in `TerminalPanel-*.css`, the front page's in
+`FrontPage-*.css` and the landing page's in `LandingView-*.css`. Each of those
+three is a stylesheet the browser fetches after the chunk's script is asked
+for and before it runs, so the reader who opens the terminal, or a signed-out
+visitor whose front door is the front page or the intro or trial, waits one
+more serial round trip before that screen draws. That is the trade the
+backoffice made first: the few readers who open such a screen pay a round
+trip so that every first paint stops carrying its rules. The one rule the front page and the
+landing page share, `.oa-landing-brand`, stays in the entry, because neither
+chunk can reach the other's stylesheet.
 
 These are transferred sizes. The server compresses its own responses, because
 the deployment this document assumes has nothing in front of it to do that

@@ -998,23 +998,9 @@ body.oa-resizing * {
 
 /* --- the front door ---------------------------------------------------------- */
 
-.oa-landing {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-  height: 100%;
-  min-height: 0;
-  padding: 18px 22px 22px;
-  box-sizing: border-box;
-}
-
-.oa-landing-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
+/* The landing page's own rules are in _landing.scss, which LandingView.vue
+   imports. The brand stays here because the front page draws it too, and
+   the two pages are separate chunks. */
 .oa-landing-brand {
   display: flex;
   align-items: center;
@@ -1038,136 +1024,6 @@ body.oa-resizing * {
 
 .oa-landing-brand:focus-visible {
   @include mixins.focus-ring;
-}
-
-.oa-landing-body {
-  display: flex;
-  flex: 1;
-  min-height: 0;
-  justify-content: center;
-}
-
-/* The operator's own page. Their markup lands here, so this only sets the
-   measure and the rhythm and leaves the rest alone. */
-.oa-landing-intro {
-  width: min(720px, 100%);
-  overflow-y: auto;
-  font-size: 14px;
-  line-height: 1.65;
-}
-
-.oa-landing-intro h1,
-.oa-landing-intro h2,
-.oa-landing-intro h3 {
-  margin: 1.4em 0 0.5em;
-  letter-spacing: -0.2px;
-}
-
-.oa-landing-intro h1:first-child {
-  margin-top: 0;
-}
-
-.oa-landing-intro a {
-  color: var(--ai-primary);
-}
-
-.oa-landing-intro img {
-  max-width: 100%;
-  border-radius: 14px;
-}
-
-.oa-landing-chat {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  width: min(720px, 100%);
-  min-height: 0;
-}
-
-.oa-landing-title {
-  margin: 0;
-  font-size: 24px;
-  font-weight: 600;
-  letter-spacing: -0.4px;
-  text-align: center;
-}
-
-.oa-landing-sub {
-  margin: 0;
-  font-size: 13px;
-  text-align: center;
-  color: var(--ai-text-secondary);
-}
-
-.oa-landing-thread {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 8px 2px;
-}
-
-.oa-landing-turn {
-  display: flex;
-}
-
-.oa-landing-turn.user {
-  justify-content: flex-end;
-}
-
-.oa-landing-turn.user .ai-user-bubble {
-  max-width: 78%;
-}
-
-.oa-landing-error {
-  color: var(--ai-danger);
-}
-
-.oa-landing-notice {
-  margin: 0;
-  font-size: 11.5px;
-  text-align: center;
-  color: var(--ai-text-secondary);
-}
-
-.oa-landing-composer {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-  padding: 6px 6px 6px 16px;
-  border-radius: 999px;
-  background: var(--ai-surface-container);
-}
-
-.oa-landing-composer input {
-  flex: 1;
-  min-width: 0;
-  border: none;
-  background: transparent;
-  color: var(--ai-text);
-  font: inherit;
-  font-size: 13px;
-}
-
-/* The field has no border or fill of its own, so the pill is what shows where
-   focus is; the ring follows its 999px radius. */
-.oa-landing-composer input:focus {
-  outline: none;
-}
-
-.oa-landing-composer:focus-within {
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
-}
-
-.oa-landing-finished,
-.oa-landing-entry {
-  display: flex;
-  justify-content: center;
-  gap: 8px;
-  flex-shrink: 0;
 }
 
 /* An account that has not confirmed its address. Above the chat rather than

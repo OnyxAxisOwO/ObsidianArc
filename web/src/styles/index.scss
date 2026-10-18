@@ -31,6 +31,8 @@
 // screen outside the backoffice draws, in the place the report's file had.
 // The backoffice's own partials are not here: see admin.scss.
 @use 'segment';
-// The public front page. Last: it is one screen, it consumes the vocabulary
-// every file above defines, and it overrides a little of `_surfaces`.
-@use 'front';
+// The public front page and the signed-out landing page are not here either:
+// each is one screen a signed-in account never draws, so views/FrontPage.vue
+// and views/LandingView.vue import `_front.scss` and `_landing.scss`, and they
+// arrive with those chunks. Both load after this sheet, which is where the
+// front page's rules already sat: last, over a little of `_surfaces`.

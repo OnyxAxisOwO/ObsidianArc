@@ -10,13 +10,19 @@ import path from 'node:path';
 describe('stylesheet invariants', () => {
   const assetsDir = path.resolve(__dirname, '../../internal/web/dist/assets');
 
+  // Every stylesheet the build ships, the entry's first: the backoffice, the
+  // terminal, the front page and the landing page each bring their own, and
+  // a rule in one of those reaches the same rows as a rule in the entry.
   function builtCss(): string {
     if (!fs.existsSync(assetsDir)) {
       throw new Error('no build to inspect — run `make web` first.');
     }
-    const file = fs.readdirSync(assetsDir).find((name) => /^index-[^.]+\.css$/.test(name));
-    if (!file) throw new Error('no stylesheet in the build output');
-    return fs.readFileSync(path.join(assetsDir, file), 'utf8');
+    const files = fs.readdirSync(assetsDir).filter((name) => name.endsWith('.css'));
+    const entry = files.find((name) => /^index-[^.]+\.css$/.test(name));
+    if (!entry) throw new Error('no stylesheet in the build output');
+    return [entry, ...files.filter((name) => name !== entry).sort()]
+      .map((name) => fs.readFileSync(path.join(assetsDir, name), 'utf8'))
+      .join('\n');
   }
 
   /** Every rule in the sheet, as [selector list, declarations]. */
@@ -474,7 +480,7 @@ describe('focus, width and cascade rules in the stylesheet source', () => {
   }
 
   it('rings the landing composer, because its field has no outline of its own', () => {
-    expect(bodies(sheet('_app.scss'), '.oa-landing-composer:focus-within'))
+    expect(bodies(sheet('_landing.scss'), '.oa-landing-composer:focus-within'))
       .toMatch(/box-shadow:\s*0 0 0 3px var\(--ai-focus-shadow\)/);
   });
 
