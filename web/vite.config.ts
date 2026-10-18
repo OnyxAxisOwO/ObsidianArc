@@ -1,8 +1,9 @@
 import { defineConfig, type Plugin } from 'vite';
 import vue from '@vitejs/plugin-vue';
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { brotliCompressSync, gzipSync, constants as zlibConstants } from 'node:zlib';
 
 // The config is ESM (package.json sets "type": "module"), so __dirname does
 // not exist here.
@@ -26,9 +27,43 @@ function keepEmbedDirectory(): Plugin {
   };
 }
 
+// Every fingerprinted asset is compressed once here, at the strongest
+// settings, so the server sends finished bytes instead of compressing each
+// uncached request: brotli at quality 11 is too slow to run per request, and
+// it is what every current browser asks for first. The copies live outside
+// assets/, which stays the bundler's output alone (test/bundle.test.ts counts
+// it), under the same names with .br and .gz added; internal/web picks one by
+// the request's Accept-Encoding and falls back to the original.
+function precompressAssets(): Plugin {
+  return {
+    name: 'obsidian-precompress-assets',
+    closeBundle() {
+      const from = resolve(OUT_DIR, 'assets');
+      const to = resolve(OUT_DIR, 'precompressed', 'assets');
+      let names: string[];
+      try {
+        names = readdirSync(from);
+      } catch {
+        return;
+      }
+      mkdirSync(to, { recursive: true });
+      for (const name of names) {
+        const body = readFileSync(resolve(from, name));
+        writeFileSync(resolve(to, name + '.br'), brotliCompressSync(body, {
+          params: {
+            [zlibConstants.BROTLI_PARAM_QUALITY]: zlibConstants.BROTLI_MAX_QUALITY,
+            [zlibConstants.BROTLI_PARAM_SIZE_HINT]: body.length,
+          },
+        }));
+        writeFileSync(resolve(to, name + '.gz'), gzipSync(body, { level: 9 }));
+      }
+    },
+  };
+}
+
 export default defineConfig({
   root: HERE,
-  plugins: [vue(), keepEmbedDirectory()],
+  plugins: [vue(), keepEmbedDirectory(), precompressAssets()],
   resolve: {
     alias: { '@': resolve(HERE, 'src') },
   },

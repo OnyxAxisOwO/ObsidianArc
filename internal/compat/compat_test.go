@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -518,8 +519,8 @@ func TestDuplicatePublicModelNamesResolveByQualifiedRef(t *testing.T) {
 	}
 }
 
-// GET and POST resolve a qualified ref through two implementations of one rule.
-// Only POST was pinned, so the same ref is asked of GET here.
+// GET and POST resolve a qualified ref by one ranking but through two reads of
+// the catalogue. Only POST was pinned, so the same ref is asked of GET here.
 func TestQualifiedRefResolvesOnGETAsOnPOST(t *testing.T) {
 	f := newFixture(t)
 	duplicate, err := f.models.Create(context.Background(), model.CreateInput{
@@ -539,6 +540,48 @@ func TestQualifiedRefResolvesOnGETAsOnPOST(t *testing.T) {
 	}
 	if id, _ := decodeJSON(t, got)["id"].(string); id != ref {
 		t.Errorf("GET qualified ref answered with id %q, want %q", id, ref)
+	}
+}
+
+// SQLite's LOWER folds ASCII alone. GET compared names in Go and found a
+// display name spelled with another case of a non-ASCII letter, while POST's
+// SQL prefilter missed it and answered 404.
+func TestNonASCIIDisplayNameResolvesOnGET(t *testing.T) {
+	f := newFixture(t)
+	if _, err := f.models.Create(context.Background(), model.CreateInput{
+		ProviderID: f.model.ProviderID, ModelID: "aether-upstream",
+		DisplayName: "Äther", Enabled: true,
+		Capabilities: model.Capabilities{SupportsStreaming: true, SupportsSystemPrompt: true},
+		Weights:      model.Weights{InputToken: 1, OutputToken: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := f.do(t, http.MethodGet, "/v1/models/"+url.PathEscape("äther"), f.token, "")
+	if got.Code != http.StatusOK {
+		t.Fatalf("GET status = %d, want 200: %s", got.Code, got.Body.String())
+	}
+	if id, _ := decodeJSON(t, got)["id"].(string); id != "aether-upstream" {
+		t.Errorf("GET answered with id %q, want aether-upstream", id)
+	}
+}
+
+func TestNonASCIIDisplayNameResolvesOnPOST(t *testing.T) {
+	f := newFixture(t)
+	if _, err := f.models.Create(context.Background(), model.CreateInput{
+		ProviderID: f.model.ProviderID, ModelID: "aether-upstream",
+		DisplayName: "Äther", Enabled: true,
+		Capabilities: model.Capabilities{SupportsStreaming: true, SupportsSystemPrompt: true},
+		Weights:      model.Weights{InputToken: 1, OutputToken: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.upstream.reply(answer)
+	response := f.do(t, http.MethodPost, "/v1/chat/completions", f.token, completionBody("äther"))
+	if response.Code != http.StatusOK {
+		t.Fatalf("POST status = %d, want 200: %s", response.Code, response.Body.String())
+	}
+	if got := f.upstream.received()["model"]; got != "aether-upstream" {
+		t.Errorf("POST reached upstream model %v, want aether-upstream", got)
 	}
 }
 

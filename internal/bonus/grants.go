@@ -247,6 +247,23 @@ func (s *Store) GrantsInBar(ctx context.Context, barID string, limit, offset int
 	return out, total, rows.Err()
 }
 
+// GrantOwner is the account a grant was made to, or ErrNotFound. It is what a
+// caller deciding whether it may revoke the grant asks first, so it reads the
+// row alone rather than the grant with its bar.
+func (s *Store) GrantOwner(ctx context.Context, q database.Queryer, grantID string) (string, error) {
+	if q == nil {
+		q = s.db
+	}
+	var owner string
+	if err := q.QueryRow(ctx, `SELECT user_id FROM bonus_grants WHERE id = ?`, grantID).Scan(&owner); err != nil {
+		if database.IsNotFound(err) {
+			return "", ErrNotFound
+		}
+		return "", err
+	}
+	return owner, nil
+}
+
 // Revoke takes back what is left of a grant. The row stays, with its amount
 // cut to what was spent, so the account's history still says what happened.
 func (s *Store) Revoke(ctx context.Context, grantID string) (float64, error) {

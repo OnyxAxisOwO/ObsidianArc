@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -286,50 +287,68 @@ func (s *Store) Facets(ctx context.Context, since int64) (Facets, error) {
 		window, args = " WHERE at >= ?", []any{since}
 	}
 
-	read := func(query string) ([]Option, error) {
-		rows, err := s.db.Query(ctx, query, args...)
-		if err != nil {
-			return nil, err
+	// One pass over the window, grouped by who and what. The actors, the
+	// actions and both figures are all sums of these groups, so the trail is
+	// scanned once rather than once per list; with no window that scan is the
+	// whole trail, which is what made four of them expensive.
+	rows, err := s.db.Query(ctx,
+		`SELECT actor_id, MAX(actor_username), method, route, COUNT(*),
+		        SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END)
+		 FROM admin_audit`+window+` GROUP BY actor_id, method, route`, args...)
+	if err != nil {
+		return out, fmt.Errorf("audit: facets: %w", err)
+	}
+	defer rows.Close()
+	actors := map[string]*Option{}
+	routes := map[string]*Option{}
+	for rows.Next() {
+		var actorID, username, method, route string
+		var count, failed int64
+		if err := rows.Scan(&actorID, &username, &method, &route, &count, &failed); err != nil {
+			return out, fmt.Errorf("audit: facets: %w", err)
 		}
-		defer rows.Close()
-		options := []Option{}
-		for rows.Next() {
-			var o Option
-			if err := rows.Scan(&o.Value, &o.Label, &o.Count); err != nil {
-				return nil, err
-			}
-			if o.Label == "" {
-				o.Label = o.Value
-			}
-			options = append(options, o)
+		out.Total += count
+		out.Failed += failed
+		actor := actors[actorID]
+		if actor == nil {
+			actor = &Option{Value: actorID}
+			actors[actorID] = actor
 		}
-		return options, rows.Err()
+		actor.Count += count
+		actor.Label = max(actor.Label, username)
+		// The method rides in the label, "PATCH /api/admin/users/{id}", so one
+		// route answering two methods is two actions in the list. The value is
+		// the same text; the handler splits it back.
+		action := method + " " + route
+		if routes[action] == nil {
+			routes[action] = &Option{Value: action, Label: action}
+		}
+		routes[action].Count += count
 	}
-
-	var err error
-	if out.Actors, err = read(`SELECT actor_id, MAX(actor_username), COUNT(*) FROM admin_audit` + window +
-		` GROUP BY actor_id ORDER BY COUNT(*) DESC, actor_id`); err != nil {
-		return out, fmt.Errorf("audit: facet actors: %w", err)
+	if err := rows.Err(); err != nil {
+		return out, fmt.Errorf("audit: facets: %w", err)
 	}
-	// The method rides in the label, "PATCH /api/admin/users/{id}", so one
-	// route answering two methods is two actions in the list. The value is
-	// the same text; the handler splits it back.
-	if out.Routes, err = read(`SELECT method || ' ' || route, MAX(route), COUNT(*) FROM admin_audit` + window +
-		` GROUP BY method, route ORDER BY COUNT(*) DESC, route`); err != nil {
-		return out, fmt.Errorf("audit: facet routes: %w", err)
+	for _, actor := range actors {
+		if actor.Label == "" {
+			actor.Label = actor.Value
+		}
+		out.Actors = append(out.Actors, *actor)
 	}
-	for i := range out.Routes {
-		out.Routes[i].Label = out.Routes[i].Value
+	for _, action := range routes {
+		out.Routes = append(out.Routes, *action)
 	}
-
-	// Total and failed are read in one pass over the same window. The failed
-	// count is a conditional sum, which both engines accept, so the trail is
-	// scanned once here rather than once per figure.
-	if err := s.db.QueryRow(ctx,
-		`SELECT COUNT(*), COALESCE(SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END), 0) FROM admin_audit`+window,
-		args...).Scan(&out.Total, &out.Failed); err != nil {
-		return out, fmt.Errorf("audit: count: %w", err)
+	// Most used first; a tie goes by the value, so two methods on one path
+	// that were used as often keep one order from one load to the next.
+	byCount := func(list []Option) {
+		sort.Slice(list, func(i, j int) bool {
+			if list[i].Count != list[j].Count {
+				return list[i].Count > list[j].Count
+			}
+			return list[i].Value < list[j].Value
+		})
 	}
+	byCount(out.Actors)
+	byCount(out.Routes)
 	return out, nil
 }
 

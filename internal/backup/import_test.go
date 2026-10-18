@@ -83,7 +83,8 @@ func TestImportRefusesNULInAnyTextItWouldStore(t *testing.T) {
 	if n, _ := f.conversations.CountMessages(ctx, nil, f.account.ID); n != 0 {
 		t.Errorf("refused imports wrote %d messages", n)
 	}
-	threads, err := f.conversations.List(ctx, f.account.ID, 50)
+	archived := false
+	threads, err := f.conversations.ListWithFilter(ctx, f.account.ID, conversation.ListFilter{Limit: 50, Archived: &archived})
 	if err != nil {
 		t.Fatal(err)
 	}

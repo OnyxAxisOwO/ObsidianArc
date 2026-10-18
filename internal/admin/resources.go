@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/flight"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 )
 
@@ -30,11 +31,18 @@ type storageTotals struct {
 // a deadline of its own; a variable so a test can shorten it.
 var storageScanTimeout = 30 * time.Second
 
+// storageState is the last storage scan and the one in flight, if any.
+type storageState struct {
+	mu     sync.Mutex
+	totals *storageTotals
+	flight flight.Group
+}
+
 func (h *Handlers) cachedStorage() (storageTotals, bool) {
-	h.storageMu.Lock()
-	defer h.storageMu.Unlock()
-	if h.storageCache != nil && time.Since(h.storageCache.at) < storageCacheTTL {
-		return *h.storageCache, true
+	h.storageCache.mu.Lock()
+	defer h.storageCache.mu.Unlock()
+	if h.storageCache.totals != nil && time.Since(h.storageCache.totals.at) < storageCacheTTL {
+		return *h.storageCache.totals, true
 	}
 	return storageTotals{}, false
 }
@@ -48,7 +56,7 @@ func (h *Handlers) storage(ctx context.Context) (storageTotals, error) {
 	if cached, ok := h.cachedStorage(); ok {
 		return cached, nil
 	}
-	result := h.storageSF.DoChan("storage", func() (any, error) {
+	result := h.storageCache.flight.DoChan("storage", func() (any, error) {
 		if cached, ok := h.cachedStorage(); ok {
 			return cached, nil
 		}
@@ -67,9 +75,9 @@ func (h *Handlers) storage(ctx context.Context) (storageTotals, error) {
 			discarded: totals.Discarded,
 			byUser:    totals.ByUser,
 		}
-		h.storageMu.Lock()
-		h.storageCache = &fresh
-		h.storageMu.Unlock()
+		h.storageCache.mu.Lock()
+		h.storageCache.totals = &fresh
+		h.storageCache.mu.Unlock()
 		return fresh, nil
 	})
 	select {

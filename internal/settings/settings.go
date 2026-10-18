@@ -25,6 +25,12 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugingate"
 )
 
+// MaxValueBytes is the most one setting value may take, in bytes, whether a
+// core setting or a plugin's. The backoffice repeats it as SETTING_MAX_BYTES
+// (web/src/views/admin/settingsDraft.ts) to warn before it sends a value the
+// server would refuse; testdata/limits.json holds both copies to one number.
+const MaxValueBytes = 8 << 10
+
 // Known keys. Anything not listed here is still storable — the admin UI only
 // offers these, and a future module can add its own without a migration.
 const (

@@ -71,6 +71,11 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	// Public, and necessarily so: nobody signing in has a session yet, and
 	// the provider sends the browser back with nothing but the code.
 	mux.HandleFunc("GET /api/auth/oauth/start/{provider}", h.start)
+	// The same door as a form post, which is how the sign-in page goes through
+	// it now: the challenge token and the proof are one-use, but in a query
+	// string they are written into proxy logs, history and the Referer. The GET
+	// stays for a page still running an older bundle, and for the plain link.
+	mux.HandleFunc("POST /api/auth/oauth/start/{provider}", h.start)
 	mux.HandleFunc("GET /api/auth/oauth/callback/{provider}", h.callback)
 
 	protected := func(handler httpx.Handler) http.HandlerFunc {
@@ -154,6 +159,10 @@ func proofFrom(raw string) *pow.Solution {
 	return &solution
 }
 
+// startFormBytes bounds the sign-in form: four short fields, the longest a
+// proof-of-work solution of a few hundred bytes.
+const startFormBytes = 16 * 1024
+
 func (h *Handlers) start(w http.ResponseWriter, r *http.Request) {
 	provider := ByID(r.PathValue("provider"))
 	if provider == nil {
@@ -161,13 +170,26 @@ func (h *Handlers) start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A form post carries its fields in the body and a navigation in the
+	// query; each reads only its own, so a post cannot be steered by a query
+	// string glued onto its action.
+	param := r.URL.Query().Get
+	if r.Method == http.MethodPost {
+		r.Body = http.MaxBytesReader(w, r.Body, startFormBytes)
+		if err := r.ParseForm(); err != nil {
+			httpx.WriteError(w, r, httpx.BadRequest("The sign-in form could not be read."))
+			return
+		}
+		param = r.PostForm.Get
+	}
+
 	// The link this navigation used to start is retired, and refused rather than
 	// read as a sign-in. A page still running the old bundle asks for it, and a
 	// sign-in here would switch that browser to whichever account the provider
 	// names, or open a new one. A connection is started by connect, which asks for
 	// the account's proof; a navigation has nowhere to carry one.
-	if r.URL.Query().Get("link") == "1" {
-		h.fail(w, r, linkBack(r.URL.Query().Get("next")), "failed")
+	if param("link") == "1" {
+		h.fail(w, r, linkBack(param("next")), "failed")
 		return
 	}
 
@@ -175,8 +197,8 @@ func (h *Handlers) start(w http.ResponseWriter, r *http.Request) {
 	// provider is reached goes back to the page it was started from, carrying the
 	// page it was meant to reach, as a failure at the callback does: a visitor
 	// refused at the door of a sign-up for a consent request keeps that request.
-	signingUp := r.URL.Query().Get("register") == "1"
-	back := signInBack(signingUp, r.URL.Query().Get("next"))
+	signingUp := param("register") == "1"
+	back := signInBack(signingUp, param("next"))
 
 	if !h.service.Enabled(provider.ID) {
 		h.fail(w, r, back, "unavailable")
@@ -191,14 +213,14 @@ func (h *Handlers) start(w http.ResponseWriter, r *http.Request) {
 	checked := false
 	gate := h.gateFor(signingUp)
 	if gate.Enabled != nil && gate.Enabled() {
-		if err := gate.Check(r.Context(), r.URL.Query().Get("turnstile"), h.address(r)); err != nil {
+		if err := gate.Check(r.Context(), param("turnstile"), h.address(r)); err != nil {
 			h.fail(w, r, back, "challenge_failed")
 			return
 		}
 		checked = true
 	}
 	if signingUp && h.proofRequired() {
-		proof := proofFrom(r.URL.Query().Get("pow"))
+		proof := proofFrom(param("pow"))
 		if err := h.service.auth.CheckSignupProof(r.Context(), h.address(r), proof); err != nil {
 			h.fail(w, r, back, "challenge_failed")
 			return
@@ -216,7 +238,7 @@ func (h *Handlers) start(w http.ResponseWriter, r *http.Request) {
 	target, err := h.begin(w, r, provider, creds, state{
 		Provider: provider.ID,
 		Nonce:    token(),
-		Next:     safeNext(r.URL.Query().Get("next")),
+		Next:     safeNext(param("next")),
 		SignUp:   passedSignUp,
 		Register: signingUp,
 		Expiry:   time.Now().Add(stateTTL).UnixMilli(),
@@ -229,7 +251,16 @@ func (h *Handlers) start(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, back, "failed")
 		return
 	}
-	http.Redirect(w, r, target, http.StatusFound)
+	http.Redirect(w, r, target, redirectStatus(r))
+}
+
+// redirectStatus is 303 for the form post, which says in so many words that
+// the browser follows with a GET, and the 302 a navigation always had.
+func redirectStatus(r *http.Request) int {
+	if r.Method == http.MethodPost {
+		return http.StatusSeeOther
+	}
+	return http.StatusFound
 }
 
 // connect starts connecting a provider to the account that asks, and answers
@@ -724,7 +755,7 @@ func (h *Handlers) failWithReason(w http.ResponseWriter, r *http.Request, back, 
 	if reason != "" {
 		u = withQuery(u, "ban_reason", reason)
 	}
-	http.Redirect(w, r, u, http.StatusFound)
+	http.Redirect(w, r, u, redirectStatus(r))
 }
 
 // signInBack is the page a sign-in that failed returns to: the page it was

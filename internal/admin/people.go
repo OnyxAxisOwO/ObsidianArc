@@ -96,17 +96,17 @@ func (h *Handlers) listUsers(w http.ResponseWriter, r *http.Request) error {
 		Offset:   intParam(query.Get("offset"), 0),
 	}
 	if filter.GroupID != "" && !id.Valid(filter.GroupID) {
-		return httpx.BadRequest("Malformed group id.")
+		return httpx.BadRequestCode("malformed_group_id", "Malformed group id.")
 	}
 	switch filter.Role {
 	case "", user.RoleUser, user.RoleAdmin, user.RoleSuperAdmin:
 	default:
-		return httpx.BadRequest("Unknown role filter.")
+		return httpx.BadRequestCode("role_filter_unknown", "Unknown role filter.")
 	}
 	switch filter.Status {
 	case "", user.StatusActive, user.StatusDisabled:
 	default:
-		return httpx.BadRequest("Unknown status filter.")
+		return httpx.BadRequestCode("status_filter_unknown", "Unknown status filter.")
 	}
 
 	users, total, err := h.users.List(r.Context(), filter)
@@ -205,18 +205,7 @@ type userRequest struct {
 func (h *Handlers) createUser(w http.ResponseWriter, r *http.Request) error {
 	actor := auth.MustUser(r.Context())
 
-	var body struct {
-		Username         string            `json:"username"`
-		Password         string            `json:"password"`
-		Email            string            `json:"email"`
-		Fields           map[string]string `json:"fields"`
-		Nickname         string            `json:"nickname"`
-		Role             user.Role         `json:"role"`
-		AdminPermissions []string          `json:"admin_permissions"`
-		GroupID          string            `json:"group_id"`
-		Status           user.Status       `json:"status"`
-		BanReason        string            `json:"ban_reason"`
-	}
+	var body newUserRequest
 	if err := httpx.DecodeJSON(w, r, &body, 16*1024); err != nil {
 		return err
 	}
@@ -224,47 +213,8 @@ func (h *Handlers) createUser(w http.ResponseWriter, r *http.Request) error {
 	// Shape first, outside the transaction and before hashing: a malformed
 	// request should not take the population lock, and it should not pay for
 	// an Argon2 hash either.
-	if body.Role == "" {
-		body.Role = user.RoleUser
-	}
-	if body.Role != user.RoleUser && body.Role != user.RoleAdmin && body.Role != user.RoleSuperAdmin {
-		return httpx.BadRequest("Role must be user, admin or super_admin.")
-	}
-	if body.Status == "" {
-		body.Status = user.StatusActive
-	}
-	if body.Status != user.StatusActive && body.Status != user.StatusDisabled {
-		return httpx.BadRequest("Status must be active or disabled.")
-	}
-	if utf8.RuneCountInString(strings.TrimSpace(body.BanReason)) > user.MaxBanReasonChars {
-		return httpx.BadRequest("Ban reason must be %d characters or fewer.", user.MaxBanReasonChars)
-	}
-	for _, permission := range body.AdminPermissions {
-		if !user.ValidPermission(permission) {
-			return httpx.BadRequest("Unknown permission %q.", permission)
-		}
-	}
-	// Grants only mean anything on an administrator, and leaving them on a
-	// plain account is a trap for whoever promotes it later.
-	if body.Role != user.RoleAdmin {
-		body.AdminPermissions = nil
-	}
-	if body.GroupID != "" {
-		if !id.Valid(body.GroupID) {
-			return httpx.BadRequest("Malformed group id.")
-		}
-		if _, err := h.groups.ByID(r.Context(), nil, body.GroupID); err != nil {
-			return translateGroupError(err)
-		}
-	}
-	// An account with no password cannot be signed into with one. That is a
-	// legitimate shape here — a service account that only ever arrives through
-	// a provider — so it is allowed. A missing field and an empty one both mean
-	// no password.
-	if body.Password != "" {
-		if err := auth.ValidatePassword(body.Password); err != nil {
-			return httpx.BadRequest("%s", err.Error())
-		}
+	if err := h.checkNewUser(r.Context(), &body); err != nil {
+		return err
 	}
 
 	hash := ""
@@ -286,27 +236,8 @@ func (h *Handlers) createUser(w http.ResponseWriter, r *http.Request) error {
 		if err != nil {
 			return err
 		}
-		if !fresh.CanAdmin("users") {
-			return permissionDenied()
-		}
-		if body.Role == user.RoleAdmin || body.Role == user.RoleSuperAdmin {
-			// CanManageAdmin wants the account being managed; the one about to
-			// exist is described by what was asked for.
-			wanted := user.User{Role: body.Role, AdminPermissions: body.AdminPermissions}
-			if !fresh.CanManageAdmin(wanted) {
-				return permissionDenied()
-			}
-		}
-		if !fresh.IsSuperAdmin() {
-			if body.Role == user.RoleSuperAdmin {
-				return permissionDenied()
-			}
-			// Nobody may hand out a key they do not hold themselves.
-			for _, permission := range body.AdminPermissions {
-				if !fresh.CanAdmin(permission) {
-					return permissionDenied()
-				}
-			}
+		if err := authoriseNewUser(fresh, &body); err != nil {
+			return err
 		}
 
 		created, err = h.users.Create(r.Context(), tx, user.CreateInput{
@@ -341,16 +272,104 @@ func (h *Handlers) createUser(w http.ResponseWriter, r *http.Request) error {
 		return nil
 	})
 	if err != nil {
-		var response *httpx.Error
-		if errors.As(err, &response) {
-			return response
-		}
-		return translateUserError(err)
+		return responseOr(err, translateUserError)
 	}
 
 	slog.InfoContext(r.Context(), "administrator created an account",
 		"actor", actor.ID, "created", created.ID, "role", created.Role)
 	return httpx.WriteJSON(w, http.StatusCreated, map[string]any{"user": created})
+}
+
+// newUserRequest is createUser's body.
+type newUserRequest struct {
+	Username         string            `json:"username"`
+	Password         string            `json:"password"`
+	Email            string            `json:"email"`
+	Fields           map[string]string `json:"fields"`
+	Nickname         string            `json:"nickname"`
+	Role             user.Role         `json:"role"`
+	AdminPermissions []string          `json:"admin_permissions"`
+	GroupID          string            `json:"group_id"`
+	Status           user.Status       `json:"status"`
+	BanReason        string            `json:"ban_reason"`
+}
+
+// checkNewUser refuses a malformed account and fills in the defaults a body
+// may leave out. It reads the group but takes no lock.
+func (h *Handlers) checkNewUser(ctx context.Context, body *newUserRequest) error {
+	if body.Role == "" {
+		body.Role = user.RoleUser
+	}
+	if body.Role != user.RoleUser && body.Role != user.RoleAdmin && body.Role != user.RoleSuperAdmin {
+		return httpx.BadRequestCode("role_invalid", "Role must be user, admin or super_admin.")
+	}
+	if body.Status == "" {
+		body.Status = user.StatusActive
+	}
+	if body.Status != user.StatusActive && body.Status != user.StatusDisabled {
+		return httpx.BadRequestCode("account_status_invalid", "Status must be active or disabled.")
+	}
+	if utf8.RuneCountInString(strings.TrimSpace(body.BanReason)) > user.MaxBanReasonChars {
+		return httpx.BadRequestCode("ban_reason_too_long", "Ban reason must be %d characters or fewer.", user.MaxBanReasonChars).
+			WithDetails(map[string]any{"max": user.MaxBanReasonChars})
+	}
+	for _, permission := range body.AdminPermissions {
+		if !user.ValidPermission(permission) {
+			return httpx.BadRequestCode("permission_unknown", "Unknown permission %q.", permission).
+				WithDetails(map[string]any{"value": permission})
+		}
+	}
+	// Grants only mean anything on an administrator, and leaving them on a
+	// plain account is a trap for whoever promotes it later.
+	if body.Role != user.RoleAdmin {
+		body.AdminPermissions = nil
+	}
+	if body.GroupID != "" {
+		if !id.Valid(body.GroupID) {
+			return httpx.BadRequestCode("malformed_group_id", "Malformed group id.")
+		}
+		if _, err := h.groups.ByID(ctx, nil, body.GroupID); err != nil {
+			return translateGroupError(err)
+		}
+	}
+	// An account with no password cannot be signed into with one. That is a
+	// legitimate shape here — a service account that only ever arrives through
+	// a provider — so it is allowed. A missing field and an empty one both mean
+	// no password.
+	if body.Password != "" {
+		if err := auth.ValidatePassword(body.Password); err != nil {
+			return httpx.BadRequest("%s", err.Error())
+		}
+	}
+	return nil
+}
+
+// authoriseNewUser holds the actor, as read under the population lock, to the
+// account it asked for.
+func authoriseNewUser(fresh user.User, body *newUserRequest) error {
+	if !fresh.CanAdmin("users") {
+		return permissionDenied()
+	}
+	if body.Role == user.RoleAdmin || body.Role == user.RoleSuperAdmin {
+		// CanManageAdmin wants the account being managed; the one about to
+		// exist is described by what was asked for.
+		wanted := user.User{Role: body.Role, AdminPermissions: body.AdminPermissions}
+		if !fresh.CanManageAdmin(wanted) {
+			return permissionDenied()
+		}
+	}
+	if !fresh.IsSuperAdmin() {
+		if body.Role == user.RoleSuperAdmin {
+			return permissionDenied()
+		}
+		// Nobody may hand out a key they do not hold themselves.
+		for _, permission := range body.AdminPermissions {
+			if !fresh.CanAdmin(permission) {
+				return permissionDenied()
+			}
+		}
+	}
+	return nil
 }
 
 // loggedValue is what a request field reads as in the log. A pointer prints as
@@ -379,31 +398,33 @@ func (h *Handlers) updateUser(w http.ResponseWriter, r *http.Request) error {
 	// Shape first, and outside the transaction: a malformed request should be
 	// refused without taking a lock the rest of the instance queues behind.
 	if body.Role != nil && *body.Role != user.RoleUser && *body.Role != user.RoleAdmin && *body.Role != user.RoleSuperAdmin {
-		return httpx.BadRequest("Role must be user, admin or super_admin.")
+		return httpx.BadRequestCode("role_invalid", "Role must be user, admin or super_admin.")
 	}
 	if body.AdminPermissions != nil {
 		for _, permission := range *body.AdminPermissions {
 			if !user.ValidPermission(permission) {
-				return httpx.BadRequest("Unknown permission %q.", permission)
+				return httpx.BadRequestCode("permission_unknown", "Unknown permission %q.", permission).
+					WithDetails(map[string]any{"value": permission})
 			}
 		}
 	}
 	if body.Status != nil && *body.Status != user.StatusActive && *body.Status != user.StatusDisabled {
-		return httpx.BadRequest("Status must be active or disabled.")
+		return httpx.BadRequestCode("account_status_invalid", "Status must be active or disabled.")
 	}
 	if body.BanReason != nil && utf8.RuneCountInString(strings.TrimSpace(*body.BanReason)) > user.MaxBanReasonChars {
-		return httpx.BadRequest("Ban reason must be %d characters or fewer.", user.MaxBanReasonChars)
+		return httpx.BadRequestCode("ban_reason_too_long", "Ban reason must be %d characters or fewer.", user.MaxBanReasonChars).
+			WithDetails(map[string]any{"max": user.MaxBanReasonChars})
 	}
 	if body.APIRestrictionHours != nil &&
 		(*body.APIRestrictionHours < 0 || *body.APIRestrictionHours > 24*365) {
-		return httpx.BadRequest("API restriction hours must be between 0 and 8760.")
+		return httpx.BadRequestCode("api_restriction_hours_range", "API restriction hours must be between 0 and 8760.")
 	}
 	if body.APIRestrictionHours != nil && body.APIRestricted == nil {
-		return httpx.BadRequest("API restriction hours require an API restriction choice.")
+		return httpx.BadRequestCode("api_restriction_choice_required", "API restriction hours require an API restriction choice.")
 	}
 	if body.GroupID != nil && *body.GroupID != "" {
 		if !id.Valid(*body.GroupID) {
-			return httpx.BadRequest("Malformed group id.")
+			return httpx.BadRequestCode("malformed_group_id", "Malformed group id.")
 		}
 		if _, err := h.groups.ByID(r.Context(), nil, *body.GroupID); err != nil {
 			return translateGroupError(err)
@@ -411,7 +432,7 @@ func (h *Handlers) updateUser(w http.ResponseWriter, r *http.Request) error {
 	}
 	if body.GroupExpiresAt != nil {
 		if body.GroupID == nil || (*body.GroupID == "" && *body.GroupExpiresAt != 0) {
-			return httpx.BadRequest("A group is required when setting membership expiry.")
+			return httpx.BadRequestCode("membership_expiry_needs_group", "A group is required when setting membership expiry.")
 		}
 		if err := validateMembershipExpiry(*body.GroupExpiresAt); err != nil {
 			return err
@@ -420,105 +441,27 @@ func (h *Handlers) updateUser(w http.ResponseWriter, r *http.Request) error {
 
 	var updated, previous user.User
 	err = h.db.Tx(r.Context(), func(tx *database.Tx) error {
-		// Profile edits also need this lock now: their target may be promoted
-		// while a delegated operator is waiting to change its login address.
-		if err := lockAdminPopulation(r.Context(), tx); err != nil {
-			return err
-		}
-
-		// Profile edits and membership expiry both read this row before writing
-		// it. Lock first so a renewal cannot be replaced by that earlier read.
-		if _, err := tx.Exec(r.Context(), `UPDATE users SET updated_at = updated_at WHERE id = ?`, userID); err != nil {
-			return err
-		}
-		target, err := h.users.ByID(r.Context(), tx, userID)
+		ctx := r.Context()
+		target, err := h.lockUpdateTarget(ctx, tx, userID)
 		if err != nil {
 			return err
 		}
 		previous = target
 
-		// Re-read the actor while holding the population lock: a concurrent
-		// revocation must win before another grant can be delegated.
-		actor, err = h.users.ByID(r.Context(), tx, actor.ID)
-		if err != nil {
+		if actor, err = h.authoriseUserUpdate(ctx, tx, actor.ID, target, &body); err != nil {
 			return err
 		}
-		if !actor.CanAdmin("users") {
-			return permissionDenied()
+		if err := h.refuseLosingLastAdmin(ctx, tx, userID, target, &body); err != nil {
+			return err
 		}
-		// Role writes are an action on the users page with their own grant.
-		// Even a no-op role field must not be accepted without that grant.
-		if target.IsAdmin() || body.Role != nil || body.AdminPermissions != nil {
-			if !actor.CanManageAdmin(target) {
-				return permissionDenied()
-			}
+		if err := refuseSelfBan(userID, actor, &body); err != nil {
+			return err
 		}
-		if !actor.IsSuperAdmin() {
-			if body.Role != nil && *body.Role == user.RoleSuperAdmin {
-				return permissionDenied()
-			}
-			if body.AdminPermissions != nil {
-				for _, permission := range *body.AdminPermissions {
-					if !actor.CanAdmin(permission) {
-						return permissionDenied()
-					}
-				}
-			}
-		}
-		if body.Role != nil && *body.Role != user.RoleAdmin {
-			empty := []string{}
-			body.AdminPermissions = &empty
+		if err := h.settleAdminAddressChange(ctx, tx, userID, target, &body); err != nil {
+			return err
 		}
 
-		// Losing the last administrator locks everyone out of the instance for
-		// good, so the two changes that could cause it are checked first.
-		losingAdmin := (body.Role != nil && *body.Role != user.RoleSuperAdmin && target.IsSuperAdmin()) ||
-			(body.Status != nil && *body.Status != user.StatusActive && target.IsSuperAdmin())
-		if losingAdmin {
-			remaining, err := h.users.CountActiveAdmins(r.Context(), tx, userID)
-			if err != nil {
-				return err
-			}
-			if remaining == 0 {
-				return errLastAdmin
-			}
-		}
-
-		// Refused as deleting one's own account is: the same request signs the
-		// administrator out, and only another administrator could undo it. Checked
-		// after the last-administrator rule, so the lone super administrator still
-		// gets the answer that explains their whole situation.
-		if body.Status != nil && *body.Status == user.StatusDisabled && userID == actor.ID {
-			return httpx.BadRequestCode("cannot_ban_self", "You cannot ban your own account.")
-		}
-
-		// An address an administrator typed is not one its owner proved. The
-		// owner's own form withdraws the confirmation and drops whatever links
-		// are outstanding when the address moves. This one used to do neither,
-		// so an administrator could hand any account a confirmed address it had
-		// never seen, and a link issued for the address being left stayed open
-		// behind it. Both now settle the move through auth.SettleAddressChange,
-		// the one place that writes the confirmation for it.
-		//
-		// Folded the same way the store folds it — see the note in
-		// auth.Service.UpdateProfile about why EqualFold is the wrong
-		// alphabet for this comparison.
-		//
-		// No allowlist check: an administrator setting an address is a
-		// deliberate act rather than a claim, and no new link is posted
-		// either. The account asks for one itself, through the resend button
-		// and its throttle.
-		if body.Email != nil &&
-			strings.ToLower(strings.TrimSpace(*body.Email)) != strings.ToLower(target.Email) {
-			// Nothing to confirm and nothing to hold back when there is no
-			// address, which is the rule user.Store.Create keeps.
-			confirmed := strings.TrimSpace(*body.Email) == "" || !h.auth.VerificationRequired()
-			if err := h.auth.SettleAddressChange(r.Context(), tx, userID, confirmed); err != nil {
-				return httpx.Internal(err)
-			}
-		}
-
-		updated, err = h.users.UpdateProfile(r.Context(), tx, userID, user.ProfileUpdate{
+		updated, err = h.users.UpdateProfile(ctx, tx, userID, user.ProfileUpdate{
 			Nickname: body.Nickname,
 			Avatar:   body.Avatar,
 			Bio:      body.Bio,
@@ -528,66 +471,13 @@ func (h *Handlers) updateUser(w http.ResponseWriter, r *http.Request) error {
 		if err != nil {
 			return err
 		}
-
-		if body.Role != nil || body.GroupID != nil || body.Status != nil || body.AdminPermissions != nil || body.BanReason != nil {
-			// The store keeps the reason in step with the status, so the request's
-			// reason goes in as sent: an account left active drops it there.
-			updated, err = h.users.UpdateAdminFields(r.Context(), tx, userID, user.AdminUpdate{
-				Role:             body.Role,
-				AdminPermissions: body.AdminPermissions,
-				GroupID:          body.GroupID,
-				GroupExpiresAt:   body.GroupExpiresAt,
-				Status:           body.Status,
-				BanReason:        body.BanReason,
-			})
-			if err != nil {
-				return err
-			}
+		if updated, err = h.applyAdminFields(ctx, tx, userID, updated, &body); err != nil {
+			return err
 		}
-
-		if body.APIRestricted != nil {
-			until := int64(0)
-			if *body.APIRestricted && body.APIRestrictionHours != nil && *body.APIRestrictionHours > 0 {
-				until = time.Now().Add(time.Duration(*body.APIRestrictionHours) * time.Hour).UnixMilli()
-			}
-			updated, err = h.users.UpdateAPIRestriction(
-				r.Context(), tx, userID, *body.APIRestricted, until, "admin")
-			if err != nil {
-				return err
-			}
-			decision := "allow"
-			eventType := securityevents.EventAPIRestrictionLift
-			severity := securityevents.SeverityInfo
-			reason := "administrator lifted the API restriction"
-			if *body.APIRestricted {
-				decision = "restrict"
-				eventType = securityevents.EventAPIRestriction
-				severity = securityevents.SeverityWarning
-				reason = "administrator restricted API access permanently"
-				if body.APIRestrictionHours != nil && *body.APIRestrictionHours > 0 {
-					reason = "administrator restricted API access for " +
-						strconv.Itoa(*body.APIRestrictionHours) + " hours"
-				}
-			}
-			if err := h.security.Record(r.Context(), tx, securityevents.Event{
-				Event: eventType, Severity: severity,
-				UserID: userID, Username: target.Username, Source: "admin",
-				ActorID: actor.ID, ActorUsername: actor.Username,
-				Decision: decision, Reason: reason,
-			}); err != nil {
-				return err
-			}
+		if updated, err = h.applyAPIRestriction(ctx, tx, actor, target, updated, &body); err != nil {
+			return err
 		}
-
-		// A disabled account must stop working now, not at its next expiry.
-		// Inside the transaction, so an account is never left disabled with a
-		// session still good because the delete failed after the commit.
-		if body.Status != nil && *body.Status == user.StatusDisabled {
-			if err := h.auth.Sessions().DeleteByUser(r.Context(), tx, userID); err != nil {
-				return err
-			}
-		}
-		return nil
+		return h.revokeDisabledSessions(ctx, tx, userID, &body)
 	})
 	if err != nil {
 		if errors.Is(err, errLastAdmin) {
@@ -608,6 +498,200 @@ func (h *Handlers) updateUser(w http.ResponseWriter, r *http.Request) error {
 		"actor", actor.ID, "target", userID, "role", loggedValue(body.Role), "status", loggedValue(body.Status))
 
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"user": updated})
+}
+
+// The steps below are updateUser's transaction, in the order it runs them.
+// Each takes the transaction it is part of; none commits or opens one.
+
+// lockUpdateTarget takes the locks an account edit needs and reads the account
+// under them.
+func (h *Handlers) lockUpdateTarget(ctx context.Context, tx *database.Tx, userID string) (user.User, error) {
+	// Profile edits also need this lock now: their target may be promoted
+	// while a delegated operator is waiting to change its login address.
+	if err := lockAdminPopulation(ctx, tx); err != nil {
+		return user.User{}, err
+	}
+
+	// Profile edits and membership expiry both read this row before writing
+	// it. Lock first so a renewal cannot be replaced by that earlier read.
+	if _, err := tx.Exec(ctx, `UPDATE users SET updated_at = updated_at WHERE id = ?`, userID); err != nil {
+		return user.User{}, err
+	}
+	return h.users.ByID(ctx, tx, userID)
+}
+
+// authoriseUserUpdate re-reads the actor and holds it to what the request
+// asks, returning the actor as it reads now. A role other than administrator
+// clears the grant list on the way out, so the writes after it see one.
+func (h *Handlers) authoriseUserUpdate(ctx context.Context, tx *database.Tx, actorID string, target user.User, body *userRequest) (user.User, error) {
+	// Re-read the actor while holding the population lock: a concurrent
+	// revocation must win before another grant can be delegated.
+	actor, err := h.users.ByID(ctx, tx, actorID)
+	if err != nil {
+		return user.User{}, err
+	}
+	if !actor.CanAdmin("users") {
+		return user.User{}, permissionDenied()
+	}
+	// Role writes are an action on the users page with their own grant.
+	// Even a no-op role field must not be accepted without that grant.
+	if target.IsAdmin() || body.Role != nil || body.AdminPermissions != nil {
+		if !actor.CanManageAdmin(target) {
+			return user.User{}, permissionDenied()
+		}
+	}
+	if !actor.IsSuperAdmin() {
+		if body.Role != nil && *body.Role == user.RoleSuperAdmin {
+			return user.User{}, permissionDenied()
+		}
+		if body.AdminPermissions != nil {
+			for _, permission := range *body.AdminPermissions {
+				if !actor.CanAdmin(permission) {
+					return user.User{}, permissionDenied()
+				}
+			}
+		}
+	}
+	if body.Role != nil && *body.Role != user.RoleAdmin {
+		empty := []string{}
+		body.AdminPermissions = &empty
+	}
+	return actor, nil
+}
+
+// refuseLosingLastAdmin answers errLastAdmin when the edit would leave the
+// instance without an active super administrator.
+func (h *Handlers) refuseLosingLastAdmin(ctx context.Context, tx *database.Tx, userID string, target user.User, body *userRequest) error {
+	// Losing the last administrator locks everyone out of the instance for
+	// good, so the two changes that could cause it are checked first.
+	losingAdmin := (body.Role != nil && *body.Role != user.RoleSuperAdmin && target.IsSuperAdmin()) ||
+		(body.Status != nil && *body.Status != user.StatusActive && target.IsSuperAdmin())
+	if !losingAdmin {
+		return nil
+	}
+	remaining, err := h.users.CountActiveAdmins(ctx, tx, userID)
+	if err != nil {
+		return err
+	}
+	if remaining == 0 {
+		return errLastAdmin
+	}
+	return nil
+}
+
+// refuseSelfBan is refused as deleting one's own account is: the same request
+// signs the administrator out, and only another administrator could undo it.
+// Checked after the last-administrator rule, so the lone super administrator
+// still gets the answer that explains their whole situation.
+func refuseSelfBan(userID string, actor user.User, body *userRequest) error {
+	if body.Status != nil && *body.Status == user.StatusDisabled && userID == actor.ID {
+		return httpx.BadRequestCode("cannot_ban_self", "You cannot ban your own account.")
+	}
+	return nil
+}
+
+// settleAdminAddressChange settles the confirmation when the edit moves the
+// account's address.
+//
+// An address an administrator typed is not one its owner proved. The
+// owner's own form withdraws the confirmation and drops whatever links
+// are outstanding when the address moves. This one used to do neither,
+// so an administrator could hand any account a confirmed address it had
+// never seen, and a link issued for the address being left stayed open
+// behind it. Both now settle the move through auth.SettleAddressChange,
+// the one place that writes the confirmation for it.
+//
+// Folded the same way the store folds it — see the note in
+// auth.Service.UpdateProfile about why EqualFold is the wrong
+// alphabet for this comparison.
+//
+// No allowlist check: an administrator setting an address is a
+// deliberate act rather than a claim, and no new link is posted
+// either. The account asks for one itself, through the resend button
+// and its throttle.
+func (h *Handlers) settleAdminAddressChange(ctx context.Context, tx *database.Tx, userID string, target user.User, body *userRequest) error {
+	if body.Email == nil ||
+		strings.ToLower(strings.TrimSpace(*body.Email)) == strings.ToLower(target.Email) {
+		return nil
+	}
+	// Nothing to confirm and nothing to hold back when there is no
+	// address, which is the rule user.Store.Create keeps.
+	confirmed := strings.TrimSpace(*body.Email) == "" || !h.auth.VerificationRequired()
+	if err := h.auth.SettleAddressChange(ctx, tx, userID, confirmed); err != nil {
+		return httpx.Internal(err)
+	}
+	return nil
+}
+
+// applyAdminFields writes the role, grants, group and status the request
+// carries, and returns the account as it reads after; with none of them, the
+// account it was given.
+func (h *Handlers) applyAdminFields(ctx context.Context, tx *database.Tx, userID string, updated user.User, body *userRequest) (user.User, error) {
+	if body.Role == nil && body.GroupID == nil && body.Status == nil && body.AdminPermissions == nil && body.BanReason == nil {
+		return updated, nil
+	}
+	// The store keeps the reason in step with the status, so the request's
+	// reason goes in as sent: an account left active drops it there.
+	return h.users.UpdateAdminFields(ctx, tx, userID, user.AdminUpdate{
+		Role:             body.Role,
+		AdminPermissions: body.AdminPermissions,
+		GroupID:          body.GroupID,
+		GroupExpiresAt:   body.GroupExpiresAt,
+		Status:           body.Status,
+		BanReason:        body.BanReason,
+	})
+}
+
+// applyAPIRestriction writes the API restriction the request carries and
+// records it as a security event; without one, it returns the account it
+// was given.
+func (h *Handlers) applyAPIRestriction(ctx context.Context, tx *database.Tx, actor, target, updated user.User, body *userRequest) (user.User, error) {
+	if body.APIRestricted == nil {
+		return updated, nil
+	}
+	userID := target.ID
+	until := int64(0)
+	if *body.APIRestricted && body.APIRestrictionHours != nil && *body.APIRestrictionHours > 0 {
+		until = time.Now().Add(time.Duration(*body.APIRestrictionHours) * time.Hour).UnixMilli()
+	}
+	updated, err := h.users.UpdateAPIRestriction(ctx, tx, userID, *body.APIRestricted, until, "admin")
+	if err != nil {
+		return user.User{}, err
+	}
+	decision := "allow"
+	eventType := securityevents.EventAPIRestrictionLift
+	severity := securityevents.SeverityInfo
+	reason := "administrator lifted the API restriction"
+	if *body.APIRestricted {
+		decision = "restrict"
+		eventType = securityevents.EventAPIRestriction
+		severity = securityevents.SeverityWarning
+		reason = "administrator restricted API access permanently"
+		if body.APIRestrictionHours != nil && *body.APIRestrictionHours > 0 {
+			reason = "administrator restricted API access for " +
+				strconv.Itoa(*body.APIRestrictionHours) + " hours"
+		}
+	}
+	if err := h.security.Record(ctx, tx, securityevents.Event{
+		Event: eventType, Severity: severity,
+		UserID: userID, Username: target.Username, Source: "admin",
+		ActorID: actor.ID, ActorUsername: actor.Username,
+		Decision: decision, Reason: reason,
+	}); err != nil {
+		return user.User{}, err
+	}
+	return updated, nil
+}
+
+// revokeDisabledSessions signs a disabled account out.
+func (h *Handlers) revokeDisabledSessions(ctx context.Context, tx *database.Tx, userID string, body *userRequest) error {
+	// A disabled account must stop working now, not at its next expiry.
+	// Inside the transaction, so an account is never left disabled with a
+	// session still good because the delete failed after the commit.
+	if body.Status != nil && *body.Status == user.StatusDisabled {
+		return h.auth.Sessions().DeleteByUser(ctx, tx, userID)
+	}
+	return nil
 }
 
 func (h *Handlers) resetPassword(w http.ResponseWriter, r *http.Request) error {
@@ -647,14 +731,12 @@ func (h *Handlers) resetPassword(w http.ResponseWriter, r *http.Request) error {
 		}
 		return nil
 	}); err != nil {
-		var response *httpx.Error
-		if errors.As(err, &response) {
-			return response
-		}
-		if errors.Is(err, auth.ErrPasswordTooShort) || errors.Is(err, auth.ErrPasswordTooLong) {
-			return httpx.BadRequest("%s", err.Error())
-		}
-		return httpx.Internal(err)
+		return responseOr(err, func(err error) error {
+			if errors.Is(err, auth.ErrPasswordTooShort) || errors.Is(err, auth.ErrPasswordTooLong) {
+				return httpx.BadRequest("%s", err.Error())
+			}
+			return httpx.Internal(err)
+		})
 	}
 
 	// Recorded in the security log as well as the process log: the request log
@@ -769,7 +851,7 @@ func (h *Handlers) userTranscript(w http.ResponseWriter, r *http.Request) error 
 	record, err := h.conversations.Get(r.Context(), nil, userID, conversationID)
 	if err != nil {
 		if errors.Is(err, conversation.ErrNotFound) {
-			return httpx.NotFound("No such conversation.")
+			return httpx.NotFoundCode("conversation_not_found", "No such conversation.")
 		}
 		return httpx.Internal(err)
 	}
@@ -898,7 +980,7 @@ func (h *Handlers) createGroup(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	if body.Name == nil {
-		return httpx.BadRequest("A name is required.")
+		return httpx.BadRequestCode("name_required", "A name is required.")
 	}
 	if err := checkGroupModelAccess(body.ModelGrants); err != nil {
 		return err
@@ -1079,7 +1161,7 @@ func translateUserError(err error) error {
 	}
 	switch {
 	case errors.Is(err, user.ErrNotFound):
-		return httpx.NotFound("No such account.")
+		return httpx.NotFoundCode("account_not_found", "No such account.")
 	case errors.Is(err, user.ErrEmailTaken):
 		return httpx.Conflict("email_taken", "That email address is already registered.")
 	case errors.Is(err, user.ErrUsernameTaken):
@@ -1091,22 +1173,18 @@ func translateUserError(err error) error {
 		errors.Is(err, user.ErrAvatarTooLong):
 		return httpx.BadRequest("%s", trimSentence(err.Error()))
 	default:
-		var response *httpx.Error
-		if errors.As(err, &response) {
-			return response
-		}
-		return httpx.Internal(err)
+		return responseOr(err, internalError)
 	}
 }
 
 func translateGroupError(err error) error {
 	switch {
 	case errors.Is(err, group.ErrNotFound):
-		return httpx.NotFound("No such group.")
+		return httpx.NotFoundCode("group_not_found", "No such group.")
 	case errors.Is(err, group.ErrNameTaken):
 		return httpx.Conflict("group_exists", "A group with that name already exists.")
 	case errors.Is(err, group.ErrInvalidName):
-		return httpx.BadRequest("Name must be 1-40 characters.")
+		return httpx.BadRequestCode("group_name_length", "Name must be 1-40 characters.")
 	case errors.Is(err, group.ErrDeleteDefault), errors.Is(err, group.ErrUnsetDefault):
 		return httpx.Conflict("default_group", "Make another group the default first.")
 	case errors.Is(err, group.ErrDeleteLast):
@@ -1120,12 +1198,12 @@ func translateGroupError(err error) error {
 
 // Sentinels are namespaced for the log ("user: …"); a browser should see the
 // sentence, not the package it came from.
+//
+// The namespace comes off only when something follows it, and the sentence
+// then starts with a capital.
 func trimSentence(message string) string {
-	for _, prefix := range []string{"user: ", "group: ", "auth: ", "conversation: "} {
-		if len(message) > len(prefix) && message[:len(prefix)] == prefix {
-			message = message[len(prefix):]
-			break
-		}
+	if rest := trimPackagePrefix(message, "user: ", "group: ", "auth: ", "conversation: "); rest != "" {
+		message = rest
 	}
 	if message == "" {
 		return message

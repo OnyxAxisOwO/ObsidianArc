@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -92,7 +93,11 @@ func rewardUnavailable(err error) bool {
 const (
 	maxRules     = 30
 	maxCardCount = 20
-	maxDays      = 3650
+	// maxBonusDays bounds a bonus reward's lifetime. It matches card.MaxDays,
+	// which a card reward is checked against, but it is not that limit: the
+	// bonus store has no ceiling of its own, so this is only the sanity bound
+	// on what a configuration may hold.
+	maxBonusDays = 3650
 )
 
 type Service struct {
@@ -102,6 +107,14 @@ type Service struct {
 	cards    *card.Store
 	// Now is the clock, replaceable by tests.
 	Now func() time.Time
+
+	// zone remembers the last zone loaded, by name. Location runs once or
+	// twice on every paid turn and LoadLocation reads the zone file from disk
+	// each time; the name is still read from settings on every call, so a
+	// change takes effect at once and nothing here can go stale.
+	zoneMu   sync.Mutex
+	zoneName string
+	zone     *time.Location
 }
 
 func NewService(db *database.DB, set *settings.Service, bars *bonus.Store, cards *card.Store) *Service {
@@ -117,14 +130,22 @@ func (s *Service) Location() *time.Location {
 	if name == "" {
 		return time.UTC
 	}
+	s.zoneMu.Lock()
+	defer s.zoneMu.Unlock()
+	if s.zone != nil && s.zoneName == name {
+		return s.zone
+	}
 	loc, err := time.LoadLocation(name)
 	if err != nil {
+		// Not remembered: a zone database that appears later, or a corrected
+		// name, is picked up on the next call.
 		// A typo has always fallen back here. The log is for a valid name the host
 		// cannot load, which has no zone database to read from: every day is then
 		// counted in UTC, and nothing else reports it.
 		slog.Warn("checkin: timezone cannot be loaded, counting days in UTC", "zone", name, "error", err)
 		return time.UTC
 	}
+	s.zoneName, s.zone = name, loc
 	return loc
 }
 
@@ -241,7 +262,7 @@ func (s *Service) checkReward(ctx context.Context, q database.Queryer, r Reward,
 	case KindNone:
 		return nil
 	case KindBonus:
-		if r.Amount <= 0 || r.Amount > bonus.MaxAmount || r.ValidDays < 0 || r.ValidDays > maxDays {
+		if r.Amount <= 0 || r.Amount > bonus.MaxAmount || r.ValidDays < 0 || r.ValidDays > maxBonusDays {
 			return fmt.Errorf("%w: %s needs an amount and a number of days it lasts", ErrInvalid, what)
 		}
 		bar, err := s.bonus.Bar(ctx, q, r.BarID)
@@ -252,7 +273,7 @@ func (s *Service) checkReward(ctx context.Context, q database.Queryer, r Reward,
 			return fmt.Errorf("%w: %s names a shared pool, which is not granted to accounts", ErrInvalid, what)
 		}
 	case KindCard:
-		if r.Cards < 1 || r.Cards > maxCardCount || r.ValidDays < 1 || r.ValidDays > maxDays {
+		if r.Cards < 1 || r.Cards > maxCardCount || r.ValidDays < 1 || r.ValidDays > card.MaxDays {
 			return fmt.Errorf("%w: %s needs a number of cards and the days they last", ErrInvalid, what)
 		}
 		// Checked here for the same reason as everything else in this function:

@@ -45,7 +45,7 @@ func burstOfFlaggedSignups(t *testing.T, in *instance) {
 		go func() {
 			defer wg.Done()
 			<-start
-			in.server.auth.OnSignupReview(ctx,
+			in.server.auth.Hooks.OnSignupReview(ctx,
 				auth.RegisterInput{Username: fmt.Sprintf("bot%02d", i), IP: "203.0.113.9"}, nil, review)
 		}()
 	}
@@ -66,7 +66,7 @@ func TestABurstOfFlaggedSignupsIsOneAdministratorNotice(t *testing.T) {
 	review := auth.SignupReview{Ran: true, Decision: auth.SignupRefuse, Reason: "automated"}
 
 	for i := range 20 {
-		in.server.auth.OnSignupReview(ctx,
+		in.server.auth.Hooks.OnSignupReview(ctx,
 			auth.RegisterInput{Username: fmt.Sprintf("bot%02d", i), IP: "203.0.113.9"}, nil, review)
 	}
 
@@ -91,7 +91,7 @@ func TestAFlaggedSignupAfterTheWindowGetsItsOwnNotice(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	in.server.auth.OnSignupReview(ctx,
+	in.server.auth.Hooks.OnSignupReview(ctx,
 		auth.RegisterInput{Username: "later", IP: "203.0.113.9"}, nil, review)
 
 	if got := in.flaggedSignupNotices(ctx); got != 2 {

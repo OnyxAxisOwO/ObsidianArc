@@ -16,7 +16,7 @@ import { safeNext, serverOwned } from '@/lib/next';
 import { GUARD_DEADLINE_MS, GuardTimeout, withDeadline } from '@/lib/deadline';
 import { completeSignIn, fetchPoWChallenge, login, logout, register, type LoginResult, type PoWSolution } from '@/api/auth';
 import { solvePoW, type PoWTask } from '@/lib/pow';
-import { signInURL } from '@/api/oauth';
+import { signInURL, submitSignIn } from '@/api/oauth';
 import HomeNotice from '@/announce/HomeNotice.vue';
 import OaField from '@/components/OaField.vue';
 import OaThemeToggle from '@/components/OaThemeToggle.vue';
@@ -354,14 +354,12 @@ async function onProviderClick(event: MouseEvent, providerId: string): Promise<v
         return;
       }
     }
-    window.location.assign(
-      signInURL(providerId, {
-        next: safeNext(route.query['next']),
-        ...(token ? { turnstile: token } : {}),
-        register: registering.value,
-        ...(pow ? { pow } : {}),
-      }),
-    );
+    submitSignIn(providerId, {
+      next: safeNext(route.query['next']),
+      ...(token ? { turnstile: token } : {}),
+      register: registering.value,
+      ...(pow ? { pow } : {}),
+    });
   } finally {
     providerPending = false;
   }

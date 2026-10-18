@@ -27,6 +27,7 @@ import { apiErrorText } from '@/lib/api-error';
 import { relativeTime } from '@/lib/format';
 import AdminFailure from './AdminFailure.vue';
 import { useAdminView } from './adminView';
+import { errorLine } from './failure-codes';
 
 type DisplayMode = Announcement['display_mode'];
 
@@ -172,7 +173,7 @@ async function load(): Promise<void> {
   try {
     ({ announcements: announcements.value } = await adminApi.announcements());
   } catch (failure) {
-    error.value = failure instanceof Error ? failure.message : String(failure);
+    error.value = errorLine(failure);
   } finally {
     loaded.value = true;
     if (first) checkDrawerTarget();

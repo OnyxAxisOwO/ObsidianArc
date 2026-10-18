@@ -64,7 +64,7 @@ func (h *Handlers) createProvider(w http.ResponseWriter, r *http.Request) error 
 		return err
 	}
 	if body.CopyKeyFrom != nil && !id.Valid(*body.CopyKeyFrom) {
-		return httpx.BadRequest("Malformed provider id.")
+		return httpx.BadRequestCode("malformed_provider_id", "Malformed provider id.")
 	}
 
 	in := provider.CreateInput{
@@ -366,7 +366,7 @@ func (body modelRequest) createInput() model.CreateInput {
 func (h *Handlers) listModels(w http.ResponseWriter, r *http.Request) error {
 	providerID := r.URL.Query().Get("provider_id")
 	if providerID != "" && !id.Valid(providerID) {
-		return httpx.BadRequest("Malformed provider id.")
+		return httpx.BadRequestCode("malformed_provider_id", "Malformed provider id.")
 	}
 
 	records, err := h.models.ListAll(r.Context(), providerID)
@@ -391,7 +391,7 @@ func (h *Handlers) createModel(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	if !id.Valid(body.ProviderID) {
-		return httpx.BadRequest("A provider is required.")
+		return httpx.BadRequestCode("provider_required", "A provider is required.")
 	}
 	if _, err := h.providers.ByID(r.Context(), body.ProviderID); err != nil {
 		return translateProviderError(err)
@@ -462,10 +462,10 @@ func (h *Handlers) checkRoute(ctx context.Context, modelID string, body modelReq
 	}
 	targetID := *body.RouteToID
 	if !id.Valid(targetID) {
-		return httpx.BadRequest("Malformed model id.")
+		return httpx.BadRequestCode("malformed_model_id", "Malformed model id.")
 	}
 	if targetID == modelID {
-		return httpx.BadRequest("A model cannot route to itself.")
+		return httpx.BadRequestCode("route_to_self", "A model cannot route to itself.")
 	}
 	target, err := h.models.ByID(ctx, targetID)
 	// The pre-check reads the target before the store does, so it has to say
@@ -478,7 +478,7 @@ func (h *Handlers) checkRoute(ctx context.Context, modelID string, body modelReq
 		return model.TranslateError(err)
 	}
 	if target.RouteToID != "" {
-		return httpx.BadRequest("That model is itself routed elsewhere; routes are a single hop.")
+		return httpx.BadRequestCode("route_chained", "That model is itself routed elsewhere; routes are a single hop.")
 	}
 	return nil
 }
@@ -498,10 +498,10 @@ func (h *Handlers) reorderModels(w http.ResponseWriter, r *http.Request) error {
 	seen := make(map[string]bool, len(body.IDs))
 	for _, modelID := range body.IDs {
 		if !id.Valid(modelID) {
-			return httpx.BadRequest("Malformed model id.")
+			return httpx.BadRequestCode("malformed_model_id", "Malformed model id.")
 		}
 		if seen[modelID] {
-			return httpx.BadRequest("The same model appears twice in the order.")
+			return httpx.BadRequestCode("order_duplicate_model", "The same model appears twice in the order.")
 		}
 		seen[modelID] = true
 	}
@@ -548,7 +548,7 @@ func translateAdapterError(err error) error {
 	case adapter.ErrorUpstream:
 		return httpx.Unavailable(upstream.Message).WithCause(err)
 	case adapter.ErrorCancelled:
-		return httpx.Unavailable("The request was cancelled.")
+		return httpx.UnavailableCode("request_cancelled", "The request was cancelled.")
 	default:
 		return httpx.BadRequest("%s", upstream.Message)
 	}

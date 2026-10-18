@@ -7,8 +7,6 @@
 
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { adminApi, type CodeRedemption, type RedemptionCode } from '@/admin/api';
-import { ApiError } from '@/api/client';
-import { codeText } from '@/lib/api-error';
 import { saveAsFile } from '@/api/backup';
 import { copyToClipboard } from '@/chat/markdown';
 import OaBadge from '@/components/OaBadge.vue';
@@ -32,6 +30,7 @@ import { DAY_MS } from '@/lib/time';
 import { maskCredential, maskUser } from '@/admin/safeMode';
 import AdminFailure from './AdminFailure.vue';
 import { useAdminView } from './adminView';
+import { errorLine, refusalLine } from './failure-codes';
 
 const view = useAdminView();
 view.setTitle(() => t('codesTitle'), () => t('codesSubtitle'));
@@ -160,7 +159,7 @@ async function loadRedemptions(codeID: string): Promise<void> {
     if (existing.value?.id === codeID) redemptions.value = result.redemptions ?? [];
   } catch (failure) {
     if (existing.value?.id === codeID) {
-      redemptionsError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+      redemptionsError.value = refusalLine(failure);
     }
   } finally {
     if (existing.value?.id === codeID) redemptionsLoading.value = false;
@@ -203,7 +202,7 @@ async function create(): Promise<void> {
   } catch (failure) {
     // Only a code the interface has a sentence for is translated; any other
     // keeps the server's sentence, which an administrator may need verbatim.
-    panelError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    panelError.value = refusalLine(failure);
   } finally {
     busy.value = false;
   }
@@ -227,7 +226,7 @@ async function remove(): Promise<void> {
     void load();
   } catch (failure) {
     busy.value = false;
-    panelError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    panelError.value = refusalLine(failure);
   }
 }
 
@@ -253,7 +252,7 @@ async function load(): Promise<void> {
   try {
     ({ codes: codes.value } = await adminApi.codes());
   } catch (failure) {
-    error.value = failure instanceof Error ? failure.message : String(failure);
+    error.value = errorLine(failure);
   } finally {
     loaded.value = true;
   }

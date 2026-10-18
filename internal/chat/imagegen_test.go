@@ -116,7 +116,8 @@ func TestAnImageModelIsStillAnOrdinaryChatModel(t *testing.T) {
 		t.Errorf("the turn went to %q, want the chat endpoint", path)
 	}
 
-	conversations, err := lab.fixture.conversations.List(context.Background(), lab.fixture.account.ID, 10)
+	archived := false
+	conversations, err := lab.fixture.conversations.ListWithFilter(context.Background(), lab.fixture.account.ID, conversation.ListFilter{Limit: 10, Archived: &archived})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,6 +167,7 @@ func TestGeneratingAnImageIsChargedAndRecorded(t *testing.T) {
 		Images []struct {
 			AttachmentID string `json:"attachment_id"`
 			URL          string `json:"url"`
+			B64JSON      string `json:"b64_json"`
 		} `json:"images"`
 	}
 	if err := json.NewDecoder(recorder.Body).Decode(&body); err != nil {
@@ -176,6 +178,11 @@ func TestGeneratingAnImageIsChargedAndRecorded(t *testing.T) {
 	}
 	if !strings.HasPrefix(body.Images[0].URL, "/api/attachments/") {
 		t.Errorf("url = %q, want one served by this server", body.Images[0].URL)
+	}
+	// A stored picture is reached by its URL; the provider's copy is not
+	// echoed beside it as a second picture's worth of response.
+	if body.Images[0].B64JSON != "" {
+		t.Errorf("b64_json carried %d bytes beside a stored picture", len(body.Images[0].B64JSON))
 	}
 }
 

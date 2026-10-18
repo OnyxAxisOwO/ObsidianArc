@@ -12,7 +12,7 @@ import (
 func TestRegistrationAndProfileChangesScreenNewAddresses(t *testing.T) {
 	in := newInstance(t)
 	var calls atomic.Int32
-	in.server.auth.ScreenEmail = func(_ context.Context, address string) error {
+	in.server.auth.Hooks.ScreenEmail = func(_ context.Context, address string) error {
 		calls.Add(1)
 		switch address {
 		case "founder@temporary.example", "throwaway@temporary.example":

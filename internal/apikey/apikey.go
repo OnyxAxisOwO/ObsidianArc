@@ -420,7 +420,7 @@ func (s *Store) byID(ctx context.Context, userID, keyID string) (Key, error) {
 	return s.withModels(ctx, record)
 }
 
-type rowScanner interface{ Scan(dest ...any) error }
+type rowScanner = database.RowScanner
 
 func scan(row rowScanner) (Key, error) {
 	var record Key

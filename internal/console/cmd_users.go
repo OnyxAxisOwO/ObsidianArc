@@ -769,6 +769,38 @@ func init() {
 	})
 
 	registerCommand(Command{
+		Name:       "user cards held",
+		Group:      "accounts",
+		Summary:    Text{EN: "List the cards an account holds", ZH: "列出账户手上的重置卡"},
+		Usage:      "user cards held <id|username>",
+		Args:       []Arg{{Name: "id|username", Hint: Text{EN: "account id or username", ZH: "账户 id 或用户名"}, Required: true}},
+		Examples:   []string{"user cards held alice", "user cards held 01ARZ3NDEKTSV4RRFFQ69G5FAV"},
+		Permission: "users",
+		Endpoints:  []string{"GET /api/admin/users/{id}/cards"},
+		Run: func(_ context.Context, rt *Runtime) error {
+			ref, err := requireRef(rt, "account id or username")
+			if err != nil {
+				return err
+			}
+			uid, err := resolveUserRef(rt, ref)
+			if err != nil {
+				return err
+			}
+			data, _, err := rt.Call(http.MethodGet, "/api/admin/users/"+url.PathEscape(uid)+"/cards", nil)
+			if err != nil {
+				return err
+			}
+			held := asMap(asMap(data)["cards"])
+			var rows [][]string
+			for _, raw := range asSlice(held["cards"]) {
+				c := asMap(raw)
+				rows = append(rows, []string{asStr(c["id"]), asStr(c["name"]), formatWindows(c["windows"]), asStr(c["source"]), formatMS(c["expires_at"]), formatMS(c["created_at"])})
+			}
+			return rt.Table([]string{"id", "name", "windows", "source", "expires", "created"}, rows)
+		},
+	})
+
+	registerCommand(Command{
 		Name:    "user cards drop",
 		Group:   "accounts",
 		Summary: Text{EN: "Take one unused card back off an account", ZH: "收回账户手上的一张未使用重置卡"},

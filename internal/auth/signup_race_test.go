@@ -87,7 +87,7 @@ func TestASignUpThatRacedTheFirstAccountIsSentBackNotOpened(t *testing.T) {
 	// applies. Without it the sign-up opens, as the next test pins.
 	set(t, f, settings.SignupReview, "true")
 	set(t, f, settings.SignupReviewModel, "review-model")
-	f.auth.ReviewSignup = func(context.Context, RegisterInput, int) (SignupReview, error) {
+	f.auth.Hooks.ReviewSignup = func(context.Context, RegisterInput, int) (SignupReview, error) {
 		return SignupReview{Ran: true, Decision: SignupAllow}, nil
 	}
 
@@ -127,7 +127,7 @@ func TestASignUpThatRacedTheFirstAccountIsSentBackNotOpened(t *testing.T) {
 func TestASignUpThatRacedTheFirstAccountOpensWhenNoChallengeIsConfigured(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
-	f.auth.ReviewSignup = func(context.Context, RegisterInput, int) (SignupReview, error) {
+	f.auth.Hooks.ReviewSignup = func(context.Context, RegisterInput, int) (SignupReview, error) {
 		return SignupReview{Ran: true, Decision: SignupAllow}, nil
 	}
 

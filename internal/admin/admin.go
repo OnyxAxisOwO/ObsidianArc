@@ -16,10 +16,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/checkin"
 	"net/http"
 	"strings"
-	"sync"
 	"sync/atomic"
-
-	"golang.org/x/sync/singleflight"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/announcement"
@@ -111,34 +108,24 @@ type Handlers struct {
 	// not told to expect. Set by the wiring, which owns the proxy settings.
 	CloudflareUnclaimed func() bool
 
+	// The budget every ledger read shares; see allowUsageRead. Built by
+	// NewHandlers, so a handler never has to ask whether there is one.
 	UsageLimiter *httpx.TokenBucketLimiter
 
 	// Paid calls to upstream models, one budget per instance. Each sign-up
 	// review and each model probe spends provider credit whatever its caller,
 	// so the budget is not per caller. Refusing rather than queueing matches
 	// the test-send cooldowns. It lives in memory, so a second instance keeps
-	// its own budget, the same trade the usage limiter makes.
+	// its own budget, the same trade the usage limiter makes. Built by
+	// NewHandlers, like UsageLimiter.
 	reviewBudget *httpx.TokenBucketLimiter
 	probeBudget  *httpx.TokenBucketLimiter
 
-	usageCacheMu        sync.RWMutex
-	usageSummaryCache   map[string]*cachedUsageSummary
-	usageBreakdownCache map[string]*cachedUsageBreakdown
-	usageSummarySF      singleflight.Group
-	usageBreakdownSF    singleflight.Group
-	// The allowances ranking is built once per search and group for each
-	// short window, and paged from that copy; see allowances.go.
-	allowanceSF singleflight.Group
-	// Bumped by every write that changes what an account has left, so a ranking
-	// built before the write is neither cached nor handed to a request after
-	// it. Guarded by usageCacheMu; see forgetAllowanceRankings.
-	allowanceGeneration uint64
+	usageCache usageCache
 
 	// The resources page's storage totals, read at most once per
 	// storageCacheTTL; see resources.go.
-	storageMu    sync.Mutex
-	storageCache *storageTotals
-	storageSF    singleflight.Group
+	storageCache storageState
 
 	// Not injected: it is two fields of state that only the resources page
 	// has any use for, and it is meaningless before the first request.
@@ -200,54 +187,59 @@ func (h *Handlers) Mount(route Route) {
 	h.extra = append(h.extra, route)
 }
 
-func NewHandlers(
-	db *database.DB,
-	users *user.Store,
-	groups *group.Store,
-	providers *provider.Store,
-	models *model.Store,
-	set *settings.Service,
-	registry *adapter.Registry,
-	authService *auth.Service,
-	usageStore *usage.Store,
-	quotaService *quota.Service,
-	conversations *conversation.Store,
-	announcements *announcement.Store,
-	keys *apikey.Store,
-	requests *reqlog.Store,
-	securityLog *securityevents.Store,
-	cards *card.Store,
-	healthStore *health.Store,
-	feedbackStore *feedback.Store,
-	apps *idp.Store,
-	invites *invite.Store,
-) *Handlers {
+// Deps is what the backoffice cannot run without, named rather than passed by
+// position: twenty stores in a row is a call where swapping two of the same
+// shape compiles and is wrong. The optional hooks stay fields on Handlers,
+// set by the wiring after NewHandlers, because each of them has an answer for
+// being absent.
+type Deps struct {
+	DB            *database.DB
+	Users         *user.Store
+	Groups        *group.Store
+	Providers     *provider.Store
+	Models        *model.Store
+	Settings      *settings.Service
+	Registry      *adapter.Registry
+	Auth          *auth.Service
+	Usage         *usage.Store
+	Quota         *quota.Service
+	Conversations *conversation.Store
+	Announcements *announcement.Store
+	Keys          *apikey.Store
+	Requests      *reqlog.Store
+	Security      *securityevents.Store
+	Cards         *card.Store
+	Health        *health.Store
+	Feedback      *feedback.Store
+	Apps          *idp.Store
+	Invites       *invite.Store
+}
+
+func NewHandlers(d Deps) *Handlers {
 	return &Handlers{
-		db:                  db,
-		users:               users,
-		groups:              groups,
-		providers:           providers,
-		models:              models,
-		settings:            set,
-		registry:            registry,
-		auth:                authService,
-		usage:               usageStore,
-		quota:               quotaService,
-		conversations:       conversations,
-		announcements:       announcements,
-		keys:                keys,
-		requests:            requests,
-		security:            securityLog,
-		cards:               cards,
-		health:              healthStore,
-		feedback:            feedbackStore,
-		apps:                apps,
-		invites:             invites,
-		UsageLimiter:        httpx.NewTokenBucketLimiter(5, 10),
-		reviewBudget:        httpx.NewTokenBucketLimiter(1.0/10, 3),
-		probeBudget:         httpx.NewTokenBucketLimiter(1.0/30, 1),
-		usageSummaryCache:   make(map[string]*cachedUsageSummary),
-		usageBreakdownCache: make(map[string]*cachedUsageBreakdown),
+		db:            d.DB,
+		users:         d.Users,
+		groups:        d.Groups,
+		providers:     d.Providers,
+		models:        d.Models,
+		settings:      d.Settings,
+		registry:      d.Registry,
+		auth:          d.Auth,
+		usage:         d.Usage,
+		quota:         d.Quota,
+		conversations: d.Conversations,
+		announcements: d.Announcements,
+		keys:          d.Keys,
+		requests:      d.Requests,
+		security:      d.Security,
+		cards:         d.Cards,
+		health:        d.Health,
+		feedback:      d.Feedback,
+		apps:          d.Apps,
+		invites:       d.Invites,
+		UsageLimiter:  httpx.NewTokenBucketLimiter(5, 10),
+		reviewBudget:  httpx.NewTokenBucketLimiter(1.0/10, 3),
+		probeBudget:   httpx.NewTokenBucketLimiter(1.0/30, 1),
 	}
 }
 
@@ -399,6 +391,7 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.Handle("POST /api/admin/codes", protected("codes", h.createCode))
 	mux.Handle("GET /api/admin/codes/{id}/redemptions", protected("codes", h.codeRedemptions))
 	mux.Handle("DELETE /api/admin/codes/{id}", protected("codes", h.deleteCode))
+	mux.Handle("GET /api/admin/users/{id}/cards", protected("users", h.userCards))
 	mux.Handle("POST /api/admin/users/{id}/cards", protected("users", h.grantCards))
 	mux.Handle("PATCH /api/admin/users/{id}/cards", protected("users", h.rescheduleCards))
 	mux.Handle("DELETE /api/admin/users/{id}/cards/{card}", protected("users", h.revokeCard))
@@ -491,7 +484,7 @@ func (h *Handlers) meta(w http.ResponseWriter, _ *http.Request) error {
 func pathID(r *http.Request, name string) (string, error) {
 	value := r.PathValue(name)
 	if !id.Valid(value) {
-		return "", httpx.BadRequest("Malformed identifier.")
+		return "", httpx.BadRequestCode("malformed_identifier", "Malformed identifier.")
 	}
 	return value, nil
 }
@@ -499,25 +492,25 @@ func pathID(r *http.Request, name string) (string, error) {
 func translateProviderError(err error) error {
 	switch {
 	case errors.Is(err, provider.ErrNotFound):
-		return httpx.NotFound("No such provider.")
+		return httpx.NotFoundCode("provider_not_found", "No such provider.")
 	case errors.Is(err, provider.ErrNameTaken):
 		return httpx.Conflict("provider_exists", "A provider with that name already exists.")
 	case errors.Is(err, provider.ErrInvalidName):
-		return httpx.BadRequest("Name must be 1-60 characters.")
+		return httpx.BadRequestCode("provider_name_length", "Name must be 1-60 characters.")
 	case errors.Is(err, provider.ErrInvalidKind):
-		return httpx.BadRequest("Provider type must be openai or anthropic.")
+		return httpx.BadRequestCode("provider_kind_invalid", "Provider type must be openai or anthropic.")
 	case errors.Is(err, provider.ErrInvalidStyle):
-		return httpx.BadRequest("Unknown reasoning style.")
+		return httpx.BadRequestCode("reasoning_style_unknown", "Unknown reasoning style.")
 	case errors.Is(err, provider.ErrRouted):
 		return httpx.Conflict("provider_routed", "Models on other providers route into this one. Clear those routes first.")
 	case errors.Is(err, provider.ErrKeyRequired):
-		return httpx.BadRequest("An API key is required.")
+		return httpx.BadRequestCode("api_key_required", "An API key is required.")
 	case errors.Is(err, provider.ErrKeyNeededForMove):
 		return httpx.BadRequestCode("provider_key_needed", "A new base URL needs the API key entered again.")
 	case errors.Is(err, provider.ErrBaseURLNeedsSuperAdmin):
 		return httpx.ForbiddenCode("super_admin_required", "Only a super administrator can set or change a provider's base URL.")
 	case errors.Is(err, provider.ErrTooManyHeaders):
-		return httpx.BadRequest("At most 20 extra headers.")
+		return httpx.BadRequestCode("too_many_headers", "At most 20 extra headers.")
 	case errors.Is(err, provider.ErrHiddenHeader):
 		return httpx.BadRequestCode("header_hidden", "A header value shown as a hint cannot be saved. Enter the value again.")
 	case errors.Is(err, provider.ErrInvalidHeaderName):
@@ -535,15 +528,17 @@ func translateProviderError(err error) error {
 		return httpx.BadRequestCode("header_duplicate", "Header name %s matches another header once spaces are trimmed and letter case is ignored. Keep one of them.", name).
 			WithDetails(map[string]any{"name": name})
 	case errors.Is(err, provider.ErrTooManyKeys):
-		return httpx.BadRequest("At most %d API keys.", provider.MaxAPIKeys)
+		return httpx.BadRequestCode("too_many_api_keys", "At most %d API keys.", provider.MaxAPIKeys).
+			WithDetails(map[string]any{"max": provider.MaxAPIKeys})
 	case errors.Is(err, provider.ErrKeyTooLong):
-		return httpx.BadRequest("An API key is at most %d characters.", provider.MaxAPIKeyChars)
+		return httpx.BadRequestCode("api_key_too_long", "An API key is at most %d characters.", provider.MaxAPIKeyChars).
+			WithDetails(map[string]any{"max": provider.MaxAPIKeyChars})
 	case errors.Is(err, provider.ErrInvalidRotation):
-		return httpx.BadRequest("Key rotation must be sequential or random.")
+		return httpx.BadRequestCode("key_rotation_invalid", "Key rotation must be sequential or random.")
 	case errors.Is(err, provider.ErrKeysChanged):
 		return httpx.Conflict("provider_keys_changed", "The API keys were changed meanwhile. Open the provider again.")
 	case errors.Is(err, provider.ErrInvalidBaseURL):
-		return httpx.BadRequest("%s", strings.TrimPrefix(err.Error(), "provider: "))
+		return httpx.BadRequest("%s", trimPackagePrefix(err.Error(), "provider: "))
 	default:
 		// A base-URL rejection is a validation message written for a person,
 		// so it is passed through rather than swallowed into a 500.

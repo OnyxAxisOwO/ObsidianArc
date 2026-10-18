@@ -1072,6 +1072,10 @@ export const adminApi = {
   revokeUserKey: (id: string, keyID: string) =>
     api.delete<void>(`/api/admin/users/${encodeURIComponent(id)}/keys/${encodeURIComponent(keyID)}`),
 
+  // The cards alone, for the panel to re-read after a card changes: the
+  // account detail would read usage and limits that change never touched.
+  userCards: (id: string) => api.get<{ cards: CardHolding }>(`/api/admin/users/${encodeURIComponent(id)}/cards`),
+
   userSessions: (id: string) => api.get<{ sessions: AdminSession[] }>(`/api/admin/users/${encodeURIComponent(id)}/sessions`),
   revokeUserSession: (id: string, sessionID: string) =>
     api.delete<void>(`/api/admin/users/${encodeURIComponent(id)}/sessions/${encodeURIComponent(sessionID)}`),

@@ -103,7 +103,7 @@ func SQLProblems(dir string) ([]string, error) {
 			if !ok {
 				return true
 			}
-			body := stripLineComments(sql)
+			body := database.StripSQLComments(sql)
 			if !looksLikeSQL.MatchString(body) && !looksLikeFragment.MatchString(body) {
 				// One side of a concatenation with a non-constant operand is
 				// visited on its own, and is checked there if it reads as SQL.
@@ -135,7 +135,7 @@ func skippedByGoTool(name string) bool {
 }
 
 func problemsIn(sql string) []string {
-	body := stripLineComments(sql)
+	body := database.StripSQLComments(sql)
 	problems := database.PortabilityProblems(sql)
 	for _, rule := range runtimeNonPortable {
 		if match := rule.pattern.FindString(body); match != "" {
@@ -143,35 +143,6 @@ func problemsIn(sql string) []string {
 		}
 	}
 	return problems
-}
-
-// stripLineComments blanks each "--" comment to the end of its line. A "--"
-// inside a quoted literal is text, not a comment: cutting there would hide the
-// rest of the statement from the runtime rules. Quotes are tracked the way SQL
-// spells them: two quote marks in a row inside a literal are one escaped quote,
-// so toggling on each mark leaves the literal open.
-func stripLineComments(sql string) string {
-	var out strings.Builder
-	quoted := false
-	for i := 0; i < len(sql); i++ {
-		c := sql[i]
-		switch {
-		case c == '\'':
-			quoted = !quoted
-			out.WriteByte(c)
-		case !quoted && c == '-' && i+1 < len(sql) && sql[i+1] == '-':
-			end := strings.IndexByte(sql[i:], '\n')
-			if end < 0 {
-				return out.String()
-			}
-			// Stop on the newline itself, which is kept, so the lines of the
-			// stripped text still match the source.
-			i += end - 1
-		default:
-			out.WriteByte(c)
-		}
-	}
-	return out.String()
 }
 
 // constantString is the value of a string literal, or of literals joined by +.

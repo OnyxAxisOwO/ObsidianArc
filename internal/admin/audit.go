@@ -315,11 +315,11 @@ func (h *Handlers) auditFilter(r *http.Request) (audit.Filter, error) {
 		filter.Limit = 50
 	}
 	if filter.Outcome != "" && filter.Outcome != "ok" && filter.Outcome != "failed" {
-		return filter, httpx.BadRequest("Outcome must be ok or failed.")
+		return filter, httpx.BadRequestCode("outcome_filter_invalid", "Outcome must be ok or failed.")
 	}
 	if value := strings.TrimSpace(query.Get("actor_id")); value != "" {
 		if !id.Valid(value) {
-			return filter, httpx.BadRequest("Malformed actor id.")
+			return filter, httpx.BadRequestCode("malformed_actor_id", "Malformed actor id.")
 		}
 		filter.ActorID = value
 	}
@@ -328,13 +328,13 @@ func (h *Handlers) auditFilter(r *http.Request) (audit.Filter, error) {
 	if value := strings.TrimSpace(query.Get("action")); value != "" {
 		method, route, ok := strings.Cut(value, " ")
 		if !ok || method == "" || !strings.HasPrefix(route, "/api/admin/") {
-			return filter, httpx.BadRequest("Malformed action.")
+			return filter, httpx.BadRequestCode("malformed_action", "Malformed action.")
 		}
 		filter.Method, filter.Route = method, route
 	}
 	if value := strings.TrimSpace(query.Get("target_id")); value != "" {
 		if len(value) > 120 {
-			return filter, httpx.BadRequest("Malformed target.")
+			return filter, httpx.BadRequestCode("malformed_target", "Malformed target.")
 		}
 		filter.TargetID = value
 	}
@@ -342,7 +342,8 @@ func (h *Handlers) auditFilter(r *http.Request) (audit.Filter, error) {
 		if value := strings.TrimSpace(query.Get(name)); value != "" {
 			at, err := strconv.ParseInt(value, 10, 64)
 			if err != nil || at < 0 {
-				return filter, httpx.BadRequest("%s must be a timestamp in milliseconds.", name)
+				return filter, httpx.BadRequestCode("timestamp_invalid", "%s must be a timestamp in milliseconds.", name).
+					WithDetails(map[string]any{"param": name})
 			}
 			*into = at
 		}
@@ -384,7 +385,7 @@ func (h *Handlers) showAudit(w http.ResponseWriter, r *http.Request) error {
 	}
 	entry, err := h.Audit.Get(r.Context(), entryID)
 	if errors.Is(err, audit.ErrNotFound) {
-		return httpx.NotFound("No such audit entry.")
+		return httpx.NotFoundCode("audit_entry_not_found", "No such audit entry.")
 	}
 	if err != nil {
 		return httpx.Internal(err)

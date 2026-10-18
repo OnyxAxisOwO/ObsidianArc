@@ -24,11 +24,11 @@ func TestAServiceWithoutItsInviteHooksDoesNotBoot(t *testing.T) {
 }
 
 func TestAServiceWiredWithItsInviteHooksPasses(t *testing.T) {
-	s := &Service{
+	s := &Service{Hooks: Hooks{
 		ConsumeInvite:   func(context.Context, *database.Tx, string) (*InviteGrant, error) { return nil, nil },
 		RecordInviteUse: func(context.Context, *database.Tx, InviteGrant, string) error { return nil },
 		RewardInvite:    func(context.Context, string, bool) {},
-	}
+	}}
 	if err := s.CheckWired(); err != nil {
 		t.Fatalf("a wired service was refused: %v", err)
 	}

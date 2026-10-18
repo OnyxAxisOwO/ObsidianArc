@@ -306,7 +306,7 @@ func TestSpendNextUsesTheEarliestExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.store.SpendNext(ctx, nil, person.ID); err != nil {
+	if _, err := f.store.SpendNextForWindow(ctx, nil, person.ID, ""); err != nil {
 		t.Fatal(err)
 	}
 

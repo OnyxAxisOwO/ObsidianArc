@@ -130,11 +130,11 @@ func TestAUserOverrideCanBeStricterThanItsGroup(t *testing.T) {
 
 	watched := account("watched", "shared")
 	for attempt := 1; attempt <= 2; attempt++ {
-		if _, err := service.Reserve(ctx, watched, Estimate{}); err != nil {
+		if _, err := service.ReserveFor(ctx, watched, "", Estimate{}, nil); err != nil {
 			t.Fatalf("request %d was refused: %v", attempt, err)
 		}
 	}
-	_, err := service.Reserve(ctx, watched, Estimate{})
+	_, err := service.ReserveFor(ctx, watched, "", Estimate{}, nil)
 	exceeded, ok := AsExceeded(err)
 	if !ok {
 		t.Fatalf("the third request got past a limit of two: %v", err)
@@ -146,7 +146,7 @@ func TestAUserOverrideCanBeStricterThanItsGroup(t *testing.T) {
 	// The group everybody else is in did not move.
 	ordinary := account("ordinary", "shared")
 	for attempt := 1; attempt <= 3; attempt++ {
-		if _, err := service.Reserve(ctx, ordinary, Estimate{}); err != nil {
+		if _, err := service.ReserveFor(ctx, ordinary, "", Estimate{}, nil); err != nil {
 			t.Fatalf("another member of the same group was refused at %d: %v", attempt, err)
 		}
 	}
@@ -218,7 +218,7 @@ func TestANumberAloneDoesNotTurnAWindowOn(t *testing.T) {
 
 	person := account("typed-a-number", "no-five-hour")
 	for attempt := 1; attempt <= 5; attempt++ {
-		if _, err := service.Reserve(ctx, person, Estimate{}); err != nil {
+		if _, err := service.ReserveFor(ctx, person, "", Estimate{}, nil); err != nil {
 			t.Fatalf("request %d was refused by a window nothing switched on: %v", attempt, err)
 		}
 	}
@@ -234,7 +234,7 @@ func TestANumberAloneDoesNotTurnAWindowOn(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	_, err := service.Reserve(ctx, person, Estimate{})
+	_, err := service.ReserveFor(ctx, person, "", Estimate{}, nil)
 	if _, ok := AsExceeded(err); !ok {
 		t.Errorf("a window switched on did not count the requests made before it: %v", err)
 	}
@@ -255,12 +255,12 @@ func TestReserveStopsAtTheRequestLimit(t *testing.T) {
 
 	person := account("user-1", "")
 	for attempt := 1; attempt <= 3; attempt++ {
-		if _, err := service.Reserve(ctx, person, Estimate{}); err != nil {
+		if _, err := service.ReserveFor(ctx, person, "", Estimate{}, nil); err != nil {
 			t.Fatalf("request %d was refused: %v", attempt, err)
 		}
 	}
 
-	_, err := service.Reserve(ctx, person, Estimate{})
+	_, err := service.ReserveFor(ctx, person, "", Estimate{}, nil)
 	exceeded, ok := AsExceeded(err)
 	if !ok {
 		t.Fatalf("the fourth request was allowed: %v", err)
@@ -294,7 +294,7 @@ func TestConcurrentAutomaticResetSpendsOneCard(t *testing.T) {
 	}
 	person := account(userID, "")
 	for range 10 {
-		if _, err := service.Reserve(ctx, person, Estimate{}); err != nil {
+		if _, err := service.ReserveFor(ctx, person, "", Estimate{}, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -309,7 +309,7 @@ func TestConcurrentAutomaticResetSpendsOneCard(t *testing.T) {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			_, err := service.ReserveWithAutoReset(ctx, person, Estimate{},
+			_, err := service.ReserveFor(ctx, person, "", Estimate{},
 				func(context.Context, database.Queryer, Window) ([]string, bool, error) {
 					mu.Lock()
 					spent++
@@ -340,11 +340,11 @@ func TestAutomaticResetDoesNotSpendForMinuteRateLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	person := account("rate-limited", "")
-	if _, err := service.Reserve(ctx, person, Estimate{}); err != nil {
+	if _, err := service.ReserveFor(ctx, person, "", Estimate{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	spent := 0
-	_, err := service.ReserveWithAutoReset(ctx, person, Estimate{},
+	_, err := service.ReserveFor(ctx, person, "", Estimate{},
 		func(context.Context, database.Queryer, Window) ([]string, bool, error) {
 			spent++
 			return nil, true, nil
@@ -381,7 +381,7 @@ func TestAutoResetTargetingWindowVariantClearsOnlyTargetedWindow(t *testing.T) {
 
 	// Exhaust 5h window (2 requests), and record 2 requests into 1w window as well.
 	for range 2 {
-		if _, err := service.Reserve(ctx, person, Estimate{}); err != nil {
+		if _, err := service.ReserveFor(ctx, person, "", Estimate{}, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -397,7 +397,7 @@ func TestAutoResetTargetingWindowVariantClearsOnlyTargetedWindow(t *testing.T) {
 	}
 
 	// 1. Auto-reset with a 5h card only clears 5h window.
-	res, err := service.ReserveWithAutoReset(ctx, person, Estimate{},
+	res, err := service.ReserveFor(ctx, person, "", Estimate{},
 		func(ctx context.Context, q database.Queryer, needed Window) ([]string, bool, error) {
 			if needed != Window5H {
 				t.Fatalf("needed window = %s, want 5h", needed)
@@ -435,12 +435,12 @@ func TestAutoResetTargetingWindowVariantClearsOnlyTargetedWindow(t *testing.T) {
 
 	// 2. If user only has a 1w card (no 5h card) and 5h is exhausted again:
 	// Exhaust the remaining 1 request in 5h:
-	if _, err := service.Reserve(ctx, person, Estimate{}); err != nil {
+	if _, err := service.ReserveFor(ctx, person, "", Estimate{}, nil); err != nil {
 		t.Fatal(err)
 	}
 
 	// 5h is exhausted. Callback says no matching card (spent = false):
-	_, err = service.ReserveWithAutoReset(ctx, person, Estimate{},
+	_, err = service.ReserveFor(ctx, person, "", Estimate{},
 		func(ctx context.Context, q database.Queryer, needed Window) ([]string, bool, error) {
 			if needed == Window5H {
 				// No 5h card available!
@@ -470,12 +470,12 @@ func TestResetRetryCountsEachWindowOnce(t *testing.T) {
 	}
 	person := account("reset-retry-user", "")
 	for range 2 {
-		if _, err := service.Reserve(ctx, person, Estimate{Tokens: 100}); err != nil {
+		if _, err := service.ReserveFor(ctx, person, "", Estimate{Tokens: 100}, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	if _, err := service.ReserveWithAutoReset(ctx, person, Estimate{Tokens: 100},
+	if _, err := service.ReserveFor(ctx, person, "", Estimate{Tokens: 100},
 		func(ctx context.Context, q database.Queryer, needed Window) ([]string, bool, error) {
 			if needed != WindowWeek {
 				t.Fatalf("needed window = %s, want 1w", needed)
@@ -522,24 +522,24 @@ func TestResetRetryChargesTheMinuteOnce(t *testing.T) {
 	}
 	person := account("minute-user", "")
 	for range 2 {
-		if _, err := service.Reserve(ctx, person, Estimate{Tokens: 100}); err != nil {
+		if _, err := service.ReserveFor(ctx, person, "", Estimate{Tokens: 100}, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
 
 	// The third request is refused by the five-hour window, a card that clears
 	// only that window pays for it, and the request runs on the retry.
-	if _, err := service.ReserveWithAutoReset(ctx, person, Estimate{Tokens: 100},
+	if _, err := service.ReserveFor(ctx, person, "", Estimate{Tokens: 100},
 		func(context.Context, database.Queryer, Window) ([]string, bool, error) {
 			return []string{"5h"}, true, nil
 		}); err != nil {
 		t.Fatalf("reserve after a five-hour card: %v", err)
 	}
-	if _, err := service.Reserve(ctx, person, Estimate{Tokens: 100}); err != nil {
+	if _, err := service.ReserveFor(ctx, person, "", Estimate{Tokens: 100}, nil); err != nil {
 		t.Fatal(err)
 	}
 	// The window is full again, and a full card is what clears it this time.
-	if _, err := service.ReserveWithAutoReset(ctx, person, Estimate{Tokens: 100},
+	if _, err := service.ReserveFor(ctx, person, "", Estimate{Tokens: 100},
 		func(context.Context, database.Queryer, Window) ([]string, bool, error) {
 			return nil, true, nil
 		}); err != nil {
@@ -579,10 +579,10 @@ func TestLimitsAreScopedToTheAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := service.Reserve(ctx, account("user-1", ""), Estimate{}); err != nil {
+	if _, err := service.ReserveFor(ctx, account("user-1", ""), "", Estimate{}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Reserve(ctx, account("user-2", ""), Estimate{}); err != nil {
+	if _, err := service.ReserveFor(ctx, account("user-2", ""), "", Estimate{}, nil); err != nil {
 		t.Errorf("a second account was blocked by the first's usage: %v", err)
 	}
 }
@@ -604,10 +604,10 @@ func TestRejectedReservationRollsBack(t *testing.T) {
 	}
 
 	person := account("user-1", "")
-	if _, err := service.Reserve(ctx, person, Estimate{}); err != nil {
+	if _, err := service.ReserveFor(ctx, person, "", Estimate{}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Reserve(ctx, person, Estimate{}); err == nil {
+	if _, err := service.ReserveFor(ctx, person, "", Estimate{}, nil); err == nil {
 		t.Fatal("the second request was allowed")
 	}
 
@@ -651,7 +651,7 @@ func TestConcurrentReservationsCannotOverspend(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := service.Reserve(ctx, person, Estimate{}); err == nil {
+			if _, err := service.ReserveFor(ctx, person, "", Estimate{}, nil); err == nil {
 				mu.Lock()
 				accepted++
 				mu.Unlock()
@@ -677,7 +677,7 @@ func TestTokenCeilingRefusesOnceSpent(t *testing.T) {
 	}
 
 	person := account("user-1", "")
-	if _, err := service.Reserve(ctx, person, Estimate{}); err != nil {
+	if _, err := service.ReserveFor(ctx, person, "", Estimate{}, nil); err != nil {
 		t.Fatalf("the first request was refused with nothing spent: %v", err)
 	}
 
@@ -687,7 +687,7 @@ func TestTokenCeilingRefusesOnceSpent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := service.Reserve(ctx, person, Estimate{})
+	_, err := service.ReserveFor(ctx, person, "", Estimate{}, nil)
 	exceeded, ok := AsExceeded(err)
 	if !ok {
 		t.Fatalf("a request was allowed after the token allowance was spent: %v", err)
@@ -709,14 +709,14 @@ func TestCreditCeiling(t *testing.T) {
 	}
 
 	person := account("user-1", "")
-	if _, err := service.Reserve(ctx, person, Estimate{}); err != nil {
+	if _, err := service.ReserveFor(ctx, person, "", Estimate{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := service.Settle(ctx, person, Estimate{}, Estimate{Tokens: 0, Credits: 5.5}); err != nil {
 		t.Fatal(err)
 	}
 
-	_, reserveErr := service.Reserve(ctx, person, Estimate{})
+	_, reserveErr := service.ReserveFor(ctx, person, "", Estimate{}, nil)
 	exceeded, ok := AsExceeded(reserveErr)
 	if !ok || exceeded.Dimension != "credits" {
 		t.Fatalf("the credit ceiling did not apply: %+v", exceeded)
@@ -738,7 +738,7 @@ func TestAdministratorsBypassByDefault(t *testing.T) {
 
 	admin := user.User{ID: "admin-1", Role: user.RoleSuperAdmin, Status: user.StatusActive}
 	for attempt := 0; attempt < 5; attempt++ {
-		if _, err := service.Reserve(ctx, admin, Estimate{}); err != nil {
+		if _, err := service.ReserveFor(ctx, admin, "", Estimate{}, nil); err != nil {
 			t.Fatalf("an administrator was rate limited: %v", err)
 		}
 	}
@@ -758,7 +758,7 @@ func TestSummaryReportsEveryWindow(t *testing.T) {
 	}
 
 	person := account("user-1", "")
-	if _, err := service.Reserve(ctx, person, Estimate{}); err != nil {
+	if _, err := service.ReserveFor(ctx, person, "", Estimate{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := service.Settle(ctx, person, Estimate{}, Estimate{Tokens: 350, Credits: 0.35}); err != nil {
@@ -806,7 +806,7 @@ func TestUnenforcedAccountStillReportsUsage(t *testing.T) {
 	ctx := context.Background()
 
 	person := account("user-1", "")
-	if _, err := service.Reserve(ctx, person, Estimate{}); err != nil {
+	if _, err := service.ReserveFor(ctx, person, "", Estimate{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := service.Settle(ctx, person, Estimate{}, Estimate{Tokens: 42, Credits: 0.042}); err != nil {
@@ -1008,7 +1008,7 @@ func TestConcurrentTurnsCannotOverspendTokens(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := service.Reserve(ctx, person, estimate); err == nil {
+			if _, err := service.ReserveFor(ctx, person, "", estimate, nil); err == nil {
 				mu.Lock()
 				accepted++
 				mu.Unlock()
@@ -1038,7 +1038,7 @@ func TestReleaseGivesBackTheReservation(t *testing.T) {
 	}
 
 	person := account("user-1", "")
-	reserved, err := service.Reserve(ctx, person, Estimate{Tokens: 4000, Credits: 4})
+	reserved, err := service.ReserveFor(ctx, person, "", Estimate{Tokens: 4000, Credits: 4}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1087,7 +1087,7 @@ func TestAnUnenforcedWindowMeasuresTheTurn(t *testing.T) {
 	}
 
 	person := account("user-1", "")
-	reserved, err := service.Reserve(ctx, person, Estimate{Tokens: 4000, Credits: 4})
+	reserved, err := service.ReserveFor(ctx, person, "", Estimate{Tokens: 4000, Credits: 4}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1135,7 +1135,7 @@ func TestAResetRetryCountsAnUnenforcedWindowOnce(t *testing.T) {
 	}
 
 	person := account("user-1", "")
-	if _, err := service.Reserve(ctx, person, Estimate{}); err != nil {
+	if _, err := service.ReserveFor(ctx, person, "", Estimate{}, nil); err != nil {
 		t.Fatalf("the first request was refused: %v", err)
 	}
 
@@ -1144,7 +1144,7 @@ func TestAResetRetryCountsAnUnenforcedWindowOnce(t *testing.T) {
 	resetWeek := func(context.Context, database.Queryer, Window) ([]string, bool, error) {
 		return []string{string(WindowWeek)}, true, nil
 	}
-	if _, err := service.ReserveWithAutoReset(ctx, person, Estimate{}, resetWeek); err != nil {
+	if _, err := service.ReserveFor(ctx, person, "", Estimate{}, resetWeek); err != nil {
 		t.Fatalf("the reset card did not let the second request through: %v", err)
 	}
 
@@ -1176,7 +1176,7 @@ func TestCountersNeverGoNegative(t *testing.T) {
 	}
 
 	person := account("user-1", "")
-	reserved, err := service.Reserve(ctx, person, Estimate{Tokens: 5000, Credits: 50})
+	reserved, err := service.ReserveFor(ctx, person, "", Estimate{Tokens: 5000, Credits: 50}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

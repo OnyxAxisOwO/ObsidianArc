@@ -304,7 +304,7 @@ func (s *Store) Delete(ctx context.Context, scope Scope, scopeID string) error {
 	return nil
 }
 
-type rowScanner interface{ Scan(dest ...any) error }
+type rowScanner = database.RowScanner
 
 func scanPolicy(row rowScanner) (Policy, error) {
 	var (

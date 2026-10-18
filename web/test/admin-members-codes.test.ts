@@ -260,6 +260,7 @@ describe('moving the expiry on cards an account already holds', () => {
       lifetime: { requests: 0, input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, total_tokens: 0, credits: 0, errors: 0, users: 0, models: 0, duration_ms: 0 },
       cards: holding,
     });
+    vi.spyOn(adminApi, 'userCards').mockResolvedValue({ cards: holding });
     vi.spyOn(adminApi, 'userKeys').mockResolvedValue({ keys: [] });
     await mount(AdminUsers);
     host.querySelector<HTMLTableRowElement>('tbody tr')!.click();

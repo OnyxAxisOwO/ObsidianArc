@@ -16,7 +16,6 @@ import { useRoute, useRouter } from 'vue-router';
 import { BACKOFFICE_PANEL_PARAM } from '@/composables/usePanelExit';
 import { adminApi, type LogEntry, type LogFacets, type LogOption } from '@/admin/api';
 import { ApiError } from '@/api/client';
-import { codeText } from '@/lib/api-error';
 import OaPagination from '@/components/OaPagination.vue';
 import type { PageState } from '@/components/table-types';
 import OaBadge from '@/components/OaBadge.vue';
@@ -33,6 +32,7 @@ import { HOUR_MS } from '@/lib/time';
 import { maskUser, maskLog } from '@/admin/safeMode';
 import AdminFailure from './AdminFailure.vue';
 import { useAdminView } from './adminView';
+import { adminCodeText } from './failure-codes';
 
 const pageSize = ref(rememberedPageSize());
 
@@ -152,7 +152,7 @@ async function reload(): Promise<void> {
       // Without facets the filter controls cannot be drawn, so they give way to
       // the failure; the retry asks for both again.
       facets.value = null;
-      facetsError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : t('failed');
+      facetsError.value = failure instanceof ApiError ? adminCodeText(failure.code, failure.details) ?? failure.message : t('failed');
     },
   );
   await Promise.all([facetsDone, paint()]);
@@ -177,7 +177,7 @@ async function paint(): Promise<void> {
   } catch (failure) {
     if (ticket !== listRequest) return;
     entries.value = [];
-    listError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : t('failed');
+    listError.value = failure instanceof ApiError ? adminCodeText(failure.code, failure.details) ?? failure.message : t('failed');
   } finally {
     if (ticket === listRequest) loading.value = false;
   }

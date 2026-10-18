@@ -22,6 +22,23 @@ describe('failureText', () => {
       .toBe(t('errPluginTimeout'));
   });
 
+  it('translates a backoffice refusal by its code, quoting the figures its details carry', async () => {
+    const refusal = new ApiError(400, 'setting_out_of_range', 'Setting "x" must be between 1 and 9.', {
+      setting: 'x', min: 1, max: 9,
+    });
+    expect(failureText(refusal)).toBe('Setting "x" must be between 1 and 9.');
+    await changeLanguage('zh');
+    expect(failureText(refusal)).toBe('设置“x”必须在 1 到 9 之间。');
+  });
+
+  it('translates the refusals an administrator gets for acting on their own account', async () => {
+    await changeLanguage('zh');
+    expect(failureText(new ApiError(400, 'cannot_ban_self', 'You cannot ban your own account.')))
+      .toBe(t('cannotBanSelf'));
+    expect(failureText(new ApiError(400, 'cannot_delete_self', 'You cannot delete your own account.')))
+      .toBe('不能删除自己的账户。');
+  });
+
   it('keeps the server sentence for any other refusal, including a 5xx a plugin chose', () => {
     expect(failureText(new ApiError(503, 'upstream_down', 'The partner service is down.')))
       .toBe('The partner service is down.');

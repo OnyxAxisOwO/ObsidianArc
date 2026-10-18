@@ -21,7 +21,7 @@ import (
 // is refused with ErrInviteInvalid, which server.go translates from the invite
 // package's own rejection.
 func wireInvites(f *fixture) {
-	f.auth.ConsumeInvite = func(_ context.Context, _ *database.Tx, code string) (*InviteGrant, error) {
+	f.auth.Hooks.ConsumeInvite = func(_ context.Context, _ *database.Tx, code string) (*InviteGrant, error) {
 		if code != "RIGHT2" {
 			return nil, ErrInviteInvalid
 		}
@@ -41,7 +41,7 @@ func TestWrongInviteCodesFromOneAddressRunOut(t *testing.T) {
 	}
 	wireInvites(f)
 	reviews := 0
-	f.auth.ReviewSignup = func(context.Context, RegisterInput, int) (SignupReview, error) {
+	f.auth.Hooks.ReviewSignup = func(context.Context, RegisterInput, int) (SignupReview, error) {
 		reviews++
 		return SignupReview{Decision: SignupAllow}, nil
 	}
@@ -226,7 +226,7 @@ func TestABurstOfWrongCodesFromOneAddressIsCountedOnce(t *testing.T) {
 	}
 	wireInvites(f)
 	var reviews atomic.Int64
-	f.auth.ReviewSignup = func(context.Context, RegisterInput, int) (SignupReview, error) {
+	f.auth.Hooks.ReviewSignup = func(context.Context, RegisterInput, int) (SignupReview, error) {
 		reviews.Add(1)
 		// Long enough that every request in the burst is in flight at once.
 		time.Sleep(20 * time.Millisecond)
@@ -288,7 +288,7 @@ func TestAnInviteStoreFailureIsNotCountedAsAGuess(t *testing.T) {
 		t.Fatal(err)
 	}
 	outage := errors.New("invite: read code: database is locked")
-	f.auth.ConsumeInvite = func(context.Context, *database.Tx, string) (*InviteGrant, error) {
+	f.auth.Hooks.ConsumeInvite = func(context.Context, *database.Tx, string) (*InviteGrant, error) {
 		return nil, outage
 	}
 

@@ -47,13 +47,13 @@ func (h *Handlers) putUserCheck(w http.ResponseWriter, r *http.Request) error {
 		failureMode = "reject"
 	}
 	if failureMode != "allow" && failureMode != "reject" {
-		return httpx.BadRequest("Failure mode must be allow or reject.")
+		return httpx.BadRequestCode("usercheck_failure_mode", "Failure mode must be allow or reject.")
 	}
 	domains := make([]string, 0, len(body.ExemptDomains))
 	for _, domain := range body.ExemptDomains {
 		domain = strings.ToLower(strings.TrimSpace(domain))
 		if domain == "" || strings.ContainsAny(domain, "\r\n /@") {
-			return httpx.BadRequest("Each exempt domain must be a domain name.")
+			return httpx.BadRequestCode("usercheck_exempt_domain", "Each exempt domain must be a domain name.")
 		}
 		domains = append(domains, domain)
 	}
@@ -82,10 +82,10 @@ func (h *Handlers) testUserCheck(w http.ResponseWriter, r *http.Request) error {
 	email := strings.TrimSpace(body.Email)
 	address, err := netmail.ParseAddress(email)
 	if err != nil || address.Address != email {
-		return httpx.BadRequest("A test email address is required.")
+		return httpx.BadRequestCode("usercheck_test_address_required", "A test email address is required.")
 	}
 	if !h.UserCheck.Config().APIKeySet {
-		return httpx.BadRequest("The UserCheck API key is not configured.")
+		return httpx.BadRequestCode("usercheck_key_missing", "The UserCheck API key is not configured.")
 	}
 	claimedAt := time.Now()
 	allowed, err := h.UserCheck.ClaimTest(r.Context(), claimedAt)
@@ -103,13 +103,13 @@ func (h *Handlers) testUserCheck(w http.ResponseWriter, r *http.Request) error {
 			if err := h.UserCheck.ReleaseTest(r.Context(), claimedAt); err != nil {
 				return httpx.Internal(err)
 			}
-			return httpx.BadRequest("The UserCheck API key was refused.")
+			return httpx.BadRequestCode("usercheck_key_refused", "The UserCheck API key was refused.")
 		}
 		if errors.Is(err, usercheck.ErrNotConfigured) || errors.Is(err, usercheck.ErrInvalidConfig) {
 			return usercheckRefused(r.Context(), err)
 		}
 		if errors.Is(err, usercheck.ErrUnavailable) {
-			return httpx.Unavailable("UserCheck is temporarily unavailable.")
+			return httpx.UnavailableCode("usercheck_unavailable", "UserCheck is temporarily unavailable.")
 		}
 		return httpx.Internal(err)
 	}
@@ -133,13 +133,13 @@ func (h *Handlers) testUserCheck(w http.ResponseWriter, r *http.Request) error {
 func usercheckRefused(ctx context.Context, err error) error {
 	if errors.Is(err, usercheck.ErrKeyUnreadable) {
 		slog.WarnContext(ctx, "usercheck: request refused", "error", err)
-		return httpx.BadRequest("The stored UserCheck API key cannot be read. Enter a new key or clear it.")
+		return httpx.BadRequestCode("usercheck_key_unreadable", "The stored UserCheck API key cannot be read. Enter a new key or clear it.")
 	}
 	slog.InfoContext(ctx, "usercheck: request refused", "error", err)
 	if errors.Is(err, usercheck.ErrNotConfigured) {
-		return httpx.BadRequest("An API key is required when email screening is enabled.")
+		return httpx.BadRequestCode("usercheck_key_required", "An API key is required when email screening is enabled.")
 	}
-	return httpx.BadRequest("The UserCheck settings are invalid. Check the API key, failure mode and exempt domains.")
+	return httpx.BadRequestCode("usercheck_settings_invalid", "The UserCheck settings are invalid. Check the API key, failure mode and exempt domains.")
 }
 
 // Keep this response explicit because Config contains a read-only key-set

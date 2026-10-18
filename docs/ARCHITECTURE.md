@@ -197,10 +197,12 @@ Go, direct:
 | `modernc.org/sqlite` | SQLite driver | Pure Go: no cgo, static binary, trivial cross-compile. Behind a `nosqlite` build tag for Postgres-only builds. |
 | `github.com/jackc/pgx/v5` | Postgres driver | The standard, and its `stdlib` shim keeps everything on `database/sql`. |
 | `golang.org/x/crypto` | argon2id, the SSH console | Official. |
-| `golang.org/x/sync` | `singleflight` for the backoffice's heavy aggregations | Official, and already linked: pgx's pool imports its `semaphore`. |
 | `github.com/tetratelabs/wazero` | The plugin-package sandbox | Pure Go WebAssembly runtime, so the binary stays static; about 2.8 MB of it. |
 
-That is the whole list. Routing is `net/http`'s `ServeMux` (Go 1.22 method +
+That is the whole list. `golang.org/x/sync` is linked too, but only
+indirectly, through pgx's pool; merging concurrent requests for one heavy
+backoffice aggregation is `internal/flight`, a page with `singleflight`'s
+behaviour, so it is not a fifth direct dependency. Routing is `net/http`'s `ServeMux` (Go 1.22 method +
 wildcard patterns). Migrations are a 60-line runner over an `embed.FS`. No
 ORM, no query builder, no logging framework (`log/slog` is in the standard
 library), no config library.
@@ -225,10 +227,42 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 27.10 MB (23.40 MB `-tags nosqlite`, Linux amd64, Go 1.27.2); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 205.59 kB to open the chat (179.18 JS + 26.41 CSS), sent by the server at gzip's best level; the build's gzip column reads 206.32 kB (179.48 JS + 26.85 CSS) |
+| Binary (SQLite + embedded SPA) | < 30 MB | 28.44 MB (24.74 MB `-tags nosqlite`, Linux amd64, Go 1.27.2); this repository ships no plugin |
+| Frontend, on the wire | < 135 kB | 205.67 kB to open the chat (179.16 JS + 26.52 CSS), counted as gzip: the build's level-9 copy, which the server sends as it is; 172.70 kB as brotli; the build's gzip column reads 206.43 kB (179.58 JS + 26.85 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-10-18 (UTC), after the zone database was compiled in
+(`internal/checkin/tzdata.go`). A host with no zone files, Windows
+among them, otherwise has `time.LoadLocation` fail, and the check-in and the
+bonus pools would count their days in UTC. Nothing else moved, the frontend
+included. The binary is 28.44 MB (24.74 MB without SQLite), up 0.41 MB from the
+figure below, built the same way as below (`CGO_ENABLED=0 GOOS=linux
+GOARCH=amd64`, `-trimpath`, `-ldflags "-s -w"`).
+
+Remeasured on 2026-10-18 (UTC), after the build began compressing the
+assets itself. Every file under `assets/` gets a brotli copy at quality 11 and
+a gzip copy at level 9, in `dist/precompressed/`, and the server sends the one
+the request accepts instead of compressing each uncached asset as it goes out;
+brotli at that quality is far too slow to run per request. The first paint is
+still counted as gzip, now the build's copy rather than Go's encoder: 205.67 kB
+(179.16 JS + 26.52 CSS), down 0.02 kB. A browser that takes brotli receives
+172.70 kB (150.47 JS + 22.23 CSS). The copies add 0.86 MB to the binary, which
+is 28.03 MB (24.33 MB without SQLite), built the same way as below; the
+originals stay, for the client that takes neither and for range requests.
+Nothing else moved.
+
+Remeasured on 2026-10-18 (UTC), after the second batch of left-over review
+fixes. A provider sign-in that carries a challenge token or a proof now
+leaves as a form post rather than a navigation, so neither lands in an
+address; the helper that builds the form is on the sign-in page, in the
+entry. 205.69 kB to open the chat (179.28 JS + 26.41 CSS), up 0.10 kB; the
+build's estimate is 206.43 kB, 0.57 kB under the bundle test's 207 kB. The
+backoffice's refusals now carry codes, and their sentences, in both
+languages, travel with the backoffice and the Chinese dictionary rather than
+the entry: backoffice 173.67 kB plus 15.24 kB of stylesheet, Chinese
+dictionary 54.04 kB. The binary is 27.16 MB (23.46 MB without SQLite), built
+the same way as below.
 
 Remeasured on 2026-10-18 (UTC), after the billing and operations review
 fixes were merged. Refusals from feedback, announcements, backup and import
@@ -935,7 +969,7 @@ POST /api/chat            (SSE response)
 1. `RequireUser` → the session's user; `status = 'disabled'` is rejected here.
 2. Resolve the model **and** check the user's group may use it. The frontend's
    model list is a convenience; this check is the authority.
-3. `quota.Reserve` — atomic, see §9. A rejection is a `429` carrying which
+3. `quota.ReserveFor` — atomic, see §9. A rejection is a `429` carrying which
    window tripped and when it resets.
 4. Load the transcript (`WHERE conversation_id = ? AND user_id = ?`), append
    the user message, create the conversation if this is the first turn.

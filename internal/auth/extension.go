@@ -241,13 +241,13 @@ func (s *Service) runGuards(ctx context.Context, action string, tokens map[strin
 			// the log has always covered: a failed sign-in already has the
 			// attempt limiter watching it, and recording each one would put
 			// every mistyped password's challenge in the operator's feed.
-			if action == GuardRegister && s.OnChallengeFailure != nil {
+			if action == GuardRegister && s.Hooks.OnChallengeFailure != nil {
 				reason := ""
 				var refusal *GuardRefusal
 				if errors.As(err, &refusal) {
 					reason = refusal.Reason
 				}
-				s.OnChallengeFailure(ctx, g.Event, ip, username, reason)
+				s.Hooks.OnChallengeFailure(ctx, g.Event, "plugin:"+g.Plugin, ip, username, reason)
 			}
 			return Verdict{}, err
 		}

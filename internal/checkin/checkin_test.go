@@ -172,6 +172,38 @@ func TestADayIsCountedInTheConfiguredTimeZone(t *testing.T) {
 	}
 }
 
+// The zone is loaded once per name, and a new name is a new zone.
+func TestTheZoneIsRememberedUntilItsNameChanges(t *testing.T) {
+	f := newFixture(t)
+	f.configure(t, Settings{Enabled: true, Timezone: "Asia/Shanghai"})
+
+	first := f.svc.Location()
+	var wg sync.WaitGroup
+	seen := make([]*time.Location, 16)
+	for i := range seen {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			seen[i] = f.svc.Location()
+		}()
+	}
+	wg.Wait()
+	for i, loc := range seen {
+		if loc != first {
+			t.Fatalf("call %d loaded the zone again: %p, want %p", i, loc, first)
+		}
+	}
+
+	f.configure(t, Settings{Enabled: true, Timezone: "Europe/Berlin"})
+	next := f.svc.Location()
+	if next == first || next.String() != "Europe/Berlin" {
+		t.Fatalf("after the name changed: %v", next)
+	}
+	if again := f.svc.Location(); again != next {
+		t.Fatal("the new zone was not remembered")
+	}
+}
+
 func TestPressesArrivingTogetherRecordOneDayAndPayOneReward(t *testing.T) {
 	f := newFixture(t)
 	bar := f.bar(t)

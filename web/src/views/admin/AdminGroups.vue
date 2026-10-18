@@ -14,8 +14,6 @@ import {
   adminApi, emptyPolicy,
   type AdminModel, type Group, type QuotaLimits, type QuotaPolicy, type QuotaWindowKind,
 } from '@/admin/api';
-import { ApiError } from '@/api/client';
-import { codeText } from '@/lib/api-error';
 import OaBadge from '@/components/OaBadge.vue';
 import OaBadgeRow from '@/components/OaBadgeRow.vue';
 import OaBulkBar from '@/components/OaBulkBar.vue';
@@ -39,6 +37,7 @@ import AdminFailure from './AdminFailure.vue';
 import CreditsField from './CreditsField.vue';
 import GroupMembers from './GroupMembers.vue';
 import { useAdminView } from './adminView';
+import { errorLine, refusalLine } from './failure-codes';
 
 const WINDOWS: QuotaWindowKind[] = ['5h', '1w', '1m'];
 
@@ -273,7 +272,7 @@ async function save(): Promise<void> {
     finish();
   } catch (failure) {
     busy.value = false;
-    panelError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    panelError.value = refusalLine(failure);
     // A group created before the policy failed is in the table now, and the
     // list should show it rather than wait for the panel to close.
     if (wasCreating && existing.value) void load();
@@ -289,7 +288,7 @@ async function remove(): Promise<void> {
     finish();
   } catch (failure) {
     busy.value = false;
-    panelError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    panelError.value = refusalLine(failure);
   }
 }
 
@@ -302,7 +301,7 @@ async function load(): Promise<void> {
     policies.value = groupsResult.policies;
     models.value = modelsResult.models;
   } catch (failure) {
-    error.value = failure instanceof Error ? failure.message : String(failure);
+    error.value = errorLine(failure);
   } finally {
     loaded.value = true;
   }

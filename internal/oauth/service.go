@@ -710,8 +710,8 @@ func (s *Service) resolve(
 	// that transaction until the commit this line is now past. A no-op for
 	// every path through resolve that did not just provision a fresh account
 	// through a personal code — see auth.Service.RewardInvite.
-	if s.auth.RewardInvite != nil {
-		s.auth.RewardInvite(ctx, account.ID, s.auth.VerificationRequired())
+	if s.auth.Hooks.RewardInvite != nil {
+		s.auth.Hooks.RewardInvite(ctx, account.ID, s.auth.VerificationRequired())
 	}
 
 	// An address somebody typed for an account this sign-in just opened is

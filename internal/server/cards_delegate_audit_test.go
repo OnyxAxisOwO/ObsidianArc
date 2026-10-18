@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"testing"
 	"time"
@@ -59,5 +60,57 @@ func TestAUsersDelegateCannotMoveOrRevokeAnAdministratorsCards(t *testing.T) {
 	}
 	if res := in.do(http.MethodPatch, "/api/admin/users/"+admin.userID+"/cards", moveTo, founder); res.Code != http.StatusOK {
 		t.Errorf("the super administrator could not move the administrator's cards: %d %s", res.Code, res.Body.String())
+	}
+}
+
+// The held-cards read answers to the account panel's rule, not the users grant
+// alone: an administrator's cards are their own allowance.
+func TestReadingHeldCardsAnswersToTheAccountPanelsRule(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("held-founder", "a-good-password")
+	delegate := in.register("held-delegate", "a-good-password")
+	admin := in.register("held-admin", "a-good-password")
+	reader := in.register("held-reader", "a-good-password")
+
+	for _, target := range []struct {
+		who         *session
+		permissions []string
+	}{{delegate, []string{"users"}}, {admin, []string{"groups"}}} {
+		res := in.do(http.MethodPatch, "/api/admin/users/"+target.who.userID,
+			map[string]any{"role": "admin", "admin_permissions": target.permissions}, founder)
+		if res.Code != http.StatusOK {
+			t.Fatalf("promote %s: %d %s", target.who.userID, res.Code, res.Body.String())
+		}
+	}
+
+	later := time.Now().Add(30 * 24 * time.Hour).Truncate(time.Second).UnixMilli()
+	for _, target := range []*session{admin, reader} {
+		res := in.do(http.MethodPost, "/api/admin/users/"+target.userID+"/cards",
+			map[string]any{"cards": 2, "expires_at": later}, founder)
+		if res.Code != http.StatusCreated {
+			t.Fatalf("grant cards to %s: %d %s", target.userID, res.Code, res.Body.String())
+		}
+	}
+
+	if res := in.do(http.MethodGet, "/api/admin/users/"+admin.userID+"/cards", nil, delegate); res.Code != http.StatusForbidden {
+		t.Errorf("a users delegate read an administrator's cards: %d %s", res.Code, res.Body.String())
+	}
+
+	res := in.do(http.MethodGet, "/api/admin/users/"+reader.userID+"/cards", nil, delegate)
+	if res.Code != http.StatusOK {
+		t.Fatalf("a users delegate could not read a plain account's cards: %d %s", res.Code, res.Body.String())
+	}
+	held := decode[struct {
+		Cards json.RawMessage `json:"cards"`
+	}](t, res).Cards
+	panel := in.do(http.MethodGet, "/api/admin/users/"+reader.userID, nil, founder)
+	if panel.Code != http.StatusOK {
+		t.Fatalf("account panel: %d %s", panel.Code, panel.Body.String())
+	}
+	want := decode[struct {
+		Cards json.RawMessage `json:"cards"`
+	}](t, panel).Cards
+	if string(held) != string(want) || string(held) == "null" {
+		t.Errorf("held cards %s, want the panel's %s", held, want)
 	}
 }

@@ -2,6 +2,7 @@ package admin
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -159,7 +160,7 @@ func (h *Handlers) importModels(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	if len(body.Models) == 0 {
-		return httpx.BadRequest("That file contains no models.")
+		return httpx.BadRequestCode("catalogue_file_empty", "That file contains no models.")
 	}
 	// Refused before the first model is written: a file with one misspelt
 	// level would otherwise import everything above it and then stop.
@@ -171,162 +172,179 @@ func (h *Handlers) importModels(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 
-	providers, err := h.providers.List(ctx)
+	index, err := h.catalogueIndex(ctx)
 	if err != nil {
 		return httpx.Internal(err)
 	}
-	providerByName := make(map[string]string, len(providers))
+	outcome := importOutcome{landed: make(map[modelRef]string, len(body.Models))}
+	for _, entry := range body.Models {
+		h.importEntry(ctx, index, entry, &outcome)
+	}
+	h.importRoutes(ctx, index, body.Models, &outcome)
+
+	if outcome.skipped == nil {
+		outcome.skipped = []string{}
+	}
+	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"created": outcome.created,
+		"updated": outcome.updated,
+		"skipped": outcome.skipped,
+	})
+}
+
+// importIndex is what is here, keyed the way a file names it.
+type importIndex struct {
+	providerByName map[string]string
+	groupByName    map[string]string
+	// Keyed the way the file names things, so an entry finds the row it is an
+	// update of without either side carrying an id.
+	byRef map[modelRef]model.Model
+	// Two configurations of one upstream model share a key. The file cannot say
+	// which one it means, so an entry for such a key is reported and left alone,
+	// rather than written over whichever row happened to come last.
+	sharedKey map[modelRef]int
+}
+
+// importOutcome is what an import has done so far.
+type importOutcome struct {
+	created int
+	updated int
+	skipped []string
+	// What each entry ended up as, so the second pass can point routes at rows
+	// the first pass has just made.
+	landed map[modelRef]string
+}
+
+func (h *Handlers) catalogueIndex(ctx context.Context) (importIndex, error) {
+	providers, err := h.providers.List(ctx)
+	if err != nil {
+		return importIndex{}, err
+	}
+	index := importIndex{providerByName: make(map[string]string, len(providers))}
 	for _, record := range providers {
-		providerByName[fold(record.Name)] = record.ID
+		index.providerByName[fold(record.Name)] = record.ID
 	}
 
 	groups, err := h.groups.List(ctx, nil)
 	if err != nil {
-		return httpx.Internal(err)
+		return importIndex{}, err
 	}
-	groupByName := make(map[string]string, len(groups))
+	index.groupByName = make(map[string]string, len(groups))
 	for _, record := range groups {
-		groupByName[fold(record.Name)] = record.ID
+		index.groupByName[fold(record.Name)] = record.ID
 	}
 
 	existing, err := h.models.ListAll(ctx, "")
 	if err != nil {
-		return httpx.Internal(err)
+		return importIndex{}, err
 	}
-	// Keyed the way the file names things, so an entry finds the row it is an
-	// update of without either side carrying an id.
-	byRef := make(map[modelRef]model.Model, len(existing))
-	// Two configurations of one upstream model share a key. The file cannot say
-	// which one it means, so an entry for such a key is reported and left alone,
-	// rather than written over whichever row happened to come last.
-	sharedKey := make(map[modelRef]int, len(existing))
+	index.byRef = make(map[modelRef]model.Model, len(existing))
+	index.sharedKey = make(map[modelRef]int, len(existing))
 	for _, record := range existing {
 		key := modelRef{Provider: fold(record.ProviderName), ModelID: fold(record.ModelID)}
-		byRef[key] = record
-		sharedKey[key]++
+		index.byRef[key] = record
+		index.sharedKey[key]++
+	}
+	return index, nil
+}
+
+// importEntry is the first pass over one entry: it creates or updates the
+// model, or says in outcome.skipped why it did not.
+func (h *Handlers) importEntry(ctx context.Context, index importIndex, entry modelImport, outcome *importOutcome) {
+	name := entryName(entry)
+
+	providerID, known := index.providerByName[fold(entry.Provider)]
+	if !known {
+		outcome.skipped = append(outcome.skipped, name+" — no provider named "+entry.Provider)
+		return
+	}
+	if strings.TrimSpace(entry.ModelID) == "" {
+		outcome.skipped = append(outcome.skipped, name+" — no model id")
+		return
 	}
 
-	var (
-		created int
-		updated int
-		skipped []string
-	)
-	// What each entry ended up as, so the second pass can point routes at rows
-	// the first pass has just made.
-	landed := make(map[modelRef]string, len(body.Models))
+	ref := modelRef{Provider: fold(entry.Provider), ModelID: fold(entry.ModelID)}
+	if index.sharedKey[ref] > 1 {
+		outcome.skipped = append(outcome.skipped, name+" — several configurations of "+entry.ModelID+" are here, and the file cannot say which one this is")
+		return
+	}
+	record, present := index.byRef[ref]
 
-	for _, entry := range body.Models {
-		name := entryName(entry)
-
-		providerID, known := providerByName[fold(entry.Provider)]
-		if !known {
-			skipped = append(skipped, name+" — no provider named "+entry.Provider)
-			continue
-		}
-		if strings.TrimSpace(entry.ModelID) == "" {
-			skipped = append(skipped, name+" — no model id")
-			continue
-		}
-
-		ref := modelRef{Provider: fold(entry.Provider), ModelID: fold(entry.ModelID)}
-		if sharedKey[ref] > 1 {
-			skipped = append(skipped, name+" — several configurations of "+entry.ModelID+" are here, and the file cannot say which one this is")
-			continue
-		}
-		record, present := byRef[ref]
-
-		// Resolved before the write and handed to it, so the grants are saved with
-		// the model. Written after it, a refused grant would leave a saved model
-		// holding the default grant to every group, and the failure would stop the
-		// whole import without saying what had landed.
-		var grants *[]model.ModelGroupGrant
-		var unknownGroups []string
-		if entry.Groups != nil {
-			list := make([]model.ModelGroupGrant, 0, len(entry.Groups))
-			for _, grant := range entry.Groups {
-				groupID, ok := groupByName[fold(grant.Group)]
-				if !ok {
-					unknownGroups = append(unknownGroups, name+" — no group named "+grant.Group)
-					continue
-				}
-				list = append(list, model.ModelGroupGrant{GroupID: groupID, Access: grant.Access})
+	// Resolved before the write and handed to it, so the grants are saved with
+	// the model. Written after it, a refused grant would leave a saved model
+	// holding the default grant to every group, and the failure would stop the
+	// whole import without saying what had landed.
+	var grants *[]model.ModelGroupGrant
+	var unknownGroups []string
+	if entry.Groups != nil {
+		list := make([]model.ModelGroupGrant, 0, len(entry.Groups))
+		for _, grant := range entry.Groups {
+			groupID, ok := index.groupByName[fold(grant.Group)]
+			if !ok {
+				unknownGroups = append(unknownGroups, name+" — no group named "+grant.Group)
+				continue
 			}
-			grants = &list
+			list = append(list, model.ModelGroupGrant{GroupID: groupID, Access: grant.Access})
 		}
-
-		var saved model.Model
-		var err error
-		if present {
-			saved, err = h.models.Update(ctx, record.ID, updateFromImport(entry, grants))
-		} else {
-			enabled, capabilities := entry.createDefaults()
-			saved, err = h.models.Create(ctx, model.CreateInput{
-				ProviderID:      providerID,
-				ModelID:         entry.ModelID,
-				APIName:         entry.APIName,
-				SystemPrompt:    entry.SystemPrompt,
-				DisplayName:     entry.DisplayName,
-				Description:     entry.Description,
-				Avatar:          entry.Avatar,
-				Enabled:         enabled,
-				Hidden:          entry.Hidden,
-				SortOrder:       entry.SortOrder,
-				ReasoningStyle:  entry.ReasoningStyle,
-				ReasoningTiers:  entry.ReasoningTiers,
-				RequestOverride: entry.RequestOverride,
-				Capabilities:    capabilities,
-				Weights:         entry.createWeights(),
-				GroupGrants:     grants,
-			})
-		}
-		if err != nil {
-			// One bad entry is not a reason to refuse the other ninety-nine,
-			// and the reason it was refused is more use than a count.
-			skipped = append(skipped, name+" — "+plainError(err))
-			continue
-		}
-		skipped = append(skipped, unknownGroups...)
-
-		landed[ref] = saved.ID
-		if present {
-			updated++
-		} else {
-			created++
-		}
+		grants = &list
 	}
 
+	var saved model.Model
+	var err error
+	if present {
+		saved, err = h.models.Update(ctx, record.ID, updateFromImport(entry, grants))
+	} else {
+		saved, err = h.models.Create(ctx, createFromImport(entry, providerID, grants))
+	}
+	if err != nil {
+		// One bad entry is not a reason to refuse the other ninety-nine,
+		// and the reason it was refused is more use than a count.
+		outcome.skipped = append(outcome.skipped, name+" — "+plainError(err))
+		return
+	}
+	outcome.skipped = append(outcome.skipped, unknownGroups...)
+
+	outcome.landed[ref] = saved.ID
+	if present {
+		outcome.updated++
+	} else {
+		outcome.created++
+	}
+}
+
+// importRoutes is the second pass: a route can name a model that only came
+// into existence halfway through the first one.
+func (h *Handlers) importRoutes(ctx context.Context, index importIndex, entries []modelImport, outcome *importOutcome) {
 	// Every model this file routes away from. A route whose target appears
 	// here would be a second hop, and the order the entries happen to be in
 	// must not decide whether that is noticed — checking the database instead
 	// would pass or fail depending on which entry was applied first.
 	routed := map[modelRef]bool{}
-	for _, entry := range body.Models {
+	for _, entry := range entries {
 		if entry.RouteTo != nil && entry.RouteTo.ModelID != "" {
 			routed[modelRef{Provider: fold(entry.Provider), ModelID: fold(entry.ModelID)}] = true
 		}
 	}
 
-	// Second pass: a route can name a model that only came into existence
-	// halfway through the first one.
-	for _, entry := range body.Models {
+	for _, entry := range entries {
 		if entry.RouteTo == nil || entry.RouteTo.ModelID == "" {
 			continue
 		}
-		from, ok := landed[modelRef{Provider: fold(entry.Provider), ModelID: fold(entry.ModelID)}]
+		from, ok := outcome.landed[modelRef{Provider: fold(entry.Provider), ModelID: fold(entry.ModelID)}]
 		if !ok {
 			continue
 		}
 		target := modelRef{Provider: fold(entry.RouteTo.Provider), ModelID: fold(entry.RouteTo.ModelID)}
-		if sharedKey[target] > 1 {
-			skipped = append(skipped, entryName(entry)+" —route target "+entry.RouteTo.ModelID+" has several configurations here, and a route names one of them")
+		if index.sharedKey[target] > 1 {
+			outcome.skipped = append(outcome.skipped, entryName(entry)+" —route target "+entry.RouteTo.ModelID+" has several configurations here, and a route names one of them")
 			continue
 		}
-		to, ok := landed[target]
+		to, ok := outcome.landed[target]
 		if !ok {
-			if here, present := byRef[target]; present {
+			if here, present := index.byRef[target]; present {
 				to = here.ID
 			} else {
-				skipped = append(skipped, entryName(entry)+" —route target "+entry.RouteTo.ModelID+" is not here")
+				outcome.skipped = append(outcome.skipped, entryName(entry)+" —route target "+entry.RouteTo.ModelID+" is not here")
 				continue
 			}
 		}
@@ -336,72 +354,67 @@ func (h *Handlers) importModels(w http.ResponseWriter, r *http.Request) error {
 		// a loop, and a target that is itself routed is a second hop that
 		// Authorize will not follow.
 		if to == from || routed[target] {
-			skipped = append(skipped, entryName(entry)+" —a route is one hop, and "+entry.RouteTo.ModelID+" is routed itself")
+			outcome.skipped = append(outcome.skipped, entryName(entry)+" —a route is one hop, and "+entry.RouteTo.ModelID+" is routed itself")
 			continue
 		}
 		existing, err := h.models.ByID(ctx, to)
 		if err != nil {
-			skipped = append(skipped, entryName(entry)+" —route: "+plainError(err))
+			outcome.skipped = append(outcome.skipped, entryName(entry)+" —route: "+plainError(err))
 			continue
 		}
 		if existing.RouteToID != "" {
-			skipped = append(skipped, entryName(entry)+" —a route is one hop, and "+entry.RouteTo.ModelID+" is routed itself")
+			outcome.skipped = append(outcome.skipped, entryName(entry)+" —a route is one hop, and "+entry.RouteTo.ModelID+" is routed itself")
 			continue
 		}
 		if _, err := h.models.Update(ctx, from, model.Update{RouteToID: &to}); err != nil {
-			skipped = append(skipped, entryName(entry)+" —route: "+plainError(err))
+			outcome.skipped = append(outcome.skipped, entryName(entry)+" —route: "+plainError(err))
 		}
 	}
-
-	if skipped == nil {
-		skipped = []string{}
-	}
-	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
-		"created": created,
-		"updated": updated,
-		"skipped": skipped,
-	})
 }
 
-// updateFromImport is the update of a model already here. grants is nil when
-// the file leaves the groups out, which keeps the grants the model has.
-func updateFromImport(entry modelImport, grants *[]model.ModelGroupGrant) model.Update {
-	// Every field, because an import of a model that is already here is that
-	// file's version of it — a partial apply would leave a row that matches
-	// neither what was here nor what was sent. The weights are the one part an
-	// entry may leave out; see weightIfCarried.
-	capabilities := entry.Capabilities
-	weights := entry.Weights
-	// The second pass writes the file's route and writes nothing for an entry
-	// without one, so an unrouted entry is cleared here. Left to the second pass,
-	// a model the file says is unrouted would keep the route it had.
+// request is the entry as the editor would send it, so an import writes
+// through the one field list modelRequest.update and createInput share rather
+// than a second copy of it that a new field can be missed from. Every field is
+// set, because an import of a model that is already here is that file's
+// version of it — a partial apply would leave a row that matches neither what
+// was here nor what was sent. The exceptions are the documented ones:
+//
+//   - a weight the file leaves out is left unset; see weightIfCarried.
+//   - the request override likewise. The backoffice's export does not carry
+//     it, so a file it wrote says nothing about one. Written as empty, every
+//     round trip through a file cleared the override of each model in it.
+//   - the route is cleared for an entry without one and left unset for an
+//     entry with one. The second pass writes the file's route and writes
+//     nothing for an entry without one, so left to the second pass, a model
+//     the file says is unrouted would keep the route it had.
+func (e modelImport) request(providerID string, grants *[]model.ModelGroupGrant) modelRequest {
+	capabilities := e.Capabilities
+	weights := e.Weights
 	var routeToID *string
-	if entry.RouteTo == nil || entry.RouteTo.ModelID == "" {
+	if e.RouteTo == nil || e.RouteTo.ModelID == "" {
 		none := ""
 		routeToID = &none
 	}
-	// The backoffice's export does not carry the override, so a file it wrote
-	// says nothing about one. Written as empty, every round trip through a
-	// file cleared the override of each model in it.
 	var requestOverride *string
-	if entry.carries("request_override") {
-		requestOverride = &entry.RequestOverride
+	if e.carries("request_override") {
+		requestOverride = &e.RequestOverride
 	}
-	return model.Update{
+	return modelRequest{
+		ProviderID:           providerID,
+		ModelID:              &e.ModelID,
+		APIName:              &e.APIName,
+		SystemPrompt:         &e.SystemPrompt,
+		DisplayName:          &e.DisplayName,
+		Description:          &e.Description,
+		Avatar:               &e.Avatar,
+		Enabled:              &e.Enabled,
+		Hidden:               &e.Hidden,
+		SortOrder:            &e.SortOrder,
 		RouteToID:            routeToID,
-		GroupGrants:          grants,
-		ModelID:              &entry.ModelID,
-		APIName:              &entry.APIName,
-		SystemPrompt:         &entry.SystemPrompt,
-		DisplayName:          &entry.DisplayName,
-		Description:          &entry.Description,
-		Avatar:               &entry.Avatar,
-		Enabled:              &entry.Enabled,
-		Hidden:               &entry.Hidden,
-		SortOrder:            &entry.SortOrder,
-		ReasoningStyle:       &entry.ReasoningStyle,
-		ReasoningTiers:       &entry.ReasoningTiers,
+		ReasoningStyle:       &e.ReasoningStyle,
+		ReasoningTiers:       &e.ReasoningTiers,
 		RequestOverride:      requestOverride,
+		GroupGrants:          grants,
 		SupportsReasoning:    &capabilities.SupportsReasoning,
 		SupportsImages:       &capabilities.SupportsImages,
 		SupportsVision:       &capabilities.SupportsVision,
@@ -413,11 +426,28 @@ func updateFromImport(entry modelImport, grants *[]model.ModelGroupGrant) model.
 		EmulateTools:         &capabilities.EmulateTools,
 		ContextWindow:        &capabilities.ContextWindow,
 		MaxOutputTokens:      &capabilities.MaxOutputTokens,
-		RequestWeight:        weightIfCarried(entry, "request_weight", &weights.Request),
-		InputTokenWeight:     weightIfCarried(entry, "input_token_weight", &weights.InputToken),
-		OutputTokenWeight:    weightIfCarried(entry, "output_token_weight", &weights.OutputToken),
-		ReasoningTokenWeight: weightIfCarried(entry, "reasoning_token_weight", &weights.ReasoningToken),
+		RequestWeight:        weightIfCarried(e, "request_weight", &weights.Request),
+		InputTokenWeight:     weightIfCarried(e, "input_token_weight", &weights.InputToken),
+		OutputTokenWeight:    weightIfCarried(e, "output_token_weight", &weights.OutputToken),
+		ReasoningTokenWeight: weightIfCarried(e, "reasoning_token_weight", &weights.ReasoningToken),
 	}
+}
+
+// updateFromImport is the update of a model already here. grants is nil when
+// the file leaves the groups out, which keeps the grants the model has.
+func updateFromImport(entry modelImport, grants *[]model.ModelGroupGrant) model.Update {
+	return entry.request("", grants).update()
+}
+
+// createFromImport is a new model from an entry. The switches, capabilities
+// and weights are the entry's with createDefaults and createWeights applied,
+// so what the file leaves out takes what the editor would give it rather than
+// a zero; the route waits for the second pass.
+func createFromImport(entry modelImport, providerID string, grants *[]model.ModelGroupGrant) model.CreateInput {
+	in := entry.request(providerID, grants).createInput()
+	in.Enabled, in.Capabilities = entry.createDefaults()
+	in.Weights = entry.createWeights()
+	return in
 }
 
 // weightIfCarried leaves a weight the file omitted as the model has it. Written
@@ -438,9 +468,5 @@ func fold(value string) string {
 // The store's errors carry a package prefix, which is right in a log and
 // noise in a list an operator is reading.
 func plainError(err error) string {
-	message := err.Error()
-	if _, rest, found := strings.Cut(message, ": "); found {
-		return rest
-	}
-	return message
+	return trimAnyPackagePrefix(err.Error())
 }

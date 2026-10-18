@@ -11,8 +11,6 @@
 // readers see, then the policy that governs it.
 
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
-import { ApiError } from '@/api/client';
-import { codeText } from '@/lib/api-error';
 import { adminApi } from '@/admin/api';
 import { fetchLeaderboard, type Leaderboard } from '@/api/leaderboard';
 import OaNumberField from '@/components/OaNumberField.vue';
@@ -27,6 +25,7 @@ import AdminWorkbench from './AdminWorkbench.vue';
 import { useAdminView } from './adminView';
 import { useSettingsDraft } from './settingsDraft';
 import type { WorkbenchGroup } from './workbench';
+import { errorLine, refusalLine } from './failure-codes';
 
 const view = useAdminView();
 view.setTitle(() => t('navLeaderboard'), () => t('leaderboardSubtitle'));
@@ -99,7 +98,7 @@ async function save(): Promise<void> {
   } catch (failure) {
     // Only a code the interface has a sentence for is translated; any other
     // keeps the server's sentence, which an administrator may need verbatim.
-    flash.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    flash.value = refusalLine(failure);
     saveLabel.value = '';
   } finally {
     busy.value = false;
@@ -128,7 +127,7 @@ async function load(): Promise<void> {
     previewFailed.value = board === null;
     accept();
   } catch (failure) {
-    error.value = failure instanceof Error ? failure.message : String(failure);
+    error.value = errorLine(failure);
   } finally {
     loaded.value = true;
   }

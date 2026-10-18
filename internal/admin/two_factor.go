@@ -105,7 +105,8 @@ func (h *Handlers) resetTwoFactor(w http.ResponseWriter, r *http.Request) error 
 func checkTwoFactorSettings(actor user.User, body map[string]string) error {
 	if policy, present := body[settings.TwoFactorPolicy]; present {
 		if !settings.ValidTwoFactorPolicy(policy) {
-			return httpx.BadRequest("Unknown two-step policy %q.", policy)
+			return httpx.BadRequestCode("two_factor_policy_unknown", "Unknown two-step policy %q.", policy).
+				WithDetails(map[string]any{"value": policy})
 		}
 		if policy != settings.TwoFactorOptional && !actor.TwoFactorEnabled() {
 			return httpx.ForbiddenCode("two_factor_self",
@@ -114,7 +115,8 @@ func checkTwoFactorSettings(actor user.User, body map[string]string) error {
 	}
 	if mode, present := body[settings.TwoFactorBackofficeMode]; present {
 		if !settings.ValidBackofficeVerifyMode(mode) {
-			return httpx.BadRequest("Unknown backoffice verification mode %q.", mode)
+			return httpx.BadRequestCode("backoffice_verification_unknown", "Unknown backoffice verification mode %q.", mode).
+				WithDetails(map[string]any{"value": mode})
 		}
 		// The same hazard as the policy: a code at the backoffice's door
 		// means none without a factor, including for the one saving it.
@@ -128,7 +130,7 @@ func checkTwoFactorSettings(actor user.User, body map[string]string) error {
 		// The app reads its label as "issuer:account", so a colon in the
 		// issuer would move where it thinks the account name starts.
 		if utf8.RuneCountInString(trimmed) > 64 || strings.Contains(trimmed, ":") {
-			return httpx.BadRequest("The authenticator name must be at most 64 characters, without a colon.")
+			return httpx.BadRequestCode("authenticator_name_invalid", "The authenticator name must be at most 64 characters, without a colon.")
 		}
 	}
 	return nil

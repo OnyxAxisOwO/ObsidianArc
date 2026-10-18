@@ -139,8 +139,8 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		return nil, err
 	}
 	authService := auth.NewService(db, users, groups, settingsService, mailer, cfg)
-	authService.ScreenEmail = userCheckManager.Check
-	authService.ScreenEmailCharges = userCheckManager.Charges
+	authService.Hooks.ScreenEmail = userCheckManager.Check
+	authService.Hooks.ScreenEmailCharges = userCheckManager.Charges
 
 	// Provider API keys are encrypted with a key derived from the instance
 	// secret; the box is the only thing that can read them back.
@@ -289,7 +289,9 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			freeSlot()
 			// Detached: the request context is cancelled the moment the
 			// browser goes away, and a reservation that is never given back
-			// is an allowance quietly lost until the window rolls over.
+			// is an allowance quietly lost until the window rolls over. Its own
+			// budget rather than chat.SaveBudget: this gives back a reservation
+			// the quota wiring took, which chat neither takes nor records.
 			refundCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 			defer cancel()
 			if err := quotaService.Release(refundCtx, userID, reserved); err != nil {
@@ -361,7 +363,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// Every handler that limits or logs by address asks this one function, so
 	// none of them can read the forwarded headers under a different trust.
 	clientIP := func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
-	authService.ClientIP = clientIP
+	authService.Hooks.ClientIP = clientIP
 	if cfg.TrustProxy && len(cfg.TrustedProxies) == 0 {
 		slog.WarnContext(ctx, "trusting forwarded headers from any private address; "+
 			"set OBSIDIAN_TRUSTED_PROXIES to the proxy's address if it is reachable directly")
@@ -579,9 +581,9 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 				settingsService.Int(settings.ChatChallengeRequests, 0) > 0)
 	}
 
-	authService.OnChallengeFailure = func(ctx context.Context, event, ip, username, reason string) {
+	authService.Hooks.OnChallengeFailure = func(ctx context.Context, event, source, ip, username, reason string) {
 		ev := securityevents.Event{
-			Event: event, Severity: securityevents.SeverityWarning,
+			Event: event, Source: source, Severity: securityevents.SeverityWarning,
 			Username: username, IP: ip, Decision: "refuse",
 			Reason: reason,
 		}
@@ -630,7 +632,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		}
 		return out, nil
 	}
-	authService.ReviewSignup = func(ctx context.Context, in auth.RegisterInput, fromAddress int) (auth.SignupReview, error) {
+	authService.Hooks.ReviewSignup = func(ctx context.Context, in auth.RegisterInput, fromAddress int) (auth.SignupReview, error) {
 		if !settingsService.Bool(settings.SignupReview) ||
 			settingsService.Get(settings.SignupReviewModel) == "" {
 			return auth.SignupReview{Decision: auth.SignupAllow}, nil
@@ -666,7 +668,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// Switching the second step on or off and spending a recovery code are
 	// what somebody asks about after an account has been taken over, so they
 	// are kept where the other decisions about who gets in are.
-	authService.OnTwoFactor = func(ctx context.Context, event auth.TwoFactorEvent) {
+	authService.Hooks.OnTwoFactor = func(ctx context.Context, event auth.TwoFactorEvent) {
 		severity := securityevents.SeverityInfo
 		if event.Kind == "disabled" || event.Kind == "recovery_used" {
 			severity = securityevents.SeverityWarning
@@ -692,7 +694,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// A sign-in from a device the account had not used before: logged where
 	// the operator looks after a takeover, and told to the owner, who is the
 	// one person who can say it was not them.
-	authService.OnNewDevice = func(ctx context.Context, event auth.NewDeviceEvent) {
+	authService.Hooks.OnNewDevice = func(ctx context.Context, event auth.NewDeviceEvent) {
 		if err := securityLog.Record(ctx, nil, securityevents.Event{
 			Event: securityevents.EventNewDevice, Severity: securityevents.SeverityInfo,
 			UserID: event.Account.ID, Username: event.Account.Username,
@@ -713,7 +715,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// takes on internal/invite directly — see auth.InviteGrant's comment —
 	// translating between that package's own Grant and auth's local
 	// InviteGrant, which is otherwise identical.
-	authService.ConsumeInvite = func(ctx context.Context, tx *database.Tx, code string) (*auth.InviteGrant, error) {
+	authService.Hooks.ConsumeInvite = func(ctx context.Context, tx *database.Tx, code string) (*auth.InviteGrant, error) {
 		grant, err := invites.Consume(ctx, tx, code, time.Now().UnixMilli())
 		// Only a rejected code is the guesser's to be charged for. A database
 		// error from the same call is passed on as itself, so it is not
@@ -728,15 +730,15 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			CodeID: grant.CodeID, OwnerID: grant.OwnerID, GroupID: grant.GroupID, GroupDays: grant.GroupDays,
 		}, nil
 	}
-	authService.RecordInviteUse = func(ctx context.Context, tx *database.Tx, grant auth.InviteGrant, userID string) error {
+	authService.Hooks.RecordInviteUse = func(ctx context.Context, tx *database.Tx, grant auth.InviteGrant, userID string) error {
 		return invites.RecordUse(ctx, tx, grant.CodeID, userID, grant.OwnerID, grant.GroupDays)
 	}
-	authService.RewardInvite = func(ctx context.Context, userID string, verificationRequired bool) {
+	authService.Hooks.RewardInvite = func(ctx context.Context, userID string, verificationRequired bool) {
 		if err := invites.Reward(ctx, userID, verificationRequired); err != nil {
 			slog.ErrorContext(ctx, "could not resolve an invite reward", "error", err, "user", userID)
 		}
 	}
-	authService.OnSignupReview = func(ctx context.Context, in auth.RegisterInput, account *user.User, review auth.SignupReview) {
+	authService.Hooks.OnSignupReview = func(ctx context.Context, in auth.RegisterInput, account *user.User, review auth.SignupReview) {
 		recordSignupReview(ctx, db, securityLog, notifyStore, in, account, review)
 	}
 
@@ -874,7 +876,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	authHandlers.SignInProviders = signInProviders
 	// The sign-up door asks the card's question too, so a registration is
 	// refused only where a button for the third-party route is on the page.
-	authService.SignInProviderCount = func() int { return len(signInProviders()) }
+	authService.Hooks.SignInProviderCount = func() int { return len(signInProviders()) }
 	// Same import-direction reason: whether an account owes an OIDC
 	// connection is oauth.Service's question to answer, and the account
 	// payload is auth's to build.
@@ -897,7 +899,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// A password that is replaced or reset ends what applications hold for
 	// the account. Set here because internal/idp imports auth, not the other
 	// way round.
-	authService.RevokeIssued = idpStore.RevokeAccount
+	authService.Hooks.RevokeIssued = idpStore.RevokeAccount
 	// The last of the sign-in wiring, so every hook the Service needs to run is
 	// set by now. A missing invite hook fails the boot here, not the first
 	// sign-up that carries a code.
@@ -924,7 +926,14 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	adminHandlers := admin.NewHandlers(db, users, groups, providers, models, settingsService, registry, authService, usageStore, quotaService, conversations, announcements, keys, requestLog, securityLog, cards, healthStore, feedbackStore, idpStore, invites)
+	adminHandlers := admin.NewHandlers(admin.Deps{
+		DB: db, Users: users, Groups: groups, Providers: providers, Models: models,
+		Settings: settingsService, Registry: registry, Auth: authService,
+		Usage: usageStore, Quota: quotaService, Conversations: conversations,
+		Announcements: announcements, Keys: keys, Requests: requestLog,
+		Security: securityLog, Cards: cards, Health: healthStore,
+		Feedback: feedbackStore, Apps: idpStore, Invites: invites,
+	})
 	adminHandlers.Mail = mailManager
 	adminHandlers.UserCheck = userCheckManager
 	adminHandlers.TryReview = adminTryReview
@@ -1463,71 +1472,138 @@ func (s *Server) StartJanitor(ctx context.Context) <-chan struct{} {
 	return done
 }
 
+// sweepTask is one of the sweep's clean-ups. Each runs whatever the ones
+// before it did: none depends on another, so a failure is logged in its own
+// words and the next one is tried. A task that reports its own failures, or
+// has none worth reporting, has no failure line and returns nil.
+type sweepTask struct {
+	failure string
+	run     func(context.Context) error
+}
+
 func (s *Server) sweep(ctx context.Context) {
 	sweepCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	// Expired sessions are already refused on read; the sweep is only about
-	// not letting the table grow forever.
-	_, _ = s.auth.Sessions().DeleteExpired(sweepCtx)
-	if err := s.users.ExpireMemberships(sweepCtx, nil, time.Now()); err != nil {
-		slog.ErrorContext(sweepCtx, "could not expire group memberships", "error", err)
-	}
-	s.sweepAttachments(sweepCtx)
-	// Authorisation codes live two minutes and tokens an hour; without this
-	// the two tables grow forever with rows nothing will read again.
-	if _, err := s.idp.Purge(sweepCtx); err != nil {
-		slog.ErrorContext(sweepCtx, "could not purge sign-in grants", "error", err)
-	}
-	// A spent sign-in state is only a record of a callback that already came
-	// back. Once its expiry has passed the state check refuses it, so the row
-	// is safe to drop.
-	if _, err := s.oauth.PruneStates(sweepCtx, time.Now().UnixMilli()); err != nil {
-		slog.ErrorContext(sweepCtx, "could not prune sign-in states", "error", err)
-	}
-	// Counter buckets whose window has long since rolled over. The ledger is
-	// never pruned: it is the audit trail. A failure is logged here because the
-	// request log cannot record it: the database that failed is the one it
-	// writes to.
-	if _, err := s.quota.PruneCounters(sweepCtx); err != nil {
-		slog.ErrorContext(sweepCtx, "could not prune usage counters", "error", err)
-	}
-	// The bell keeps about a month, unlike the security log: a notice is a
-	// nudge to look at something, not a record kept for its own sake.
-	if _, err := s.notify.Prune(sweepCtx, time.Now().Add(-30*24*time.Hour)); err != nil {
-		slog.ErrorContext(sweepCtx, "could not prune notifications", "error", err)
-	}
-	// The audit trail is kept for as long as the super administrator chose,
-	// and never less than the floor the setting enforces.
-	days := s.settings.Int(settings.AuditRetentionDays, audit.DefaultRetentionDays)
-	days = min(max(days, audit.MinRetentionDays), audit.MaxRetentionDays)
-	if _, err := s.audit.Prune(sweepCtx, time.Now().Add(-time.Duration(days)*24*time.Hour)); err != nil {
-		slog.ErrorContext(sweepCtx, "could not prune the audit trail", "error", err)
-	}
-	// Only today's draw on a pool is held against a limit; a few weeks are kept
-	// for the figures.
-	if err := s.bonus.PrunePoolUsage(sweepCtx, 35*24*time.Hour); err != nil {
-		slog.ErrorContext(sweepCtx, "could not prune pool usage", "error", err)
-	}
-	// Bonus a person is about to lose is worth a line in the bell, once.
-	expiring, err := s.bonus.TakeExpiring(sweepCtx, 3*24*time.Hour)
-	if err != nil {
-		slog.ErrorContext(sweepCtx, "could not look for expiring bonus", "error", err)
-	}
-	for _, e := range expiring {
-		if err := s.notify.Push(sweepCtx, nil, notify.Notification{
-			Audience: notify.AudienceUser, UserID: e.UserID, Kind: "bonus_expiring", Link: "/usage",
-			Params: map[string]any{"name": e.BarName, "amount": e.Remaining, "expires_at": e.ExpiresAt},
-		}); err != nil {
-			slog.ErrorContext(sweepCtx, "could not tell an account its bonus is expiring", "error", err, "user", e.UserID)
+	for _, task := range s.sweepTasks() {
+		if err := task.run(sweepCtx); err != nil && task.failure != "" {
+			slog.ErrorContext(sweepCtx, task.failure, "error", err)
 		}
-	}
-	// Invite rewards waiting on something no request announces — a signup
-	// restriction running out, say.
-	if err := s.invites.RewardPending(sweepCtx, s.auth.VerificationRequired()); err != nil {
-		slog.ErrorContext(sweepCtx, "could not resolve pending invite rewards", "error", err)
 	}
 	s.sweepHealth(ctx)
 	s.SweepPlugins(ctx)
+}
+
+// sweepTasks is the sweep's clean-ups, in the order they run.
+func (s *Server) sweepTasks() []sweepTask {
+	return []sweepTask{
+		{
+			// Expired sessions are already refused on read; the sweep is only
+			// about not letting the table grow forever.
+			run: func(ctx context.Context) error {
+				_, _ = s.auth.Sessions().DeleteExpired(ctx)
+				return nil
+			},
+		},
+		{
+			failure: "could not expire group memberships",
+			run: func(ctx context.Context) error {
+				return s.users.ExpireMemberships(ctx, nil, time.Now())
+			},
+		},
+		{
+			run: func(ctx context.Context) error {
+				s.sweepAttachments(ctx)
+				return nil
+			},
+		},
+		{
+			// Authorisation codes live two minutes and tokens an hour; without
+			// this the two tables grow forever with rows nothing will read again.
+			failure: "could not purge sign-in grants",
+			run: func(ctx context.Context) error {
+				_, err := s.idp.Purge(ctx)
+				return err
+			},
+		},
+		{
+			// A spent sign-in state is only a record of a callback that already
+			// came back. Once its expiry has passed the state check refuses it,
+			// so the row is safe to drop.
+			failure: "could not prune sign-in states",
+			run: func(ctx context.Context) error {
+				_, err := s.oauth.PruneStates(ctx, time.Now().UnixMilli())
+				return err
+			},
+		},
+		{
+			// Counter buckets whose window has long since rolled over. The
+			// ledger is never pruned: it is the audit trail. A failure is
+			// logged here because the request log cannot record it: the
+			// database that failed is the one it writes to.
+			failure: "could not prune usage counters",
+			run: func(ctx context.Context) error {
+				_, err := s.quota.PruneCounters(ctx)
+				return err
+			},
+		},
+		{
+			// The bell keeps about a month, unlike the security log: a notice
+			// is a nudge to look at something, not a record kept for its own
+			// sake.
+			failure: "could not prune notifications",
+			run: func(ctx context.Context) error {
+				_, err := s.notify.Prune(ctx, time.Now().Add(-30*24*time.Hour))
+				return err
+			},
+		},
+		{
+			// The audit trail is kept for as long as the super administrator
+			// chose, and never less than the floor the setting enforces.
+			failure: "could not prune the audit trail",
+			run: func(ctx context.Context) error {
+				days := s.settings.Int(settings.AuditRetentionDays, audit.DefaultRetentionDays)
+				days = min(max(days, audit.MinRetentionDays), audit.MaxRetentionDays)
+				_, err := s.audit.Prune(ctx, time.Now().Add(-time.Duration(days)*24*time.Hour))
+				return err
+			},
+		},
+		{
+			// Only today's draw on a pool is held against a limit; a few weeks
+			// are kept for the figures.
+			failure: "could not prune pool usage",
+			run: func(ctx context.Context) error {
+				return s.bonus.PrunePoolUsage(ctx, 35*24*time.Hour)
+			},
+		},
+		{
+			// Bonus a person is about to lose is worth a line in the bell,
+			// once. Its two failures say different things, so it logs them
+			// itself.
+			run: func(sweepCtx context.Context) error {
+				expiring, err := s.bonus.TakeExpiring(sweepCtx, 3*24*time.Hour)
+				if err != nil {
+					slog.ErrorContext(sweepCtx, "could not look for expiring bonus", "error", err)
+				}
+				for _, e := range expiring {
+					if err := s.notify.Push(sweepCtx, nil, notify.Notification{
+						Audience: notify.AudienceUser, UserID: e.UserID, Kind: "bonus_expiring", Link: "/usage",
+						Params: map[string]any{"name": e.BarName, "amount": e.Remaining, "expires_at": e.ExpiresAt},
+					}); err != nil {
+						slog.ErrorContext(sweepCtx, "could not tell an account its bonus is expiring", "error", err, "user", e.UserID)
+					}
+				}
+				return nil
+			},
+		},
+		{
+			// Invite rewards waiting on something no request announces — a
+			// signup restriction running out, say.
+			failure: "could not resolve pending invite rewards",
+			run: func(ctx context.Context) error {
+				return s.invites.RewardPending(ctx, s.auth.VerificationRequired())
+			},
+		},
+	}
 }
 
 // SweepPlugins gives each switched-on plugin package that asked for it (the

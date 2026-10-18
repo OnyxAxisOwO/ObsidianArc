@@ -74,7 +74,7 @@ func (h *Handlers) pruneLogs(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	if body.Days < 0 || body.Days > 3650 {
-		return httpx.BadRequest("Give a number of days between 0 and 3650.")
+		return httpx.BadRequestCode("retention_days_range", "Give a number of days between 0 and 3650.")
 	}
 	actor := auth.MustUser(r.Context())
 
@@ -144,25 +144,25 @@ func logFilterFrom(r *http.Request) (reqlog.Filter, error) {
 	switch filter.Outcome {
 	case "", reqlog.OutcomeOK, reqlog.OutcomeFailed:
 	default:
-		return filter, httpx.BadRequest("Outcome must be ok or failed.")
+		return filter, httpx.BadRequestCode("outcome_filter_invalid", "Outcome must be ok or failed.")
 	}
 
 	if value := strings.TrimSpace(query.Get("user_id")); value != "" {
 		if !id.Valid(value) {
-			return filter, httpx.BadRequest("Malformed user id.")
+			return filter, httpx.BadRequestCode("malformed_user_id", "Malformed user id.")
 		}
 		filter.UserID = value
 	}
 	if value := strings.TrimSpace(query.Get("model_id")); value != "" {
 		if !id.Valid(value) {
-			return filter, httpx.BadRequest("Malformed model id.")
+			return filter, httpx.BadRequestCode("malformed_model_id", "Malformed model id.")
 		}
 		filter.ModelID = value
 	}
 	if value := strings.TrimSpace(query.Get("status")); value != "" {
 		status, err := strconv.Atoi(value)
 		if err != nil || status < 100 || status > 599 {
-			return filter, httpx.BadRequest("Status must be an HTTP status code.")
+			return filter, httpx.BadRequestCode("status_code_invalid", "Status must be an HTTP status code.")
 		}
 		filter.Status = status
 	}
@@ -187,7 +187,8 @@ func epochParam(r *http.Request, name string) (int64, error) {
 	}
 	value, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || value < 0 {
-		return 0, httpx.BadRequest("%s must be a timestamp in milliseconds.", name)
+		return 0, httpx.BadRequestCode("timestamp_invalid", "%s must be a timestamp in milliseconds.", name).
+			WithDetails(map[string]any{"param": name})
 	}
 	return value, nil
 }

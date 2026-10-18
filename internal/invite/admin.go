@@ -167,7 +167,7 @@ func (s *Store) Create(ctx context.Context, in CreateInput) ([]Code, error) {
 					record.GroupID, record.GroupDays, record.GroupDaysMax,
 					record.MaxUses, record.ExpiresAt, record.Note, record.CreatedBy, record.CreatedAt)
 				if err != nil {
-					if isUnique(err) {
+					if database.IsUnique(err) {
 						return ErrCodeTaken
 					}
 					return fmt.Errorf("invite: create: %w", err)

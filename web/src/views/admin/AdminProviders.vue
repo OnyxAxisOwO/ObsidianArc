@@ -36,6 +36,7 @@ import AdminDetectModels from './AdminDetectModels.vue';
 import AdminFailure from './AdminFailure.vue';
 import { reasoningLabel } from './reasoning-labels';
 import { useAdminView } from './adminView';
+import { errorLine } from './failure-codes';
 
 const view = useAdminView();
 view.setTitle(() => t('providersTitle'), () => t('providersSubtitle'));
@@ -318,7 +319,7 @@ async function load(): Promise<void> {
     providers.value = providersResult.providers;
     meta.value = metaResult;
   } catch (failure) {
-    error.value = failure instanceof Error ? failure.message : String(failure);
+    error.value = errorLine(failure);
   } finally {
     loaded.value = true;
   }

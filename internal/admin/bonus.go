@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -147,7 +148,7 @@ func (h *Handlers) adjustBonusPool(w http.ResponseWriter, r *http.Request) error
 		return err
 	}
 	if body.Amount == nil || (body.Op != "" && body.Op != "add" && body.Op != "set") {
-		return httpx.BadRequest("Say how much, and whether to add it or set what is left to it.")
+		return httpx.BadRequestCode("bonus_adjust_invalid", "Say how much, and whether to add it or set what is left to it.")
 	}
 	pool, err := h.Bonus.AdjustPool(r.Context(), r.PathValue("id"), body.Op == "set", *body.Amount)
 	if err != nil {
@@ -228,7 +229,7 @@ func (h *Handlers) grantBonus(w http.ResponseWriter, r *http.Request) error {
 	// Neither branch below takes a negative count, so it would leave the expiry at
 	// zero, which the store keeps as a credit that never expires.
 	if body.Days < 0 {
-		return httpx.BadRequest("Days cannot be negative.")
+		return httpx.BadRequestCode("days_negative", "Days cannot be negative.")
 	}
 	barID := r.PathValue("id")
 	bar, err := h.Bonus.Bar(r.Context(), nil, barID)
@@ -249,7 +250,7 @@ func (h *Handlers) grantBonus(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 	if targets != 1 {
-		return httpx.BadRequest("Say who it goes to: everyone, one group, or named accounts.")
+		return httpx.BadRequestCode("bonus_target_required", "Say who it goes to: everyone, one group, or named accounts.")
 	}
 	actor := auth.MustUser(r.Context())
 	result, err := h.Bonus.Grant(r.Context(), barID,
@@ -291,9 +292,9 @@ func (h *Handlers) revokeBonusGrant(w http.ResponseWriter, r *http.Request) erro
 	// The usage grant takes money away from the grant's owner, so the owner
 	// decides whether it may: the rule every other delegated action on an
 	// account answers to, not the grant alone.
-	var owner string
-	if err := h.db.QueryRow(r.Context(), `SELECT user_id FROM bonus_grants WHERE id = ?`, grantID).Scan(&owner); err != nil {
-		if database.IsNotFound(err) {
+	owner, err := h.Bonus.GrantOwner(r.Context(), nil, grantID)
+	if err != nil {
+		if errors.Is(err, bonus.ErrNotFound) {
 			return bonus.TranslateError(bonus.ErrNotFound)
 		}
 		return httpx.Internal(err)

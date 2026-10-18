@@ -81,8 +81,12 @@ watch(activeGuards, (list) => {
 }, { immediate: true });
 // A result as the lab shows it. Its download name is worked out once, when the
 // picture arrives: the template is drawn again on every change, and a name built
-// from the clock there would be a different one each time.
-interface LabResult extends ImageGenerationItem {
+// from the clock there would be a different one each time. The address it is
+// drawn from is worked out then too, and the base64 it may come from is not
+// kept beside it: a data URI already is that picture, and two copies of every
+// result would be held for the whole session.
+interface LabResult extends Omit<ImageGenerationItem, 'b64_json'> {
+  src: string;
   download: string;
 }
 const history = ref<LabResult[]>([]);
@@ -463,13 +467,13 @@ async function generate(): Promise<void> {
 
     if (res.images && res.images.length) {
       const arrived = Date.now();
-      // The gallery URL is the copy the screen reads. The base64 copy is kept only
-      // when the server gave no URL, so it is not held for the whole session.
+      // The gallery URL is the copy the screen reads; a data URI stands in only
+      // when the server gave no URL.
       const fresh = res.images.map((img, n): LabResult => {
         const { b64_json: bytes, ...rest } = img;
         return {
           ...rest,
-          ...(img.url ? {} : { b64_json: bytes }),
+          src: imageSource(img.url, bytes, img.mime),
           download: `image-${arrived}-${n}.${imageExtension(img.mime)}`,
         };
       });
@@ -489,16 +493,16 @@ async function generate(): Promise<void> {
 // Both kinds of card open the same lightbox with the name their download link
 // uses, so the two cannot drift apart.
 function zoomResult(img: LabResult): void {
-  zoomedImage.value = { url: imageSource(img), alt: img.revised_prompt || prompt.value, download: img.download };
+  zoomedImage.value = { url: img.src, alt: img.revised_prompt || prompt.value, download: img.download };
 }
 
 function zoomGalleryItem(item: ImageGenerationRecord): void {
   zoomedImage.value = { url: item.url, alt: item.revised_prompt || item.prompt, download: galleryDownloadName(item) };
 }
 
-function imageSource(img: ImageGenerationItem): string {
-  if (img.url) return img.url;
-  if (img.b64_json) return `data:${img.mime || 'image/png'};base64,${img.b64_json}`;
+function imageSource(url?: string, b64?: string, mime?: string): string {
+  if (url) return url;
+  if (b64) return `data:${mime || 'image/png'};base64,${b64}`;
   return '';
 }
 
@@ -730,7 +734,7 @@ function galleryDownloadName(item: ImageGenerationRecord): string {
           <OaFormSection :title="t('imageResult')" />
           <div v-for="img in history" :key="img.download" class="oa-image-lab-card">
             <img
-              :src="imageSource(img)"
+              :src="img.src"
               class="oa-image-lab-img"
               role="button"
               tabindex="0"
@@ -745,7 +749,7 @@ function galleryDownloadName(item: ImageGenerationRecord): string {
             </p>
             <div class="oa-image-lab-actions">
               <a
-                :href="imageSource(img)"
+                :href="img.src"
                 :download="img.download"
                 target="_blank"
                 rel="noopener"

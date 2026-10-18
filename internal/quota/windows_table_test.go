@@ -28,7 +28,7 @@ func TestEveryWindowTableCoversEveryWindow(t *testing.T) {
 		if !slices.Contains(counterKinds, window) {
 			t.Errorf("allowance window %q is not a counter kind, so it is never pruned", window)
 		}
-		// Reserve charges every allowance window; Settle and Release walk
+		// ReserveFor charges every allowance window; Settle and Release walk
 		// tokenWindows, so one left out of it keeps its estimate for ever.
 		if !slices.Contains(tokenWindows, window) {
 			t.Errorf("allowance window %q is not settled or released", window)

@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
@@ -77,13 +76,13 @@ func (h *Handlers) usageAllowances(w http.ResponseWriter, r *http.Request) error
 	query := r.URL.Query()
 	groupID := query.Get("group_id")
 	if groupID != "" && !id.Valid(groupID) {
-		return httpx.BadRequest("Malformed group id.")
+		return httpx.BadRequestCode("malformed_group_id", "Malformed group id.")
 	}
 	state := query.Get("state")
 	switch state {
 	case "", "low", "exhausted":
 	default:
-		return httpx.BadRequest("Unknown state filter.")
+		return httpx.BadRequestCode("state_filter_unknown", "Unknown state filter.")
 	}
 
 	ranked, err := h.rankedAllowances(r.Context(), query.Get("q"), groupID)
@@ -137,7 +136,7 @@ func (h *Handlers) usageAllowances(w http.ResponseWriter, r *http.Request) error
 
 // rankedAllowances answers the ranking for one search and group from the cache
 // when it is fresh. The cache is the usage summary's, with the same lifetime,
-// and singleflight keeps a page scroll that arrives while the ranking is being
+// and flight keeps a page scroll that arrives while the ranking is being
 // built from starting a second build.
 func (h *Handlers) rankedAllowances(ctx context.Context, search, groupID string) (rankedAllowances, error) {
 	key := allowanceRankingKey(groupID, search)
@@ -145,11 +144,11 @@ func (h *Handlers) rankedAllowances(ctx context.Context, search, groupID string)
 		return ranked, nil
 	}
 	// The generation is read before the build starts, and it is part of the
-	// singleflight key. A request that comes after a write therefore never joins
+	// flight key. A request that comes after a write therefore never joins
 	// a build begun before it, and a build that finishes after a write is not
 	// cached, because the write may have changed what it read.
 	generation := h.allowanceGenerationNow()
-	res, err, _ := h.allowanceSF.Do(strconv.FormatUint(generation, 10)+"|"+key, func() (any, error) {
+	res, err, _ := h.usageCache.allowanceSF.Do(strconv.FormatUint(generation, 10)+"|"+key, func() (any, error) {
 		if ranked, ok := cachedRanking(h.getSummaryCache(key)); ok {
 			return ranked, nil
 		}
@@ -176,54 +175,36 @@ func (h *Handlers) rankedAllowances(ctx context.Context, search, groupID string)
 // pressure from before the write for as long as the cache holds it. It runs
 // after the write has committed, so a rebuild cannot read the old figures back.
 func (h *Handlers) forgetAllowanceRankings() {
-	h.usageCacheMu.Lock()
-	defer h.usageCacheMu.Unlock()
-	for key := range h.usageSummaryCache {
-		if strings.HasPrefix(key, allowanceRankingPrefix) {
-			delete(h.usageSummaryCache, key)
-		}
-	}
-	h.allowanceGeneration++
+	h.usageCache.mu.Lock()
+	defer h.usageCache.mu.Unlock()
+	h.usageCache.summary.deletePrefix(allowanceRankingPrefix)
+	h.usageCache.allowanceGeneration++
 }
 
 func (h *Handlers) allowanceGenerationNow() uint64 {
-	h.usageCacheMu.RLock()
-	defer h.usageCacheMu.RUnlock()
-	return h.allowanceGeneration
+	h.usageCache.mu.RLock()
+	defer h.usageCache.mu.RUnlock()
+	return h.usageCache.allowanceGeneration
 }
 
 // cacheRankingIfCurrent stores a ranking only when no write has come in since
 // the build began. The check and the insert share the lock forgetAllowanceRankings
 // takes, so a write cannot land between them and be followed by this stale copy.
 func (h *Handlers) cacheRankingIfCurrent(key string, ranked rankedAllowances, generation uint64) {
-	h.usageCacheMu.Lock()
-	defer h.usageCacheMu.Unlock()
-	if h.allowanceGeneration != generation {
+	h.usageCache.mu.Lock()
+	defer h.usageCache.mu.Unlock()
+	if h.usageCache.allowanceGeneration != generation {
 		return
 	}
 	h.putSummaryLocked(key, map[string]any{"ranked": ranked})
 }
 
 // capAllowanceRankingsLocked makes room for key among the cached rankings by
-// dropping the oldest one whatever its age. It runs under usageCacheMu, from
+// dropping the oldest one whatever its age. It runs under usageCache.mu, from
 // putSummaryLocked, and a key that is already cached is replaced rather than
 // added, so it does not count against the cap.
 func (h *Handlers) capAllowanceRankingsLocked(key string) {
-	var oldestKey string
-	var oldest time.Time
-	cached := 0
-	for k, entry := range h.usageSummaryCache {
-		if k == key || !strings.HasPrefix(k, allowanceRankingPrefix) {
-			continue
-		}
-		cached++
-		if oldestKey == "" || entry.createdAt.Before(oldest) {
-			oldestKey, oldest = k, entry.createdAt
-		}
-	}
-	if cached >= allowanceRankingsCached {
-		delete(h.usageSummaryCache, oldestKey)
-	}
+	h.usageCache.summary.makeRoomUnder(allowanceRankingPrefix, key, allowanceRankingsCached)
 }
 
 func cachedRanking(cached map[string]any) (rankedAllowances, bool) {

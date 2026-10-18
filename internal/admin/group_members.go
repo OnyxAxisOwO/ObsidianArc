@@ -14,7 +14,7 @@ import (
 
 func validateMembershipExpiry(at int64) error {
 	if at < 0 || (at > 0 && at <= time.Now().UnixMilli()) || at > 253402300799999 {
-		return httpx.BadRequest("Membership expiry must be a future date, or zero for permanent membership.")
+		return httpx.BadRequestCode("membership_expiry_invalid", "Membership expiry must be a future date, or zero for permanent membership.")
 	}
 	return nil
 }
@@ -32,7 +32,7 @@ func (h *Handlers) assignGroupMembers(w http.ResponseWriter, r *http.Request) er
 		return err
 	}
 	if len(body.UserIDs) == 0 || len(body.UserIDs) > 200 {
-		return httpx.BadRequest("Select between 1 and 200 accounts.")
+		return httpx.BadRequestCode("member_selection_size", "Select between 1 and 200 accounts.")
 	}
 	if err := validateMembershipExpiry(body.ExpiresAt); err != nil {
 		return err
@@ -40,7 +40,7 @@ func (h *Handlers) assignGroupMembers(w http.ResponseWriter, r *http.Request) er
 	seen := make(map[string]bool, len(body.UserIDs))
 	for _, userID := range body.UserIDs {
 		if !id.Valid(userID) || seen[userID] {
-			return httpx.BadRequest("Account identifiers must be valid and distinct.")
+			return httpx.BadRequestCode("member_ids_invalid", "Account identifiers must be valid and distinct.")
 		}
 		seen[userID] = true
 	}

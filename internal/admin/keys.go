@@ -45,7 +45,7 @@ func (h *Handlers) revokeUserKey(w http.ResponseWriter, r *http.Request) error {
 	}
 	keyID := r.PathValue("key")
 	if !id.Valid(keyID) {
-		return httpx.NotFound("No such key.")
+		return httpx.NotFoundCode("key_not_found", "No such key.")
 	}
 	if err := h.authoriseSessionAction(r, userID); err != nil {
 		return err
@@ -56,7 +56,7 @@ func (h *Handlers) revokeUserKey(w http.ResponseWriter, r *http.Request) error {
 	// different person's by mistyping a path.
 	if err := h.keys.Delete(r.Context(), userID, keyID); err != nil {
 		if errors.Is(err, apikey.ErrNotFound) {
-			return httpx.NotFound("No such key.")
+			return httpx.NotFoundCode("key_not_found", "No such key.")
 		}
 		return httpx.Internal(err)
 	}

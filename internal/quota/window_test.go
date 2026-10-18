@@ -45,7 +45,7 @@ func TestAHoldIsGivenBackToTheCounterItCharged(t *testing.T) {
 	started := time.Now().Add(-2 * time.Minute)
 	held := Estimate{Tokens: 4000, Credits: 4}
 
-	// Charged there, exactly as Reserve would have.
+	// Charged there, exactly as ReserveFor would have.
 	for _, window := range []Window{WindowTPM, Window5H} {
 		if _, err := bump(ctx, db, scopeKey(person.ID), window,
 			bucketStart(window, started, person.CreatedAt), 0, held.Tokens, held.Credits); err != nil {
@@ -92,7 +92,7 @@ func TestAnExemptAccountKeepsItsReading(t *testing.T) {
 	admin := account("admin-1", "")
 	admin.Role = user.RoleSuperAdmin
 
-	held, err := service.Reserve(ctx, admin, Estimate{Tokens: 4000, Credits: 4})
+	held, err := service.ReserveFor(ctx, admin, "", Estimate{Tokens: 4000, Credits: 4}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +138,7 @@ func TestAReservationIsGivenBackOnce(t *testing.T) {
 	if err := service.Settle(ctx, person, Estimate{}, Estimate{Tokens: 100, Credits: 1}); err != nil {
 		t.Fatal(err)
 	}
-	res, err := service.Reserve(ctx, person, Estimate{Tokens: 4000, Credits: 4})
+	res, err := service.ReserveFor(ctx, person, "", Estimate{Tokens: 4000, Credits: 4}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestConcurrentReleasesOfOneReservationGiveItBackOnce(t *testing.T) {
 	if err := service.Settle(ctx, person, Estimate{}, Estimate{Tokens: 100, Credits: 1}); err != nil {
 		t.Fatal(err)
 	}
-	res, err := service.Reserve(ctx, person, Estimate{Tokens: 4000, Credits: 4})
+	res, err := service.ReserveFor(ctx, person, "", Estimate{Tokens: 4000, Credits: 4}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

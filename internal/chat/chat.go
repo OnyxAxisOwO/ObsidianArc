@@ -244,7 +244,7 @@ func (s *Service) Run(ctx context.Context, req TurnRequest, resolved model.Resol
 	// instant the browser goes away.
 	if !s.settings.Bool(settings.AttachmentRetain) {
 		defer func() {
-			dropCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+			dropCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), SaveBudget)
 			defer cancel()
 			if _, err := s.conversations.Discard(dropCtx, prepared.conversationID); err != nil {
 				slog.ErrorContext(dropCtx, "could not discard attachment data",
@@ -265,7 +265,7 @@ func (s *Service) Run(ctx context.Context, req TurnRequest, resolved model.Resol
 		return nil
 	}
 	abandon := func(err error) error {
-		saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+		saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), SaveBudget)
 		defer cancel()
 		return s.finishFailed(saveCtx, ctx, finished{
 			requestID: requestID,
@@ -329,7 +329,7 @@ func (s *Service) Run(ctx context.Context, req TurnRequest, resolved model.Resol
 	// The provider call is over. Saving must not be cancelled along with it:
 	// the partial answer is what the user read, and the tokens are spent
 	// either way.
-	saveCtx, cancelSave := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	saveCtx, cancelSave := context.WithTimeout(context.WithoutCancel(ctx), SaveBudget)
 	defer cancelSave()
 
 	finish := finished{

@@ -31,13 +31,13 @@ func (h *Handlers) listFeedback(w http.ResponseWriter, r *http.Request) error {
 	// feedback", which is the one answer this screen must never give by
 	// accident.
 	if filter.Kind != "" && !filter.Kind.Valid() {
-		return httpx.BadRequest("Unknown feedback kind.")
+		return httpx.BadRequestCode("feedback_kind_unknown", "Unknown feedback kind.")
 	}
 	if filter.Priority != "" && !filter.Priority.Valid() {
-		return httpx.BadRequest("Unknown priority.")
+		return httpx.BadRequestCode("feedback_priority_unknown", "Unknown priority.")
 	}
 	if filter.Status != "" && !filter.Status.Valid() {
-		return httpx.BadRequest("Unknown status.")
+		return httpx.BadRequestCode("feedback_status_unknown", "Unknown status.")
 	}
 
 	records, total, err := h.feedback.List(r.Context(), nil, filter)

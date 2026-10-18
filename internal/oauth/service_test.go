@@ -216,7 +216,7 @@ func TestOAuthScreensOnlyAddressesThatCanOpenANewAccount(t *testing.T) {
 	}
 	var calls atomic.Int32
 	var screenedEmail atomic.Value
-	f.auth.ScreenEmail = func(_ context.Context, email string) error {
+	f.auth.Hooks.ScreenEmail = func(_ context.Context, email string) error {
 		calls.Add(1)
 		screenedEmail.Store(email)
 		return nil
@@ -245,7 +245,7 @@ func TestOAuthScreensOnlyAddressesThatCanOpenANewAccount(t *testing.T) {
 func TestTheFirstOAuthAccountKeepsTheBootstrapExemption(t *testing.T) {
 	f := newFixture(t)
 	var calls atomic.Int32
-	f.auth.ScreenEmail = func(context.Context, string) error {
+	f.auth.Hooks.ScreenEmail = func(context.Context, string) error {
 		calls.Add(1)
 		return usercheck.ErrDisposable
 	}
@@ -267,7 +267,7 @@ func TestDisposableOAuthEmailIsRefusedBeforeAccountCreation(t *testing.T) {
 		t.Fatalf("register existing user: %v", err)
 	}
 	var calls atomic.Int32
-	f.auth.ScreenEmail = func(_ context.Context, email string) error {
+	f.auth.Hooks.ScreenEmail = func(_ context.Context, email string) error {
 		calls.Add(1)
 		if email != "disposable@example.com" {
 			t.Errorf("screened email = %q", email)
@@ -294,7 +294,7 @@ func TestOAuthCompletionScreensTheAddressTypedIntoTheForm(t *testing.T) {
 		t.Fatalf("register existing user: %v", err)
 	}
 	var calls atomic.Int32
-	f.auth.ScreenEmail = func(_ context.Context, email string) error {
+	f.auth.Hooks.ScreenEmail = func(_ context.Context, email string) error {
 		calls.Add(1)
 		if email != "typed@example.com" {
 			t.Errorf("screened email = %q, want completion-form value", email)
@@ -316,7 +316,7 @@ func TestAnEmptyPreflightRerunsScreeningIfAnotherRequestCreatesTheFirstAccount(t
 	f := newFixture(t)
 	ctx := context.Background()
 	var calls atomic.Int32
-	f.auth.ScreenEmail = func(context.Context, string) error {
+	f.auth.Hooks.ScreenEmail = func(context.Context, string) error {
 		calls.Add(1)
 		return usercheck.ErrDisposable
 	}
@@ -1055,7 +1055,7 @@ func TestAChallengedProviderSignUpIsRefusedBeforeItsAddressIsLookedUp(t *testing
 		t.Fatal(err)
 	}
 	var lookups atomic.Int32
-	f.auth.ScreenEmail = func(context.Context, string) error {
+	f.auth.Hooks.ScreenEmail = func(context.Context, string) error {
 		lookups.Add(1)
 		return nil
 	}
@@ -1081,7 +1081,7 @@ func TestATypedAddressAlreadyHereIsRefusedWithoutALookup(t *testing.T) {
 		t.Fatal(err)
 	}
 	var lookups atomic.Int32
-	f.auth.ScreenEmail = func(context.Context, string) error {
+	f.auth.Hooks.ScreenEmail = func(context.Context, string) error {
 		lookups.Add(1)
 		return errors.New("the screening service is down")
 	}

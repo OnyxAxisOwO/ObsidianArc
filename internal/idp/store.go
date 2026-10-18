@@ -363,7 +363,7 @@ func (s *Store) Authenticate(ctx context.Context, clientID, secret string) (App,
 	return record, nil
 }
 
-type rowScanner interface{ Scan(dest ...any) error }
+type rowScanner = database.RowScanner
 
 func scanApp(row rowScanner) (App, string, error) {
 	var (

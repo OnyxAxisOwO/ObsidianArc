@@ -235,14 +235,6 @@ func (s *Store) ListWithFilter(ctx context.Context, userID string, filter ListFi
 	return scanConversations(rows)
 }
 
-// List is the first page of a user's active conversations, newest first. The
-// tests read an account through it; the product paths page with ListPage or
-// ListWithFilter, so it has no production caller.
-func (s *Store) List(ctx context.Context, userID string, limit int) ([]Conversation, error) {
-	f := false
-	return s.ListWithFilter(ctx, userID, ListFilter{Limit: clampLimit(limit), Archived: &f})
-}
-
 // ListForExport is one page of every conversation a user owns, archived ones
 // included, after afterID ("" for the first page), in ID order.
 //
@@ -548,18 +540,16 @@ const requestPictureBatch = 500
 // skipped.
 func (s *Store) requestPictures(ctx context.Context, q database.Queryer, userID string, batch []Message) error {
 	index := make(map[string]int, len(batch))
-	marks := make([]string, 0, len(batch))
 	ids := make([]any, 0, len(batch)+1)
 	ids = append(ids, userID)
 	for position, message := range batch {
 		index[message.ID] = position
-		marks = append(marks, "?")
 		ids = append(ids, message.ID)
 	}
 	attachments, err := q.Query(ctx,
 		`SELECT a.id, a.message_id, a.mime, a.width, a.height, a.size, a.discarded_at
 		 FROM attachments a
-		 WHERE a.user_id = ? AND a.message_id IN (`+strings.Join(marks, ", ")+`)
+		 WHERE a.user_id = ? AND a.message_id IN (`+database.Placeholders(len(batch))+`)
 		 ORDER BY a.created_at`, ids...)
 	if err != nil {
 		return fmt.Errorf("conversation: attachments for request: %w", err)

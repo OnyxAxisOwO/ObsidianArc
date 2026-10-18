@@ -38,8 +38,8 @@ agreements explicit instead of guessed.
 database, no sidecars, no cache tier, no broker. When two designs do the same
 job, the one with fewer moving parts wins.
 
-Five direct Go dependencies (`modernc.org/sqlite`, `pgx`, `x/crypto`,
-`x/sync` and `github.com/tetratelabs/wazero`) and four on the frontend: `vue`,
+Four direct Go dependencies (`modernc.org/sqlite`, `pgx`, `x/crypto` and
+`github.com/tetratelabs/wazero`) and four on the frontend: `vue`,
 `vue-router`, `@vueuse/core` and `lucide-vue-next`. Routing on the server is `net/http`. Migrations are
 numbered `.sql` files. There is no ORM, no logging framework and no config
 library on one side, and no component library, no CSS framework and no
@@ -58,10 +58,11 @@ The same goes for wazero, the Go side's fourth: it is what lets a plugin be
 installed from the backoffice without a rebuild, running as WebAssembly in a
 sandbox instead of as code with the server's own hands. It is pure Go, so the
 binary stays static and cross-compiles, and it costs 2.8 MB of that binary,
-also written down in `docs/ARCHITECTURE.md`. `x/sync` is there for
-`singleflight` alone, which keeps the backoffice's heavy aggregations from
-being computed once per waiting request; pgx's pool already links the module
-(`x/sync/semaphore`), so it brings nothing new into the build. A sixth is that conversation again.
+also written down in `docs/ARCHITECTURE.md`. A fifth is that conversation
+again. Merging concurrent requests for one heavy aggregation is
+`internal/flight`, a page of code with `singleflight`'s behaviour, rather than
+`x/sync` as a direct dependency; the module is still linked, indirectly,
+through pgx's pool.
 
 ## Plugins: what only some instances want
 
@@ -434,9 +435,10 @@ installs, updates and removes).
 change moves one of those numbers, re-measure and update it in the same change.
 They drifted to nearly double once because nobody re-ran the build.
 
-Current: 27.10 MB binary (this repository ships no plugin; 2.8 MB of it is
-the plugin runtime); 205.59 kB on the wire to open the chat (the build's gzip
-column reads 206.32 kB), against a target of 135. The target used to be 80 and
+Current: 28.44 MB binary (this repository ships no plugin; 2.8 MB of it is
+the plugin runtime, 0.86 MB the build's brotli and gzip copies of the
+assets); 205.67 kB on the wire to open the chat, as gzip (the build's gzip
+column reads 206.43 kB; a browser that takes brotli receives 172.70 kB), against a target of 135. The target used to be 80 and
 the figure used to be 59.5; adopting Vue moved both, and
 `docs/ARCHITECTURE.md` says so rather than
 quietly restating a target the build cannot meet.
@@ -462,7 +464,11 @@ somebody decided it should.
 
 Responses are compressed by `httpx.Compress`, on an allowlist of content
 types. Adding `text/event-stream` to it would buffer streamed answers into
-silence, so the list is the one place to be careful.
+silence, so the list is the one place to be careful. The fingerprinted assets
+are the exception: the build compresses them once (brotli 11, gzip 9, into
+`dist/precompressed/`), `internal/web` sends the copy the client accepts, and
+the compressor leaves a response that already names its encoding alone. The
+first-paint budget is still counted in gzip, whatever brotli saves.
 
 ## Versions
 

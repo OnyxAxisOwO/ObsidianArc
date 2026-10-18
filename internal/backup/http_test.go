@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 )
 
@@ -136,7 +137,8 @@ func TestImportEndpointRefusesNULAsBadRequest(t *testing.T) {
 		t.Errorf("error = %+v", reply.Error)
 	}
 
-	threads, err := f.conversations.List(ctx, f.account.ID, 50)
+	archived := false
+	threads, err := f.conversations.ListWithFilter(ctx, f.account.ID, conversation.ListFilter{Limit: 50, Archived: &archived})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +214,8 @@ func TestImportFailingPartWayAnswersWithWhatWasWritten(t *testing.T) {
 		t.Errorf("error = %+v, want the one conversation that committed", reply.Error)
 	}
 
-	threads, err := f.conversations.List(ctx, f.account.ID, 50)
+	archived := false
+	threads, err := f.conversations.ListWithFilter(ctx, f.account.ID, conversation.ListFilter{Limit: 50, Archived: &archived})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +243,8 @@ func TestImportFinishesWhenTheClientHasGone(t *testing.T) {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body)
 	}
 
-	threads, err := f.conversations.List(ctx, f.account.ID, 50)
+	archived := false
+	threads, err := f.conversations.ListWithFilter(ctx, f.account.ID, conversation.ListFilter{Limit: 50, Archived: &archived})
 	if err != nil {
 		t.Fatal(err)
 	}

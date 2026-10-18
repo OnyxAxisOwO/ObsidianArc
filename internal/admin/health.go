@@ -35,7 +35,7 @@ func (h *Handlers) modelHealth(w http.ResponseWriter, r *http.Request) error {
 	if raw := r.URL.Query().Get("hours"); raw != "" {
 		parsed, err := strconv.Atoi(raw)
 		if err != nil || parsed <= 0 || parsed > maxHealthHours {
-			return httpx.BadRequest("hours must be between 1 and 720.")
+			return httpx.BadRequestCode("health_hours_range", "hours must be between 1 and 720.")
 		}
 		hours = parsed
 	}
@@ -59,19 +59,27 @@ func (h *Handlers) modelHealth(w http.ResponseWriter, r *http.Request) error {
 		return httpx.Internal(err)
 	}
 
+	// Rates counts exactly the rows SamplesFor reads for a model: the same window
+	// and the same statuses. A model it has none for has no samples either, so
+	// idle models are left out of the read rather than asked about to find
+	// nothing, and the rest are read together rather than one query each.
+	busy := make([]string, 0, len(models))
+	for _, record := range models {
+		if rates[record.ID].Total > 0 {
+			busy = append(busy, record.ID)
+		}
+	}
+	evidence, err := h.health.SamplesFor(ctx, busy, since, healthSampleCap)
+	if err != nil {
+		return httpx.Internal(err)
+	}
+
 	entries := make([]map[string]any, 0, len(models))
 	for _, record := range models {
 		rate := rates[record.ID]
-		// Rates counts exactly the rows Samples reads for a model: the same window
-		// and the same statuses. A model it has none for has no samples either, so
-		// the per-model query is skipped for idle models rather than run to find
-		// nothing.
-		samples := []health.Sample{}
-		if rate.Total > 0 {
-			samples, err = h.health.Samples(ctx, record.ID, since, healthSampleCap)
-			if err != nil {
-				return httpx.Internal(err)
-			}
+		samples := evidence[record.ID]
+		if samples == nil {
+			samples = []health.Sample{}
 		}
 		status := health.Summarise(record.ID, samples)
 		status.Samples = rate.Total
@@ -109,7 +117,7 @@ func (h *Handlers) modelHealth(w http.ResponseWriter, r *http.Request) error {
 // that a model is healthy before the operator decides to enable it again.
 func (h *Handlers) probeAllHealth(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
-	if h.probeBudget != nil && !h.probeBudget.Allow("probe") {
+	if !h.probeBudget.Allow("probe") {
 		return httpx.TooManyRequests("probe_cooldown", "All models can be tested once every thirty seconds.")
 	}
 	records, err := h.models.ListAll(ctx, "")

@@ -820,7 +820,7 @@ func TestABackofficeVisitEndsWhenTheRequestMoves(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	f.auth.ClientIP = func(r *http.Request) string { return r.Header.Get("X-Test-IP") }
+	f.auth.Hooks.ClientIP = func(r *http.Request) string { return r.Header.Get("X-Test-IP") }
 	admin, _, codes, _ := enrolled(t, f, "founder")
 	token, _, err := f.auth.Sessions().Create(ctx, admin.ID, time.Hour, "", "")
 	if err != nil {

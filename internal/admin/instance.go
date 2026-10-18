@@ -413,13 +413,15 @@ type valueRule struct {
 var valueRules = []valueRule{
 	{[]string{settings.LandingMode}, func(_, value string) error {
 		if !settings.ValidLandingMode(value) {
-			return httpx.BadRequest("Unknown landing mode %q.", value)
+			return httpx.BadRequestCode("landing_mode_unknown", "Unknown landing mode %q.", value).
+				WithDetails(map[string]any{"value": value})
 		}
 		return nil
 	}},
 	{[]string{settings.SiteAuthCardPosition}, func(_, value string) error {
 		if !settings.ValidAuthCardPosition(value) {
-			return httpx.BadRequest("Unknown auth card position %q.", value)
+			return httpx.BadRequestCode("auth_card_position_unknown", "Unknown auth card position %q.", value).
+				WithDetails(map[string]any{"value": value})
 		}
 		return nil
 	}},
@@ -427,7 +429,8 @@ var valueRules = []valueRule{
 	// only a non-empty value that fails the format is refused.
 	{[]string{settings.PWAThemeColor, settings.PWABackgroundColor}, func(key, value string) error {
 		if value != "" && !settings.ValidHexColor(value) {
-			return httpx.BadRequest("Setting %q must be a #rrggbb colour.", key)
+			return httpx.BadRequestCode("setting_colour_invalid", "Setting %q must be a #rrggbb colour.", key).
+				WithDetails(map[string]any{"setting": key})
 		}
 		return nil
 	}},
@@ -436,7 +439,7 @@ var valueRules = []valueRule{
 	// to wonder why the install prompt has no icon.
 	{[]string{settings.PWAIconURL}, func(_, value string) error {
 		if !settings.ValidPWAIconURL(value) {
-			return httpx.BadRequest("The PWA icon must be a path on this server or a data URI.")
+			return httpx.BadRequestCode("pwa_icon_invalid", "The PWA icon must be a path on this server or a data URI.")
 		}
 		return nil
 	}},
@@ -448,7 +451,7 @@ var valueRules = []valueRule{
 			return nil
 		}
 		if _, _, ok := conversation.ParseDailyTime(value); !ok {
-			return httpx.BadRequest("The daily cleanup time must be HH:MM, or empty for never.")
+			return httpx.BadRequestCode("cleanup_time_invalid", "The daily cleanup time must be HH:MM, or empty for never.")
 		}
 		return nil
 	}},
@@ -457,19 +460,22 @@ var valueRules = []valueRule{
 	// browser.
 	{[]string{settings.UsageDisplay}, func(_, value string) error {
 		if !settings.ValidUsageDisplay(value) {
-			return httpx.BadRequest("Unknown usage display %q.", value)
+			return httpx.BadRequestCode("usage_display_unknown", "Unknown usage display %q.", value).
+				WithDetails(map[string]any{"value": value})
 		}
 		return nil
 	}},
 	{[]string{settings.HomeNoticeTone}, func(_, value string) error {
 		if !settings.ValidHomeNoticeTone(value) {
-			return httpx.BadRequest("Unknown notice tone %q.", value)
+			return httpx.BadRequestCode("notice_tone_unknown", "Unknown notice tone %q.", value).
+				WithDetails(map[string]any{"value": value})
 		}
 		return nil
 	}},
 	{[]string{settings.LeaderboardIdentity}, func(_, value string) error {
 		if !settings.ValidLeaderboardIdentity(value) {
-			return httpx.BadRequest("Unknown leaderboard identity %q.", value)
+			return httpx.BadRequestCode("leaderboard_identity_unknown", "Unknown leaderboard identity %q.", value).
+				WithDetails(map[string]any{"value": value})
 		}
 		return nil
 	}},
@@ -508,7 +514,7 @@ func (h *Handlers) referenceRefused(ctx context.Context, key, value string) (ref
 	}
 	if key == settings.RegistrationGroup {
 		if !id.Valid(value) {
-			return httpx.BadRequest("Malformed group id."), nil
+			return httpx.BadRequestCode("malformed_group_id", "Malformed group id."), nil
 		}
 		if _, err := h.groups.ByID(ctx, nil, value); err != nil {
 			if errors.Is(err, group.ErrNotFound) {
@@ -519,7 +525,7 @@ func (h *Handlers) referenceRefused(ctx context.Context, key, value string) (ref
 		return nil, nil
 	}
 	if !id.Valid(value) {
-		return httpx.BadRequest("Malformed model id."), nil
+		return httpx.BadRequestCode("malformed_model_id", "Malformed model id."), nil
 	}
 	if _, err := h.models.ByID(ctx, value); err != nil {
 		if errors.Is(err, model.ErrNotFound) {
@@ -577,10 +583,12 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 			return permissionDenied()
 		}
 		if !h.writable(key) {
-			return httpx.BadRequest("Unknown setting %q.", key)
+			return httpx.BadRequestCode("setting_unknown", "Unknown setting %q.", key).
+				WithDetails(map[string]any{"setting": key})
 		}
-		if len(value) > 8*1024 {
-			return httpx.BadRequest("Setting %q is too long.", key)
+		if len(value) > settings.MaxValueBytes {
+			return httpx.BadRequestCode("setting_too_long", "Setting %q is too long.", key).
+				WithDetails(map[string]any{"setting": key})
 		}
 	}
 
@@ -640,8 +648,9 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 		if raw, present := body[key]; present {
 			value, err := strconv.Atoi(strings.TrimSpace(raw))
 			if err != nil || value < bounds[0] || value > bounds[1] {
-				return httpx.BadRequest("Setting %q must be between %d and %d.",
-					key, bounds[0], bounds[1])
+				return httpx.BadRequestCode("setting_out_of_range", "Setting %q must be between %d and %d.",
+					key, bounds[0], bounds[1]).
+					WithDetails(map[string]any{"setting": key, "min": bounds[0], "max": bounds[1]})
 			}
 		}
 	}
@@ -650,10 +659,12 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 	// there can be is decided here and not by whatever the form happened to send.
 	if over := overlongNotice(body); len(over) > 0 {
 		if over[0] == settings.HomeNotice {
-			return httpx.BadRequest("The notice line is at most %d characters; put the rest in the text that opens from it.",
-				settings.MaxHomeNoticeTitleChars)
+			return httpx.BadRequestCode("notice_title_too_long", "The notice line is at most %d characters; put the rest in the text that opens from it.",
+				settings.MaxHomeNoticeTitleChars).
+				WithDetails(map[string]any{"max": settings.MaxHomeNoticeTitleChars})
 		}
-		return httpx.BadRequest("The notice text is at most %d characters.", settings.MaxHomeNoticeBodyChars)
+		return httpx.BadRequestCode("notice_body_too_long", "The notice text is at most %d characters.", settings.MaxHomeNoticeBodyChars).
+			WithDetails(map[string]any{"max": settings.MaxHomeNoticeBodyChars})
 	}
 
 	if err := h.validateDefined(body); err != nil {
@@ -679,11 +690,7 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 		save = h.settings.SetMany(r.Context(), body)
 	}
 	if save != nil {
-		var response *httpx.Error
-		if errors.As(save, &response) {
-			return response
-		}
-		return httpx.Internal(save)
+		return responseOr(save, internalError)
 	}
 	h.noteSettings(r.Context(), before, body)
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"settings": h.visibleSettings(auth.MustUser(r.Context()))})
@@ -711,7 +718,7 @@ func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error 
 		return err
 	}
 	if len(body) == 0 {
-		return httpx.BadRequest("That file contains no settings.")
+		return httpx.BadRequestCode("settings_file_empty", "That file contains no settings.")
 	}
 
 	twoFactorCode := body["two_factor_code"]
@@ -720,105 +727,11 @@ func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error 
 		twoFactorCode = r.Header.Get("X-Two-Factor-Code")
 	}
 
-	applied := map[string]string{}
-	skipped := []string{}
-
-	for key, value := range body {
-		if !hasPermission(auth.MustUser(r.Context()), h.settingPermission(key)) || !h.writable(key) || len(value) > 8*1024 {
-			skipped = append(skipped, key)
-			continue
-		}
-		applied[key] = value
+	applied, skipped := h.importableSettings(r, body)
+	h.dropRefusedImports(r, applied, &skipped, twoFactorCode)
+	if err := h.clearDanglingReferences(r.Context(), applied, &skipped); err != nil {
+		return err
 	}
-
-	// The same rule the form's save keeps: an export shows a secret as the
-	// mask, and importing that file back used to write the row of dots over
-	// the real value — every challenge or provider sign-in behind it then
-	// failing for everybody, with nothing on screen to say why.
-	for _, key := range h.secretKeys() {
-		if value, present := applied[key]; present && (value == "" || value == secretMask) {
-			delete(applied, key)
-		}
-	}
-
-	for _, rule := range valueRules {
-		for _, key := range rule.keys {
-			if value, present := applied[key]; present && rule.check(key, value) != nil {
-				delete(applied, key)
-				skipped = append(skipped, key)
-			}
-		}
-	}
-	for _, key := range themeChecked {
-		if value, present := applied[key]; present && checkThemeSettings(map[string]string{key: value}) != nil {
-			delete(applied, key)
-			skipped = append(skipped, key)
-		}
-	}
-	// Dropped and named, like the rest of this document, rather than failing the
-	// whole import: a file exported before this check existed can carry one.
-	for _, key := range oidcURLKeys {
-		if h.oidcURLRefused(key, applied[key]) {
-			delete(applied, key)
-			skipped = append(skipped, key)
-		}
-	}
-	// Dropped rather than refused, like everything else here — and for the
-	// importer's own sake: a file from an instance that requires the second
-	// step must not shut out an operator who has not switched it on yet.
-	for _, key := range twoFactorKeys {
-		if value, present := applied[key]; present {
-			if checkTwoFactorSettings(auth.MustUser(r.Context()), map[string]string{key: value}) != nil {
-				delete(applied, key)
-				skipped = append(skipped, key)
-			}
-		}
-	}
-	if value, present := applied[settings.SignupReviewPrompt]; present && strings.TrimSpace(value) != strings.TrimSpace(h.settings.Get(settings.SignupReviewPrompt)) {
-		actor := auth.MustUser(r.Context())
-		if !actor.TwoFactorEnabled() || strings.TrimSpace(twoFactorCode) == "" ||
-			h.auth.VerifyTwoFactorCode(r.Context(), actor, strings.TrimSpace(twoFactorCode), h.clientIP(r)) != nil {
-			delete(applied, settings.SignupReviewPrompt)
-			skipped = append(skipped, settings.SignupReviewPrompt)
-		}
-	}
-	for key, bounds := range numericBounds {
-		if raw, present := applied[key]; present {
-			value, err := strconv.Atoi(strings.TrimSpace(raw))
-			if err != nil || value < bounds[0] || value > bounds[1] {
-				delete(applied, key)
-				skipped = append(skipped, key)
-			}
-		}
-	}
-
-	// The save refuses these lengths; the import drops the key and names it, so a
-	// file from elsewhere cannot put a longer notice in front of signed-out visitors.
-	for _, key := range overlongNotice(applied) {
-		delete(applied, key)
-		skipped = append(skipped, key)
-	}
-
-	// A dangling identifier is cleared rather than carried, so the instance
-	// ends up in a state it can describe: "no default group" beats "a default
-	// group that does not exist". A lookup that failed says nothing about the
-	// row, so it fails the import instead: clearing on it used to wipe a
-	// working trial model or registration group whenever the database blinked.
-	for _, key := range referenceKeys {
-		value, present := applied[key]
-		if !present {
-			continue
-		}
-		refusal, err := h.referenceRefused(r.Context(), key, value)
-		if err != nil {
-			return httpx.Internal(err)
-		}
-		if refusal != nil {
-			applied[key] = ""
-			skipped = append(skipped, key)
-		}
-	}
-
 	for key, value := range applied {
 		if d, ok := h.settings.Defined(key); ok && d.Validate != nil && d.Validate(value) != nil {
 			delete(applied, key)
@@ -850,11 +763,7 @@ func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error 
 		save = h.settings.SetMany(r.Context(), applied)
 	}
 	if save != nil {
-		var response *httpx.Error
-		if errors.As(save, &response) {
-			return response
-		}
-		return httpx.Internal(save)
+		return responseOr(save, internalError)
 	}
 	h.noteSettings(r.Context(), before, applied)
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
@@ -862,6 +771,117 @@ func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error 
 		"applied":  len(applied),
 		"skipped":  skipped,
 	})
+}
+
+// importableSettings is the part of an imported document this administrator
+// may write at all, and the keys left out of it.
+func (h *Handlers) importableSettings(r *http.Request, body map[string]string) (map[string]string, []string) {
+	applied := map[string]string{}
+	skipped := []string{}
+
+	for key, value := range body {
+		if !hasPermission(auth.MustUser(r.Context()), h.settingPermission(key)) || !h.writable(key) || len(value) > settings.MaxValueBytes {
+			skipped = append(skipped, key)
+			continue
+		}
+		applied[key] = value
+	}
+
+	// The same rule the form's save keeps: an export shows a secret as the
+	// mask, and importing that file back used to write the row of dots over
+	// the real value — every challenge or provider sign-in behind it then
+	// failing for everybody, with nothing on screen to say why.
+	for _, key := range h.secretKeys() {
+		if value, present := applied[key]; present && (value == "" || value == secretMask) {
+			delete(applied, key)
+		}
+	}
+	return applied, skipped
+}
+
+// dropRefusedImports drops from applied, and names in skipped, each value the
+// ordinary save would refuse.
+func (h *Handlers) dropRefusedImports(r *http.Request, applied map[string]string, skipped *[]string, twoFactorCode string) {
+	drop := func(key string) {
+		delete(applied, key)
+		*skipped = append(*skipped, key)
+	}
+	for _, rule := range valueRules {
+		for _, key := range rule.keys {
+			if value, present := applied[key]; present && rule.check(key, value) != nil {
+				drop(key)
+			}
+		}
+	}
+	for _, key := range themeChecked {
+		if value, present := applied[key]; present && checkThemeSettings(map[string]string{key: value}) != nil {
+			drop(key)
+		}
+	}
+	// Dropped and named, like the rest of this document, rather than failing the
+	// whole import: a file exported before this check existed can carry one.
+	for _, key := range oidcURLKeys {
+		if h.oidcURLRefused(key, applied[key]) {
+			drop(key)
+		}
+	}
+	// Dropped rather than refused, like everything else here — and for the
+	// importer's own sake: a file from an instance that requires the second
+	// step must not shut out an operator who has not switched it on yet.
+	for _, key := range twoFactorKeys {
+		if value, present := applied[key]; present {
+			if checkTwoFactorSettings(auth.MustUser(r.Context()), map[string]string{key: value}) != nil {
+				drop(key)
+			}
+		}
+	}
+	if value, present := applied[settings.SignupReviewPrompt]; present && strings.TrimSpace(value) != strings.TrimSpace(h.settings.Get(settings.SignupReviewPrompt)) {
+		actor := auth.MustUser(r.Context())
+		if !actor.TwoFactorEnabled() || strings.TrimSpace(twoFactorCode) == "" ||
+			h.auth.VerifyTwoFactorCode(r.Context(), actor, strings.TrimSpace(twoFactorCode), h.clientIP(r)) != nil {
+			drop(settings.SignupReviewPrompt)
+		}
+	}
+	for key, bounds := range numericBounds {
+		if raw, present := applied[key]; present {
+			value, err := strconv.Atoi(strings.TrimSpace(raw))
+			if err != nil || value < bounds[0] || value > bounds[1] {
+				drop(key)
+			}
+		}
+	}
+
+	// The save refuses these lengths; the import drops the key and names it, so a
+	// file from elsewhere cannot put a longer notice in front of signed-out visitors.
+	for _, key := range overlongNotice(applied) {
+		drop(key)
+	}
+}
+
+// clearDanglingReferences clears, and names in skipped, each imported row
+// identifier that names nothing here.
+//
+// A dangling identifier is cleared rather than carried, so the instance
+// ends up in a state it can describe: "no default group" beats "a default
+// group that does not exist". A lookup that failed says nothing about the
+// row, so it fails the import instead: clearing on it used to wipe a
+// working trial model or registration group whenever the database blinked.
+func (h *Handlers) clearDanglingReferences(ctx context.Context, applied map[string]string, skipped *[]string) error {
+	for _, key := range referenceKeys {
+		value, present := applied[key]
+		if !present {
+			continue
+		}
+		refusal, err := h.referenceRefused(ctx, key, value)
+		if err != nil {
+			return httpx.Internal(err)
+		}
+		if refusal != nil {
+			applied[key] = ""
+			*skipped = append(*skipped, key)
+		}
+	}
+	return nil
 }
 
 // purgeAttachments drops every stored image immediately.
@@ -903,15 +923,18 @@ var themeChecked = []string{settings.ThemeMode, settings.ThemeAccent, settings.T
 // Only the keys present are checked; a missing one is not being changed.
 func checkThemeSettings(body map[string]string) error {
 	if mode, present := body[settings.ThemeMode]; present && !settings.ValidThemeMode(mode) {
-		return httpx.BadRequest("Unknown theme mode %q.", mode)
+		return httpx.BadRequestCode("theme_mode_unknown", "Unknown theme mode %q.", mode).
+			WithDetails(map[string]any{"value": mode})
 	}
 	for _, key := range []string{settings.ThemeAccent, settings.ThemeBackgroundTint} {
 		if value, present := body[key]; present && !settings.ValidThemeAccent(value) {
-			return httpx.BadRequest("Setting %q must be an accent's name.", key)
+			return httpx.BadRequestCode("setting_accent_invalid", "Setting %q must be an accent's name.", key).
+				WithDetails(map[string]any{"setting": key})
 		}
 	}
 	if value, present := body[settings.ThemeCustomAccent]; present && value != "" && !settings.ValidHexColor(value) {
-		return httpx.BadRequest("Setting %q must be a #rrggbb colour.", settings.ThemeCustomAccent)
+		return httpx.BadRequestCode("setting_colour_invalid", "Setting %q must be a #rrggbb colour.", settings.ThemeCustomAccent).
+			WithDetails(map[string]any{"setting": settings.ThemeCustomAccent})
 	}
 	return nil
 }
@@ -957,7 +980,7 @@ func (h *Handlers) checkOIDCSettings(body map[string]string) error {
 func (h *Handlers) putLoginBackground(w http.ResponseWriter, r *http.Request) error {
 	variant := settings.NormalizeVariant(r.PathValue("variant"))
 	if !settings.ValidLoginBackgroundVariants[variant] {
-		return httpx.BadRequest("Unknown login background variant.")
+		return httpx.BadRequestCode("login_background_variant_unknown", "Unknown login background variant.")
 	}
 
 	var body struct {
@@ -986,9 +1009,9 @@ func (h *Handlers) putLoginBackground(w http.ResponseWriter, r *http.Request) er
 		at, err := h.settings.SetHTMLBackground(r.Context(), variant, *body.HTML)
 		switch {
 		case errors.Is(err, settings.ErrLoginBackgroundTooLarge):
-			return httpx.BadRequest("That page is too large.")
+			return httpx.BadRequestCode("page_too_large", "That page is too large.")
 		case errors.Is(err, settings.ErrLoginBackgroundUnsupported):
-			return httpx.BadRequest("The page is empty.")
+			return httpx.BadRequestCode("page_empty", "The page is empty.")
 		case err != nil:
 			return httpx.Internal(err)
 		}
@@ -1010,16 +1033,16 @@ func (h *Handlers) putLoginBackground(w http.ResponseWriter, r *http.Request) er
 	raw = strings.ReplaceAll(raw, "\t", "")
 	data, err := base64.StdEncoding.DecodeString(raw)
 	if err != nil {
-		return httpx.BadRequest("Image data is not valid base64.")
+		return httpx.BadRequestCode("image_base64_invalid", "Image data is not valid base64.")
 	}
 
 	at, err := h.settings.SetLoginBackground(r.Context(), variant, data)
 	if err != nil {
 		switch {
 		case errors.Is(err, settings.ErrLoginBackgroundUnsupported):
-			return httpx.BadRequest("Login backgrounds must be JPEG, PNG, WebP or AVIF.")
+			return httpx.BadRequestCode("login_background_type", "Login backgrounds must be JPEG, PNG, WebP or AVIF.")
 		case errors.Is(err, settings.ErrLoginBackgroundTooLarge):
-			return httpx.BadRequest("That image is too large.")
+			return httpx.BadRequestCode("image_too_large", "That image is too large.")
 		default:
 			return httpx.Internal(err)
 		}
@@ -1034,7 +1057,7 @@ func (h *Handlers) putLoginBackground(w http.ResponseWriter, r *http.Request) er
 func (h *Handlers) deleteLoginBackground(w http.ResponseWriter, r *http.Request) error {
 	variant := settings.NormalizeVariant(r.PathValue("variant"))
 	if !settings.ValidLoginBackgroundVariants[variant] {
-		return httpx.BadRequest("Unknown login background variant.")
+		return httpx.BadRequestCode("login_background_variant_unknown", "Unknown login background variant.")
 	}
 
 	if err := h.settings.DeleteLoginBackground(r.Context(), variant); err != nil {
@@ -1064,16 +1087,16 @@ func (h *Handlers) putLogo(w http.ResponseWriter, r *http.Request) error {
 	raw = strings.ReplaceAll(raw, "\t", "")
 	data, err := base64.StdEncoding.DecodeString(raw)
 	if err != nil {
-		return httpx.BadRequest("Image data is not valid base64.")
+		return httpx.BadRequestCode("image_base64_invalid", "Image data is not valid base64.")
 	}
 
 	at, err := h.settings.SetSiteLogo(r.Context(), data)
 	if err != nil {
 		switch {
 		case errors.Is(err, settings.ErrLogoUnsupported):
-			return httpx.BadRequest("Logo must be PNG, JPEG, SVG, WebP, AVIF, GIF or ICO.")
+			return httpx.BadRequestCode("logo_type", "Logo must be PNG, JPEG, SVG, WebP, AVIF, GIF or ICO.")
 		case errors.Is(err, settings.ErrLogoTooLarge):
-			return httpx.BadRequest("That image is too large.")
+			return httpx.BadRequestCode("image_too_large", "That image is too large.")
 		default:
 			return httpx.Internal(err)
 		}

@@ -391,7 +391,7 @@ func (s *Store) takePools(ctx context.Context, q database.Queryer, userID, model
 	)
 	need := want
 	for _, c := range list {
-		if need <= epsilon {
+		if need <= Epsilon {
 			break
 		}
 		p, err := s.lockPool(ctx, q, c.barID, now)
@@ -402,7 +402,7 @@ func (s *Store) takePools(ctx context.Context, q database.Queryer, userID, model
 			return nil, want, nil, err
 		}
 		room := p.Remaining()
-		if room <= epsilon {
+		if room <= Epsilon {
 			if short == nil {
 				short = &PoolExhaustedError{Name: c.name, ResetsAt: nextPeriod(p.ResetPeriod, p.PeriodStart, loc)}
 			}
@@ -420,13 +420,13 @@ func (s *Store) takePools(ctx context.Context, q database.Queryer, userID, model
 				room, capped = left, true
 			}
 		}
-		if need > room+epsilon && short == nil {
+		if need > room+Epsilon && short == nil {
 			short = &PoolExhaustedError{Name: c.name, Capped: capped, ResetsAt: nextPeriod(p.ResetPeriod, p.PeriodStart, loc)}
 			if capped {
 				short.ResetsAt = nextDay(now, loc)
 			}
 		}
-		if room <= epsilon {
+		if room <= Epsilon {
 			continue
 		}
 		take := min(room, need)
@@ -442,7 +442,7 @@ func (s *Store) takePools(ctx context.Context, q database.Queryer, userID, model
 		})
 		need -= take
 	}
-	if need > epsilon && short == nil && len(list) > 0 {
+	if need > Epsilon && short == nil && len(list) > 0 {
 		short = &PoolExhaustedError{Name: list[0].name}
 	}
 	return holds, need, short, nil

@@ -55,6 +55,9 @@ describe('AdminUsers, when an account detail fails to load', () => {
       if (id === failing) throw new Error('detail unavailable');
       return detailOf(rows.find((row) => row.id === id)!);
     });
+    vi.spyOn(adminApi, 'userCards').mockImplementation(async (id: string) => ({
+      cards: detailOf(rows.find((row) => row.id === id)!).cards,
+    }));
     vi.spyOn(adminApi, 'userKeys').mockResolvedValue({ keys: [] });
     vi.spyOn(adminApi, 'userSessions').mockResolvedValue({ sessions: [] });
     const update = vi.spyOn(adminApi, 'updateUser').mockResolvedValue({ user: rows[0]! });
@@ -151,7 +154,7 @@ describe('AdminUsers, when an account detail fails to load', () => {
     rowOf('a').click();
     await settle();
     vi.spyOn(adminApi, 'grantCards').mockResolvedValue(undefined);
-    vi.mocked(adminApi.user).mockRejectedValueOnce(new Error('reread failed'));
+    vi.mocked(adminApi.userCards).mockRejectedValueOnce(new Error('reread failed'));
 
     buttonNamed(t('grantCards')).click();
     await settle();
@@ -196,6 +199,9 @@ describe('AdminUsers, when an account detail fails to load', () => {
     let available = 2;
     vi.mocked(adminApi.user).mockImplementation(async (id: string) => ({
       ...detailOf(account(id)),
+      cards: { available, expired: 0, used: 0, total: 2, cards: [] },
+    }) as never);
+    vi.mocked(adminApi.userCards).mockImplementation(async () => ({
       cards: { available, expired: 0, used: 0, total: 2, cards: [] },
     }) as never);
     rowOf('a').click();
@@ -272,10 +278,12 @@ describe('AdminUsers, when an account detail fails to load', () => {
     rowOf('b').click();
     await settle();
     vi.mocked(adminApi.user).mockClear();
+    vi.mocked(adminApi.userCards).mockClear();
     grant.resolve();
     await settle();
 
     expect(adminApi.user).not.toHaveBeenCalledWith('a');
+    expect(adminApi.userCards).not.toHaveBeenCalledWith('a');
   });
 
   // The group names only label the rows. When they fail, the accounts still

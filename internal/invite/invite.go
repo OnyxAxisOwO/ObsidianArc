@@ -1419,14 +1419,6 @@ func (s *Store) createPersonal(ctx context.Context, q database.Queryer, userID s
 	return Code{}, fmt.Errorf("invite: create personal code: collision retry exhausted")
 }
 
-// isUnique is true only for a unique clash. A CHECK, NOT NULL or foreign-key
-// failure also says "constraint", and reading that as a duplicate turned a
-// bad row into "that code already exists".
-func isUnique(err error) bool {
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "unique") || strings.Contains(message, "duplicate")
-}
-
 // Uses lists every registration and every claim through one code, newest
 // first — an account's own list when the code is its personal one, or an
 // administrator's view of one it issued. The two sources are unioned rather

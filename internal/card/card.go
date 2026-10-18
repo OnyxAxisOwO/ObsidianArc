@@ -371,12 +371,6 @@ func (s *Store) spendNextCard(ctx context.Context, q database.Queryer, userID st
 // the table in a loop.
 const spendNextAttempts = 3
 
-// SpendNext marks the available card that expires first, regardless of window.
-func (s *Store) SpendNext(ctx context.Context, q database.Queryer, userID string) error {
-	_, err := s.SpendNextForWindow(ctx, q, userID, "")
-	return err
-}
-
 // Grant hands cards to one account without a code in between. q is nil to
 // grant on its own, or the caller's transaction when the grant has to stand
 // or fall with something else — an invite reward's claim, which must not
@@ -789,7 +783,7 @@ func (s *Store) createCode(ctx context.Context, q database.Queryer, in CodeInput
 		record.ID, record.Code, record.Name, rawWindows, record.Cards, 0, record.CardDays,
 		record.ExpiresAt, record.Note, record.CreatedAt)
 	if err != nil {
-		if isUnique(err) {
+		if database.IsUnique(err) {
 			return Code{}, ErrCodeTaken
 		}
 		return Code{}, fmt.Errorf("card: create code: %w", err)
@@ -910,7 +904,7 @@ func (s *Store) Redeem(ctx context.Context, userID, code string) (Card, error) {
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO redemptions (code_id, user_id, created_at) VALUES (?, ?, ?)`,
 			codeID, userID, now); err != nil {
-			if isUnique(err) {
+			if database.IsUnique(err) {
 				return ErrCodeUsed
 			}
 			return fmt.Errorf("card: redeem: %w", err)
@@ -973,12 +967,4 @@ func clampDays(days int) int {
 		return 30
 	}
 	return min(days, MaxDays)
-}
-
-// isUnique is true only for a unique clash. A CHECK, NOT NULL or foreign-key
-// failure says "constraint" too, and reporting it as a duplicate tells the
-// account it has already redeemed a code when the real failure is elsewhere.
-func isUnique(err error) bool {
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "unique") || strings.Contains(message, "duplicate")
 }

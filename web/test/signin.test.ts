@@ -109,6 +109,24 @@ const NEW_ACCOUNT: Account = {
   api_restricted: false, api_restricted_until: 0, api_restriction_source: '',
 };
 
+
+// A provider sign-in that carries a token or a proof leaves as a form post.
+// jsdom does not navigate on submit, so the submit is caught and what the
+// form would have sent is kept for the test to read.
+function stubFormPost(): {
+  posts: { method: string; action: string; fields: Record<string, string> }[];
+  restore: () => void;
+} {
+  const posts: { method: string; action: string; fields: Record<string, string> }[] = [];
+  const spy = vi.spyOn(HTMLFormElement.prototype, 'submit').mockImplementation(function (this: HTMLFormElement) {
+    const fields: Record<string, string> = {};
+    for (const input of Array.from(this.querySelectorAll('input'))) fields[input.name] = input.value;
+    posts.push({ method: this.method, action: new URL(this.action, 'http://localhost').pathname, fields });
+    this.remove();
+  });
+  return { posts, restore: () => spy.mockRestore() };
+}
+
 describe('password sign-in errors', () => {
   it('shows a localized message for an incorrect password', async () => {
     await changeLanguage('zh');
@@ -252,12 +270,15 @@ describe('signing in with an account from elsewhere', () => {
     await mount(AuthView, { mode: 'login' });
 
     const { assign } = stubLocation();
+    const { posts, restore } = stubFormPost();
 
     const link = host.querySelector<HTMLAnchorElement>('.oa-auth-provider')!;
     link.click();
     await settle();
+    restore();
 
     expect(assign).not.toHaveBeenCalled();
+    expect(posts).toHaveLength(0);
     expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('challengeRequired'));
   });
 
@@ -1302,18 +1323,22 @@ describe('registering with proof-of-work (PoW)', () => {
     route.path = '/register';
     await mount(AuthView, { mode: 'register' });
 
-    const { assign, restore } = stubLocation();
+    const { assign, restore: restoreLocation } = stubLocation();
+    const { posts, restore } = stubFormPost();
     try {
       providerLink().click();
       await settle();
 
-      expect(assign).toHaveBeenCalledTimes(1);
-      const target = new URL(String(assign.mock.calls[0]![0]), 'http://localhost');
-      expect(target.pathname).toBe('/api/auth/oauth/start/github');
-      expect(target.searchParams.get('register')).toBe('1');
-      expect(JSON.parse(target.searchParams.get('pow')!)).toMatchObject({ nonce: 3, signature: 'test-sig' });
+      // A form post, so the proof travels in the body and not the address.
+      expect(assign).not.toHaveBeenCalled();
+      expect(posts).toHaveLength(1);
+      expect(posts[0]!.method).toBe('post');
+      expect(posts[0]!.action).toBe('/api/auth/oauth/start/github');
+      expect(posts[0]!.fields['register']).toBe('1');
+      expect(JSON.parse(posts[0]!.fields['pow']!)).toMatchObject({ nonce: 3, signature: 'test-sig' });
     } finally {
       restore();
+      restoreLocation();
     }
   });
 
@@ -1326,14 +1351,13 @@ describe('registering with proof-of-work (PoW)', () => {
     route.path = '/register';
     await mount(AuthView, { mode: 'register' });
 
-    const { assign, restore } = stubLocation();
+    const { posts, restore } = stubFormPost();
     try {
       providerLink().click();
       await settle();
 
       expect(fetchSpy).toHaveBeenCalledTimes(2);
-      const target = new URL(String(assign.mock.calls[0]![0]), 'http://localhost');
-      expect(JSON.parse(target.searchParams.get('pow')!)).toMatchObject({ signature: 'fresh-sig' });
+      expect(JSON.parse(posts[0]!.fields['pow']!)).toMatchObject({ signature: 'fresh-sig' });
     } finally {
       restore();
     }
@@ -1367,13 +1391,13 @@ describe('registering with proof-of-work (PoW)', () => {
     route.path = '/register';
     await mount(AuthView, { mode: 'register' });
 
-    const { assign, restore } = stubLocation();
+    const { posts, restore } = stubFormPost();
     try {
       providerLink().click();
       providerLink().click();
       await settle();
 
-      expect(assign).toHaveBeenCalledTimes(1);
+      expect(posts).toHaveLength(1);
     } finally {
       restore();
     }

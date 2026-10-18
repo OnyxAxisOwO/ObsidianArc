@@ -97,7 +97,7 @@ func (s *Store) ViewFor(ctx context.Context, userID string) ([]View, error) {
 		a.total += amount
 		left := math.Max(amount-used, 0)
 		a.remaining += left
-		if left > epsilon && expires != 0 && (a.view.ExpiresAt == 0 || expires < a.view.ExpiresAt) {
+		if left > Epsilon && expires != 0 && (a.view.ExpiresAt == 0 || expires < a.view.ExpiresAt) {
 			a.view.ExpiresAt = expires
 		}
 	}
@@ -114,7 +114,7 @@ func (s *Store) ViewFor(ctx context.Context, userID string) ([]View, error) {
 	for _, barID := range order {
 		a := byBar[barID]
 		v := a.view
-		v.Exhausted = a.remaining <= epsilon
+		v.Exhausted = a.remaining <= Epsilon
 		if a.total > 0 {
 			v.Percent = int(math.Round(a.remaining / a.total * 100))
 		}
@@ -179,7 +179,7 @@ func (s *Store) poolViews(ctx context.Context, userID string) ([]View, error) {
 		v := View{
 			BarID: b.ID, Name: b.Name, Description: b.Description, Kind: b.Kind, ToggleMode: b.ToggleMode,
 			Choosable: b.ToggleMode == ModeUser, Enabled: on, ShowTotal: b.ShowTotal, ModelIDs: b.ModelIDs,
-			Exhausted: p.Remaining() <= epsilon,
+			Exhausted: p.Remaining() <= Epsilon,
 			Pool: &PoolView{
 				Only: b.ToggleMode == ModeOnly, DailyLimit: p.PerUserDaily, DailyUsed: round(drawn[b.ID]),
 				ResetsAt: nextPeriod(p.ResetPeriod, p.PeriodStart, loc),

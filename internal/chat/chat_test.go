@@ -633,7 +633,8 @@ func TestListOnlyShowsYourOwnConversations(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	theirs, err := f.conversations.List(context.Background(), f.other.ID, 0)
+	archived := false
+	theirs, err := f.conversations.ListWithFilter(context.Background(), f.other.ID, conversation.ListFilter{Limit: 0, Archived: &archived})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -904,7 +905,8 @@ func TestRejectedTurnWritesNothing(t *testing.T) {
 		t.Fatalf("want the hook's error, got %v", err)
 	}
 
-	list, err := f.conversations.List(context.Background(), f.account.ID, 0)
+	archived := false
+	list, err := f.conversations.ListWithFilter(context.Background(), f.account.ID, conversation.ListFilter{Limit: 0, Archived: &archived})
 	if err != nil {
 		t.Fatal(err)
 	}

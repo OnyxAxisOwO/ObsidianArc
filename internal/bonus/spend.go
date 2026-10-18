@@ -164,7 +164,7 @@ func (s *Store) Take(ctx context.Context, q database.Queryer, userID, modelID st
 		return nil, err
 	}
 	if phase == Exclusive {
-		if need > epsilon {
+		if need > Epsilon {
 			if short == nil {
 				short = &PoolExhaustedError{}
 			}
@@ -178,7 +178,7 @@ func (s *Store) Take(ctx context.Context, q database.Queryer, userID, modelID st
 		return nil, err
 	}
 	for _, c := range list {
-		if need <= epsilon {
+		if need <= Epsilon {
 			break
 		}
 		remaining := c.remaining
@@ -187,7 +187,7 @@ func (s *Store) Take(ctx context.Context, q database.Queryer, userID, modelID st
 		// grant, so the loop ends once no credit is left. A cap gave up with
 		// credit still on the grant, and a fallback then refused a request the
 		// grants together could cover.
-		for remaining > epsilon && need > epsilon {
+		for remaining > Epsilon && need > Epsilon {
 			take := min(remaining, need)
 			res, err := q.Exec(ctx, `UPDATE bonus_grants SET used = used + ? WHERE id = ? AND amount - used >= ?`,
 				take, c.grantID, take)
@@ -207,14 +207,16 @@ func (s *Store) Take(ctx context.Context, q database.Queryer, userID, modelID st
 			remaining = amount - used
 		}
 	}
-	if phase == Fallback && need > epsilon {
+	if phase == Fallback && need > Epsilon {
 		return nil, ErrInsufficient
 	}
 	return holds, nil
 }
 
-// epsilon is what a floating-point sum of prices may be off by.
-const epsilon = 1e-9
+// Epsilon is what a floating-point sum of prices may be off by. It is
+// exported because quota compares the same sums against the same tolerance,
+// and two tolerances would disagree about whether a turn is covered.
+const Epsilon = 1e-9
 
 // Refund gives holds back. Never below zero used: two refunds racing must not
 // hand out credit that was never granted. A revoked grant takes nothing back:
@@ -264,7 +266,7 @@ func (s *Store) Settle(ctx context.Context, q database.Queryer, holds []Hold, co
 		}
 	}
 	for i, h := range holds {
-		if left <= epsilon {
+		if left <= Epsilon {
 			break
 		}
 		if h.Pool != "" {

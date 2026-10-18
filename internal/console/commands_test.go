@@ -95,6 +95,7 @@ var consoleExempt = map[string]string{
 	"GET /api/auth/pow-challenge":                   "fetching a proof-of-work challenge happens before there is a terminal",
 	"POST /api/auth/verify":                         "followed from the link in the verification email",
 	"GET /api/auth/oauth/start/{provider}":          "a browser redirect to the identity provider",
+	"POST /api/auth/oauth/start/{provider}":         "the sign-in page's form post to the same redirect",
 	"GET /api/auth/oauth/callback/{provider}":       "a browser redirect back from the identity provider",
 	"POST /api/auth/oauth/connections/{provider}":   "starting a connection, which ends in a browser trip to the identity provider and back",
 	"GET /api/auth/oauth/signup":                    "part of signing up through an identity provider",
