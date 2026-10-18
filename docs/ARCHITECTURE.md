@@ -242,9 +242,9 @@ browser that takes brotli receives 169.11 kB (149.65 JS + 19.46 CSS) and one
 that takes only gzip 201.27 kB (178.40 JS + 22.87 CSS); the build's gzip
 column reads 201.97 kB (178.83 JS + 23.14 CSS), 2.03 kB under the bundle
 test's 204 kB. The lazy chunks, gzip then brotli: backoffice 170.65 /
-137.00 kB plus 15.25 / 13.33 kB of stylesheet, Chinese dictionary 20.06 /
-16.92 kB, the backoffice's Chinese 36.94 / 30.87 kB, terminal 8.07 / 7.34 kB
-plus 1.67 / 1.40 kB, math 3.73 / 3.26 kB, front page 4.15 / 3.68 kB plus
+137.12 kB plus 15.25 / 13.33 kB of stylesheet, Chinese dictionary 20.06 /
+16.92 kB, the backoffice's Chinese 36.94 / 30.87 kB, terminal 8.07 / 7.36 kB
+plus 1.67 / 1.40 kB, math 3.73 / 3.25 kB, front page 4.15 / 3.68 kB plus
 3.91 / 3.40 kB, landing page 3.12 / 2.75 kB plus 0.62 / 0.51 kB. The build
 emits thirteen files besides the plugins'. The binary is 28.44 MB (24.74 MB
 without SQLite), built the same way as below.
