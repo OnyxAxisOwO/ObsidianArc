@@ -435,27 +435,32 @@ change moves one of those numbers, re-measure and update it in the same change.
 They drifted to nearly double once because nobody re-ran the build.
 
 Current: 27.10 MB binary (this repository ships no plugin; 2.8 MB of it is
-the plugin runtime); 205.59 kB on the wire to open the chat (the build's gzip
-column reads 206.32 kB), against a target of 135. The target used to be 80 and
+the plugin runtime); 205.74 kB on the wire to open the chat (the build's gzip
+column reads 206.46 kB), against a target of 135. The target used to be 80 and
 the figure used to be 59.5; adopting Vue moved both, and
 `docs/ARCHITECTURE.md` says so rather than
 quietly restating a target the build cannot meet.
 
-The backoffice, the terminal, the Chinese dictionary, the LaTeX renderer, the
-public front page and the landing page are separate chunks, fetched only by the
-readers who need them, and the backoffice's English, the backoffice's
-stylesheet and the terminal's stylesheet travel with their chunks — so a static
-import reaching into `views/admin/`, `views/TerminalPanel.vue`, `terminal/`,
-`views/FrontPage.vue`, `views/LandingView.vue`, `i18n.zh`, `i18n.admin`,
-`styles/admin.scss` or `chat/math` from the main graph silently undoes one of
-those splits. `web/src/lib/format.ts` holds
+The backoffice, the terminal, the Chinese dictionary, the backoffice's
+Chinese, the LaTeX renderer, the public front page and the landing page are
+separate chunks, fetched only by the readers who need them, and the
+backoffice's English, the backoffice's stylesheet and the terminal's
+stylesheet travel with their chunks — so a static import reaching into
+`views/admin/`, `views/TerminalPanel.vue`, `terminal/`, `views/FrontPage.vue`,
+`views/LandingView.vue`, `i18n.zh`, `i18n.admin`, `i18n.admin.zh`,
+`styles/admin.scss` or `chat/math` from the main graph — or `i18n.admin.zh`
+from the backoffice's — silently undoes one of those splits. The Chinese
+dictionary is 20.30 kB on the wire; the backoffice's Chinese, 33.13 kB, is
+fetched only when a Chinese reader opens the backoffice or an administrator
+switches to Chinese inside it, and the backoffice's route waits for it so its
+first render is already translated. `web/src/lib/format.ts` holds
 `formatUptime` for exactly that reason: one import of one four-line helper
 used to pull the whole backoffice back into the main bundle.
 
-`test/bundle.test.ts` asserts the build produces exactly ten files (the entry's
-script and stylesheet, the backoffice's and the terminal's script and
-stylesheet, the Chinese dictionary, the maths renderer, the front page and the
-landing page), plus one per directory under `web/src/plugins/` — each plugin's own chunk. Route-level
+`test/bundle.test.ts` asserts the build produces exactly eleven files (the
+entry's script and stylesheet, the backoffice's and the terminal's script and
+stylesheet, the Chinese dictionary and the backoffice's Chinese, the maths
+renderer, the front page and the landing page), plus one per directory under `web/src/plugins/` — each plugin's own chunk. Route-level
 lazy loading produces a dozen and is switched off for everything but the
 backoffice, the terminal and the front page; if that count changes, it should be because
 somebody decided it should.

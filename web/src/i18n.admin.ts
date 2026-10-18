@@ -5,8 +5,8 @@
 //
 // It is still one dictionary. These keys are part of `StringKey`, so the
 // Chinese dictionary must translate them and tsc says so when it does not;
-// i18n.zh.ts carries them all, since that chunk is fetched for a Chinese
-// reader whichever page they open. What moved is only where the English
+// their Chinese is in i18n.admin.zh.ts, a chunk of its own that only a
+// Chinese reader in the backoffice fetches. What moved is only where the English
 // sentences sit: this module adds them to the English lookup when it is
 // evaluated, which is when the backoffice's chunk arrives and before any of
 // its screens render (AdminPage.vue imports it for that side effect).
@@ -17,7 +17,7 @@
 // using fails the build instead of rendering as its own name. A key the
 // backoffice shares with any other screen stays in i18n.ts.
 
-import { addEnglish } from './i18n';
+import { addEnglish, wantBackofficeLanguage } from './i18n';
 
 export const enAdmin = {
   controlCategories: 'Settings categories',
@@ -1739,3 +1739,6 @@ export const enAdmin = {
 export type AdminKey = keyof typeof enAdmin;
 
 addEnglish(enAdmin);
+// From here on a switch to Chinese brings the backoffice's Chinese with it.
+// The route's own load (primeBackofficeLanguage) covers arriving in Chinese.
+wantBackofficeLanguage();

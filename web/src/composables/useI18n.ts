@@ -15,6 +15,7 @@ import {
   fallBackToEnglish,
   language,
   loadLanguage,
+  wantBackofficeLanguage,
   setLanguage as applyLanguage,
   t as translate,
   tn as translatePlural,
@@ -88,4 +89,32 @@ export async function primeLanguage(): Promise<void> {
     console.warn('language dictionary did not load; the page stays in English', failure);
   }
   version.value += 1;
+}
+
+/**
+ * Called by the backoffice's route before its first render, alongside the
+ * fetch of its chunk. A Chinese reader needs the backoffice's half of the
+ * dictionary before anything there is drawn, or every label would show in
+ * English first; an English reader fetches nothing. From here on a switch to
+ * Chinese waits for that half as well (see loadLanguage).
+ *
+ * Bounded and never rejecting, for the reason primeLanguage is: the English
+ * sentences are already there as the fallback, so a dictionary that fails
+ * must not leave the backoffice unopenable. The redraw is tied to the load
+ * itself rather than to the wait, so a dictionary that lands after the
+ * deadline still replaces the English it found on screen.
+ */
+export async function primeBackofficeLanguage(): Promise<void> {
+  wantBackofficeLanguage();
+  if (language() !== 'zh') return;
+  const loading = loadLanguage();
+  loading.then(
+    () => { version.value += 1; },
+    () => {},
+  );
+  try {
+    await within(loading, DICTIONARY_DEADLINE_MS);
+  } catch (failure) {
+    console.warn('backoffice dictionary did not load; the backoffice stays in English', failure);
+  }
 }

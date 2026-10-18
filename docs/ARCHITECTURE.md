@@ -226,9 +226,25 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
 | Binary (SQLite + embedded SPA) | < 30 MB | 27.10 MB (23.40 MB `-tags nosqlite`, Linux amd64, Go 1.27.2); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 205.59 kB to open the chat (179.18 JS + 26.41 CSS), sent by the server at gzip's best level; the build's gzip column reads 206.32 kB (179.48 JS + 26.85 CSS) |
+| Frontend, on the wire | < 135 kB | 205.74 kB to open the chat (179.32 JS + 26.41 CSS), sent by the server at gzip's best level; the build's gzip column reads 206.46 kB (179.61 JS + 26.85 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-10-18 (UTC), with the backoffice's Chinese split out of
+the Chinese dictionary. The 1658 keys only the backoffice says had their
+English moved into the backoffice's chunk already, but their Chinese still
+travelled in `i18n.zh`, so every Chinese reader fetched the backoffice's
+words to open a conversation. They are now `i18n.admin.zh.ts`, a chunk of its
+own rather than a part of the backoffice's, so an English-reading
+administrator does not fetch them either: the Chinese dictionary is 20.30 kB
+(from 51.60 kB) and the backoffice's Chinese 33.13 kB, fetched before the
+backoffice's first render for a Chinese reader and before the switch for an
+administrator who picks Chinese inside it. The loader that does this is in
+the entry: 205.74 kB to open the chat (179.32 JS + 26.41 CSS), up 0.15 kB;
+the build's estimate is 206.46 kB, 0.54 kB under the bundle test's 207 kB.
+Backoffice 170.56 kB plus 15.24 kB of stylesheet, the other lazy chunks
+unchanged. The build emits eleven files besides the plugins'. The binary is
+27.10 MB (23.40 MB without SQLite), built the same way as below.
 
 Remeasured on 2026-10-18 (UTC), after the billing and operations review
 fixes were merged. Refusals from feedback, announcements, backup and import

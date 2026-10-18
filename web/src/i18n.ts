@@ -1170,6 +1170,9 @@ const en = {
 // their English arrives with the backoffice's chunk: see i18n.admin.ts.
 export type StringKey = keyof typeof en | AdminKey;
 
+/** The keys every screen may name; i18n.zh.ts translates exactly these. */
+export type CoreKey = keyof typeof en;
+
 // `en` under the type the lookup needs: the backoffice's English is added to
 // this object when that chunk arrives, so not every key is here from the start.
 const english: Partial<Record<StringKey, string>> = en;
@@ -1187,16 +1190,48 @@ export function addEnglish(extra: Partial<Record<StringKey, string>>): void {
 // during boot when it is the language in play and never otherwise.
 const dictionaries: Partial<Record<Language, Partial<Record<StringKey, string>>>> = { en: english };
 
+// Whether the backoffice is in play on this page, and so whether loading
+// Chinese means its half too (i18n.admin.zh.ts). Set once and never cleared:
+// an administrator who left the backoffice may come back to it, and a later
+// switch to Chinese should not leave it to show English when they do.
+let backoffice = false;
+let backofficeChinese = false;
+
+/**
+ * Marks the backoffice as in play, so every later Chinese load brings its
+ * dictionary too. Called by i18n.admin.ts as the backoffice's chunk is
+ * evaluated, and by the backoffice's route before it is drawn.
+ */
+export function wantBackofficeLanguage(): void {
+  backoffice = true;
+}
+
 /**
  * Brings in the dictionary for a language, if it is not the built-in one and
  * has not already arrived. Awaited once during boot so the first paint is
- * already translated; everything after that reads it synchronously.
+ * already translated; everything after that reads it synchronously. Once the
+ * backoffice is in play, Chinese means both halves, fetched together, so a
+ * switch inside the backoffice waits for the half its screens read.
  */
 export async function loadLanguage(next: Language = active): Promise<void> {
-  if (dictionaries[next]) return;
-  if (next === 'zh') {
-    dictionaries.zh = (await import('./i18n.zh')).zh;
+  if (next !== 'zh') return;
+  const [core, admin] = await Promise.all([
+    dictionaries.zh ? undefined : import('./i18n.zh').then((m) => m.zh),
+    backoffice && !backofficeChinese ? import('./i18n.admin.zh').then((m) => m.zhAdmin) : undefined,
+  ]);
+  // A copy, and only if no concurrent load got here first: the backoffice's
+  // half is merged into this object, and replacing it afterwards with a fresh
+  // copy of the core would drop that half while the flag said it was there.
+  dictionaries.zh ??= { ...core };
+  if (admin) {
+    Object.assign(dictionaries.zh, admin);
+    backofficeChinese = true;
   }
+  // The backoffice came into play while the core was on its way — a switch
+  // the account's preferences started just before the backoffice's route
+  // loaded — and this load is what the switch waits on, so it fetches the
+  // half the backoffice now needs instead of switching without it.
+  if (backoffice && !backofficeChinese) await loadLanguage(next);
 }
 
 let active: Language = detect();
