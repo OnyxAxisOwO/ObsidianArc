@@ -8,6 +8,7 @@ import { SOURCE_URL } from '@/lib/source';
 
 import { computed, onMounted, ref } from 'vue';
 import { health } from '@/api/client';
+import OaBadge from '@/components/OaBadge.vue';
 import OaMarkdown from '@/components/OaMarkdown.vue';
 import OaPanel from '@/components/OaPanel.vue';
 import { t } from '@/composables/useI18n';
@@ -96,13 +97,13 @@ onMounted(() => {
           <span class="oa-about-fact-label">{{ t('aboutVersionOf', { product: PRODUCT }) }}</span>
           <span class="oa-about-fact-value">
             {{ version }}
-            <span
+            <OaBadge
               v-if="isAdmin && siteInfo.about?.show_software_info === false"
-              class="oa-badge oa-badge-muted"
+              tone="muted"
               style="margin-left: 6px; font-size: 11px;"
             >
               {{ t('aboutAdminOnlyBadge') }}
-            </span>
+            </OaBadge>
           </span>
         </div>
 
@@ -123,13 +124,13 @@ onMounted(() => {
           <span class="oa-about-fact-label">{{ t('aboutRuntime') }}</span>
           <span class="oa-about-fact-value">
             {{ uptime }}
-            <span
+            <OaBadge
               v-if="isAdmin && siteInfo.about?.show_software_info === false"
-              class="oa-badge oa-badge-muted"
+              tone="muted"
               style="margin-left: 6px; font-size: 11px;"
             >
               {{ t('aboutAdminOnlyBadge') }}
-            </span>
+            </OaBadge>
           </span>
         </div>
         <div class="oa-about-fact">
@@ -141,13 +142,13 @@ onMounted(() => {
       <section v-if="showSoftwareInfo" class="oa-about-details">
         <h3 class="oa-drawer-subhead">
           {{ t('aboutContributors') }}
-          <span
+          <OaBadge
             v-if="isAdmin && siteInfo.about?.show_software_info === false"
-            class="oa-badge oa-badge-muted"
+            tone="muted"
             style="margin-left: 6px; font-size: 11px;"
           >
             {{ t('aboutAdminOnlyBadge') }}
-          </span>
+          </OaBadge>
         </h3>
         <p class="oa-about-lede">{{ t('aboutContributorsThanks') }}</p>
         <ul class="oa-about-people">

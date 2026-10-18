@@ -1,4 +1,6 @@
-/* Styles for src/chat.js. Defines its own color tokens (rather than assuming
+@use 'mixins' as *;
+
+/* Styles for the chat surface. Defines its own color tokens (rather than assuming
    a host page supplies them) so the component is self-contained enough to
    drop into a different app's page and still look intentional — a host that
    wants its own palette can simply redefine these custom properties on an
@@ -39,31 +41,13 @@
   --ai-danger: #b91c1c;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --ai-text: #ededef;
-    --ai-text-secondary: #b0b0b3;
-    --ai-border: rgba(237, 237, 239, 0.12);
-    --ai-outline-variant: rgba(237, 237, 239, 0.16);
-    --ai-state-hover: rgba(255, 255, 255, 0.16);
-    --ai-surface-card: #19191b;
-    --ai-surface-container: #242426;
-    --ai-surface-container-low: #1c1c1e;
-    --ai-surface-container-high: #2e2e30;
-    --ai-field-bg: #343437;
-    --ai-field-bg-hover: #3e3e41;
-    --ai-primary: #ffffff;
-    --ai-primary-text: #000000;
-    --ai-primary-hover: #dfdfdf;
-    --ai-badge-bg: rgba(255, 255, 255, 0.16);
-    --ai-badge-text: #ffffff;
-    --ai-focus-shadow: rgba(255, 255, 255, 0.28);
-    --ai-shadow-md: 0 8px 28px rgba(0, 0, 0, 0.5);
-    --ai-danger: #ff9a9a;
-  }
-}
-
-:root[data-theme="dark"] {
+// The dark palette is written out twice, and it cannot be one selector. The
+// media query applies it to a system that prefers dark unless the page says
+// otherwise; the attribute selector forces it when the page asks for dark on
+// a light system. They match on different conditions, so each needs its own
+// rule, and this mixin keeps their declarations from drifting apart. It is
+// local to this file because _mixins.scss holds structure, never palette.
+@mixin dark-tokens {
   --ai-text: #ededef;
   --ai-text-secondary: #b0b0b3;
   --ai-border: rgba(237, 237, 239, 0.12);
@@ -83,6 +67,16 @@
   --ai-focus-shadow: rgba(255, 255, 255, 0.28);
   --ai-shadow-md: 0 8px 28px rgba(0, 0, 0, 0.5);
   --ai-danger: #ff9a9a;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    @include dark-tokens;
+  }
+}
+
+:root[data-theme="dark"] {
+  @include dark-tokens;
 }
 
 .ai-chat {
@@ -280,6 +274,9 @@
   opacity: 1;
 }
 
+/* The one OaScrollArea wrapper that is not clipped: the rail's track sits
+   8px outside it (right: -8px below), in the gutter beside the list, and
+   overflow: hidden would cut it off. */
 .ai-chat-list-wrap {
   position: relative;
   display: flex;
@@ -307,10 +304,10 @@
   -ms-overflow-style: none;
 }
 
-.ai-chat-list::-webkit-scrollbar {
-  display: none;
-  width: 0;
-  height: 0;
+/* The rail scrolls without showing anything: it is a short list beside a
+   long one, and a second bar next to the transcript's reads as clutter. */
+.ai-chat-list {
+  @include hidden-scrollbar;
 }
 
 /* An empty list is a quiet band where the rows would be, centred like every
@@ -512,9 +509,11 @@
   color: var(--ai-text);
 }
 
+/* 12px, the size of the project's own rows and of the shared inline empty
+   line it was copied from; the half pixel less had no reason behind it. */
 .ai-project-empty-convs {
   margin: 4px 8px;
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--ai-text-secondary);
 }
 
@@ -525,12 +524,7 @@
 /* --- transcript -------------------------------------------------------------- */
 
 .ai-chat-scroll-wrap {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
+  @include scroll-area-shell;
 }
 
 .ai-chat-scroll {
@@ -544,10 +538,8 @@
   -ms-overflow-style: none;
 }
 
-.ai-chat-scroll::-webkit-scrollbar {
-  display: none;
-  width: 0;
-  height: 0;
+.ai-chat-scroll {
+  @include hidden-scrollbar;
 }
 
 /* Switching to another conversation, or starting a new one, swaps every
@@ -1012,22 +1004,11 @@
   width: 100%;
 }
 
-/* The composer's textarea is transparent because the pill around it carries
-   the fill. Reused on its own in the transcript it had nothing behind it, so
-   it gets its own surface here rather than a second class doing half a job. */
-.ai-msg-edit-input {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 10px 12px;
-  border-radius: 14px;
-  background: var(--ai-field-bg);
-  color: var(--ai-text);
-}
-
-.ai-msg-edit-input:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
-}
+/* .ai-msg-edit-input has no rule of its own: the editor's textarea also
+   carries .ai-chat-input, which is later in this file at the same
+   specificity, and the always-on .ai-chat-wide overrides beat both. A fill,
+   padding or ring written here never reached the screen, so the class is
+   only the hook the tests find the textarea by. */
 
 .ai-msg-editor-actions {
   display: flex;
@@ -1178,9 +1159,7 @@
   box-sizing: border-box;
   width: 14px;
   height: 14px;
-  border: 2px solid var(--ai-outline-variant);
-  border-radius: 50%;
-  border-top-color: var(--ai-primary);
+  @include spinner-ring;
   transform-origin: center center;
   flex-shrink: 0;
   will-change: transform;
@@ -1189,6 +1168,9 @@
   animation: ai-chat-spin 0.8s linear infinite;
 }
 
+/* The turn for spinners and refresh icons. A new spinner uses it, and a screen
+   that needs another speed sets its duration at the call site rather than
+   copying the turn. */
 @keyframes ai-chat-spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
@@ -1462,11 +1444,6 @@
     visibility 0s linear 0.34s;
 }
 
-.ai-chat-wide .ai-chat-list {
-  min-height: 0;
-  overflow-y: auto;
-}
-
 /* The rail is the navigation on a wide screen, so the bar's own history
    toggle and title would only repeat it. */
 .ai-chat-wide .ai-chat-bar {
@@ -1488,13 +1465,6 @@
    18px top-right corner. */
 .ai-chat-wide .ai-chat-scroll-wrap .oa-overlay-track {
   top: 14px;
-}
-
-/* The rail scrolls without showing anything: it is a short list beside a
-   long one, and a second bar next to the transcript's reads as clutter. */
-.ai-chat-wide .ai-chat-list::-webkit-scrollbar {
-  width: 0;
-  height: 0;
 }
 
 /* One reading column, centred: a paragraph set across the full width of a
@@ -1621,14 +1591,12 @@
 }
 
 .ai-chat-wide .ai-chat-input {
-  width: 100%;
   min-height: 28px;
   max-height: 200px;
   padding: 2px 4px 4px;
   border: none;
   border-radius: 0;
   background: transparent;
-  box-sizing: border-box;
 }
 
 .ai-chat-wide .ai-chat-input:focus {

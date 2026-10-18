@@ -138,6 +138,16 @@ describe('component rules in the stylesheet source', () => {
     expect(workspace).toMatch(/\.oa-field input:focus,/);
   });
 
+  it('draws the resource page account initials round, like every other account avatar', () => {
+    // The resource page's initials were the only square account mark, so an
+    // operator reading two pages saw two different kinds of account. The
+    // change is the shape alone; size and colour are left as they were.
+    const avatar = /\.oa-resource-avatar \{([^}]*)\}/.exec(source('_workbench.scss'))?.[1] ?? '';
+
+    expect(avatar).toMatch(/border-radius:\s*50%/);
+    expect(avatar).not.toMatch(/border-radius:\s*11px/);
+  });
+
   it('gives the terminal its own width only in the three-column layout', () => {
     // Below 1101px the panel is a fixed overlay sized by _surfaces.scss; a
     // bare width: auto here would shrink it to fit its content.
@@ -260,6 +270,20 @@ describe('phone and state rules in the stylesheet source', () => {
     expect(offenders).toEqual([]);
   });
 
+  it('never reads --ai-accent from a component, since no theme defines it', () => {
+    // Inline styles in the Vue sources read tokens the same way the sheets
+    // do. `--ai-accent` was never defined, so a success line written with it
+    // ignored the accent the user picked and showed the fallback green.
+    const offenders = fs.readdirSync(path.resolve(__dirname, '../src'), { recursive: true })
+      .map(String)
+      .filter((name) => /\.(vue|ts)$/.test(name))
+      .filter((name) => /--ai-accent\b/.test(
+        fs.readFileSync(path.resolve(__dirname, '../src', name), 'utf8'),
+      ));
+
+    expect(offenders).toEqual([]);
+  });
+
   it('reads only custom properties that something defines, in the surfaces sheet', () => {
     // A read with no fallback has nothing to fall back on: an undeclared name
     // makes the whole declaration invalid, so the uptime button's hover fill
@@ -288,6 +312,26 @@ describe('phone and state rules in the stylesheet source', () => {
     const reduced = blocks(sheet('_surfaces.scss'), '@media (prefers-reduced-motion: reduce)');
 
     expect(bodies(reduced, '.oa-panel').join('')).not.toMatch(/transform:\s*none/);
+  });
+
+  it('writes each reduced-motion reset after the rule it resets', () => {
+    // A media query adds no weight, so a reset written above its base rule
+    // loses to it: the settings navigation kept fading, and the issued key
+    // kept glowing, for readers who had asked for less motion.
+    const surfaces = sheet('_surfaces.scss');
+    const reduced = blocks(surfaces, '@media (prefers-reduced-motion: reduce)');
+    const cases: Array<[string, 'transition' | 'animation']> = [
+      ['.oa-settings-rail-item', 'transition'],
+      ['.oa-settings-tab', 'transition'],
+      ['.oa-key-token-pulse', 'animation'],
+      ['.oa-key-row', 'animation'],
+    ];
+
+    for (const [selector, property] of cases) {
+      const declared = bodies(surfaces, selector).filter((body) => new RegExp(`(^|[;\\s])${property}:`).test(body));
+      expect(declared.at(-1), selector).toMatch(new RegExp(`${property}:\\s*none`));
+      expect(bodies(reduced, selector).join(''), selector).toMatch(new RegExp(`${property}:\\s*none`));
+    }
   });
 
   it('declares each card list and card row once, so no later rule silently wins', () => {

@@ -1,8 +1,12 @@
+@use 'mixins' as *;
+
 /* These rules belong to the grouped admin pages only. Shared fields retain
    their appearance settings, while cards give long forms a readable width.
    The page head these used to enlarge is now every section's, in
    _surfaces.scss. */
-.oa-workbench, .oa-resource-page { max-width: 1480px; margin: 0 auto; container: workbench / inline-size; }
+/* .oa-workbench is set to 1040px further down, which wins over the 1480px
+   given here, so only .oa-resource-page takes the wider measure. */
+.oa-workbench, .oa-resource-page { max-width: $page-width; margin: 0 auto; container: workbench / inline-size; }
 /* The pages made of groups sit in the middle, head, categories and cards
    alike, at the width a form wants. Left-aligned at the same width they left
    the search box adrift at the far edge of a wide window, a long way from
@@ -13,7 +17,22 @@
    no longer four tiles with a paragraph each: the paragraph was the heading
    below it, said twice, and the tiles were the largest thing on the page. */
 .oa-workbench-nav { display: flex; flex-wrap: wrap; gap: 8px; }
-.oa-workbench-tab { display: inline-flex; align-items: center; gap: 7px; height: 34px; padding: 0 15px; border: none; outline: none; border-radius: 999px; font: inherit; font-size: 12.5px; color: var(--ai-text-secondary); background: var(--ai-surface-card); cursor: pointer; transition: background-color .15s ease, color .15s ease; }
+.oa-workbench-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  padding: 0 15px;
+  border: none;
+  outline: none;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--ai-text-secondary);
+  background: var(--ai-surface-card);
+  cursor: pointer;
+  transition: background-color .15s ease, color .15s ease;
+}
 .oa-workbench-tab > strong { font-weight: 600; }
 .oa-workbench-tab:hover { background: var(--ai-state-hover); color: var(--ai-text); }
 .oa-workbench-tab:focus-visible { box-shadow: 0 0 0 3px var(--ai-focus-shadow); }
@@ -36,8 +55,19 @@
 /* border-box, because several of these (a table block, a search) are width: 100%, and
    padding on top of that made them wider than the card — the last column was cut. */
 .oa-control-card > .oa-group-card > * { box-sizing: border-box; margin: 0; padding: 13px 16px; min-width: 0; }
-.oa-control-card > .oa-group-card > :is(.oa-plugin-controls, .oa-resource-definition) { display: flex; flex-direction: column; gap: 1px; padding: 0; background: var(--oa-group-line); }
-.oa-control-card > .oa-group-card > :is(.oa-plugin-controls, .oa-resource-definition) > * { margin: 0; padding: 13px 16px; border: 0; background: var(--ai-surface-card); }
+.oa-control-card > .oa-group-card > :is(.oa-plugin-controls, .oa-resource-definition) {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 0;
+  background: var(--oa-group-line);
+}
+.oa-control-card > .oa-group-card > :is(.oa-plugin-controls, .oa-resource-definition) > * {
+  margin: 0;
+  padding: 13px 16px;
+  border: 0;
+  background: var(--ai-surface-card);
+}
 /* A search field stood in a row of its own is a strip the width of the card,
    not a pill whose corners the card clips. (A table keeps the row's padding:
    edge to edge its header band and stripes meet the card's rounded corners and
@@ -47,8 +77,23 @@
    they are now rows of it, each introduced by a line naming it. */
 .oa-control-card > .oa-group-card > .oa-providers,
 .oa-control-card > .oa-group-card > .oa-providers > .oa-provider { display: contents; }
-.oa-control-card > .oa-group-card > .oa-providers > .oa-provider > * { box-sizing: border-box; margin: 0; padding: 13px 16px; min-width: 0; background: var(--ai-surface-card); }
-.oa-control-card > .oa-group-card > .oa-providers > .oa-provider > .oa-provider-head { display: flex; align-items: center; gap: 8px; padding: 10px 16px; background: var(--ai-field-bg); color: var(--ai-text-secondary); font-size: 12px; font-weight: 700; }
+.oa-control-card > .oa-group-card > .oa-providers > .oa-provider > * {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 13px 16px;
+  min-width: 0;
+  background: var(--ai-surface-card);
+}
+.oa-control-card > .oa-group-card > .oa-providers > .oa-provider > .oa-provider-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: var(--ai-field-bg);
+  color: var(--ai-text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+}
 /* An empty list is a line of text in the card, not a box inside a box. */
 .oa-control-card .oa-group-card .oa-table-empty { background: none; padding: 10px 0; }
 /* A row of buttons belongs to what is above it — a Save under its fields — and
@@ -66,18 +111,50 @@
    card, the same as the check lists, rather than a stripe across it. */
 .oa-detect-run.busy svg { animation: ai-chat-spin 0.8s linear infinite; }
 .oa-detect-options { display: flex; flex-direction: column; gap: 2px; max-height: 288px; overflow-y: auto; padding: 6px; }
-.oa-detect-option { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 40px; box-sizing: border-box; padding: 6px 10px; border: 0; border-radius: 10px; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.oa-detect-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 40px;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
 .oa-detect-option:not(:disabled):hover, .oa-detect-option.picked { background: var(--ai-state-hover); }
 .oa-detect-option:disabled { cursor: default; }
 .oa-detect-option:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--ai-focus-shadow); }
 .oa-detect-option-text { display: flex; flex: 1; flex-direction: column; gap: 1px; min-width: 0; }
-.oa-detect-option-id { overflow: hidden; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.oa-detect-option-id {
+  overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .oa-detect-option:disabled .oa-detect-option-id { color: var(--ai-text-secondary); }
 .oa-detect-option-name { overflow: hidden; color: var(--ai-text-secondary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .oa-detect-option .oa-detect-known { flex: none; }
 /* The tick is a quiet circle until chosen, then takes the accent the way a
    switch does when it is on. */
-.oa-detect-tick { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 999px; background: var(--ai-field-bg); color: transparent; transition: background 0.15s, color 0.15s; }
+.oa-detect-tick {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--ai-field-bg);
+  color: transparent;
+  transition: background 0.15s, color 0.15s;
+}
 .oa-detect-option.picked .oa-detect-tick { background: var(--ai-primary); color: var(--ai-primary-text); }
 .oa-detect-none { margin: 0; padding: 10px; color: var(--ai-text-secondary); font-size: 12px; }
 /* A fact in a card: its name on the left as the row's title, the value at the
@@ -112,7 +189,7 @@
 .oa-plugin-row .oa-plugin-notice { margin-top: 6px; }
 /* In a card the facts are read as a list, not shown as figures. */
 .oa-control-card .oa-resource-definition dd { font-size: 13px; font-weight: 600; }
-.oa-control-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.oa-control-actions { @include button-row; }
 .oa-control-actions a { text-decoration: none; }
 .oa-control-save-state { display: inline-flex; gap: 6px; align-items: center; color: var(--ai-text-secondary); font-size: 11px; white-space: nowrap; }
 .oa-control-save-state.dirty { color: var(--ai-text); }
@@ -130,7 +207,16 @@
    direct child, and .oa-group-card > * would paint it the card's fill. */
 .oa-control-flash { margin: 16px auto 0; max-width: 1432px; padding: 4px 2px; font-size: 13px; line-height: 1.6; background: transparent; }
 .oa-health-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
-.oa-health-summary > div { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; min-width: 0; padding: 21px; border-radius: 18px; background: var(--ai-surface-container-high); }
+.oa-health-summary > div {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  min-width: 0;
+  padding: 21px;
+  border-radius: 18px;
+  background: var(--ai-surface-container-high);
+}
 .oa-health-summary > div:first-child { background: var(--ai-primary); color: var(--ai-primary-text); }
 .oa-health-summary span { font-size: 12px; }
 .oa-health-summary strong { width: 100%; font-size: 32px; line-height: 1; font-weight: 550; letter-spacing: -1px; font-variant-numeric: tabular-nums; }
@@ -148,13 +234,28 @@
 .oa-health-meter > span { display: block; height: 100%; border-radius: inherit; background: var(--ai-primary); }
 .oa-health-model.has-errors .oa-dashboard-dot { color: var(--ai-danger); }
 .oa-health-model.has-errors .oa-health-meter > span { background: var(--ai-danger); }
-.oa-resource-status { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; color: var(--ai-text-secondary); font-size: 11px; margin: 0 2px 17px; }
+.oa-resource-status {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--ai-text-secondary);
+  font-size: 11px;
+  margin: 0 2px 17px;
+}
 .oa-resource-status > span:first-child { display: flex; align-items: center; gap: 7px; }
 .oa-resource-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-bottom: 20px; }
 .oa-resource-metric { padding: 23px; border-radius: 18px; background: var(--ai-surface-card); }
 .oa-resource-metric:first-child { background: var(--ai-primary); color: var(--ai-primary-text); }
 .oa-resource-metric-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12px; }
-.oa-resource-metric > strong { display: block; font-size: clamp(26px, 3vw, 38px); font-weight: 550; margin: 20px 0 15px; letter-spacing: -1.3px; font-variant-numeric: tabular-nums; }
+.oa-resource-metric > strong {
+  display: block;
+  font-size: clamp(26px, 3vw, 38px);
+  font-weight: 550;
+  margin: 20px 0 15px;
+  letter-spacing: -1.3px;
+  font-variant-numeric: tabular-nums;
+}
 .oa-resource-metric > p { margin: 0; font-size: 11px; line-height: 1.6; opacity: .7; }
 .oa-resource-layout { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 16px; align-items: start; }
 /* Storage has a line of explanation and memory has none; without a floor the two
@@ -163,7 +264,14 @@
 .oa-resource-details > .oa-control-card:first-child > .oa-group-head { min-height: 42px; }
 .oa-resource-details { display: grid; gap: 16px; }
 .oa-resource-definition { margin: 0; display: grid; gap: 16px; }
-.oa-resource-definition > div { display: flex; gap: 12px; justify-content: space-between; align-items: baseline; padding-bottom: 14px; border-bottom: 1px solid var(--ai-border); }
+.oa-resource-definition > div {
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  align-items: baseline;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--ai-border);
+}
 .oa-resource-definition > div:last-child { border: 0; padding-bottom: 0; }
 /* A plugin's manifest lists route patterns and migration names, which have no
    spaces to wrap at; right-aligned like the other values, and broken anywhere
@@ -174,7 +282,24 @@
 .oa-plugin-tabs { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 /* font-family and line-height only: a font shorthand here would reset the size and weight
    declared above it to the parent's, since it would come later in the rule. */
-.oa-plugin-tab { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 13px; border-radius: 999px; background: var(--ai-field-bg); color: var(--ai-text-secondary); font-size: 12.5px; font-weight: 500; border: none; outline: none; cursor: pointer; transition: background-color .15s ease, color .15s ease; font-family: inherit; line-height: inherit; }
+.oa-plugin-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 13px;
+  border-radius: 999px;
+  background: var(--ai-field-bg);
+  color: var(--ai-text-secondary);
+  font-size: 12.5px;
+  font-weight: 500;
+  border: none;
+  outline: none;
+  cursor: pointer;
+  transition: background-color .15s ease, color .15s ease;
+  font-family: inherit;
+  line-height: inherit;
+}
 .oa-plugin-tab:hover { background: var(--ai-field-bg-hover); color: var(--ai-text); }
 .oa-plugin-tab.active { background: var(--ai-badge-bg); color: var(--ai-badge-text); font-weight: 600; }
 /* outline is off for the tab, so the ring is what marks keyboard focus here. */
@@ -182,39 +307,114 @@
 /* Plugin details drawer: hero header, structured metadata tiles, and categorized capability chips. */
 .oa-plugin-detail { display: flex; flex-direction: column; gap: 18px; }
 .oa-plugin-detail-hero { display: flex; align-items: flex-start; gap: 14px; padding: 16px; border-radius: 14px; background: var(--ai-surface-container); }
-.oa-plugin-detail-icon { display: grid; place-items: center; width: 44px; height: 44px; flex-shrink: 0; border-radius: 12px; background: var(--ai-surface-card); color: var(--ai-primary); }
+.oa-plugin-detail-icon {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  border-radius: 12px;
+  background: var(--ai-surface-card);
+  color: var(--ai-primary);
+}
 .oa-plugin-detail-lead { flex: 1; min-width: 0; }
 .oa-plugin-detail-header-row { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .oa-plugin-detail-name { margin: 0; font-size: 16px; font-weight: 650; color: var(--ai-text); line-height: 1.3; }
 .oa-plugin-detail-slug { font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--ai-text-secondary); }
 .oa-plugin-detail-badge-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
-.oa-plugin-detail-version { font-size: 11px; font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--ai-text-secondary); background: var(--ai-surface-card); padding: 2px 7px; border-radius: 6px; }
+.oa-plugin-detail-version {
+  font-size: 11px;
+  font-weight: 600;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--ai-text-secondary);
+  background: var(--ai-surface-card);
+  padding: 2px 7px;
+  border-radius: 6px;
+}
 .oa-plugin-detail-desc { margin: 10px 0 0; font-size: 12px; line-height: 1.6; color: var(--ai-text-secondary); }
 .oa-plugin-detail-action-bar { display: flex; flex-wrap: wrap; gap: 8px; }
 .oa-plugin-page-jump { display: inline-flex; align-items: center; gap: 6px; text-decoration: none; }
 .oa-plugin-detail-section { display: flex; flex-direction: column; gap: 10px; }
 .oa-plugin-detail-section-head { display: flex; align-items: center; justify-content: space-between; }
-.oa-plugin-detail-section-head .oa-field-label { margin: 0; font-size: 12px; font-weight: 600; letter-spacing: .02em; color: var(--ai-text-secondary); text-transform: uppercase; }
+.oa-plugin-detail-section-head .oa-field-label {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .02em;
+  color: var(--ai-text-secondary);
+  text-transform: uppercase;
+}
 .oa-plugin-meta-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-.oa-plugin-meta-item { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-radius: 12px; background: var(--ai-surface-container); min-width: 0; }
+.oa-plugin-meta-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--ai-surface-container);
+  min-width: 0;
+}
 .oa-plugin-meta-item.wide { grid-column: 1 / -1; }
 .oa-plugin-meta-label { font-size: 11px; color: var(--ai-text-secondary); }
 .oa-plugin-meta-value { font-size: 12.5px; font-weight: 550; color: var(--ai-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .oa-plugin-meta-value.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-.oa-plugin-meta-link { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--ai-primary); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oa-plugin-meta-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--ai-primary);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .oa-plugin-meta-link:hover { text-decoration: underline; }
-.oa-plugin-contrib-total-badge { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 999px; background: var(--ai-surface-container); color: var(--ai-text-secondary); }
+.oa-plugin-contrib-total-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--ai-surface-container);
+  color: var(--ai-text-secondary);
+}
 .oa-plugin-contrib-list { display: flex; flex-direction: column; gap: 10px; }
 .oa-plugin-contrib-group { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border-radius: 12px; background: var(--ai-surface-container); }
 .oa-plugin-contrib-head { display: flex; align-items: center; justify-content: space-between; }
 .oa-plugin-contrib-title { font-size: 12px; font-weight: 600; color: var(--ai-text); }
-.oa-plugin-contrib-count { font-size: 10.5px; font-weight: 600; padding: 1px 6px; border-radius: 999px; background: var(--ai-surface-card); color: var(--ai-text-secondary); }
+.oa-plugin-contrib-count {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--ai-surface-card);
+  color: var(--ai-text-secondary);
+}
 .oa-plugin-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-.oa-plugin-chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 7px; background: var(--ai-surface-card); font-size: 11.5px; line-height: 1.4; color: var(--ai-text); word-break: break-all; }
+.oa-plugin-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 7px;
+  background: var(--ai-surface-card);
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--ai-text);
+  word-break: break-all;
+}
 .oa-plugin-chip.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .oa-plugin-chip.link { color: var(--ai-primary); text-decoration: none; cursor: pointer; transition: background-color .15s ease; }
 .oa-plugin-chip.link:hover { background: var(--ai-field-bg-hover); }
-.oa-plugin-chip-method { font-size: 9.5px; font-weight: 700; letter-spacing: .04em; padding: 1px 4px; border-radius: 4px; background: var(--ai-surface-container-high); color: var(--ai-primary); }
+.oa-plugin-chip-method {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--ai-surface-container-high);
+  color: var(--ai-primary);
+}
 .oa-plugin-chip-secret { font-size: 10px; padding: 1px 5px; border-radius: 4px; background: var(--ai-surface-container-high); color: var(--ai-text-secondary); }
 /* Controls declared by a plugin: separated with subtle borders so hint text does not crowd the next field. */
 .oa-plugin-controls { display: flex; flex-direction: column; gap: 16px; }
@@ -224,16 +424,41 @@
 .oa-plugin-control-item .oa-switch-field { padding: 0; border-bottom: 0; }
 /* The storage key a control writes, shown above it so an operator approving
    the install sees where the value goes, not only the label the package chose. */
-.oa-plugin-control-key { align-self: flex-start; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; color: var(--ai-text-secondary); }
+.oa-plugin-control-key {
+  align-self: flex-start;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--ai-text-secondary);
+}
 .oa-resource-definition dt { font-size: 12px; }
 .oa-resource-definition dt > small { display: block; margin-top: 6px; font-size: 10px; line-height: 1.7; color: var(--ai-text-secondary); }
 .oa-resource-definition dd { margin: 0; font-size: 18px; font-weight: 550; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .oa-resource-account { display: flex; align-items: center; gap: 10px; }
-.oa-resource-avatar { width: 30px; height: 30px; border-radius: 11px; display: grid; place-items: center; flex-shrink: 0; background: var(--ai-surface-container-high); color: var(--ai-text-secondary); font-size: 11px; }
+.oa-resource-avatar {
+  width: 30px;
+  height: 30px;
+  /* Round, like the account initials everywhere else in the interface (see
+     the note on .oa-consent-party in _app.scss). Only the shape changes here. */
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  background: var(--ai-surface-container-high);
+  color: var(--ai-text-secondary);
+  font-size: 11px;
+}
 .oa-resource-share { display: grid; gap: 6px; text-align: right; }
 .oa-resource-share .oa-health-meter { margin: 0; height: 3px; }
 .oa-resource-storage-totals { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.oa-resource-storage-totals > div { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; background: var(--ai-surface-container); border-radius: 11px; padding: 15px; }
+.oa-resource-storage-totals > div {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  background: var(--ai-surface-container);
+  border-radius: 11px;
+  padding: 15px;
+}
 .oa-resource-storage-totals span { font-size: 11px; color: var(--ai-text-secondary); }
 .oa-resource-storage-totals strong { font-size: 23px; font-weight: 550; font-variant-numeric: tabular-nums; }
 .oa-resource-page > .oa-field-hint { display: block; margin: 20px 2px 0; line-height: 1.8; }
@@ -267,22 +492,83 @@
 /* Installing a plugin by dragging its package onto the page. The card is the
    discoverable half — a click chooses a file — and the overlay is what the
    window shows while a file is over it, so a drop a little off the card is
-   still a drop. */
-.oa-plugin-dropcard { display: flex; flex-direction: column; align-items: center; gap: 6px; width: 100%; padding: 22px 16px; margin-bottom: 18px; border: none; outline: none; border-radius: 16px; background: var(--ai-field-bg); color: var(--ai-text-secondary); cursor: pointer; font: inherit; text-align: center; transition: background-color .15s ease, color .15s ease; }
+   still a drop. Filled rather than dashed like the image-reference drop
+   zones: it is a button first, with a title and a hint, and a fill is what
+   marks a control here. */
+.oa-plugin-dropcard {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 22px 16px;
+  margin-bottom: 18px;
+  border: none;
+  outline: none;
+  border-radius: 16px;
+  background: var(--ai-field-bg);
+  color: var(--ai-text-secondary);
+  cursor: pointer;
+  font: inherit;
+  text-align: center;
+  transition: background-color .15s ease, color .15s ease;
+}
 .oa-plugin-dropcard:hover:not(:disabled) { background: var(--ai-field-bg-hover); color: var(--ai-text); }
 .oa-plugin-dropcard:focus-visible { box-shadow: 0 0 0 3px var(--ai-focus-shadow); }
 .oa-plugin-dropcard:disabled { cursor: progress; opacity: .7; }
 .oa-plugin-dropcard-title { font-size: 13.5px; font-weight: 600; color: var(--ai-text); }
 .oa-plugin-dropcard-hint { font-size: 12px; max-width: 440px; line-height: 1.5; }
-.oa-plugin-dropoverlay { position: fixed; inset: 0; z-index: 200; display: grid; place-items: center; background: rgba(0, 0, 0, .38); backdrop-filter: blur(3px); pointer-events: none; }
-.oa-plugin-dropoverlay-box { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 34px 48px; border-radius: 22px; background: var(--ai-surface-card); color: var(--ai-primary); font-size: 14px; font-weight: 600; box-shadow: 0 18px 60px rgba(0, 0, 0, .28); }
-.oa-plugin-notice { display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 10px 12px; border-radius: 11px; font-size: 12px; line-height: 1.55; background: var(--ai-field-bg); color: var(--ai-text-secondary); }
+.oa-plugin-dropoverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, .38);
+  backdrop-filter: blur(3px);
+  pointer-events: none;
+}
+.oa-plugin-dropoverlay-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 34px 48px;
+  border-radius: 22px;
+  background: var(--ai-surface-card);
+  color: var(--ai-primary);
+  font-size: 14px;
+  font-weight: 600;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, .28);
+}
+.oa-plugin-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 11px;
+  font-size: 12px;
+  line-height: 1.55;
+  background: var(--ai-field-bg);
+  color: var(--ai-text-secondary);
+}
 .oa-plugin-notice svg { flex-shrink: 0; margin-top: 2px; }
 .oa-plugin-notice.warn { background: var(--ai-surface-container); color: var(--ai-text); }
 .oa-plugin-notice.warn svg { color: var(--ai-danger); }
 .oa-plugin-notice.ok { color: var(--ai-text); }
 .oa-plugin-permissions { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
-.oa-plugin-permissions li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 12px; border-radius: 11px; background: var(--ai-field-bg); font-size: 12.5px; color: var(--ai-text); }
+.oa-plugin-permissions li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: 11px;
+  background: var(--ai-field-bg);
+  font-size: 12.5px;
+  color: var(--ai-text);
+}
 .oa-plugin-fingerprint { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; font-size: 11.5px; color: var(--ai-text-secondary); }
 .oa-plugin-fingerprint dt { font-weight: 600; }
 .oa-plugin-fingerprint dd { margin: 0; overflow-wrap: anywhere; }

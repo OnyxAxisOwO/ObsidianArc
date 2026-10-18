@@ -1,16 +1,35 @@
+@use 'mixins' as *;
+
 /* The appearance panel's surfaces and accent also own this page: neutral,
    coloured and wallpaper themes must all retain the same visual hierarchy.
    The curve, the week-on-a-clock and the switches come from _analytics.scss,
-   so the overview and the usage report draw the same things the same way. */
-@use 'mixins';
-
+   so the overview and the usage report draw the same things the same way.
+   So do the kicker, a card's title and a figure's note: their dashboard
+   class names are listed on the report's rules there rather than copied. */
 .oa-admin-main-dashboard .oa-admin-body { padding-top: 26px; }
-.oa-dashboard { display: flex; flex-direction: column; gap: 16px; max-width: 1480px; margin: 0 auto; container: dashboard / inline-size; }
+.oa-dashboard { @include page-column; container: dashboard / inline-size; }
 .oa-dashboard-intro { display: flex; justify-content: space-between; align-items: flex-end; gap: 20px; padding: 4px 2px 10px; }
-.oa-dashboard-kicker { display: block; color: var(--ai-text-secondary); font-size: 11px; line-height: 1.5; }
-.oa-dashboard-intro h1 { margin: 0 0 6px; font-size: clamp(24px, 2.4vw, 34px); font-weight: 650; letter-spacing: -1.2px; line-height: 1.35; text-wrap: balance; }
+.oa-dashboard-intro h1 {
+  margin: 0 0 6px;
+  font-size: clamp(24px, 2.4vw, 34px);
+  font-weight: 650;
+  letter-spacing: -1.2px;
+  line-height: 1.35;
+  text-wrap: balance;
+}
 .oa-dashboard-intro p { margin: 0; color: var(--ai-text-secondary); font-size: 12px; line-height: 1.7; }
-.oa-dashboard-date { display: inline-flex; align-items: center; gap: 7px; height: 34px; padding: 0 14px; border-radius: 999px; background: var(--ai-surface-container-high); color: var(--ai-text-secondary); font-size: 11.5px; white-space: nowrap; }
+.oa-dashboard-date {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: var(--ai-surface-container-high);
+  color: var(--ai-text-secondary);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
 .oa-dashboard-updated { color: var(--ai-text-secondary); font-size: 11px; }
 .oa-dashboard-intro-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; flex-shrink: 0; }
 .oa-dashboard-intro-meta > div { display: flex; align-items: center; gap: 8px; }
@@ -19,27 +38,81 @@
 
 /* --- the day's figures -------------------------------------------------- */
 .oa-dashboard-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
-.oa-dashboard-metric { position: relative; overflow: hidden; isolation: isolate; display: flex; flex-direction: column; min-width: 0; padding: 22px; border-radius: 18px; background: var(--ai-surface-card); }
+.oa-dashboard-metric {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 22px;
+  border-radius: 18px;
+  background: var(--ai-surface-card);
+}
 .oa-dashboard-metric-top { display: flex; justify-content: space-between; align-items: center; gap: 10px; color: var(--ai-text-secondary); font-size: 12px; }
 .oa-dashboard-metric-top > svg { opacity: .75; flex-shrink: 0; }
-.oa-dashboard-metric > strong { display: block; margin: 18px 0 14px; font-size: clamp(28px, 3vw, 40px); font-weight: 550; line-height: 1; letter-spacing: -1.6px; font-variant-numeric: tabular-nums; }
-/* Wraps rather than squeezes: the arrow and the note beside it are two
-   things, and a narrow card should put the note under the arrow, not cut it. */
-.oa-dashboard-metric-note { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-height: 18px; margin-top: auto; color: var(--ai-text-secondary); font-size: 11px; line-height: 1.5; }
+.oa-dashboard-metric > strong {
+  display: block;
+  margin: 18px 0 14px;
+  font-size: clamp(28px, 3vw, 40px);
+  font-weight: 550;
+  line-height: 1;
+  letter-spacing: -1.6px;
+  font-variant-numeric: tabular-nums;
+}
 .oa-dashboard-dot { display: inline-block; flex-shrink: 0; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
 .oa-dashboard-token-split > span { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
 .oa-dashboard-metric-featured { color: var(--ai-primary-text); background: var(--ai-primary); }
 .oa-dashboard-metric-featured .oa-dashboard-metric-top, .oa-dashboard-metric-featured .oa-dashboard-metric-note { color: inherit; }
 .oa-dashboard-metric-featured .oa-dashboard-metric-note > span:not(.oa-delta) { opacity: .8; }
 .oa-dashboard-metric-featured .oa-delta { background: color-mix(in srgb, var(--ai-primary-text) 16%, transparent); color: inherit; }
-.oa-dashboard-metric-orbit { position: absolute; z-index: -1; right: 0; bottom: 0; width: 155px; height: 155px; fill: none; stroke: currentColor; stroke-width: 1; opacity: .12; pointer-events: none; }
+.oa-dashboard-metric-orbit {
+  position: absolute;
+  z-index: -1;
+  right: 0;
+  bottom: 0;
+  width: 155px;
+  height: 155px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1;
+  opacity: .12;
+  pointer-events: none;
+}
 
 /* --- what the instance holds ------------------------------------------- */
-.oa-dashboard-resources { display: grid; grid-template-columns: minmax(120px, .6fr) repeat(3, minmax(0, 1fr)); align-items: center; gap: 12px; padding: 6px 12px 6px 18px; border-radius: 18px; background: var(--ai-surface-container-high); }
+.oa-dashboard-resources {
+  display: grid;
+  grid-template-columns: minmax(120px, .6fr) repeat(3, minmax(0, 1fr));
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px 6px 18px;
+  border-radius: 18px;
+  background: var(--ai-surface-container-high);
+}
 .oa-dashboard-resources-label { display: flex; align-items: center; gap: 8px; color: var(--ai-text-secondary); font-size: 11.5px; }
-.oa-dashboard-resource { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 10px 12px; border-radius: 14px; color: var(--ai-text); text-decoration: none; transition: background-color .15s ease; }
+.oa-dashboard-resource {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: 14px;
+  color: var(--ai-text);
+  text-decoration: none;
+  transition: background-color .15s ease;
+}
 a.oa-dashboard-resource:hover { background: var(--ai-state-hover); }
-.oa-dashboard-resource-icon { display: grid; place-items: center; width: 36px; height: 36px; flex-shrink: 0; border-radius: 12px; background: var(--ai-surface-container); color: var(--ai-text-secondary); }
+.oa-dashboard-resource-icon {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  border-radius: 12px;
+  background: var(--ai-surface-container);
+  color: var(--ai-text-secondary);
+}
 .oa-dashboard-resource-copy { flex: 1; display: flex; flex-direction: column; gap: 3px; min-width: 0; font-size: 11.5px; }
 .oa-dashboard-resource-copy > span { display: flex; align-items: baseline; gap: 8px; }
 .oa-dashboard-resource-copy strong { font-size: 18px; font-weight: 600; letter-spacing: -.5px; font-variant-numeric: tabular-nums; }
@@ -54,12 +127,18 @@ a.oa-dashboard-resource:hover { background: var(--ai-state-hover); }
    jump targets stop short of the top by, instead of landing flush on it. */
 .oa-dashboard-card { min-width: 0; padding: 22px 24px; background: var(--ai-surface-card); border-radius: 18px; scroll-margin-top: 14px; }
 .oa-dashboard-section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.oa-dashboard-section-head h2 { margin: 3px 0 0; font-size: 15px; line-height: 1.4; font-weight: 650; letter-spacing: -.2px; }
 .oa-dashboard-section-head p { margin: 5px 0 0; font-size: 11.5px; color: var(--ai-text-secondary); }
 .oa-dashboard-trend-summary { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; margin: 16px 0 16px; }
 .oa-dashboard-trend-summary > div { display: flex; align-items: baseline; gap: 8px; }
-.oa-dashboard-trend-summary strong { font-size: 30px; font-weight: 550; letter-spacing: -1px; line-height: 1.1; font-variant-numeric: tabular-nums; }
-.oa-dashboard-trend-summary span { color: var(--ai-text-secondary); font-size: 11px; }
+/* The day's curve and the success rate carry the same size of headline figure. */
+.oa-dashboard-trend-summary strong, .oa-dashboard-health-rate strong {
+  font-size: 30px;
+  font-weight: 550;
+  letter-spacing: -1px;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+.oa-dashboard-trend-summary span, .oa-dashboard-health-rate span { color: var(--ai-text-secondary); font-size: 11px; }
 .oa-dashboard-trend-summary > span { text-align: right; max-width: 55%; }
 /* The card beside it sets the row's height, and a chart that stopped short of
    that left a band of nothing between the curve and its footer. The plot
@@ -67,19 +146,44 @@ a.oa-dashboard-resource:hover { background: var(--ai-state-hover); }
    so a taller box only spreads them. */
 .oa-dashboard-trend { display: flex; flex-direction: column; }
 .oa-dashboard-trend .oa-plot { flex: 1; grid-template-rows: minmax(var(--oa-plot-height), 1fr) auto; }
-.oa-dashboard-trend-foot { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--ai-border); color: var(--ai-text-secondary); font-size: 11px; }
-.oa-dashboard-trend-foot > span:first-child { display: inline-flex; align-items: center; gap: 6px; }
-.oa-dashboard-trend-foot .oa-dashboard-dot { color: var(--ai-primary); }
+.oa-dashboard-trend-foot {
+  @include chart-foot(10px);
+}
 
 /* --- where the load goes ------------------------------------------------- */
-.oa-dashboard-rank-caption { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 16px 0 14px; color: var(--ai-text-secondary); font-size: 11px; }
+.oa-dashboard-rank-caption {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin: 16px 0 14px;
+  color: var(--ai-text-secondary);
+  font-size: 11px;
+}
 .oa-dashboard-shapes { display: flex; gap: 2px; flex-shrink: 0; }
-.oa-dashboard-shapes button { height: 24px; padding: 0 9px; border: none; border-radius: 999px; background: transparent; color: var(--ai-text-secondary); font: inherit; font-size: 11px; cursor: pointer; }
+.oa-dashboard-shapes button {
+  height: 24px;
+  padding: 0 9px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ai-text-secondary);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
 .oa-dashboard-shapes button:hover { background: var(--ai-state-hover); color: var(--ai-text); }
 .oa-dashboard-shapes button[aria-pressed="true"] { background: var(--ai-surface-container); color: var(--ai-text); font-weight: 600; }
 .oa-dashboard-rank-list { display: flex; flex-direction: column; gap: 14px; min-height: 222px; margin: 0; padding: 0; list-style: none; }
 .oa-dashboard-rank-list li { display: flex; align-items: flex-start; gap: 12px; min-width: 0; }
-.oa-dashboard-rank-number { width: 18px; flex-shrink: 0; color: var(--ai-text-secondary); font-size: 10.5px; line-height: 18px; font-variant-numeric: tabular-nums; }
+.oa-dashboard-rank-number {
+  width: 18px;
+  flex-shrink: 0;
+  color: var(--ai-text-secondary);
+  font-size: 10.5px;
+  line-height: 18px;
+  font-variant-numeric: tabular-nums;
+}
 .oa-dashboard-rank-list li:first-child .oa-dashboard-rank-number { color: var(--ai-text); font-weight: 650; }
 .oa-dashboard-rank-main { flex: 1; min-width: 0; }
 .oa-dashboard-rank-label { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; line-height: 18px; }
@@ -90,7 +194,15 @@ a.oa-dashboard-resource:hover { background: var(--ai-state-hover); }
 .oa-dashboard-rank-track > span { display: block; height: 100%; border-radius: inherit; background: var(--ai-primary); opacity: .7; }
 .oa-dashboard-rank-list li:first-child .oa-dashboard-rank-track > span { opacity: 1; }
 .oa-dashboard-rank-bottom small { width: 40px; text-align: right; color: var(--ai-text-secondary); font-size: 10.5px; font-variant-numeric: tabular-nums; }
-.oa-dashboard-rank-reach { display: block; margin-top: 5px; overflow: hidden; color: var(--ai-text-secondary); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
+.oa-dashboard-rank-reach {
+  display: block;
+  margin-top: 5px;
+  overflow: hidden;
+  color: var(--ai-text-secondary);
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .oa-dashboard-ranking-details {
   margin-top: 16px;
   padding-top: 14px;
@@ -170,7 +282,19 @@ a.oa-dashboard-resource:hover { background: var(--ai-state-hover); }
 .oa-dashboard-pie .oa-chart-legend { flex: 1; min-width: 0; gap: 12px; }
 .oa-dashboard-pie .oa-chart-legend-row { font-size: 11px; gap: 6px; }
 .oa-dashboard-pie .oa-chart-swatch { width: 7px; height: 7px; }
-.oa-dashboard-empty { display: flex; flex: 1; flex-direction: column; align-items: center; justify-content: center; gap: 14px; min-height: 222px; margin: 0; text-align: center; color: var(--ai-text-secondary); font-size: 12px; }
+.oa-dashboard-empty {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  min-height: 222px;
+  margin: 0;
+  text-align: center;
+  color: var(--ai-text-secondary);
+  font-size: 12px;
+}
 .oa-dashboard-empty > svg { opacity: .55; }
 .oa-dashboard-trend-empty { min-height: 206px; }
 
@@ -179,23 +303,69 @@ a.oa-dashboard-resource:hover { background: var(--ai-state-hover); }
 .oa-dashboard-health { display: flex; flex-direction: column; }
 .oa-dashboard-health-icon { color: var(--ai-text-secondary); flex-shrink: 0; }
 .oa-dashboard-health-rate { display: flex; align-items: baseline; gap: 8px; margin: 18px 0 12px; }
-.oa-dashboard-health-rate strong { font-size: 30px; font-weight: 550; letter-spacing: -1px; line-height: 1.1; font-variant-numeric: tabular-nums; }
-.oa-dashboard-health-rate span { color: var(--ai-text-secondary); font-size: 11px; }
-.oa-dashboard-health-meter { height: 6px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--ai-danger) 28%, var(--ai-surface-container)); }
+/* The track is tinted with the danger colour on purpose: what the fill does
+   not cover is the failed share, and it matches the red failed-requests row
+   in the list under it. A neutral track would say "not yet" instead. */
+.oa-dashboard-health-meter {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ai-danger) 28%, var(--ai-surface-container));
+}
 .oa-dashboard-health-meter > span { display: block; height: 100%; border-radius: inherit; background: var(--ai-primary); }
 .oa-dashboard-health-list { display: flex; flex-direction: column; margin: auto 0 0; padding-top: 18px; }
-.oa-dashboard-health-list > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; border-top: 1px solid var(--ai-border); }
+.oa-dashboard-health-list > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 44px;
+  border-top: 1px solid var(--ai-border);
+}
 .oa-dashboard-health-list dt { display: inline-flex; align-items: center; gap: 6px; color: var(--ai-text-secondary); font-size: 12px; }
-.oa-dashboard-health-list dd { display: inline-flex; align-items: center; gap: 8px; margin: 0; font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.oa-dashboard-health-list dd {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
 .oa-dashboard-health-list .has-errors dt, .oa-dashboard-health-list .has-errors dd { color: var(--ai-danger); }
 
 /* --- the latest requests ------------------------------------------------- */
 .oa-dashboard-recent > .oa-dashboard-section-head { margin-bottom: 18px; }
-.oa-dashboard-link { display: inline-flex; align-items: center; gap: 5px; height: 34px; padding: 0 14px; border-radius: 999px; background: var(--ai-surface-container); color: var(--ai-text); text-decoration: none; font-size: 12px; white-space: nowrap; transition: background-color .15s ease; }
+.oa-dashboard-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 34px;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: var(--ai-surface-container);
+  color: var(--ai-text);
+  text-decoration: none;
+  font-size: 12px;
+  white-space: nowrap;
+  transition: background-color .15s ease;
+}
 .oa-dashboard-link:hover { background: var(--ai-state-hover); }
+/* The overview's two tables are hand-drawn rather than OaTable: OaTable
+   always adds a pagination bar, which a top-eight list has no use for, and
+   reads a percentage column width as that many pixels, which would squeeze
+   this table on a phone instead of letting it scroll. Folding them into
+   OaTable is a change to how the overview looks, not a cleanup. */
 .oa-dashboard-table-wrap { overflow-x: auto; border-radius: 11px; scrollbar-width: thin; }
 .oa-dashboard-table { width: 100%; border-collapse: collapse; text-align: left; font-size: 12px; }
-.oa-dashboard-table th { padding: 10px 14px; color: var(--ai-text-secondary); background: var(--ai-surface-container-low); font-size: 11px; font-weight: 500; white-space: nowrap; }
+.oa-dashboard-table th {
+  padding: 10px 14px;
+  color: var(--ai-text-secondary);
+  background: var(--ai-surface-container-low);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
 .oa-dashboard-table th:first-child { border-radius: 9px 0 0 9px; }
 .oa-dashboard-table th:last-child { border-radius: 0 9px 9px 0; }
 .oa-dashboard-table td { padding: 12px 14px; border-bottom: 1px solid var(--ai-border); vertical-align: middle; }
@@ -211,10 +381,29 @@ a.oa-dashboard-resource:hover { background: var(--ai-state-hover); }
 .oa-dashboard-recent-table th:nth-child(5) { width: 15%; }
 .oa-dashboard-recent-table th:nth-child(6) { width: 13%; }
 .oa-dashboard-user { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.oa-dashboard-avatar { display: grid; place-items: center; width: 28px; height: 28px; flex-shrink: 0; border-radius: 50%; background: var(--ai-badge-bg); color: var(--ai-badge-text); font-weight: 600; font-size: 11px; }
+.oa-dashboard-avatar {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--ai-badge-bg);
+  color: var(--ai-badge-text);
+  font-weight: 600;
+  font-size: 11px;
+}
 .oa-dashboard-numeric { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .oa-dashboard-when { text-align: right; color: var(--ai-text-secondary); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.oa-dashboard-foot { display: flex; align-items: center; justify-content: center; gap: 6px; color: var(--ai-text-secondary); font-size: 10.5px; padding: 2px 0; }
+.oa-dashboard-foot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: var(--ai-text-secondary);
+  font-size: 10.5px;
+  padding: 2px 0;
+}
 /* The notices above the figures. A single line each, not a banner: they are
    for an operator to act on when convenient, and a banner would read as an
    outage. The warning tint is the danger token mixed into the card, as the
@@ -230,13 +419,20 @@ a.oa-dashboard-resource:hover { background: var(--ai-state-hover); }
 /* The skeleton is a sibling of `.oa-dashboard`, not a child, so the container
    below is its own: it has the same width as the loaded page, and the
    placeholders can follow the same column count the metrics do. */
-.oa-dashboard-loading { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; max-width: 1480px; margin: 0 auto; container: dashboard / inline-size; }
+.oa-dashboard-loading {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  max-width: $page-width;
+  margin: 0 auto;
+  container: dashboard / inline-size;
+}
 .oa-dashboard-loading > span { grid-column: 1 / -1; color: var(--ai-text-secondary); font-size: 12px; }
 .oa-dashboard-loading > div { height: 150px; border-radius: 18px; background: var(--ai-surface-card); }
 @container dashboard (max-width: 1040px) {
   .oa-dashboard-loading > div { grid-column: span 2; }
 }
-.oa-dashboard :is(button, a, summary, [tabindex]):focus-visible { @include mixins.focus-ring; }
+.oa-dashboard :is(button, a, summary, [tabindex]):focus-visible { @include focus-ring; }
 
 /* Container width also follows the resizable admin rail, unlike a viewport breakpoint. */
 @container dashboard (max-width: 1040px) {

@@ -1,3 +1,5 @@
+@use 'mixins' as *;
+
 // The terminal. Imported last from index.scss, after
 // surfaces — nothing else in the app depends on load order here, but this is
 // where a rule that turns out to need overriding one of surfaces' own goes
@@ -179,9 +181,7 @@
 .oa-terminal-tab-label {
   flex: 1;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  @include ellipsis;
 }
 
 /* Takes the label's place in the pill, so it carries the same left inset the
@@ -285,12 +285,7 @@
 }
 
 .oa-terminal-scroll-wrap {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
+  @include scroll-area-shell;
 }
 
 .oa-terminal-scroll-wrap .oa-overlay-track {
@@ -316,10 +311,8 @@
   font-variant-ligatures: var(--oa-term-ligatures);
 }
 
-.oa-terminal-scroll::-webkit-scrollbar {
-  display: none;
-  width: 0;
-  height: 0;
+.oa-terminal-scroll {
+  @include hidden-scrollbar;
 }
 
 .oa-terminal-blocks {
@@ -472,10 +465,8 @@
   caret-shape: var(--oa-term-cursor-style);
 }
 
-.oa-terminal-input::-webkit-scrollbar {
-  display: none;
-  width: 0;
-  height: 0;
+.oa-terminal-input {
+  @include hidden-scrollbar;
 }
 
 .oa-terminal-spinner {
@@ -486,17 +477,14 @@
   border-radius: 999px;
   border: 2px solid var(--ai-outline-variant);
   border-top-color: var(--ai-primary);
-  animation: oa-terminal-spin 0.7s linear infinite;
+  /* The chat's own turn, not a second copy of it. */
+  animation: ai-chat-spin 0.7s linear infinite;
 }
 
 .oa-terminal-cancel {
   width: 26px;
   height: 26px;
   flex-shrink: 0;
-}
-
-@keyframes oa-terminal-spin {
-  to { transform: rotate(360deg); }
 }
 
 @media (prefers-reduced-motion: reduce) {

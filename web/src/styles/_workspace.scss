@@ -1,6 +1,7 @@
-/* Styles for src/workspace.js: the header bar and settings drawer wrapped
-   around src/chat.js. Consumes the same --ai-* custom properties chat.css
-   defines, so the two never disagree about palette. */
+@use 'mixins' as *;
+/* Styles for the workspace shell: the header bar and settings drawer wrapped
+   around the chat surface. Consumes the same --ai-* custom properties
+   _chat.scss defines, so the two never disagree about palette. */
 
 @use 'mixins';
 
@@ -280,9 +281,7 @@
 
 .oa-menu-item-title {
   font-size: 12.5px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  @include ellipsis;
 }
 
 /* The one line under a menu row's name, wherever the row comes from: an
@@ -292,9 +291,7 @@
 .ai-pop-model-sub {
   font-size: 10.5px;
   color: var(--ai-text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  @include ellipsis;
 }
 
 .oa-menu-empty {
@@ -318,9 +315,7 @@
 
 .oa-select-label {
   display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  @include ellipsis;
 }
 
 /* Placed by script, from the trigger's rectangle, because the list is
@@ -329,8 +324,9 @@
    or captures its positioning. ui/select.ts carries the full reason.
 
    Above .oa-modal-overlay at 50, because a select can be inside a modal, and
-   below the confetti at 60, which has no pointer events and is over
-   everything by design. Everything else comes from .oa-menu. */
+   below the confetti at 60, which has no pointer events and sits over the
+   page. Toasts and the other layers that must stay on top are numbered above
+   it. Everything else comes from .oa-menu. */
 .oa-select-menu {
   position: fixed;
   /* So the min-width script sets from the trigger is the width the list ends
@@ -422,9 +418,7 @@
 }
 
 .oa-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+  @include flex-column;
   font-size: 12.5px;
 }
 
@@ -666,9 +660,7 @@
    is read down its first column — the names — and stacking would bury
    that under a label for every cell. */
 .oa-thinking-tiers {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+  @include flex-column;
 }
 
 .oa-thinking-tier {

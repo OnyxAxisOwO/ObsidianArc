@@ -5,38 +5,121 @@
 // accent recolours the whole interface at runtime and a Sass variable is
 // resolved at build time — baking one in would produce a surface that
 // ignores the colour the user picked. So these mixins carry structure
-// (how a pill is shaped, how a column scrolls) and never palette.
+// (how a scroller hides its bar, how a line truncates) and never palette.
+//
+// Each mixin expands to exactly the declarations it replaces, in the same
+// order, so moving a rule onto one leaves the compiled stylesheet unchanged.
+// Only add a mixin for a block that is already repeated; one used once is
+// just a rule with a longer name.
 
-// A pill. Buttons here are 999px and carry no outline; a fill is what marks
-// a control.
-@mixin pill($padding: 7px 14px) {
-  padding: $padding;
-  border: none;
-  border-radius: 999px;
-  cursor: pointer;
-}
-
-// A flex column that scrolls its overflow rather than growing the page.
-// `min-height: 0` is the half everyone forgets: without it a flex child
-// refuses to shrink below its content and the scroll never engages.
-@mixin scroll-column {
+// The outer box of an OaScrollArea whose scroller fills a column: positioned
+// so the overlay track can sit on it, clipped so neither the track nor the
+// contents leave the card, and shrinkable so the scroller inside engages.
+// Only for the wrappers that are that shell; a select's or a board's wrap is
+// a different box and keeps its own rule.
+@mixin scroll-area-shell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
+  overflow: hidden;
 }
 
-// The rounded 18px card every surface in this product is made of — the rail,
-// the transcript, the side panel and the sign-in box are all one of these.
-@mixin card($radius: 18px) {
-  border-radius: $radius;
-  background: var(--ai-surface-container);
+// Hides a scroller's bar. Pair it with `scrollbar-width: none` on the same
+// element: engines that know that property (Firefox, current Chromium) take
+// it and ignore this pseudo-element, while older WebKit and Blink builds read
+// only this rule, so the two are written together and never apart.
+@mixin hidden-scrollbar {
+  &::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
+  }
 }
 
-// Centres a box in whatever it is given.
-@mixin centre {
+// Truncates a line with an ellipsis. All three are needed together: the
+// ellipsis only shows on a box that clips its overflow, on a line that does
+// not wrap.
+@mixin ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+// A vertical flex stack with a fixed gap between its children.
+@mixin flex-column($gap: 6px) {
   display: flex;
+  flex-direction: column;
+  gap: $gap;
+}
+
+// A row of buttons: one 8px gap, centred on the line, wrapping when the window
+// is narrow. Rows that carry the same declarations in another order keep their
+// own copy, so the compiled stylesheet stays byte for byte the same.
+@mixin button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   align-items: center;
-  justify-content: center;
+}
+
+// The measure every full page is laid out against. A variable rather than a
+// mixin argument because the number is shared by rules that are not all
+// columns (a grid skeleton, a panel head), and one place to change it is what
+// keeps those pages lined up with each other.
+$page-width: 1480px;
+
+// A page as a centred column at the page measure. Each page still names its
+// own size container afterwards, because its container queries point at it.
+@mixin page-column {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: $page-width;
+  margin: 0 auto;
+}
+
+// The frosted material for surfaces that always carry it: a blur with its
+// saturation put back, so the glass shows the colour behind it rather than a
+// grey wash. A Sass value rather than a custom property because nothing
+// changes it at runtime; the user's own blur setting is --ai-surface-filter,
+// and that one stays a token.
+$frosted-filter: blur(20px) saturate(1.6);
+
+// The line under a chart: a hairline, the bucket note on the left and the peak
+// on the right. The gap belongs to the caller: it only shows when the two
+// notes wrap onto separate lines, and the two charts set it to different values.
+@mixin chart-foot($gap) {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: $gap;
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--ai-border);
+  color: var(--ai-text-secondary);
+  font-size: 11px;
+
+  > span:first-child {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .oa-dashboard-dot {
+    color: var(--ai-primary);
+  }
+}
+
+// The track and coloured arc of a loading ring. Size, timing and whatever a
+// spinner adds around the ring stay at the call site. The terminal's ring keeps
+// its own copy: it declares its radius before its border, and moving it here
+// would reorder that rule in the compiled stylesheet.
+@mixin spinner-ring {
+  border: 2px solid var(--ai-outline-variant);
+  border-radius: 50%;
+  border-top-color: var(--ai-primary);
 }
 
 // Keyboard focus on a control: the shared ring, with the browser's outline

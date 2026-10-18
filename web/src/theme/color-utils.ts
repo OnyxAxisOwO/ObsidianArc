@@ -32,7 +32,7 @@ export function isAccentName(value: string): value is AccentName {
 
 // Black and white. The accent now drives every surface, not just the buttons,
 // so the default has to be the one that imposes least on an instance that
-// never opens the picker. The :root fallbacks in chat.css are this accent's
+// never opens the picker. The :root fallbacks in _chat.scss are this accent's
 // own ramp — change one and the other has to follow.
 export const DEFAULT_ACCENT: AccentName = 'neutral';
 

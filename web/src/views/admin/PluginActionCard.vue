@@ -29,8 +29,6 @@ const emit = defineEmits<{
 
 const draft = ref<Record<string, string>>({ ...(props.card.defaults ?? {}) });
 const busy = ref(false);
-// The success green is a literal: no --ai-* token carries it, and it is the
-// green the stylesheets use for success too (.oa-2fa-flash.ok).
 const result = ref<{ message: string; failed: boolean } | null>(null);
 
 // Initialise any unset datetime controls to a sensible default (7 days). A
@@ -92,7 +90,7 @@ async function runAction(): Promise<void> {
       <p
         v-if="result"
         class="oa-field-hint"
-        :style="{ color: result.failed ? 'var(--ai-danger)' : '#10b981' }"
+        :style="{ color: result.failed ? 'var(--ai-danger)' : 'var(--ai-primary)' }"
         role="status"
       >
         {{ result.message }}

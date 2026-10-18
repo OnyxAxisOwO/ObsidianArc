@@ -1,5 +1,6 @@
+@use 'mixins' as *;
 /* Screens the standalone build never had — sign in, the account menu, the
-   admin backoffice — drawn from the same tokens chat.css defines, so they
+   admin backoffice — drawn from the same tokens _chat.scss defines, so they
    read as one product rather than as a chat app with an admin panel bolted
    to the side. Nothing here introduces a new colour, radius or easing. */
 
@@ -536,9 +537,7 @@
 }
 
 .oa-account-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  @include ellipsis;
 }
 
 /* The top-right account dropdown: longer and taller than a compact select
@@ -577,9 +576,7 @@
 .oa-menu-head-name {
   font-size: 12.5px;
   font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  @include ellipsis;
 }
 
 .oa-menu-row {
@@ -764,9 +761,7 @@
 }
 
 .oa-menu-quota {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+  @include flex-column;
   padding: 10px;
   margin-top: 6px;
 }
@@ -1374,7 +1369,7 @@ button.oa-home-notice-main:focus-visible {
 
 /* --- confetti ----------------------------------------------------------- */
 
-/* Above everything, touchable by nothing. The layer is removed by the code
+/* Above the page, touchable by nothing. The layer is removed by the code
    that made it; the pointer-events rule is what stops it swallowing a click
    in the two seconds it exists. */
 .oa-confetti {
@@ -1899,6 +1894,8 @@ $oa-slide-ease: cubic-bezier(0.16, 1, 0.3, 1);
   pointer-events: none;
   white-space: nowrap;
   opacity: 0;
+  /* Only measured, never painted: visibility hides it, so this stacking
+     order matters only if the sizer is ever shown. */
   z-index: -9999;
 }
 

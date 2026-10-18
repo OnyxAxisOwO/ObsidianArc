@@ -1,3 +1,4 @@
+@use 'mixins' as *;
 /* The usage report and the chart vocabulary it shares with the overview:
    cards, segmented switches, figures with a direction, a curve over a grid,
    a week folded onto a clock, a table of who uses what, ranked boards.
@@ -22,8 +23,10 @@
 }
 
 /* The line above a card's title: what the card is about, in the ordinary
-   secondary voice rather than capitals, which Chinese does not have. */
-.oa-kicker {
+   secondary voice rather than capitals, which Chinese does not have. The
+   overview's kicker is the same line. */
+.oa-kicker,
+.oa-dashboard-kicker {
   display: block;
   color: var(--ai-text-secondary);
   font-size: 11px;
@@ -163,7 +166,8 @@
   min-width: 0;
 }
 
-.oa-viz-head h2 {
+.oa-viz-head h2,
+.oa-dashboard-section-head h2 {
   margin: 3px 0 0;
   font-size: 15px;
   font-weight: 650;
@@ -194,31 +198,16 @@
 }
 
 .oa-viz-foot {
-  display: flex;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 18px;
-  padding-top: 14px;
-  border-top: 1px solid var(--ai-border);
-  color: var(--ai-text-secondary);
-  font-size: 11px;
+  @include chart-foot(8px);
 }
 
-.oa-viz-foot > span:first-child {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.oa-viz-foot .oa-dashboard-dot {
-  color: var(--ai-primary);
-}
-
+/* As tall as the curve it stands in for — the usage report's 190px plot,
+   its 10px row gap and its 14px axis — so a period with no requests does
+   not shorten the card under the reader. */
 .oa-viz-empty {
   display: grid;
   place-items: center;
-  min-height: 180px;
+  min-height: 214px;
   margin: 0;
   color: var(--ai-text-secondary);
   font-size: 12px;
@@ -285,7 +274,11 @@
   white-space: nowrap;
 }
 
-.oa-kpi-foot {
+/* Wraps rather than squeezes: the arrow and the note beside it are two
+   things, and a narrow card should put the note under the arrow, not cut it.
+   The overview's figure cards end the same way. */
+.oa-kpi-foot,
+.oa-dashboard-metric-note {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -621,9 +614,7 @@
 .oa-matrix-head span,
 .oa-matrix-head small,
 .oa-matrix-user > span:last-child {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  @include ellipsis;
 }
 
 .oa-matrix-head span {
@@ -750,11 +741,15 @@
   transition: background-color 0.15s ease;
 }
 
-.oa-board-frame button.oa-board-row:hover {
+/* The allowance list below is the same kind of clickable row, so it takes
+   its hover and focus from these two rules instead of a copy of them. */
+.oa-board-frame button.oa-board-row:hover,
+.oa-allow-row:hover {
   background: var(--ai-state-hover);
 }
 
-.oa-board-frame button.oa-board-row:focus-visible {
+.oa-board-frame button.oa-board-row:focus-visible,
+.oa-allow-row:focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px var(--ai-focus-shadow);
 }
@@ -786,7 +781,10 @@
   user-select: none;
 }
 
-.oa-board-user .oa-board-mark {
+/* Every allowance row is a person, so its mark is the user board's round
+   badge without the list having to say kind=user. */
+.oa-board-user .oa-board-mark,
+.oa-allow-mark {
   border-radius: 50%;
   background: var(--ai-badge-bg);
   color: var(--ai-badge-text);
@@ -810,9 +808,7 @@
 
 .oa-board-frame .oa-board-name,
 .oa-board-frame .oa-board-notes {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  @include ellipsis;
 }
 
 /* The base rule makes the name a flex container, so a plain-text name becomes
@@ -886,11 +882,7 @@
   scrollbar-width: none;
   -ms-overflow-style: none;
 
-  &::-webkit-scrollbar {
-    display: none;
-    width: 0;
-    height: 0;
-  }
+  @include hidden-scrollbar;
 
   --fade-top: 0px;
   --fade-bottom: 0px;
@@ -949,21 +941,6 @@
   text-align: left;
   cursor: pointer;
   transition: background-color 0.15s ease;
-
-  &:hover {
-    background: var(--ai-state-hover);
-  }
-
-  &:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 3px var(--ai-focus-shadow);
-  }
-}
-
-.oa-allow-mark {
-  border-radius: 50%;
-  background: var(--ai-badge-bg);
-  color: var(--ai-badge-text);
 }
 
 .oa-allow-who {
@@ -971,14 +948,6 @@
   flex-direction: column;
   gap: 3px;
   min-width: 0;
-}
-
-.oa-allow-sub {
-  overflow: hidden;
-  color: var(--ai-text-secondary);
-  font-size: 10.5px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .oa-allow-windows {
@@ -1061,11 +1030,7 @@
 /* --- the report page ------------------------------------------------------------------- */
 
 .oa-report {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  max-width: 1480px;
-  margin: 0 auto;
+  @include page-column;
   container: report / inline-size;
 }
 
@@ -1192,7 +1157,7 @@
 .oa-report-loading {
   display: grid;
   gap: 16px;
-  max-width: 1480px;
+  max-width: $page-width;
   margin: 0 auto;
 }
 

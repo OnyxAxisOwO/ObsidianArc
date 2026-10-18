@@ -177,7 +177,7 @@ function sub(row: AllowanceRow): string {
               <span class="oa-board-mark oa-allow-mark" aria-hidden="true">{{ initial(row) }}</span>
               <span class="oa-allow-who">
                 <span class="oa-board-name">{{ name(row) }}</span>
-                <span class="oa-allow-sub">{{ sub(row) }}</span>
+                <span class="oa-cell-sub">{{ sub(row) }}</span>
               </span>
               <span class="oa-allow-windows">
                 <template v-for="window in row.windows" :key="window.kind">
