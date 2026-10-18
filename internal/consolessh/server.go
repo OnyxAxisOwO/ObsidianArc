@@ -126,6 +126,9 @@ type Config struct {
 	// may come from one. 0 means 64; negative means no limit.
 	MaxUnauthenticated int
 
+	// Logf receives the listener's operational warnings: Accept retrying,
+	// connections turned away at a cap. nil means the process log at warning
+	// level, so leaving it unset does not leave them unread.
 	Logf func(ctx context.Context, msg string, args ...any)
 }
 
@@ -208,8 +211,12 @@ func New(cfg Config) (*Server, error) {
 	if cfg.MaxUnauthenticated == 0 {
 		cfg.MaxUnauthenticated = 64
 	}
+	// The process log unless a caller routes these elsewhere. A silent
+	// default left an accept loop retrying, or a flood of unauthenticated
+	// connections being turned away, invisible in production, which wires no
+	// Logf of its own.
 	if cfg.Logf == nil {
-		cfg.Logf = func(context.Context, string, ...any) {}
+		cfg.Logf = slog.WarnContext
 	}
 
 	signer, err := loadOrCreateHostKey(cfg.HostKeyPath)
@@ -536,9 +543,9 @@ func (s *Server) handleConn(conn net.Conn) {
 	}()
 	if err != nil {
 		// A failed handshake is routine on the public internet (scanners,
-		// mistyped passwords) and not worth more than a debug-level trace;
-		// Logf's caller decides the level.
-		s.cfg.Logf(context.Background(), "consolessh: handshake failed", "remote", conn.RemoteAddr().String(), "error", err)
+		// mistyped passwords) and not worth more than a debug-level trace, so
+		// it bypasses Logf, whose default is a warning.
+		slog.Debug("consolessh: handshake failed", "remote", conn.RemoteAddr().String(), "error", err)
 		return
 	}
 	defer sconn.Close()
@@ -750,24 +757,13 @@ func (s *Server) releaseSlot() {
 func (s *Server) acquireAccountConn(accountID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.connsPerAccount[accountID] >= maxConnectionsPerAccount {
-		return false
-	}
-	if s.connsPerAccount == nil {
-		s.connsPerAccount = make(map[string]int)
-	}
-	s.connsPerAccount[accountID]++
-	return true
+	return takeCount(&s.connsPerAccount, accountID, maxConnectionsPerAccount)
 }
 
 func (s *Server) releaseAccountConn(accountID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.connsPerAccount[accountID] <= 1 {
-		delete(s.connsPerAccount, accountID)
-		return
-	}
-	s.connsPerAccount[accountID]--
+	giveCount(s.connsPerAccount, accountID)
 }
 
 func (s *Server) acquireAccountSlot(accountID string) bool {
@@ -776,14 +772,7 @@ func (s *Server) acquireAccountSlot(accountID string) bool {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.perAccount[accountID] >= s.cfg.MaxSessionsPerAccount {
-		return false
-	}
-	if s.perAccount == nil {
-		s.perAccount = make(map[string]int)
-	}
-	s.perAccount[accountID]++
-	return true
+	return takeCount(&s.perAccount, accountID, s.cfg.MaxSessionsPerAccount)
 }
 
 func (s *Server) releaseAccountSlot(accountID string) {
@@ -792,11 +781,32 @@ func (s *Server) releaseAccountSlot(accountID string) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.perAccount[accountID] <= 1 {
-		delete(s.perAccount, accountID)
+	giveCount(s.perAccount, accountID)
+}
+
+// takeCount and giveCount are the one spelling of a per-key cap that both
+// account counters share, so a fix to one (an entry left at zero, a release
+// that goes negative) cannot be made to only one of them. The caller holds
+// s.mu.
+func takeCount(counts *map[string]int, key string, limit int) bool {
+	if (*counts)[key] >= limit {
+		return false
+	}
+	if *counts == nil {
+		*counts = make(map[string]int)
+	}
+	(*counts)[key]++
+	return true
+}
+
+// An entry is deleted at its last release rather than left at zero, so the
+// map holds the accounts connected now and not every account that ever was.
+func giveCount(counts map[string]int, key string) {
+	if counts[key] <= 1 {
+		delete(counts, key)
 		return
 	}
-	s.perAccount[accountID]--
+	counts[key]--
 }
 
 // acquirePreauth reserves a handshake slot and returns the key it is counted
@@ -1510,16 +1520,7 @@ func (sess *sshSession) runInteractive() {
 		}
 	}()
 	running := false
-	// Keys typed while a command runs wait here and are fed to the editor when
-	// it returns. A paste of several lines would otherwise lose every line after
-	// the first, and whether a later line survived depended on how long the
-	// command took.
-	var typeAhead []rune
-	typeAheadFull := false
-	// typeAheadLost is set when a key was discarded because the queue was full.
-	// The discarded keys continue whatever line the queue ends in, so that line
-	// must be refused on Enter, not run as the truncated prefix it now is.
-	typeAheadLost := false
+	var typeAhead typeAheadQueue
 	idle := sess.server.cfg.IdleTimeout
 	idleTimer := time.NewTimer(idle)
 	defer idleTimer.Stop()
@@ -1586,9 +1587,11 @@ func (sess *sshSession) runInteractive() {
 	// drainTypeAhead feeds the keys typed during the last command until one of
 	// them submits a line, which starts the next command. The rest keep waiting.
 	drainTypeAhead := func() (exit bool) {
-		for len(typeAhead) > 0 && !running {
-			r := typeAhead[0]
-			typeAhead = typeAhead[1:]
+		for !running {
+			r, ok := typeAhead.pop()
+			if !ok {
+				break
+			}
 			if feedEditor(r) {
 				return true
 			}
@@ -1597,8 +1600,7 @@ func (sess *sshSession) runInteractive() {
 		// line the one the discarded keys belong to. If a command started
 		// instead, the discarded keys are in the line after it, and the next
 		// drain or the next results event refuses that one.
-		if len(typeAhead) == 0 && !running && typeAheadLost {
-			typeAheadLost = false
+		if !running && typeAhead.takeLost() {
 			editor.refuseOnEnter()
 		}
 		return false
@@ -1628,18 +1630,11 @@ func (sess *sshSession) runInteractive() {
 					if cancel != nil {
 						cancel()
 					}
-					typeAhead = nil
-					typeAheadLost = false
+					typeAhead.clear()
 					continue
 				}
-				if len(typeAhead) < maxLineRunes {
-					typeAhead = append(typeAhead, ev.r)
-				} else {
-					typeAheadLost = true
-					if !typeAheadFull {
-						typeAheadFull = true
-						_, _ = sess.output().Write([]byte(noticeTypeAhead.in(lang)))
-					}
+				if typeAhead.push(ev.r) {
+					_, _ = sess.output().Write([]byte(noticeTypeAhead.in(lang)))
 				}
 				continue
 			}
@@ -1654,7 +1649,7 @@ func (sess *sshSession) runInteractive() {
 				cancel()
 				cancel = nil
 			}
-			typeAheadFull = false
+			typeAhead.commandEnded()
 			if ev.result.Exit {
 				return
 			}
@@ -1682,6 +1677,70 @@ func (sess *sshSession) runInteractive() {
 			return
 		}
 	}
+}
+
+// typeAheadQueue holds the keys typed while a command runs, to be fed to the
+// editor when it returns. A paste of several lines would otherwise lose every
+// line after the first, and whether a later line survived depended on how long
+// the command took. It belongs to runInteractive's loop and is never shared,
+// so it takes no lock.
+type typeAheadQueue struct {
+	keys []rune
+	// full is set once per command, so the notice that keys are being
+	// dropped is printed once rather than for every key of a long paste.
+	full bool
+	// lost is set when a key was discarded because the queue was full. The
+	// discarded keys continue whatever line the queue ends in, so that line
+	// must be refused on Enter, not run as the truncated prefix it now is.
+	lost bool
+}
+
+// push queues a key, up to the same bound a line has, so that one paste
+// cannot grow the queue without limit. It reports true the first time a key
+// is dropped during the current command, which is when to say so.
+func (q *typeAheadQueue) push(r rune) (firstDrop bool) {
+	if len(q.keys) < maxLineRunes {
+		q.keys = append(q.keys, r)
+		return false
+	}
+	q.lost = true
+	if q.full {
+		return false
+	}
+	q.full = true
+	return true
+}
+
+// clear is Ctrl-C during a command: what was typed ahead of it goes with it,
+// and so does the refusal owed to a truncated line that is no longer there.
+// full stays, because the notice has already been printed for this command.
+func (q *typeAheadQueue) clear() {
+	q.keys = nil
+	q.lost = false
+}
+
+// commandEnded lets the next command print the drop notice again.
+func (q *typeAheadQueue) commandEnded() {
+	q.full = false
+}
+
+func (q *typeAheadQueue) pop() (rune, bool) {
+	if len(q.keys) == 0 {
+		return 0, false
+	}
+	r := q.keys[0]
+	q.keys = q.keys[1:]
+	return r, true
+}
+
+// takeLost reports, once, that the queue has emptied into a line some of whose
+// keys were dropped. While keys remain, the truncated line is still ahead.
+func (q *typeAheadQueue) takeLost() bool {
+	if len(q.keys) > 0 || !q.lost {
+		return false
+	}
+	q.lost = false
+	return true
 }
 
 // watchCancel watches a one-shot command's channel for an interrupt. The

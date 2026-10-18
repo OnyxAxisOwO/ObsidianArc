@@ -256,7 +256,7 @@ func TestEveryCommandHasBilingualHelp(t *testing.T) {
 			t.Fatalf("%s: not found in the built registry", cmd.Name)
 		}
 		var buf bytes.Buffer
-		renderCommandHelp(&buf, s, got, reg)
+		renderCommandHelp(&buf, s, got)
 		if buf.Len() == 0 {
 			t.Errorf("%s: help rendered nothing", cmd.Name)
 		}

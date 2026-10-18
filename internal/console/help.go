@@ -96,7 +96,7 @@ func renderHelpIndex(out io.Writer, s *Session, reg *registry) {
 // --help`: summary, usage, the extended description, arguments, flags with
 // their defaults, at least two worked examples, see-also, and the grant it
 // needs.
-func renderCommandHelp(out io.Writer, s *Session, cmd *Command, reg *registry) {
+func renderCommandHelp(out io.Writer, s *Session, cmd *Command) {
 	lang := s.Lang
 
 	fmt.Fprintln(out, cmd.Summary.For(lang))
@@ -167,8 +167,6 @@ func renderCommandHelp(out io.Writer, s *Session, cmd *Command, reg *registry) {
 	if len(cmd.Endpoints) > 0 {
 		fmt.Fprintf(out, "%s %s\n", callsLabel.For(lang), strings.Join(cmd.Endpoints, ", "))
 	}
-
-	_ = reg // reserved for a future "did you mean" pass over the registry
 }
 
 func permissionDisplay(permission, lang string) string {

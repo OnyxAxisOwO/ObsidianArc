@@ -225,7 +225,7 @@ func (c *Console) runTokens(ctx context.Context, s *Session, out io.Writer, toke
 	}
 
 	if parsed.Help {
-		renderCommandHelp(out, s, cmd, c.reg)
+		renderCommandHelp(out, s, cmd)
 		return Result{OK: true, Elapsed: time.Since(start)}
 	}
 

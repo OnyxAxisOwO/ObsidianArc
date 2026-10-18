@@ -11,6 +11,26 @@ import (
 	"time"
 )
 
+// ReadLine drives Start/NextRune/Feed to completion. Only these tests want a
+// whole line at once: the ssh server needs the finer grain (see Feed's doc
+// comment), so this lives here rather than beside the editor.
+func (ed *lineEditor) ReadLine() (string, error) {
+	ed.Start()
+	for {
+		r, err := ed.NextRune()
+		if err != nil {
+			return "", err
+		}
+		line, done, eof := ed.Feed(r)
+		if eof {
+			return "", io.EOF
+		}
+		if done {
+			return line, nil
+		}
+	}
+}
+
 // syncBuffer collects the editor's output from a background reader
 // goroutine so writes on the pipe never block waiting for the test to get
 // around to reading them.

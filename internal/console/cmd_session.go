@@ -57,7 +57,7 @@ func init() {
 
 			joined := strings.Join(args, " ")
 			if cmd, ok := rt.console.reg.lookup(joined); ok && hasPermission(rt.Session.Actor, cmd.Permission) {
-				renderCommandHelp(rt.Out, rt.Session, cmd, rt.console.reg)
+				renderCommandHelp(rt.Out, rt.Session, cmd)
 				return nil
 			}
 			if renderNounHelp(rt.Out, rt.Session, args[0], rt.console.reg) {

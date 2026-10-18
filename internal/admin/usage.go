@@ -624,6 +624,13 @@ type policyRequest struct {
 	RPM     *int64                        `json:"rpm"`
 	TPM     *int64                        `json:"tpm"`
 	Windows map[quota.Window]quota.Limits `json:"windows"`
+	// IfUpdatedAt, when given, is the updated_at the caller read the policy
+	// at (0 for a level with no policy yet). A save replaces every window, so
+	// a caller that edits one window by carrying the rest forward would
+	// otherwise put back the old figures of a window somebody else changed
+	// in between. Optional, so a client that sends the whole policy it means
+	// keeps working unchanged.
+	IfUpdatedAt *int64 `json:"if_updated_at,omitempty"`
 }
 
 // checkPolicyFigures refuses numbers that a limit cannot mean. A negative figure
@@ -699,12 +706,26 @@ func (h *Handlers) savePolicy(w http.ResponseWriter, r *http.Request) error {
 	// the policy pointing at a group that is gone.
 	var saved quota.Policy
 	err := h.db.Tx(r.Context(), func(tx *database.Tx) error {
-		if body.Scope == quota.ScopeGroup {
+		// The precondition takes the same instance lock: a level with no
+		// policy yet has no row to lock, and two first saves racing past an
+		// unlocked check would both see it absent.
+		if body.Scope == quota.ScopeGroup || body.IfUpdatedAt != nil {
 			if err := settings.Lock(r.Context(), tx); err != nil {
 				return err
 			}
+		}
+		if body.Scope == quota.ScopeGroup {
 			if _, err := h.groups.ByID(r.Context(), tx, body.ScopeID); err != nil {
 				return translateGroupError(err)
+			}
+		}
+		if body.IfUpdatedAt != nil {
+			current, err := h.quota.Policies().GetOrEmpty(r.Context(), tx, body.Scope, body.ScopeID)
+			if err != nil {
+				return httpx.Internal(err)
+			}
+			if current.UpdatedAt != *body.IfUpdatedAt {
+				return httpx.Conflict("policy_changed", "This policy was changed since it was read. Read it again and retry.")
 			}
 		}
 		policy, err := h.quota.Policies().Save(r.Context(), tx, quota.Policy{

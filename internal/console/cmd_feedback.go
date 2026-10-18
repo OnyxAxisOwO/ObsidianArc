@@ -32,7 +32,7 @@ func init() {
 			{Name: "--kind", Hint: Text{EN: "bug or idea", ZH: "bug 或 idea"}, Value: "KIND"},
 			{Name: "--priority", Hint: Text{EN: "low, medium or high", ZH: "low、medium 或 high"}, Value: "PRIORITY"},
 			{Name: "--q", Hint: Text{EN: "search title, body and author", ZH: "搜索标题、正文与作者"}, Value: "TEXT"},
-			{Name: "--limit", Hint: Text{EN: "page size, default 20", ZH: "每页数量，默认 20"}, Value: "N"},
+			{Name: "--limit", Hint: Text{EN: "page size, default 20", ZH: "每页数量，默认 20"}, Value: "N", Default: "20"},
 			{Name: "--offset", Hint: Text{EN: "rows to skip", ZH: "跳过的行数"}, Value: "N"},
 		},
 		Examples: []string{

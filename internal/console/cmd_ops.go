@@ -10,6 +10,10 @@ import (
 	"strings"
 )
 
+// The operations group is registered one noun family per init — health,
+// usage, quota, code, log — so each family's locals stay with it and one
+// family can be read without scrolling through the others. Go runs a
+// file's inits in order, so the registration order is what it was.
 func init() {
 	registerCommand(Command{
 		Name:       "dash",
@@ -228,7 +232,9 @@ func init() {
 			})
 		},
 	})
+}
 
+func init() {
 	usageFilterFlags := []Flag{
 		{Name: "--user", Hint: Text{EN: "filter to one account, by ref", ZH: "按账户筛选，可用引用"}, Value: "REF"},
 		{Name: "--group", Hint: Text{EN: "filter to one group, by ref", ZH: "按分组筛选，可用引用"}, Value: "REF"},
@@ -338,7 +344,7 @@ func init() {
 			{Name: "--state", Hint: Text{EN: "low is 80% or more of a window spent; exhausted is all of it", ZH: "low 为已用 80% 以上；exhausted 为已用尽"}, Value: "STATE"},
 			{Name: "--q", Hint: Text{EN: "search name, nickname or email", ZH: "搜索用户名、昵称或邮箱"}, Value: "TEXT"},
 			{Name: "--group", Hint: Text{EN: "only this group's accounts", ZH: "只看这个用户组的账户"}, Value: "ID"},
-			{Name: "--limit", Hint: Text{EN: "rows to show; default 50", ZH: "显示多少行；默认 50"}, Value: "N"},
+			{Name: "--limit", Hint: Text{EN: "rows to show; default 50", ZH: "显示多少行；默认 50"}, Value: "N", Default: "50"},
 			{Name: "--offset", Hint: Text{EN: "rows to skip", ZH: "跳过多少行"}, Value: "N"},
 		},
 		Examples:   []string{"usage allowances --state exhausted", "usage allowances --q alice"},
@@ -553,6 +559,16 @@ func init() {
 			scope := rt.String("scope")
 			body := bodyBuilder{"scope": scope}
 			switch scope {
+			case "all":
+				// The all branch never reads an id, so "--scope all --id alice" would
+				// reset everyone while the operator meant one account. The line is
+				// refused instead.
+				if rt.Present("id") {
+					if rt.Session.Lang == "zh" {
+						return rt.Errorf("--scope all 不能再给 --id；要重置单个账户请用 --scope user")
+					}
+					return rt.Errorf("--scope all takes no --id; use --scope user to reset one account")
+				}
 			case "user":
 				uid, err := resolveUserRef(rt, rt.String("id"))
 				if err != nil {
@@ -565,6 +581,11 @@ func init() {
 					return err
 				}
 				body["id"] = gid
+			default:
+				if rt.Session.Lang == "zh" {
+					return rt.Errorf("--scope 必须是 all、group 或 user")
+				}
+				return rt.Errorf("--scope must be all, group or user")
 			}
 			data, _, err := rt.Call(http.MethodPost, "/api/admin/usage/reset", map[string]any(body))
 			if err != nil {
@@ -573,7 +594,9 @@ func init() {
 			return rt.Fields([][2]string{{"accounts", formatNumber(asNum(asMap(data)["accounts"]))}})
 		},
 	})
+}
 
+func init() {
 	registerCommand(Command{
 		Name:    "quota list",
 		Group:   "operations",
@@ -620,10 +643,12 @@ func init() {
 			EN: "The policy is replaced wholesale on the server, so this command reads the existing " +
 				"policy first and carries every other window forward unchanged — only the --window " +
 				"named here (if any) and --rpm/--tpm are touched. --clear-rpm / --clear-tpm set that " +
-				"limit back to 'inherit'.",
+				"limit back to 'inherit'. If the policy changes between that read and the save, the save is " +
+				"refused rather than overwriting the change; run the command again.",
 			ZH: "服务器端策略是整体替换写入的，因此本命令会先读取现有策略，并原样保留其余窗口的设置——" +
 				"只会改动这里指定的 --window（如果给出）以及 --rpm / --tpm。--clear-rpm / --clear-tpm " +
-				"会把对应限制改回“继承”。",
+				"会把对应限制改回“继承”。如果读取之后、保存之前策略被别人改过，保存会被拒绝而不是覆盖那次修改；" +
+				"重新执行一次即可。",
 		},
 		Flags: []Flag{
 			{Name: "--scope", Hint: Text{EN: "global, group or user, required", ZH: "global、group 或 user，必填"}, Value: "SCOPE"},
@@ -676,9 +701,15 @@ func init() {
 			}
 			var rpm, tpm any
 			windows := map[string]any{}
+			// What the policy looked like when it was read, sent back as the
+			// save's precondition: the windows carried forward are this
+			// reading's, and another administrator's change since then would
+			// otherwise be overwritten with them. 0 means no policy yet.
+			var readAt int64
 			for _, raw := range asSlice(asMap(existing)["policies"]) {
 				p := asMap(raw)
 				if asStr(p["scope"]) == scope && asStr(p["scope_id"]) == scopeID {
+					readAt = int64(asNum(p["updated_at"]))
 					rpm, tpm = p["rpm"], p["tpm"]
 					for k, v := range asMap(p["windows"]) {
 						windows[k] = v
@@ -726,7 +757,7 @@ func init() {
 				}
 			}
 
-			body := map[string]any{"scope": scope, "scope_id": scopeID, "rpm": rpm, "tpm": tpm, "windows": windows}
+			body := map[string]any{"scope": scope, "scope_id": scopeID, "rpm": rpm, "tpm": tpm, "windows": windows, "if_updated_at": readAt}
 			data, _, err := rt.Call(http.MethodPut, "/api/admin/quota/policies", body)
 			if err != nil {
 				return err
@@ -803,7 +834,9 @@ func init() {
 			return nil
 		},
 	})
+}
 
+func init() {
 	registerCommand(Command{
 		Name:       "code list",
 		Group:      "operations",
@@ -942,7 +975,9 @@ func init() {
 			return nil
 		},
 	})
+}
 
+func init() {
 	logFilterFlags := []Flag{
 		{Name: "--channel", Hint: Text{EN: "web or api", ZH: "web 或 api"}, Value: "CHANNEL"},
 		{Name: "--method", Hint: Text{EN: "HTTP method", ZH: "HTTP 方法"}, Value: "METHOD"},
@@ -1023,7 +1058,7 @@ func init() {
 		Group:      "operations",
 		Summary:    Text{EN: "Show request log facet counts", ZH: "显示请求日志的分面统计"},
 		Usage:      "log facets [--since MS]",
-		Flags:      []Flag{{Name: "--since", Hint: Text{EN: "epoch ms, default 0 (all time)", ZH: "毫秒时间戳，默认 0（全部时间）"}, Value: "MS"}},
+		Flags:      []Flag{{Name: "--since", Hint: Text{EN: "epoch ms, default 0 (all time)", ZH: "毫秒时间戳，默认 0（全部时间）"}, Value: "MS", Default: "0"}},
 		Examples:   []string{"log facets", "log facets --since 0"},
 		SeeAlso:    []string{"log list"},
 		Permission: "logs",

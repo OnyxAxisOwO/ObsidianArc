@@ -13,18 +13,18 @@ import (
 )
 
 // ANSI SGR codes this package ever emits — section 1.5 of the contract is
-// explicit that this is the whole palette: dim, bold, the three status
-// colours, underline for a table header, and nothing else. The emulator's
-// own theme (which follows the app's --ai-* tokens on the web terminal)
-// decides the actual hue; these are just the standard SGR defaults.
+// explicit that the palette is at most dim, bold, three status colours and
+// underline for a table header. Only red, for an error, is used today; the
+// other two status colours are added here when something prints one, so this
+// list stays what the package actually emits. The emulator's own theme
+// (which follows the app's --ai-* tokens on the web terminal) decides the
+// actual hue; these are just the standard SGR defaults.
 const (
 	ansiReset     = "\x1b[0m"
 	ansiBold      = "\x1b[1m"
 	ansiDim       = "\x1b[2m"
 	ansiUnderline = "\x1b[4m"
 	ansiRed       = "\x1b[31m"
-	ansiGreen     = "\x1b[32m"
-	ansiYellow    = "\x1b[33m"
 )
 
 // sanitize strips the control characters out of a value before it reaches a
@@ -406,19 +406,6 @@ func renderPairsAsJSON(w io.Writer, pairs [][2]string) error {
 	}
 	_, err = fmt.Fprintln(w, string(escapeJSONControls(enc)))
 	return err
-}
-
-// Mask truncates a secret to a short, unambiguous hint — "sk-…abcd" — never
-// enough to reconstruct the value, always enough to tell two keys apart in
-// a list. A secret already masked server-side (the settings redaction's
-// "••••••••") is left alone by callers; Mask is only for a console command
-// that has the real value in hand, such as a freshly generated API key.
-func Mask(secret string) string {
-	r := []rune(secret)
-	if len(r) <= 8 {
-		return strings.Repeat("•", len(r))
-	}
-	return string(r[:3]) + "…" + string(r[len(r)-4:])
 }
 
 // RenderError renders whatever error a command (or the parser) produced,

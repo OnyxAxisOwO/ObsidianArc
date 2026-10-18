@@ -86,9 +86,6 @@ func newLineEditor(r io.Reader, w io.Writer, prompt string, complete completeFun
 	}
 }
 
-// SetPrompt changes the prompt used by the next Start call.
-func (ed *lineEditor) SetPrompt(prompt string) { ed.prompt = prompt }
-
 // Start resets the editor for a new line and paints the prompt. Split out
 // from ReadLine so the ssh server can drive the reader itself (see Feed):
 // while a command is running, the session still has to watch the same
@@ -214,26 +211,6 @@ func (ed *lineEditor) Feed(r rune) (line string, done bool, eof bool) {
 		ed.insert(r)
 	}
 	return "", false, false
-}
-
-// ReadLine drives Start/NextRune/Feed to completion for callers that just
-// want one line — the tests, mainly, since the ssh server needs the finer
-// grain (see Feed's doc comment).
-func (ed *lineEditor) ReadLine() (string, error) {
-	ed.Start()
-	for {
-		r, err := ed.NextRune()
-		if err != nil {
-			return "", err
-		}
-		line, done, eof := ed.Feed(r)
-		if eof {
-			return "", io.EOF
-		}
-		if done {
-			return line, nil
-		}
-	}
 }
 
 // finishLine echoes the newline and records history; the return value is

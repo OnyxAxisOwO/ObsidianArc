@@ -310,7 +310,7 @@ func init() {
 		Summary:    Text{EN: "List what has been granted in a bonus bar", ZH: "列出赠金条里已经发放的数额"},
 		Usage:      "bonus grants <id|name> [--limit N] [--offset N]",
 		Args:       []Arg{{Name: "id|name", Hint: Text{EN: "the bar", ZH: "赠金条"}, Required: true}},
-		Flags:      []Flag{{Name: "--limit", Hint: Text{EN: "page size, default 50", ZH: "每页条数，默认 50"}, Value: "N"}, {Name: "--offset", Hint: Text{EN: "rows to skip", ZH: "跳过的条数"}, Value: "N"}},
+		Flags:      []Flag{{Name: "--limit", Hint: Text{EN: "page size, default 50", ZH: "每页条数，默认 50"}, Value: "N", Default: "50"}, {Name: "--offset", Hint: Text{EN: "rows to skip", ZH: "跳过的条数"}, Value: "N"}},
 		Examples:   []string{"bonus grants 新用户礼包 --limit 20", "bonus grants 新用户礼包 --offset 20 --json"},
 		Permission: "usage",
 		Endpoints:  []string{"GET /api/admin/bonus/bars/{id}/grants"},
