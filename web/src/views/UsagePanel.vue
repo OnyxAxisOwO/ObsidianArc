@@ -9,8 +9,9 @@
 
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { useDocumentVisibility, useIntervalFn } from '@vueuse/core';
-import { ApiError, api } from '@/api/client';
+import { api } from '@/api/client';
 import { apiErrorText } from '@/lib/api-error';
+import { challengeText } from '@/lib/refusal';
 import { fetchUsage, type UsageSummary } from '@/api/usage';
 import OaBonusBars from '@/components/OaBonusBars.vue';
 import OaCheckin from '@/components/OaCheckin.vue';
@@ -31,6 +32,7 @@ import { t, type StringKey } from '@/composables/useI18n';
 import { usePanelExit } from '@/composables/usePanelExit';
 import { IconClose, IconLock, IconPlus, IconRefresh } from '@/icons';
 import { absoluteTime, compactNumber, relativeTime, tokenFigure } from '@/lib/format';
+import { cardTitle, formatCardScope } from '@/lib/card-scope';
 import { currentPreferences, currentUser, siteInfo, syncPreferences } from '@/stores/session';
 
 interface Totals {
@@ -76,6 +78,14 @@ const panels = usePanelExit();
 // figures are aggregates over the ledger and move in steps, so fifteen
 // seconds is plenty — unlike the composer's allowance bar, nobody is waiting
 // on this screen for permission to send.
+// The words for a turn that did not finish cleanly. A turn that went through has
+// no word, and its state cell is left blank.
+const TURN_STATE_KEYS: Record<Exclude<Turn['status'], 'ok'>, StringKey> = {
+  error: 'turn_error',
+  aborted: 'turn_aborted',
+  rejected: 'turn_rejected',
+};
+
 const REFRESH_MS = 15000;
 
 const summary = ref<UsageSummary | null>(null);
@@ -159,7 +169,7 @@ const columns = computed<Array<Column<Turn>>>(() => [
   {
     key: 'state',
     header: t('colState'),
-    text: (row) => (row.status === 'ok' ? '' : t(`turn_${row.status}` as 'turn_error')),
+    text: (row) => (row.status === 'ok' ? '' : t(TURN_STATE_KEYS[row.status])),
     width: '80px',
   },
 ]);
@@ -177,38 +187,6 @@ function expiryDay(at: number): string {
 // One row per window the server names, shortest first: the order here is the
 // order a combined card lists its windows in. `alone` is the sentence for a
 // card that resets that window only, `part` its name inside a combined one.
-const CARD_WINDOWS: readonly { window: string; alone: StringKey; part: StringKey }[] = [
-  { window: '5h', alone: 'cardScope5H', part: 'cardScopeLabel5H' },
-  { window: '1w', alone: 'cardScope1W', part: 'cardScopeLabel1W' },
-  { window: '1m', alone: 'cardScope1M', part: 'cardScopeLabel1M' },
-];
-
-function formatCardScope(card: Card): string {
-  const wins = card.windows ?? [];
-  if (wins.length === 0 || wins.includes('full')) {
-    return t('cardFullReset');
-  }
-  const order = CARD_WINDOWS.map((row) => row.window);
-  const sorted = [...wins].sort((a, b) => order.indexOf(a) - order.indexOf(b));
-  const known = (w: string) => CARD_WINDOWS.find((row) => row.window === w);
-  const lone = sorted.length === 1 ? known(sorted[0]!) : undefined;
-  if (lone) return t(lone.alone);
-  // A window this build has no name for is shown as the server spelled it,
-  // rather than dropped from the list of what the card resets.
-  const labels = sorted.map((w) => {
-    const row = known(w);
-    return row ? t(row.part) : w;
-  });
-  return t('cardScopeCombined', { windows: labels.join(' + ') });
-}
-
-function cardTitle(card: Card): string {
-  if (card.name && card.name.trim()) {
-    return card.name.trim();
-  }
-  return formatCardScope(card);
-}
-
 function cardSubtitle(stack: CardStack): string {
   const card = stack.first;
   const expiryText = stack.count > 1
@@ -355,10 +333,9 @@ async function submitRedemption(code: string, turnstile = ''): Promise<void> {
     cardFlash.value = t('redeemed');
     await loadCards();
   } catch (error) {
-    if (turnstile && error instanceof ApiError &&
-        (error.code === 'challenge_failed' || error.code === 'challenge_unavailable')) {
-      redeemChallengeError.value = error.code === 'challenge_failed'
-        ? t('challengeFailed') : t('challengeUnavailable');
+    const challenge = challengeText(error);
+    if (turnstile && challenge) {
+      redeemChallengeError.value = challenge;
       redeemGuard.value?.reset();
     } else {
       redeemChallenge.value = false;

@@ -16,6 +16,7 @@ import OaLineChart from '@/components/OaLineChart.vue';
 import OaPanel from '@/components/OaPanel.vue';
 import { t } from '@/composables/useI18n';
 import { usePanelExit } from '@/composables/usePanelExit';
+import { usePanelFullscreen } from '@/composables/usePanelFullscreen';
 import { IconChevron, IconCollapse, IconExpand } from '@/icons';
 import { maskProvider } from '@/admin/safeMode';
 import { formatUptime } from '@/lib/format';
@@ -41,7 +42,7 @@ interface UptimeResponse {
 const panels = usePanelExit();
 
 const panel = ref<InstanceType<typeof OaPanel> | null>(null);
-const fullscreen = ref(false);
+const { fullscreen, toggle: toggleFullscreen } = usePanelFullscreen(() => panel.value);
 
 const loading = ref(true);
 const error = ref('');
@@ -82,9 +83,6 @@ function collapseAll(): void {
   expanded.value = new Set();
 }
 
-function toggleFullscreen(): void {
-  fullscreen.value = panel.value?.toggleFullscreen() ?? false;
-}
 
 async function load(): Promise<void> {
   loading.value = true;

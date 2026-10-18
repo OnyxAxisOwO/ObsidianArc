@@ -13,20 +13,21 @@
 // Save at the bottom would be claiming to commit things it has nothing to do
 // with.
 
-import { computed, ref, watch } from 'vue';
+import { computed, reactive, ref, watch } from 'vue';
 import OaIconButton from '@/components/OaIconButton.vue';
 import OaPanel from '@/components/OaPanel.vue';
 import OaScrollArea from '@/components/OaScrollArea.vue';
 import OaSearchField from '@/components/OaSearchField.vue';
 import { t, type StringKey } from '@/composables/useI18n';
 import { usePanelExit } from '@/composables/usePanelExit';
+import { usePanelFullscreen } from '@/composables/usePanelFullscreen';
 import { IconCollapse, IconExpand } from '@/icons';
 import AccountSection from './settings/AccountSection.vue';
 import AppearanceSection from './settings/AppearanceSection.vue';
 import ChatSection from './settings/ChatSection.vue';
 import InvitesSection from './settings/InvitesSection.vue';
 import SecuritySection from './settings/SecuritySection.vue';
-import { matchesSettings, type SettingsGroup } from './settings/search';
+import { sectionMatches, type SettingsSection } from './settings/search';
 
 type Category = 'appearance' | 'chat' | 'account' | 'security' | 'invites';
 
@@ -63,24 +64,44 @@ watch(() => props.tab, (tab) => {
   if (known) select(known.id);
 });
 const searching = computed(() => !!query.value.trim());
-const visibleGroups = computed(() => {
-  const visible = (group: SettingsGroup, owner: Category) => searching.value
-    ? matchesSettings(query.value, group)
-    : category.value === owner;
+// A section shows while a search runs when one of its groups matches, and
+// otherwise when it is the open category. Which group sits in which section is
+// kept in search.ts, beside the terms the search reads.
+const visibleSections = computed(() => {
+  const shown = (section: SettingsSection) => searching.value
+    ? sectionMatches(query.value, section)
+    : category.value === section;
   return {
-    appearance: visible('appearance', 'appearance'),
-    wallpaper: visible('wallpaper', 'appearance'),
-    chat: visible('chat', 'chat'),
-    account: (['profile', 'connections', 'authorizations', 'password', 'data'] as const).some((group) => visible(group, 'account')),
-    security: (['twofactor', 'devices'] as const).some((group) => visible(group, 'security')),
-    invites: visible('invites', 'invites'),
+    appearance: shown('appearance'),
+    chat: shown('chat'),
+    account: shown('account'),
+    security: shown('security'),
+    invites: shown('invites'),
   };
 });
+
+// A section is mounted the first time it shows, not when the panel opens: each
+// one loads its own data on mount, and the reader is usually looking at one
+// category. Once mounted it stays, so a draft survives a switch to another section.
+// The account section is the exception: it takes the outcome of a connection from
+// the address as it mounts, wherever the reader is, so it must mount with the panel.
+const mounted = reactive<Record<SettingsSection, boolean>>({
+  appearance: false,
+  chat: false,
+  account: true,
+  security: false,
+  invites: false,
+});
+watch(visibleSections, (shown) => {
+  for (const section of Object.keys(shown) as SettingsSection[]) {
+    if (shown[section]) mounted[section] = true;
+  }
+}, { immediate: true });
 watch(query, () => {
   const node = scroll.value?.scroller;
   if (node) node.scrollTop = 0;
 });
-const fullscreen = ref(false);
+const { fullscreen, toggle: toggleFullscreen } = usePanelFullscreen(() => panel.value);
 /** Which way the pane arrives, so a step back does not read as a step on. */
 const direction = ref<'forward' | 'back' | 'rise'>('rise');
 
@@ -97,9 +118,6 @@ function select(next: Category): void {
   if (node) node.scrollTop = 0;
 }
 
-function toggleFullscreen(): void {
-  fullscreen.value = panel.value?.toggleFullscreen() ?? false;
-}
 </script>
 
 <template>
@@ -157,18 +175,19 @@ function toggleFullscreen(): void {
         scroll-class="oa-settings-scroll"
       >
         <div :class="paneClass">
-          <p v-if="!Object.values(visibleGroups).some(Boolean)" class="oa-search-empty" role="status">{{ t('noSearchResults') }}</p>
-          <!-- Keep drafts mounted while search temporarily hides their section. -->
-          <AppearanceSection v-show="visibleGroups.appearance || visibleGroups.wallpaper" />
-          <ChatSection v-show="visibleGroups.chat" />
-          <div v-show="visibleGroups.account" class="oa-settings-group">
-            <AccountSection :query="query" />
+          <p v-if="!Object.values(visibleSections).some(Boolean)" class="oa-search-empty" role="status">{{ t('noSearchResults') }}</p>
+          <!-- Hidden with v-show rather than unmounted, so a search that hides a section
+               does not throw away what was typed into it. -->
+          <AppearanceSection v-if="mounted.appearance" v-show="visibleSections.appearance" />
+          <ChatSection v-if="mounted.chat" v-show="visibleSections.chat" />
+          <div v-show="visibleSections.account" class="oa-settings-group">
+            <AccountSection v-if="mounted.account" :query="query" />
           </div>
-          <div v-show="visibleGroups.security" class="oa-settings-group">
-            <SecuritySection :query="query" />
+          <div v-show="visibleSections.security" class="oa-settings-group">
+            <SecuritySection v-if="mounted.security" :query="query" />
           </div>
-          <div v-show="visibleGroups.invites" class="oa-settings-group">
-            <InvitesSection :query="query" />
+          <div v-show="visibleSections.invites" class="oa-settings-group">
+            <InvitesSection v-if="mounted.invites" :query="query" />
           </div>
         </div>
       </OaScrollArea>

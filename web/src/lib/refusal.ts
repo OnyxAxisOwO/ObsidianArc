@@ -15,6 +15,9 @@ import { pluginRefusal } from '@/plugins/registry';
 export function refusalText(failure: unknown, domains: string[] = []): string {
   if (!(failure instanceof ApiError)) return t('authRequestFailed');
 
+  const challenge = challengeText(failure);
+  if (challenge !== undefined) return challenge;
+
   if (failure.details['code_detail'] === 'invalid_credentials' || failure.code === 'invalid_credentials') {
     return t('invalidCredentials');
   }
@@ -60,21 +63,6 @@ export function refusalText(failure: unknown, domains: string[] = []): string {
       return t('disposableEmailRejected');
     case 'email_screening_unavailable':
       return t('emailScreeningUnavailable');
-    case 'challenge_failed':
-      return t('challengeFailed');
-    case 'challenge_unavailable':
-      return t('challengeUnavailable');
-    case 'pow_required':
-      return t('powRequired');
-    case 'pow_expired':
-      return t('powExpired');
-    case 'pow_invalid_signature':
-    case 'pow_max_exceeded':
-    case 'pow_invalid_nonce':
-    case 'pow_replayed':
-      return t('powVerificationFailed');
-    case 'pow_rate_limited':
-      return t('powRateLimited');
     case 'email_required':
       return t('emailRequiredHere');
     case 'email_domain':
@@ -111,6 +99,38 @@ export function refusalText(failure: unknown, domains: string[] = []): string {
   }
 }
 
+/**
+ * Why a human check or a proof of work was refused, in the reader's language, or
+ * undefined when the failure is not one of those. Each code keeps its own
+ * sentence: a rate limit and an expired proof ask for different things of the
+ * reader, and one shared sentence would send them back to retry at once.
+ *
+ * Every screen that asks for a check reads this, so a new challenge code is
+ * worded once here rather than in each screen's own table.
+ */
+export function challengeText(failure: unknown): string | undefined {
+  if (!(failure instanceof ApiError)) return undefined;
+  switch (failure.code) {
+    case 'challenge_failed':
+      return t('challengeFailed');
+    case 'challenge_unavailable':
+      return t('challengeUnavailable');
+    case 'pow_required':
+      return t('powRequired');
+    case 'pow_expired':
+      return t('powExpired');
+    case 'pow_invalid_signature':
+    case 'pow_max_exceeded':
+    case 'pow_invalid_nonce':
+    case 'pow_replayed':
+      return t('powVerificationFailed');
+    case 'pow_rate_limited':
+      return t('powRateLimited');
+    default:
+      return undefined;
+  }
+}
+
 /** Keep unknown accounts indistinguishable from wrong passwords at sign-in. */
 export function loginRefusalText(failure: unknown): string {
   if (failure instanceof ApiError && failure.status === 401) return t('invalidCredentials');
@@ -134,6 +154,31 @@ export function connectRefusalText(failure: unknown): string {
     }
   }
   return refusalText(failure);
+}
+
+/**
+ * The codes the connect callback can send back in oauth_error, worded for the
+ * connections screens. Settings and the bind screen both read this table, so the
+ * two cannot word the same refusal differently. `address_taken` uses the connect
+ * wording on purpose: the sign-in screen words the same code as a prompt to
+ * connect from Settings, which would be wrong on a screen that is connecting.
+ */
+const CONNECT_CALLBACK_KEYS: Record<string, StringKey> = {
+  denied: 'oauthDenied',
+  state: 'oauthState',
+  unavailable: 'oauthUnavailable',
+  provider: 'oauthProviderFailed',
+  already_linked: 'oauthAlreadyLinked',
+  address_taken: 'oauthConnectAddressTaken',
+};
+
+// Anything the callback sends that is not listed gets the general sentence: the
+// raw code means nothing to the person reading it.
+export function connectCallbackText(code: string): string {
+  // Own keys only: the code is whatever the query carried, and an inherited name
+  // (constructor) is not a refusal.
+  const key = Object.hasOwn(CONNECT_CALLBACK_KEYS, code) ? CONNECT_CALLBACK_KEYS[code] : undefined;
+  return t(key ?? 'oauthFailed');
 }
 
 /**

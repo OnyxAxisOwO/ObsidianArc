@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { SOURCE_URL } from '@/lib/source';
 // The product's own front page.
 //
 // The other two front doors are the operator's: `intro` is HTML they wrote,
@@ -42,7 +43,6 @@ import {
 import { siteInfo } from '@/stores/session';
 
 const DOCS_URL = 'https://obsidianarc.pages.dev';
-const SOURCE_URL = 'https://github.com/OnyxAxisOwO/ObsidianArc';
 
 const router = useRouter();
 const site = computed(() => siteInfo.value);
@@ -164,24 +164,34 @@ let alive = true;
  * `timer` is cleared on entry: the terminal's observer tells "nothing is
  * scheduled" from "a timeout is pending" by it, to know whether to restart.
  */
+// Timing of the typed command in the hero: the speed of each character, the
+// pause once a command is fully typed, and the pause before the next one.
+const TYPE_STEP_MS = 55;
+const HOLD_COMMAND_MS = 2600;
+const PAUSE_BETWEEN_MS = 420;
+// The header changes its look once the page has moved this far.
+const SCROLLED_AFTER_PX = 24;
+// Each feature card enters a little after the one before it.
+const ENTRANCE_STAGGER_MS = 70;
+
 function tick(): void {
   timer = 0;
   if (!alive) return;
   const command = current.value.command;
   if (typed.length < command.length) {
     showTyped(command.slice(0, typed.length + 1));
-    timer = window.setTimeout(tick, 55);
+    timer = window.setTimeout(tick, TYPE_STEP_MS);
     return;
   }
   if (typing.value) {
     typing.value = false;
-    timer = window.setTimeout(tick, 2600);
+    timer = window.setTimeout(tick, HOLD_COMMAND_MS);
     return;
   }
   step.value = (step.value + 1) % SESSION.length;
   showTyped('');
   typing.value = true;
-  timer = window.setTimeout(tick, 420);
+  timer = window.setTimeout(tick, PAUSE_BETWEEN_MS);
 }
 
 /** Runs the counters up once, when the facts come into view. */
@@ -211,7 +221,7 @@ function onScroll(): void {
   // re-render this whole page on every scroll event.
   const share = travel > 0 ? Math.min(1, node.scrollTop / travel) : 0;
   if (progressBar.value) progressBar.value.style.transform = `scaleX(${share})`;
-  scrolled.value = node.scrollTop > 24;
+  scrolled.value = node.scrollTop > SCROLLED_AFTER_PX;
 }
 
 function jump(id: string): void {
@@ -450,7 +460,7 @@ useEventListener(page, 'scroll', onScroll, { passive: true });
           v-for="(feature, index) in FEATURES"
           :key="feature.title"
           class="oa-front-card oa-front-reveal"
-          :style="{ '--oa-front-delay': `${index * 70}ms` }"
+          :style="{ '--oa-front-delay': `${index * ENTRANCE_STAGGER_MS}ms` }"
           @pointermove="onPointer"
         >
           <span class="oa-front-card-icon"><component :is="feature.icon" :size="17" /></span>

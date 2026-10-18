@@ -3508,6 +3508,19 @@
   margin-top: 10px;
 }
 
+/* The lab's inline spacing, given names so the template carries markup only. The
+   pending lines carry the chat's pending class, which centres itself in wide
+   layouts, so these rules are written two classes deep to win over it. _surfaces
+   loads after _chat, so at equal depth they would win anyway; the depth keeps
+   that from mattering if the order ever changes. */
+.ai-chat-pending.oa-image-lab-pending { margin: 16px 0; }
+.ai-chat-pending.oa-image-lab-loading { margin: 32px auto; }
+.oa-field-hint.oa-image-lab-note { margin-top: 8px; }
+.oa-btn.oa-image-lab-download { text-decoration: none; display: inline-flex; align-items: center; gap: 6px; }
+
+/* A flexible gap that pushes the row's last control to the far edge. */
+.oa-gallery-spacer { flex: 1; }
+
 /* --- image lab gallery ---------------------------------------------------- */
 .oa-gallery-empty {
   padding: 48px 16px;

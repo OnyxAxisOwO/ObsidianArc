@@ -18,7 +18,8 @@ import { fieldProblem, fieldValues, type FieldPlan } from '@/lib/account-fields'
 import { fieldSpec } from '@/plugins/registry';
 import OaThemeToggle from '@/components/OaThemeToggle.vue';
 import { t } from '@/composables/useI18n';
-import { IconGithub, IconGoogle, IconKey, IconSpark, type OaIcon } from '@/icons';
+import { IconSpark, type OaIcon } from '@/icons';
+import { providerMark } from '@/lib/provider-marks';
 import { refusalText } from '@/lib/refusal';
 import { siteInfo } from '@/stores/session';
 import { useLoginBackground } from '@/composables/useLoginBackground';
@@ -56,8 +57,7 @@ const fieldPlan = computed<FieldPlan>(() => {
 const showPassword = computed(() => pending.value?.needs_password !== false);
 const passwordRequired = computed(() => !!pending.value?.password_required);
 
-const MARKS: Record<string, OaIcon> = { github: IconGithub, google: IconGoogle };
-const mark = computed<OaIcon>(() => MARKS[pending.value?.provider ?? ''] ?? IconKey);
+const mark = computed<OaIcon>(() => providerMark(pending.value?.provider ?? ''));
 
 const domains = computed(() => pending.value?.email_domains ?? []);
 

@@ -10,9 +10,11 @@
 // inside the same card, so the thing being set up and the steps setting it up
 // read as one object instead of a stack of loose parts.
 
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import type { Account } from '@/api/auth';
 import { ApiError } from '@/api/client';
+import { useLatestTimeout } from '@/composables/useLatestTimeout';
+import { useLeaveWarning } from '@/composables/useLeaveWarning';
 import { apiErrorText } from '@/lib/api-error';
 import { fetchSessions, revokeOtherSessions, revokeSession, type DeviceSession } from '@/api/sessions';
 import {
@@ -119,11 +121,15 @@ async function confirm(): Promise<void> {
   }
 }
 
+// The codes are copied as one block, and the confirmation says so for a moment.
+const COPY_FLASH_MS = 1500;
+const copiedLater = useLatestTimeout();
+
 function copyFresh(): void {
   void copyToClipboard(fresh.value.join('\n')).then((ok) => {
     if (!ok) return;
     copied.value = true;
-    window.setTimeout(() => { copied.value = false; }, 1500);
+    copiedLater(() => { copied.value = false; }, COPY_FLASH_MS);
   });
 }
 
@@ -132,14 +138,7 @@ function copyFresh(): void {
 // only their digests, so they cannot be shown again. The browser is asked
 // before that happens. Leaving this page inside the app asks nothing: the codes
 // stay in memory (see recovery.ts), so coming back shows them again.
-function warnBeforeLeaving(event: BeforeUnloadEvent): void {
-  if (!fresh.value.length || savedCodes.value) return;
-  event.preventDefault();
-  event.returnValue = '';
-}
-
-onMounted(() => window.addEventListener('beforeunload', warnBeforeLeaving));
-onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeLeaving));
+useLeaveWarning(() => !!fresh.value.length && !savedCodes.value);
 
 // --- signed-in devices --------------------------------------------------------
 //

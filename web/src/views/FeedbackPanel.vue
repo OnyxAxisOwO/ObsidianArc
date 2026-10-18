@@ -19,8 +19,8 @@
 // model's answer is.
 
 import { computed, onMounted, ref } from 'vue';
-import { ApiError } from '@/api/client';
 import { apiErrorText } from '@/lib/api-error';
+import { challengeText } from '@/lib/refusal';
 import {
   fetchThread, listFeedback, replyToFeedback, sendFeedback,
   type Feedback, type FeedbackKind, type FeedbackPriority, type FeedbackThread,
@@ -159,13 +159,12 @@ async function submit(token: string): Promise<void> {
     // still find the answer when they look back.
     await refresh();
   } catch (failure) {
-    const code = failure instanceof ApiError ? failure.code : '';
     // A refused check is answered inside the sheet, with the widget reset —
     // a token is spent whether or not it passed — so the reader can try again
     // without losing what they wrote.
-    if (token && (code === 'challenge_failed' || code === 'challenge_unavailable')) {
-      challengeError.value = code === 'challenge_failed'
-        ? t('challengeFailed') : t('challengeUnavailable');
+    const challenge = challengeText(failure);
+    if (token && challenge) {
+      challengeError.value = challenge;
       guard.value?.reset();
     } else {
       challengeOpen.value = false;
@@ -266,12 +265,11 @@ async function submitReply(token: string): Promise<void> {
     await refresh();
   } catch (failure) {
     if (seq !== openSeq) return;
-    const code = failure instanceof ApiError ? failure.code : '';
     // Answered inside the sheet, with the widget reset, so the reader can try
     // again without losing what they wrote — the same bargain the form makes.
-    if (token && (code === 'challenge_failed' || code === 'challenge_unavailable')) {
-      challengeError.value = code === 'challenge_failed'
-        ? t('challengeFailed') : t('challengeUnavailable');
+    const challenge = challengeText(failure);
+    if (token && challenge) {
+      challengeError.value = challenge;
       guard.value?.reset();
     } else {
       challengeOpen.value = false;

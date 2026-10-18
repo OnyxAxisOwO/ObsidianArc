@@ -25,6 +25,7 @@ import OaIconButton from '@/components/OaIconButton.vue';
 import OaPanel from '@/components/OaPanel.vue';
 import { t } from '@/composables/useI18n';
 import { usePanelExit } from '@/composables/usePanelExit';
+import { usePanelFullscreen } from '@/composables/usePanelFullscreen';
 import { IconCollapse, IconExpand, IconTrophy } from '@/icons';
 import { initials, safeAvatar } from '@/lib/account';
 import { compactNumber } from '@/lib/format';
@@ -32,7 +33,7 @@ import { compactNumber } from '@/lib/format';
 const panels = usePanelExit();
 
 const panel = ref<InstanceType<typeof OaPanel> | null>(null);
-const fullscreen = ref(false);
+const { fullscreen, toggle: toggleFullscreen } = usePanelFullscreen(() => panel.value);
 
 const loading = ref(true);
 const error = ref('');
@@ -47,9 +48,6 @@ const PERIODS: Array<{ value: LeaderboardPeriod; label: 'boardDay' | 'boardWeek'
   { value: 'month', label: 'boardMonth' },
 ];
 
-function toggleFullscreen(): void {
-  fullscreen.value = panel.value?.toggleFullscreen() ?? false;
-}
 
 /**
  * What to call a row.

@@ -14,6 +14,7 @@ import OaScrollArea from '@/components/OaScrollArea.vue';
 import OaSearchField from '@/components/OaSearchField.vue';
 import { t } from '@/composables/useI18n';
 import { usePanelExit } from '@/composables/usePanelExit';
+import { usePanelFullscreen } from '@/composables/usePanelFullscreen';
 import { IconArchive, IconCheck, IconCollapse, IconExpand, IconTrash } from '@/icons';
 import { relativeTime } from '@/lib/format';
 import { matchesSearch } from '@/lib/search';
@@ -23,7 +24,7 @@ const router = useRouter();
 const panels = usePanelExit();
 
 const panel = ref<InstanceType<typeof OaPanel> | null>(null);
-const fullscreen = ref(false);
+const { fullscreen, toggle: toggleFullscreen } = usePanelFullscreen(() => panel.value);
 
 const PAGE_SIZE = 100;
 
@@ -114,9 +115,6 @@ async function openInChat(conversation: Conversation): Promise<void> {
   void router.push('/');
 }
 
-function toggleFullscreen(): void {
-  fullscreen.value = panel.value?.toggleFullscreen() ?? false;
-}
 
 onMounted(() => {
   void loadArchived();

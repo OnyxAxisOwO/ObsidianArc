@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { SOURCE_URL } from '@/lib/source';
 // The About panel.
 //
 // An instance can be renamed and can describe itself in Markdown however its
@@ -15,7 +16,6 @@ import { formatUptime } from '@/lib/format';
 import { siteInfo, isAdmin } from '@/stores/session';
 
 const PRODUCT = 'Obsidian Arc';
-const SOURCE_URL = 'https://github.com/OnyxAxisOwO/ObsidianArc';
 
 // Everyone whose work is in the binary, most commits first.
 //

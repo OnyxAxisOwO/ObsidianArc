@@ -3,6 +3,7 @@ import { createApp, h, nextTick, shallowRef, type App } from 'vue';
 import { createRouter, createWebHistory } from 'vue-router';
 import * as authApi from '@/api/auth';
 import * as imagesApi from '@/api/images';
+import { ApiError } from '@/api/client';
 import * as powLib from '@/lib/pow';
 import * as registry from '@/plugins/registry';
 import { currentUser, site, siteInfo } from '@/stores/session';
@@ -350,6 +351,80 @@ describe('Image Lab challenges', () => {
 
     expect(generate).not.toHaveBeenCalled();
     expect(panels.textContent).toContain(t('challengeRequired'));
+  });
+
+  it('says a rate limit is a rate limit, not a failed check', async () => {
+    site.value = { ...siteInfo.value, pow_on_images: true };
+    vi.spyOn(authApi, 'fetchPoWChallenge').mockRejectedValue(
+      new ApiError(429, 'pow_rate_limited', 'Too many proofs of work.'),
+    );
+    const generate = vi.spyOn(imagesApi, 'generateImages').mockResolvedValue({ created: 1, images: [] });
+
+    await submit('a sunset');
+
+    expect(generate).not.toHaveBeenCalled();
+    expect(panels.textContent).toContain(t('powRateLimited'));
+    expect(panels.textContent).not.toContain(t('challengeFailed'));
+  });
+
+  it('sends the references attached when Generate was pressed, even if the panel closes during the proof of work', async () => {
+    site.value = { ...siteInfo.value, pow_on_images: true };
+    const challenge = { challenge: 'c', salt: 's', maxNumber: 10, expires: 1, signature: 'g' };
+    vi.spyOn(authApi, 'fetchPoWChallenge').mockResolvedValue(challenge);
+    let finishProof!: (value: unknown) => void;
+    vi.spyOn(powLib, 'solvePoW').mockReturnValue({
+      promise: new Promise((resolve) => { finishProof = resolve; }),
+      cancel: () => {},
+    } as any);
+    const generate = vi.spyOn(imagesApi, 'generateImages').mockResolvedValue({ created: 1, images: [] });
+    await mountImageLab();
+
+    const container = panels.querySelector('.oa-image-lab-generate') as HTMLElement;
+    container.dispatchEvent(createPasteEvent([createFile('screenshot.png', 'image/png')]));
+    await settle();
+    const field = panels.querySelector('#image-lab-prompt') as HTMLTextAreaElement;
+    field.value = 'a sunset';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    await settle();
+    (panels.querySelector('.oa-panel-foot .oa-btn.primary') as HTMLButtonElement).click();
+    await settle();
+
+    app!.unmount();
+    app = undefined;
+    finishProof({ ...challenge, nonce: 4 });
+    await settle();
+
+    expect(generate).toHaveBeenCalledOnce();
+    expect(generate.mock.calls[0]![0].images).toEqual(['base64-screenshot.png']);
+  });
+});
+
+describe('Image Lab gallery refresh', () => {
+  it('runs a refresh that was asked for while the first read was still in flight', async () => {
+    let finishFirstRead!: (value: unknown) => void;
+    const list = vi.spyOn(imagesApi, 'listImageGenerations')
+      .mockImplementationOnce(() => new Promise((resolve) => { finishFirstRead = resolve; }) as never)
+      .mockResolvedValue({ generations: [] });
+    vi.spyOn(imagesApi, 'generateImages').mockResolvedValue({
+      created: 1,
+      images: [{ id: 'new', url: '/api/attachments/new', mime: 'image/png' }] as any,
+    });
+    await mountImageLab();
+
+    const field = panels.querySelector('#image-lab-prompt') as HTMLTextAreaElement;
+    field.value = 'a sunset';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    await settle();
+    (panels.querySelector('.oa-panel-foot .oa-btn.primary') as HTMLButtonElement).click();
+    await settle();
+    // The picture is saved while the first read is still running, so that read
+    // may not list it. The refresh it asked for must not be lost.
+    expect(list).toHaveBeenCalledOnce();
+
+    finishFirstRead({ generations: [] });
+    await settle();
+
+    expect(list).toHaveBeenCalledTimes(2);
   });
 });
 

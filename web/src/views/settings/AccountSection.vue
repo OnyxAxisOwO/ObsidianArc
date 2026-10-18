@@ -23,12 +23,14 @@ import OaGroup from '@/components/OaGroup.vue';
 import OaRow from '@/components/OaRow.vue';
 import OaTextArea from '@/components/OaTextArea.vue';
 import OaTextField from '@/components/OaTextField.vue';
-import { t, type StringKey } from '@/composables/useI18n';
-import { IconGithub, IconGoogle, IconKey, type OaIcon } from '@/icons';
+import { t } from '@/composables/useI18n';
+import { IconKey } from '@/icons';
 import { allFields, fieldProblem, fieldValues } from '@/lib/account-fields';
+import { useLatestTimeout } from '@/composables/useLatestTimeout';
 import { apiErrorText } from '@/lib/api-error';
 import { absoluteTime } from '@/lib/format';
-import { connectRefusalText, refusalText } from '@/lib/refusal';
+import { connectCallbackText, connectRefusalText, refusalText } from '@/lib/refusal';
+import { providerMark } from '@/lib/provider-marks';
 import { pinnedProvider, pluginRefusal } from '@/plugins/registry';
 import { adopt, currentPreferences, currentUser, requireUser, siteInfo } from '@/stores/session';
 import { matchesSettings } from './search';
@@ -100,10 +102,6 @@ const emailMoving = computed(() =>
 // nothing to type into.
 const askForPassword = computed(() => emailMoving.value && hasPassword.value !== false);
 
-const MARKS: Record<string, OaIcon> = { github: IconGithub, google: IconGoogle };
-function mark(id: string): OaIcon {
-  return MARKS[id] ?? IconKey;
-}
 
 const linked = computed(() => new Map(connections.value.map((item) => [item.provider, item])));
 
@@ -134,14 +132,11 @@ const rows = computed(() => providers.value.filter(
   (provider) => provider.enabled || linked.value.has(provider.id),
 ));
 
-const OAUTH_REFUSALS: Record<string, StringKey> = {
-  denied: 'oauthDenied',
-  state: 'oauthState',
-  unavailable: 'oauthUnavailable',
-  provider: 'oauthProviderFailed',
-  already_linked: 'oauthAlreadyLinked',
-  address_taken: 'oauthConnectAddressTaken',
-};
+// Saved-state labels clear themselves after a moment. Each section has its own, so
+// saving one does not end the other's label early.
+const LABEL_FLASH_MS = 1500;
+const profileLabelLater = useLatestTimeout();
+const passwordLabelLater = useLatestTimeout();
 
 // The message of the last read that failed, so a later read that works can take
 // back its own failure from both places it was shown, and nothing else.
@@ -273,9 +268,7 @@ onMounted(() => {
   const failure = route.query['oauth_error'];
   const done = route.query['oauth'];
   if (typeof failure === 'string' && failure) {
-    // Own keys only, as in AuthView: an inherited name is not a refusal.
-    const known = Object.hasOwn(OAUTH_REFUSALS, failure) ? OAUTH_REFUSALS[failure] : undefined;
-    connectionFlash.value = t(known ?? 'oauthFailed');
+    connectionFlash.value = connectCallbackText(failure);
   } else if (done === 'connected') {
     connectionFlash.value = t('oauthConnected');
   }
@@ -318,7 +311,7 @@ async function saveProfile(): Promise<void> {
     adopt(user, currentPreferences.value);
     profilePassword.value = '';
     profileLabel.value = t('saved');
-    window.setTimeout(() => { profileLabel.value = ''; }, 1500);
+    profileLabelLater(() => { profileLabel.value = ''; }, LABEL_FLASH_MS);
   } catch (error) {
     if (error instanceof ApiError && error.code === 'current_password_wrong') {
       profileFlash.value = t('currentPasswordWrong');
@@ -334,7 +327,7 @@ async function saveProfile(): Promise<void> {
     } else if (error instanceof ApiError) {
       profileFlash.value = pluginRefusal(error.code ?? '') ?? apiErrorText(error);
     } else {
-      profileFlash.value = String(error);
+      profileFlash.value = apiErrorText(error);
     }
   } finally {
     profileBusy.value = false;
@@ -357,7 +350,7 @@ async function savePassword(): Promise<void> {
     // From here it is an ordinary password: the next change asks for it.
     hasPassword.value = true;
     passwordLabel.value = t('changed');
-    window.setTimeout(() => { passwordLabel.value = ''; }, 1500);
+    passwordLabelLater(() => { passwordLabel.value = ''; }, LABEL_FLASH_MS);
   } catch (error) {
     if (error instanceof ApiError && error.code === 'reauth_required') {
       passwordFlash.value = t('reauthForPassword');
@@ -415,6 +408,8 @@ function importData(): void {
       });
       // The imported conversations are not in the list behind this panel, and
       // the preferences may have changed the theme out from under it.
+      // Not cancelled when the reader leaves this screen: the import changed data the
+      // rest of the app has already read into memory, and only a reload shows it.
       window.setTimeout(() => window.location.reload(), 1200);
     })
     .catch((error: unknown) => {
@@ -489,7 +484,7 @@ function importData(): void {
       v-for="provider in rows"
       :key="provider.id"
       class="oa-connection"
-      :icon="mark(provider.id)"
+      :icon="providerMark(provider.id)"
       :title="provider.name"
       :meta="connectionMeta(provider.id)"
     >
@@ -506,7 +501,7 @@ function importData(): void {
            account, so it has no remove control at all — deleting the
            account is the only way it comes off. -->
       <span v-else-if="pinnedProvider(provider.id)" class="oa-group-row-meta">
-        {{ pinnedProvider(provider.id)!.hint() }}
+        {{ pinnedProvider(provider.id)?.hint() }}
       </span>
       <OaConfirmButton
         v-else

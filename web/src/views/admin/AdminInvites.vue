@@ -15,6 +15,7 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { useDebounceFn } from '@vueuse/core';
 import { adminApi, type Group, type InviteCode, type InviteStats, type InviteUse } from '@/admin/api';
 import { fetchSite } from '@/api/auth';
+import { inviteLink } from '@/api/invites';
 import { ApiError } from '@/api/client';
 import { copyToClipboard } from '@/chat/markdown';
 import AdminControlCard from './AdminControlCard.vue';
@@ -54,10 +55,6 @@ view.setTitle(() => t('navInvites'), () => t('invitesSubtitle'));
 function formatCode(code: string, kind?: string): string {
   if (kind === 'partner') return code;
   return code.length === 8 ? `${code.slice(0, 4)}-${code.slice(4)}` : code;
-}
-
-function inviteLink(code: string): string {
-  return `${window.location.origin}/register?invite=${code}`;
 }
 
 // --- settings: the registration policy and what an invite is worth --------------

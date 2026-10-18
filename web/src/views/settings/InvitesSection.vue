@@ -11,9 +11,10 @@
 // to be a sentence under the title is now a progress line and a bar, and
 // each invitee row carries its own outcome rather than a shared blurb.
 
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ApiError } from '@/api/client';
+import { useLatestTimeout } from '@/composables/useLatestTimeout';
 import { apiErrorText } from '@/lib/api-error';
 import {
   claimInviteCode, fetchProfileInvites, formatInviteCode, inviteLink, regenerateProfileInvite,
@@ -55,18 +56,15 @@ async function load(): Promise<void> {
 
 onMounted(load);
 
-const copyTimers: { code?: ReturnType<typeof setTimeout>; link?: ReturnType<typeof setTimeout> } = {};
+// Each copy button has its own confirmation, so copying the link does not end the
+// code's confirmation early, and leaving the screen cancels both.
+const COPY_FLASH_MS = 1500;
+const copiedLater = { code: useLatestTimeout(), link: useLatestTimeout() };
 
 function flashCopy(which: 'code' | 'link'): void {
   const target = which === 'code' ? copiedCode : copiedLink;
   target.value = true;
-  if (copyTimers[which]) {
-    clearTimeout(copyTimers[which]);
-  }
-  copyTimers[which] = setTimeout(() => {
-    target.value = false;
-    delete copyTimers[which];
-  }, 1500);
+  copiedLater[which](() => { target.value = false; }, COPY_FLASH_MS);
 }
 
 // A refused clipboard — plain HTTP, a locked-down browser — says so, the
@@ -90,11 +88,6 @@ function copyLink(): void {
   if (!data.value || !link.value) return;
   void copyToClipboard(link.value).then((ok) => copied('link', ok));
 }
-
-onUnmounted(() => {
-  if (copyTimers.code) clearTimeout(copyTimers.code);
-  if (copyTimers.link) clearTimeout(copyTimers.link);
-});
 
 async function regenerate(): Promise<void> {
   if (busy.value) return;

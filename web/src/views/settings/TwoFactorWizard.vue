@@ -17,10 +17,12 @@
 // only on the last step: adopting it earlier would let a gate that is watching
 // the account disappear with the recovery codes still unsaved.
 
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, nextTick, ref } from 'vue';
 import type { Account } from '@/api/auth';
 import { saveAsFile } from '@/api/backup';
 import { ApiError } from '@/api/client';
+import { useLatestTimeout } from '@/composables/useLatestTimeout';
+import { useLeaveWarning } from '@/composables/useLeaveWarning';
 import { apiErrorText } from '@/lib/api-error';
 import { beginTwoFactor, enableTwoFactor, type TwoFactorSetup } from '@/api/twofactor';
 import { copyToClipboard } from '@/chat/markdown';
@@ -161,13 +163,18 @@ function onCodeInput(event: Event): void {
   }
 }
 
+// A confirmation clears only if it is still the value that was copied last, so
+// one line's confirmation does not clear another's.
+const COPY_FLASH_MS = 1500;
+const copiedLater = useLatestTimeout();
+
 function copy(value: string): void {
   void copyToClipboard(value).then((ok) => {
     if (!ok) return;
     copied.value = value;
-    window.setTimeout(() => {
+    copiedLater(() => {
       if (copied.value === value) copied.value = '';
-    }, 1500);
+    }, COPY_FLASH_MS);
   });
 }
 
@@ -193,14 +200,7 @@ function finish(): void {
 // on with codes nobody has seen, and they cannot be shown again. The browser's
 // prompt is the only thing that can hold the reader there, so it is asked for
 // until the codes are acknowledged.
-function warnBeforeLeaving(event: BeforeUnloadEvent): void {
-  if (step.value !== 'save' || saved.value) return;
-  event.preventDefault();
-  event.returnValue = '';
-}
-
-onMounted(() => window.addEventListener('beforeunload', warnBeforeLeaving));
-onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeLeaving));
+useLeaveWarning(() => step.value === 'save' && !saved.value);
 </script>
 
 <template>
