@@ -130,7 +130,9 @@ func TestImportEndpointRefusesNULAsBadRequest(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &reply); err != nil {
 		t.Fatalf("error body is not JSON: %v", err)
 	}
-	if reply.Error.Code != "bad_request" || !strings.Contains(reply.Error.Message, "NUL") {
+	// The code is what the reader's screen translates, so it names the refusal
+	// rather than falling back to the generic bad_request.
+	if reply.Error.Code != "import_nul_character" || !strings.Contains(reply.Error.Message, "NUL") {
 		t.Errorf("error = %+v", reply.Error)
 	}
 

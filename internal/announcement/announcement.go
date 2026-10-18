@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -42,12 +43,7 @@ const (
 var Modes = []DisplayMode{DisplayAlways, DisplayOnce, DisplaySilent}
 
 func (m DisplayMode) Valid() bool {
-	for _, candidate := range Modes {
-		if m == candidate {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(Modes, m)
 }
 
 const (
@@ -56,11 +52,14 @@ const (
 	// A dismiss delay is there to make someone read the first line, not to
 	// trap them. Anything longer reads as a fault.
 	MaxDismissSeconds = 60
+	// How long a save waits on the bell. A publish or a delete waits for the
+	// push or the retraction, so this is the most either can spend on it.
+	notifyTimeout = 5 * time.Second
 )
 
 var (
 	ErrNotFound     = errors.New("announcement: not found")
-	ErrInvalidTitle = errors.New("announcement: title must be 1-120 characters")
+	ErrInvalidTitle = fmt.Errorf("announcement: title must be 1-%d characters", MaxTitleChars)
 	ErrInvalidBody  = errors.New("announcement: body is too long")
 	ErrInvalidMode  = errors.New("announcement: unknown display mode")
 )
@@ -205,7 +204,13 @@ func (s *Store) Update(ctx context.Context, announcementID string, in Input) (An
 		if err != nil {
 			return fmt.Errorf("announcement: update: %w", err)
 		}
-		if affected, _ := result.RowsAffected(); affected == 0 {
+		// A driver that cannot report the count is an error, not a missing row:
+		// treating it as zero would report a saved announcement as not found.
+		affected, affectedErr := result.RowsAffected()
+		if affectedErr != nil {
+			return fmt.Errorf("announcement: update: %w", affectedErr)
+		}
+		if affected == 0 {
 			return ErrNotFound
 		}
 		updated, err = load(ctx, tx, announcementID)
@@ -244,7 +249,7 @@ func (s *Store) notifyPublished(ctx context.Context, record Announcement) {
 	if s.Notify == nil || record.DisplayMode == DisplaySilent {
 		return
 	}
-	pushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	pushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), notifyTimeout)
 	defer cancel()
 	if err := s.Notify.Push(pushCtx, nil, notify.Notification{
 		Audience: notify.AudienceAll, Kind: "announcement", Ref: record.ID,
@@ -284,7 +289,7 @@ func (s *Store) retract(ctx context.Context, announcementID string) {
 	if s.Notify == nil {
 		return
 	}
-	retractCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	retractCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), notifyTimeout)
 	defer cancel()
 	if _, err := s.Notify.Retract(retractCtx, nil, "announcement", announcementID); err != nil {
 		slog.ErrorContext(ctx, "announcement: retract notices", "error", err, "id", announcementID)

@@ -298,8 +298,11 @@ func compose(from, to string, message Message) string {
 	return out.String()
 }
 
-// encodeHeader wraps a header value in RFC 2047 base64 when it is not plain
-// ASCII. Everything this server sends may have a Chinese subject.
+// encodeHeader writes a header value that is not plain ASCII as an RFC 2047
+// encoded word in the Q form (mime.QEncoding). Everything this server sends may
+// have a Chinese subject. The B form, which is base64, is the other encoded-word
+// form and would look different in a raw header, so anyone checking a message
+// against this code should expect Q.
 func encodeHeader(value string) string {
 	ascii := true
 	for _, r := range value {

@@ -35,6 +35,7 @@ import OaTurnstile from '@/components/OaTurnstile.vue';
 import { t, type StringKey } from '@/composables/useI18n';
 import { usePanelExit } from '@/composables/usePanelExit';
 import { IconClose, IconLock } from '@/icons';
+import { apiErrorText } from '@/lib/api-error';
 import { absoluteTime, relativeTime } from '@/lib/format';
 import { refreshFeedbackUnread } from '@/stores/feedback';
 import { siteInfo } from '@/stores/session';
@@ -104,7 +105,7 @@ async function refresh(): Promise<void> {
     mine.value = result.feedback;
     remaining.value = result.remaining;
   } catch (failure) {
-    error.value = failure instanceof ApiError ? failure.message : t('failed');
+    error.value = apiErrorText(failure);
   } finally {
     loaded.value = true;
   }
@@ -168,7 +169,7 @@ async function submit(token: string): Promise<void> {
       guard.value?.reset();
     } else {
       challengeOpen.value = false;
-      error.value = failure instanceof ApiError ? failure.message : t('failed');
+      error.value = apiErrorText(failure);
     }
   } finally {
     busy.value = false;
@@ -219,7 +220,7 @@ async function open(record: Feedback): Promise<void> {
     void refreshFeedbackUnread();
     if (seq === openSeq) thread.value = opened;
   } catch (failure) {
-    if (seq === openSeq) error.value = failure instanceof ApiError ? failure.message : t('failed');
+    if (seq === openSeq) error.value = apiErrorText(failure);
   } finally {
     if (seq === openSeq) threadBusy.value = false;
   }
@@ -274,7 +275,7 @@ async function submitReply(token: string): Promise<void> {
       guard.value?.reset();
     } else {
       challengeOpen.value = false;
-      error.value = failure instanceof ApiError ? failure.message : t('failed');
+      error.value = apiErrorText(failure);
     }
   } finally {
     // A stale reply must not release the composer for the report now open,

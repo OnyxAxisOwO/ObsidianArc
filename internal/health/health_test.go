@@ -198,6 +198,21 @@ func TestFailuresAreGroupedIntoCodesAnOperatorCanActrOn(t *testing.T) {
 	}
 }
 
+// The text path reads each status number from the rule table, which is also
+// what its patterns are built from. Holding every number to the code its rule
+// names covers the ones the cases above never reach, 403 and the 5xx family
+// other than 503.
+func TestEveryStatusNumberInTheRulesIsRecognised(t *testing.T) {
+	for _, rule := range codeRules {
+		for _, number := range rule.numbers {
+			message := "provider answered " + number
+			if got := Code(errors.New(message)); got != rule.code {
+				t.Errorf("Code(%q) = %q, want %q", message, got, rule.code)
+			}
+		}
+	}
+}
+
 // An upstream error is whatever the provider wrote, and providers write in
 // their own language. The stored message used to be cut by byte offset, so a
 // Chinese error cut at 400 bytes could end mid-character; PostgreSQL then

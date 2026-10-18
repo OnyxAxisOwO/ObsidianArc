@@ -62,6 +62,17 @@ const (
 	// megabyte, and the trail is read a page at a time.
 	maxRequestChars = 16 * 1024
 	maxValueChars   = 512
+	// Each text field is cut to its limit before it is stored, so one long value
+	// cannot refuse the whole entry, and the trail keeps what happened.
+	maxActorUsernameChars = 80
+	maxActorRoleChars     = 20
+	maxMethodChars        = 10
+	maxRouteChars         = 200
+	maxPathChars          = 400
+	maxTargetChars        = 120
+	maxViaChars           = 20
+	maxIPChars            = 80
+	maxUserAgentChars     = 300
 	// The retention bounds the setting accepts, in days. The floor is what
 	// keeps a delegated operator — or a hurried super administrator — from
 	// erasing last week by setting it to one.
@@ -90,16 +101,16 @@ func (s *Store) Record(ctx context.Context, q database.Queryer, e Entry) error {
 	clean := func(value string, limit int) string {
 		return text.TrimAndTruncate(strings.TrimSpace(text.Clean(value)), limit)
 	}
-	e.ActorUsername = clean(e.ActorUsername, 80)
-	e.ActorRole = clean(e.ActorRole, 20)
-	e.Method = clean(e.Method, 10)
-	e.Route = clean(e.Route, 200)
-	e.Path = clean(e.Path, 400)
-	e.TargetID = clean(e.TargetID, 120)
-	e.TargetLabel = clean(e.TargetLabel, 120)
-	e.Via = clean(e.Via, 20)
-	e.IP = clean(e.IP, 80)
-	e.UserAgent = clean(e.UserAgent, 300)
+	e.ActorUsername = clean(e.ActorUsername, maxActorUsernameChars)
+	e.ActorRole = clean(e.ActorRole, maxActorRoleChars)
+	e.Method = clean(e.Method, maxMethodChars)
+	e.Route = clean(e.Route, maxRouteChars)
+	e.Path = clean(e.Path, maxPathChars)
+	e.TargetID = clean(e.TargetID, maxTargetChars)
+	e.TargetLabel = clean(e.TargetLabel, maxTargetChars)
+	e.Via = clean(e.Via, maxViaChars)
+	e.IP = clean(e.IP, maxIPChars)
+	e.UserAgent = clean(e.UserAgent, maxUserAgentChars)
 	e.Request = text.Truncate(text.Clean(e.Request), maxRequestChars)
 	if e.Method == "" || e.Route == "" {
 		return fmt.Errorf("audit: method and route are required")
@@ -311,15 +322,13 @@ func (s *Store) Facets(ctx context.Context, since int64) (Facets, error) {
 		out.Routes[i].Label = out.Routes[i].Value
 	}
 
-	failedWhere := " WHERE status >= 400"
-	if since > 0 {
-		failedWhere += " AND at >= ?"
-	}
-	if err := s.db.QueryRow(ctx, `SELECT COUNT(*) FROM admin_audit`+window, args...).Scan(&out.Total); err != nil {
+	// Total and failed are read in one pass over the same window. The failed
+	// count is a conditional sum, which both engines accept, so the trail is
+	// scanned once here rather than once per figure.
+	if err := s.db.QueryRow(ctx,
+		`SELECT COUNT(*), COALESCE(SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END), 0) FROM admin_audit`+window,
+		args...).Scan(&out.Total, &out.Failed); err != nil {
 		return out, fmt.Errorf("audit: count: %w", err)
-	}
-	if err := s.db.QueryRow(ctx, `SELECT COUNT(*) FROM admin_audit`+failedWhere, args...).Scan(&out.Failed); err != nil {
-		return out, fmt.Errorf("audit: count failed: %w", err)
 	}
 	return out, nil
 }
@@ -331,6 +340,11 @@ func (s *Store) Prune(ctx context.Context, before time.Time) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("audit: prune: %w", err)
 	}
-	removed, _ := result.RowsAffected()
+	// A count the driver cannot give is reported as an error. Zero would read
+	// as a prune that found nothing to remove.
+	removed, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("audit: prune: %w", err)
+	}
 	return removed, nil
 }

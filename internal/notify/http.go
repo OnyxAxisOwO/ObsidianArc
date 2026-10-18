@@ -54,7 +54,7 @@ func parseTimestamp(r *http.Request, name string) (int64, error) {
 	}
 	value, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil {
-		return 0, httpx.BadRequest("%s must be a timestamp in milliseconds.", name)
+		return 0, httpx.BadRequestCode("invalid_timestamp", "%s must be a timestamp in milliseconds.", name)
 	}
 	return value, nil
 }
@@ -69,7 +69,7 @@ func parseLimit(r *http.Request) (int, error) {
 	}
 	value, err := strconv.Atoi(raw)
 	if err != nil {
-		return 0, httpx.BadRequest("limit must be a whole number.")
+		return 0, httpx.BadRequestCode("invalid_limit", "limit must be a whole number.")
 	}
 	return value, nil
 }

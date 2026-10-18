@@ -8,7 +8,6 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { adminApi, type Announcement } from '@/admin/api';
-import { ApiError } from '@/api/client';
 import OaBadge from '@/components/OaBadge.vue';
 import OaBadgeRow from '@/components/OaBadgeRow.vue';
 import OaBulkBar from '@/components/OaBulkBar.vue';
@@ -24,6 +23,7 @@ import type { Column } from '@/components/table-types';
 import { t } from '@/composables/useI18n';
 import { useBulk } from '@/composables/useBulk';
 import { usePanelSlot } from '@/composables/usePanelSlot';
+import { apiErrorText } from '@/lib/api-error';
 import { relativeTime } from '@/lib/format';
 import AdminFailure from './AdminFailure.vue';
 import { useAdminView } from './adminView';
@@ -147,7 +147,7 @@ async function save(): Promise<void> {
     finish();
   } catch (failure) {
     busy.value = false;
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    panelError.value = apiErrorText(failure);
   }
 }
 
@@ -160,7 +160,7 @@ async function remove(): Promise<void> {
     finish();
   } catch (failure) {
     busy.value = false;
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    panelError.value = apiErrorText(failure);
   }
 }
 

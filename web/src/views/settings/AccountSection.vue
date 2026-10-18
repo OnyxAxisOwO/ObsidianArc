@@ -388,7 +388,7 @@ function exportData(): void {
       dataStatus.value = t('exportDone', { count: document.conversations.length });
     })
     .catch((error: unknown) => {
-      dataStatus.value = error instanceof ApiError ? error.message : t('failed');
+      dataStatus.value = apiErrorText(error);
     })
     .finally(() => { exporting.value = false; });
 }
