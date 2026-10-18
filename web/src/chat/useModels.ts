@@ -117,6 +117,12 @@ export const models = ref<AvailableModel[]>([]);
 export const selectedID = ref('');
 export const reasoning = ref<ReasoningState>({ enabled: false, effort: 'medium' });
 
+// Whether the account's list has come back, or failed, since sign-in. Until it
+// has, an empty picker only means the list has not arrived yet; the setup card
+// waits for this rather than telling every reload that no models are configured.
+const listed = ref(false);
+export const modelsListed = computed(() => listed.value);
+
 // Bumped on sign-out. A list fetched for the account that left is dropped, so
 // it cannot land on the picker of whoever signs in next.
 let generation = 0;
@@ -125,6 +131,7 @@ let generation = 0;
 // picker's defaults rather than the last account's pick.
 onSignOut(() => {
   generation += 1;
+  listed.value = false;
   models.value = [];
   selectedID.value = '';
   reasoning.value = { enabled: false, effort: 'medium' };
@@ -172,9 +179,15 @@ export function setReasoning(next: ReasoningState): void {
 
 export async function loadModels(): Promise<void> {
   const account = generation;
-  const result = await api.get<{ models: AvailableModel[] }>('/api/models');
+  const result = await api.get<{ models: AvailableModel[] }>('/api/models').catch((failure: unknown) => {
+    // A failed list is an answer too: the picker is empty and the setup card
+    // says so, as it did before the flag existed.
+    if (account === generation) listed.value = true;
+    throw failure;
+  });
   // Signed out while the list was on its way: it is the account that left's.
   if (account !== generation) return;
+  listed.value = true;
   models.value = result.models;
 
   const usable = result.models.filter((model) => model.usable !== false);

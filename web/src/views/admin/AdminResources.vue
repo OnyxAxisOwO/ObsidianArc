@@ -19,7 +19,7 @@ import type { Column, SortState } from '@/components/table-types';
 import type { Stat } from '@/components/stat';
 import { t } from '@/composables/useI18n';
 import { isMasked, maskUser } from '@/admin/safeMode';
-import { formatBytes } from '@/lib/format';
+import { formatBytes, localeTag } from '@/lib/format';
 import AdminFailure from './AdminFailure.vue';
 import { useAdminView } from './adminView';
 
@@ -31,7 +31,7 @@ view.setTitle(() => t('navResources'), () => t('controlResourceHint'));
 const snapshot = ref<Resources | null>(null);
 const error = ref('');
 const refreshing = ref(false);
-const updatedAt = computed(() => snapshot.value ? new Date(snapshot.value.sampled_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '');
+const updatedAt = computed(() => snapshot.value ? new Date(snapshot.value.sampled_at).toLocaleTimeString(localeTag(), { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '');
 const sort = ref<SortState | null>(null);
 
 const memoryStats = computed<Stat[]>(() => {

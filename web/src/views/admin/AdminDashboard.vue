@@ -6,9 +6,9 @@ import { hasCloudflareNotice, loadUpdateStatus, releaseLink, updateStatus } from
 import OaChart from '@/components/OaChart.vue';
 import OaCellStack from '@/components/OaCellStack.vue';
 import OaIconButton from '@/components/OaIconButton.vue';
-import { currentLanguage, t, tn } from '@/composables/useI18n';
+import { t, tn } from '@/composables/useI18n';
 import { IconSpark, IconUsers, IconServer, IconChevron } from '@/icons';
-import { compactNumber, relativeTime, tokenFigure } from '@/lib/format';
+import { compactNumber, localeTag, relativeTime, tokenFigure } from '@/lib/format';
 import { fold, type ChartShape } from '@/lib/chart';
 import { canAdmin, isSuperAdmin } from '@/stores/session';
 import { maskUser, maskProvider, maskBilling } from '@/admin/safeMode';
@@ -29,7 +29,7 @@ const updatedAt = ref(0);
 const ranking = ref<'models' | 'users'>('models');
 const shape = ref<ChartShape>(dashboardShape);
 const heatMetric = ref<'requests' | 'total_tokens'>(dashboardHeatMetric);
-const locale = computed(() => currentLanguage() === 'zh' ? 'zh-CN' : 'en-US');
+const locale = computed(() => localeTag());
 const dateLabel = computed(() => new Date(updatedAt.value || Date.now()).toLocaleDateString(locale.value, {
   month: 'long', day: 'numeric', weekday: 'long',
 }));

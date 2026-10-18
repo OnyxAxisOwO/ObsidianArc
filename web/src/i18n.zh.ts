@@ -274,7 +274,6 @@ export const zh: Record<StringKey, string> = {
   placeholder: '发送消息…',
   placeholderFirst: '想聊点什么？',
   send: '发送',
-  attach: '添加图片',
   removeImage: '移除这张图片',
   dropHint: '把图片拖到这里',
   tooManyImages: '每条消息最多 {count} 张图片。',

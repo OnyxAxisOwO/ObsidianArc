@@ -39,7 +39,7 @@ import { t, tn } from '@/composables/useI18n';
 import { useBulk } from '@/composables/useBulk';
 import { usePanelSlot } from '@/composables/usePanelSlot';
 import { IconTrash } from '@/icons';
-import { absoluteTime, compactNumber, relativeTime } from '@/lib/format';
+import { absoluteTime, compactNumber, localeTag, relativeTime } from '@/lib/format';
 import { rememberedPageSize } from '@/lib/page-size';
 import { describeUserAgent } from '@/lib/ua';
 import { currentUser, canAdmin, isSuperAdmin, siteInfo } from '@/stores/session';
@@ -359,7 +359,7 @@ const summaryStats = computed<Stat[]>(() => {
     { label: t('statCredits'), value: maskBilling(compactNumber(totals.credits)) },
     {
       label: t('joined'),
-      value: new Date(row.created_at).toLocaleDateString(),
+      value: new Date(row.created_at).toLocaleDateString(localeTag()),
       note: (row.last_active_at || row.last_login_at)
         ? t('lastSeenAt', { when: relativeTime(row.last_active_at || row.last_login_at) })
         : t('neverSignedIn'),

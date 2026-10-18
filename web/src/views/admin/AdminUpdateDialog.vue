@@ -10,7 +10,8 @@ import { computed, ref } from 'vue';
 import { offeredRelease, releaseLink, skippedVersion, skipVersion, updateStatus } from '@/admin/update';
 import OaMarkdown from '@/components/OaMarkdown.vue';
 import OaPanel from '@/components/OaPanel.vue';
-import { currentLanguage, t } from '@/composables/useI18n';
+import { t } from '@/composables/useI18n';
+import { localeTag } from '@/lib/format';
 
 const skipped = ref(skippedVersion());
 const putAway = ref(false);
@@ -22,7 +23,7 @@ const published = computed(() => {
   if (!when) return '';
   const date = new Date(when);
   if (Number.isNaN(date.getTime())) return '';
-  const locale = currentLanguage() === 'zh' ? 'zh-CN' : 'en-US';
+  const locale = localeTag();
   return date.toLocaleDateString(locale, { year: 'numeric', month: 'long', day: 'numeric' });
 });
 

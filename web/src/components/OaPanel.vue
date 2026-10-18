@@ -214,27 +214,31 @@ let swapTimer = 0;
  */
 let restoreSiblings: (() => void) | null = null;
 
+/** Puts back the flex each pinned column had before it was pinned. */
+function restoreFlex(pinned: Array<[HTMLElement, string]>): void {
+  for (const [node, previous] of pinned) node.style.flex = previous;
+}
+
 /**
  * Pins the other columns at the width they have while the panel is one of
  * them. The panel leaves the flex flow the instant it goes full screen, and
  * without this the content behind it snaps wider before the panel has grown
  * far enough to cover it.
  */
-/** Puts back the flex each pinned column had before it was pinned. */
-function restoreFlex(pinned: Array<[HTMLElement, string]>): void {
-  for (const [node, previous] of pinned) node.style.flex = previous;
-}
-
 function freezeSiblings(): () => void {
   const row = host.value;
   const self = panel.value;
   if (!row || !self) return () => {};
   const pinned: Array<[HTMLElement, string]> = [];
+  const widths: Array<[HTMLElement, number]> = [];
   for (const child of Array.from(row.children)) {
     if (child === self || !(child instanceof HTMLElement)) continue;
     pinned.push([child, child.style.flex]);
-    child.style.flex = `0 0 ${child.getBoundingClientRect().width}px`;
+    widths.push([child, child.getBoundingClientRect().width]);
   }
+  // Reads before writes: pinning one column can change the width the next one
+  // reports, and a read after a write forces a layout of the whole row.
+  for (const [child, width] of widths) child.style.flex = `0 0 ${width}px`;
   return () => restoreFlex(pinned);
 }
 
@@ -263,26 +267,25 @@ function freezeSiblingsForDrawer(drawerWidth: number): () => void {
   const gap = parseFloat(rowStyle.gap) || 0;
   const rowWidth = row.getBoundingClientRect().width;
 
-  const visibleChildren = children.filter((child) => !isChildHidden(child));
+  // Everything is measured before the first write below: a write changes what
+  // the next read reports, and a read after a write forces a layout.
+  const shown: Array<{ child: HTMLElement; flexible: boolean; width: number }> = [];
   let fixedTotal = 0;
-  const flexible: HTMLElement[] = [];
   for (const child of children) {
     pinned.push([child, child.style.flex]);
-    if (!isChildHidden(child)) {
-      if (parseFloat(window.getComputedStyle(child).flexGrow) > 0) flexible.push(child);
-      else fixedTotal += child.getBoundingClientRect().width;
-    }
+    if (isChildHidden(child)) continue;
+    const flexible = parseFloat(window.getComputedStyle(child).flexGrow) > 0;
+    const width = flexible ? 0 : child.getBoundingClientRect().width;
+    if (!flexible) fixedTotal += width;
+    shown.push({ child, flexible, width });
   }
 
-  const gapCount = Math.max(0, visibleChildren.length);
-  const remaining = Math.max(0, rowWidth - drawerWidth - fixedTotal - gapCount * gap);
-  const perFlex = flexible.length > 0 ? remaining / flexible.length : remaining;
+  const flexCount = shown.filter((entry) => entry.flexible).length;
+  const remaining = Math.max(0, rowWidth - drawerWidth - fixedTotal - shown.length * gap);
+  const perFlex = flexCount > 0 ? remaining / flexCount : remaining;
 
-  for (const child of children) {
-    if (isChildHidden(child)) continue;
-    child.style.flex = flexible.includes(child)
-      ? `0 0 ${perFlex}px`
-      : `0 0 ${child.getBoundingClientRect().width}px`;
+  for (const { child, flexible, width } of shown) {
+    child.style.flex = flexible ? `0 0 ${perFlex}px` : `0 0 ${width}px`;
   }
 
   return () => restoreFlex(pinned);

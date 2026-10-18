@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createApp, h, nextTick, ref, type App } from 'vue';
 import OaTable from '../src/components/OaTable.vue';
 import type { SortState } from '../src/components/table-types';
-import { relativeTime } from '../src/lib/format';
+import { localeTag, relativeTime } from '../src/lib/format';
 import { t } from '../src/composables/useI18n';
 
 describe('relativeTime', () => {
@@ -11,7 +11,7 @@ describe('relativeTime', () => {
   // month was displayed as one expiring this second.
   it('does not describe a future moment in the past tense', () => {
     const month = Date.now() + 30 * 24 * 3600 * 1000;
-    expect(relativeTime(month)).toBe(new Date(month).toLocaleString());
+    expect(relativeTime(month)).toBe(new Date(month).toLocaleString(localeTag()));
   });
 
   it('still reads the past as it always did', () => {

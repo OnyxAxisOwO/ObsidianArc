@@ -1,8 +1,9 @@
 <script setup lang="ts">
 // An inline SVG line chart showing a model's availability trend over time.
 //
-// Native SVG without external dependencies, matching the interface's design
-// tokens. A chart library would add tens of kilobytes for one graph.
+// Native SVG without external dependencies. Its status colours are fixed hues
+// rather than --ai-* tokens (see strokeColor). A chart library would add tens
+// of kilobytes for one graph.
 
 import { computed, ref } from 'vue';
 import { t } from '@/composables/useI18n';
@@ -48,7 +49,9 @@ const gridYs = [padT, padT + plotH / 2, padT + plotH];
 // because the accent colour is the reader's choice: "up" must stay green when
 // the accent is green, or the chart cannot tell an outage from the accent.
 // --ai-danger is the only red token, and it is a different red in each theme,
-// so the down line keeps one fixed red in both.
+// so the down line keeps one fixed red in both. The status dots beside the
+// chart use these same three hexes, so a line and its dot always agree; a
+// success or warning token would add two hues to the theme for one screen.
 const strokeColor = computed(() => {
   switch (props.state) {
     case 'up':

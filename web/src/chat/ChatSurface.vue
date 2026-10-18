@@ -24,6 +24,7 @@ import {
 import {
   cancelAllFlights, captureComposerRect, lastComposerRect, markFlying, playSendAnimation,
 } from './useSendAnimation';
+import { modelsListed } from './useModels';
 import { currentUser, isAdmin } from '@/stores/session';
 
 let route: ReturnType<typeof useRoute> | undefined;
@@ -248,7 +249,9 @@ defineExpose({ focus: () => composer.value?.focus() });
       :scroll-class="rising ? 'ai-chat-scroll ai-chat-switching' : 'ai-chat-scroll'"
       @scroll="onScroll"
     >
-      <div v-if="!status.configured" class="ai-chat-setup">
+      <!-- Not before the list has answered: until then an empty picker is not
+           yet known to be empty, and this card says there are no models. -->
+      <div v-if="modelsListed && !status.configured" class="ai-chat-setup">
         <h3 class="ai-chat-setup-title">{{ t('setupTitle') }}</h3>
         <p class="ai-chat-setup-body">{{ isAdmin ? t('setupBody') : t('setupBodyUser') }}</p>
         <button

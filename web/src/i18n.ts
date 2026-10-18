@@ -283,7 +283,6 @@ const en = {
   placeholder: 'Send a message…',
   placeholderFirst: 'What do you want to talk about?',
   send: 'Send',
-  attach: 'Attach an image',
   removeImage: 'Remove this image',
   dropHint: 'Drop images here',
   tooManyImages: 'Up to {count} images per message.',

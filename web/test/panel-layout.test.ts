@@ -122,3 +122,49 @@ describe('OaPanel full screen', () => {
     expect(sibling.style.flex).toBe('');
   });
 });
+
+describe('OaPanel beside two columns', () => {
+  // jsdom has no layout. A column reports a narrower width once a column in its
+  // row is pinned, as a real row does when the panel leaves the flow, so these
+  // tests show whether every width is read before the first pin is written.
+  function mountWithColumns(): { columns: HTMLElement[]; panel: { value: InstanceType<typeof OaPanel> | null } } {
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    host = root;
+    const columns = [document.createElement('div'), document.createElement('div')];
+    const panel = ref<InstanceType<typeof OaPanel> | null>(null);
+    app = createApp({
+      setup() {
+        const row = document.createElement('div');
+        root.appendChild(row);
+        for (const column of columns) row.appendChild(column);
+        providePanelHost(ref(row));
+        return () => h('div', [h(OaPanel, { ref: panel, title: 'Panel' })]);
+      },
+    });
+    app.mount(root);
+    const anyPinned = (): boolean => columns.some((column) => column.style.flex !== '');
+    for (const column of columns) {
+      column.getBoundingClientRect = () => ({ width: anyPinned() ? 120 : 300 }) as DOMRect;
+    }
+    return { columns, panel };
+  }
+
+  it('pins each column to the width it had before any of them was pinned, going full screen', async () => {
+    const { columns, panel } = mountWithColumns();
+    await nextTick();
+
+    panel.value!.toggleFullscreen();
+    expect(columns.map((column) => column.style.flex)).toEqual(['0 0 300px', '0 0 300px']);
+  });
+
+  it('pins each column to the width it had before any of them was pinned, leaving full screen', async () => {
+    const { columns, panel } = mountWithColumns();
+    await nextTick();
+
+    panel.value!.toggleFullscreen();
+    await wait(PAST_THE_ZOOM_MS);
+    panel.value!.toggleFullscreen();
+    expect(columns.map((column) => column.style.flex)).toEqual(['0 0 300px', '0 0 300px']);
+  });
+});

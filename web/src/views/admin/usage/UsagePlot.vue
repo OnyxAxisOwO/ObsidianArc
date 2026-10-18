@@ -8,7 +8,7 @@
 // ellipse.
 
 import { computed, ref, useId, watch } from 'vue';
-import { currentLanguage } from '@/composables/useI18n';
+import { localeTag } from '@/lib/format';
 import { niceScale, smoothPath, tickFormat, timeTicks } from './scale';
 import type { PlotPoint } from './shape';
 
@@ -33,7 +33,7 @@ const emit = defineEmits<{ (event: 'update:active', index: number | null): void 
 const WIDTH = 720;
 const gradient = `oa-plot-fill-${useId()}`;
 const focused = ref(false);
-const locale = computed(() => currentLanguage() === 'zh' ? 'zh-CN' : 'en-US');
+const locale = computed(() => localeTag());
 
 const scale = computed(() => niceScale(Math.max(0, ...props.points.map((point) => point.value))));
 const start = computed(() => props.points[0]?.at ?? 0);

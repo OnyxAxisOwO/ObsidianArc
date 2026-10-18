@@ -346,9 +346,14 @@ function onKey(event: KeyboardEvent): void {
   search();
 }
 
+// What the list draws, as one string. Callers write their options inline, so
+// the array is a new reference on every render of the parent; a re-render that
+// leaves the rows alone must not re-measure the list or move the highlight.
+const rows = computed(() => JSON.stringify(choices.value.map((choice) => [choice.value, choice.label])));
+
 // A rebuilt list has a new height, a new set of ids, and possibly fewer rows
 // than the arrow keys had walked to.
-watch(choices, async () => {
+watch(rows, async () => {
   if (!open.value) return;
   await nextTick();
   if (!open.value) return;

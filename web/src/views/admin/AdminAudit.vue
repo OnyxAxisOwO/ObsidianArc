@@ -25,7 +25,7 @@ import type { Choice } from '@/components/choice';
 import type { PageState } from '@/components/table-types';
 import { BACKOFFICE_PANEL_PARAM } from '@/composables/usePanelExit';
 import { t, type StringKey } from '@/composables/useI18n';
-import { absoluteTime } from '@/lib/format';
+import { absoluteTime, localeTag } from '@/lib/format';
 import { rememberedPageSize } from '@/lib/page-size';
 import { isSuperAdmin } from '@/stores/session';
 import AdminFailure from './AdminFailure.vue';
@@ -243,7 +243,7 @@ function dayLabel(at: number): string {
   if (dayKey(at) === dayKey(today.getTime())) return t('presetToday');
   if (dayKey(at) === dayKey(yesterday.getTime())) return t('presetYesterday');
   const d = new Date(at);
-  return d.toLocaleDateString(undefined, {
+  return d.toLocaleDateString(localeTag(), {
     weekday: 'short', month: 'long', day: 'numeric',
     ...(d.getFullYear() === today.getFullYear() ? {} : { year: 'numeric' }),
   });
@@ -481,7 +481,7 @@ onMounted(reload);
                 <span class="oa-audit-side">
                   <span v-if="entry.ip" class="oa-audit-ip">{{ maskLog(entry.ip) }}</span>
                   <time class="oa-audit-time" :datetime="new Date(entry.at).toISOString()" :title="absoluteTime(entry.at)">
-                    {{ new Date(entry.at).toLocaleTimeString([], timeFormat) }}
+                    {{ new Date(entry.at).toLocaleTimeString(localeTag(), timeFormat) }}
                   </time>
                 </span>
               </button>

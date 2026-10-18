@@ -34,7 +34,10 @@ export async function refreshFeedbackUnread(): Promise<void> {
   }
 }
 
-/** Set directly when a screen has just learned the answer for itself. */
+/**
+ * Sets the count without a fetch. Nothing in the app calls it today; the
+ * sign-out test uses it to put a count in place before signing out.
+ */
 export function setFeedbackUnread(count: number): void {
   unread.value = Math.max(0, count);
 }
