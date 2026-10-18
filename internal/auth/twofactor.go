@@ -81,14 +81,14 @@ type TwoFactorEvent struct {
 }
 
 func (s *Service) twoFactorEvent(ctx context.Context, kind string, account user.User, ip string) {
-	if s.OnTwoFactor == nil {
+	if s.Hooks.OnTwoFactor == nil {
 		return
 	}
 	// Detached and bounded: the change is committed, and an audit write that
 	// failed or hung must not turn it into a failure the person sees.
 	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	s.OnTwoFactor(recordCtx, TwoFactorEvent{Kind: kind, Account: account, IP: ip})
+	s.Hooks.OnTwoFactor(recordCtx, TwoFactorEvent{Kind: kind, Account: account, IP: ip})
 }
 
 // --- policy -------------------------------------------------------------------

@@ -139,8 +139,8 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		return nil, err
 	}
 	authService := auth.NewService(db, users, groups, settingsService, mailer, cfg)
-	authService.ScreenEmail = userCheckManager.Check
-	authService.ScreenEmailCharges = userCheckManager.Charges
+	authService.Hooks.ScreenEmail = userCheckManager.Check
+	authService.Hooks.ScreenEmailCharges = userCheckManager.Charges
 
 	// Provider API keys are encrypted with a key derived from the instance
 	// secret; the box is the only thing that can read them back.
@@ -289,7 +289,9 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			freeSlot()
 			// Detached: the request context is cancelled the moment the
 			// browser goes away, and a reservation that is never given back
-			// is an allowance quietly lost until the window rolls over.
+			// is an allowance quietly lost until the window rolls over. Its own
+			// budget rather than chat.SaveBudget: this gives back a reservation
+			// the quota wiring took, which chat neither takes nor records.
 			refundCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 			defer cancel()
 			if err := quotaService.Release(refundCtx, userID, reserved); err != nil {
@@ -361,7 +363,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// Every handler that limits or logs by address asks this one function, so
 	// none of them can read the forwarded headers under a different trust.
 	clientIP := func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
-	authService.ClientIP = clientIP
+	authService.Hooks.ClientIP = clientIP
 	if cfg.TrustProxy && len(cfg.TrustedProxies) == 0 {
 		slog.WarnContext(ctx, "trusting forwarded headers from any private address; "+
 			"set OBSIDIAN_TRUSTED_PROXIES to the proxy's address if it is reachable directly")
@@ -579,7 +581,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 				settingsService.Int(settings.ChatChallengeRequests, 0) > 0)
 	}
 
-	authService.OnChallengeFailure = func(ctx context.Context, event, ip, username, reason string) {
+	authService.Hooks.OnChallengeFailure = func(ctx context.Context, event, ip, username, reason string) {
 		ev := securityevents.Event{
 			Event: event, Severity: securityevents.SeverityWarning,
 			Username: username, IP: ip, Decision: "refuse",
@@ -630,7 +632,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		}
 		return out, nil
 	}
-	authService.ReviewSignup = func(ctx context.Context, in auth.RegisterInput, fromAddress int) (auth.SignupReview, error) {
+	authService.Hooks.ReviewSignup = func(ctx context.Context, in auth.RegisterInput, fromAddress int) (auth.SignupReview, error) {
 		if !settingsService.Bool(settings.SignupReview) ||
 			settingsService.Get(settings.SignupReviewModel) == "" {
 			return auth.SignupReview{Decision: auth.SignupAllow}, nil
@@ -666,7 +668,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// Switching the second step on or off and spending a recovery code are
 	// what somebody asks about after an account has been taken over, so they
 	// are kept where the other decisions about who gets in are.
-	authService.OnTwoFactor = func(ctx context.Context, event auth.TwoFactorEvent) {
+	authService.Hooks.OnTwoFactor = func(ctx context.Context, event auth.TwoFactorEvent) {
 		severity := securityevents.SeverityInfo
 		if event.Kind == "disabled" || event.Kind == "recovery_used" {
 			severity = securityevents.SeverityWarning
@@ -692,7 +694,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// A sign-in from a device the account had not used before: logged where
 	// the operator looks after a takeover, and told to the owner, who is the
 	// one person who can say it was not them.
-	authService.OnNewDevice = func(ctx context.Context, event auth.NewDeviceEvent) {
+	authService.Hooks.OnNewDevice = func(ctx context.Context, event auth.NewDeviceEvent) {
 		if err := securityLog.Record(ctx, nil, securityevents.Event{
 			Event: securityevents.EventNewDevice, Severity: securityevents.SeverityInfo,
 			UserID: event.Account.ID, Username: event.Account.Username,
@@ -713,7 +715,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// takes on internal/invite directly — see auth.InviteGrant's comment —
 	// translating between that package's own Grant and auth's local
 	// InviteGrant, which is otherwise identical.
-	authService.ConsumeInvite = func(ctx context.Context, tx *database.Tx, code string) (*auth.InviteGrant, error) {
+	authService.Hooks.ConsumeInvite = func(ctx context.Context, tx *database.Tx, code string) (*auth.InviteGrant, error) {
 		grant, err := invites.Consume(ctx, tx, code, time.Now().UnixMilli())
 		// Only a rejected code is the guesser's to be charged for. A database
 		// error from the same call is passed on as itself, so it is not
@@ -728,15 +730,15 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			CodeID: grant.CodeID, OwnerID: grant.OwnerID, GroupID: grant.GroupID, GroupDays: grant.GroupDays,
 		}, nil
 	}
-	authService.RecordInviteUse = func(ctx context.Context, tx *database.Tx, grant auth.InviteGrant, userID string) error {
+	authService.Hooks.RecordInviteUse = func(ctx context.Context, tx *database.Tx, grant auth.InviteGrant, userID string) error {
 		return invites.RecordUse(ctx, tx, grant.CodeID, userID, grant.OwnerID, grant.GroupDays)
 	}
-	authService.RewardInvite = func(ctx context.Context, userID string, verificationRequired bool) {
+	authService.Hooks.RewardInvite = func(ctx context.Context, userID string, verificationRequired bool) {
 		if err := invites.Reward(ctx, userID, verificationRequired); err != nil {
 			slog.ErrorContext(ctx, "could not resolve an invite reward", "error", err, "user", userID)
 		}
 	}
-	authService.OnSignupReview = func(ctx context.Context, in auth.RegisterInput, account *user.User, review auth.SignupReview) {
+	authService.Hooks.OnSignupReview = func(ctx context.Context, in auth.RegisterInput, account *user.User, review auth.SignupReview) {
 		recordSignupReview(ctx, db, securityLog, notifyStore, in, account, review)
 	}
 
@@ -874,7 +876,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	authHandlers.SignInProviders = signInProviders
 	// The sign-up door asks the card's question too, so a registration is
 	// refused only where a button for the third-party route is on the page.
-	authService.SignInProviderCount = func() int { return len(signInProviders()) }
+	authService.Hooks.SignInProviderCount = func() int { return len(signInProviders()) }
 	// Same import-direction reason: whether an account owes an OIDC
 	// connection is oauth.Service's question to answer, and the account
 	// payload is auth's to build.
@@ -897,7 +899,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// A password that is replaced or reset ends what applications hold for
 	// the account. Set here because internal/idp imports auth, not the other
 	// way round.
-	authService.RevokeIssued = idpStore.RevokeAccount
+	authService.Hooks.RevokeIssued = idpStore.RevokeAccount
 	// The last of the sign-in wiring, so every hook the Service needs to run is
 	// set by now. A missing invite hook fails the boot here, not the first
 	// sign-up that carries a code.

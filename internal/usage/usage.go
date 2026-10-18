@@ -9,6 +9,7 @@ package usage
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,6 +25,10 @@ const (
 	StatusAborted  Status = "aborted"
 	StatusRejected Status = "rejected"
 )
+
+// hourMillis is an hour in the epoch milliseconds every timestamp here is
+// stored in: the width of a rollup bucket and of one cell of the week grid.
+const hourMillis = int64(time.Hour / time.Millisecond)
 
 // Record is one request. The group, provider and model names are snapshots
 // rather than joins: what something was called at the time is part of the
@@ -100,7 +105,7 @@ func (s *Store) Write(ctx context.Context, record Record) error {
 			return err
 		}
 
-		hourTS := record.StartedAt - (record.StartedAt % 3600000)
+		hourTS := record.StartedAt - (record.StartedAt % hourMillis)
 		var errors int64
 		if record.Status == StatusError {
 			errors = 1
@@ -275,7 +280,7 @@ func (f Filter) usesRollup() bool {
 	} else {
 		span = time.Now().UnixMilli() - f.Since
 	}
-	return span >= 3600_000
+	return span >= hourMillis
 }
 
 // where builds the filter clause for usage_records. The prefix qualifies every
@@ -321,7 +326,7 @@ func (f Filter) clause(prefix, timeCol string, hourly bool) (string, []any) {
 	if f.Since > 0 {
 		since := f.Since
 		if hourly {
-			since -= since % 3600_000
+			since -= since % hourMillis
 		}
 		conditions = append(conditions, prefix+timeCol+" >= ?")
 		args = append(args, since)
@@ -790,7 +795,7 @@ func (s *Store) Heatmap(ctx context.Context, filter Filter, offset time.Duration
 	}
 	args := append([]any{offset.Milliseconds()}, filterArgs...)
 	query := `SELECT (t.h / 24 + 4) % 7, t.h % 24, SUM(t.requests), COALESCE(SUM(t.total_tokens), 0)
-		 FROM (SELECT (` + timeCol + ` + ?) / 3600000 AS h, ` + requests + ` AS requests, SUM(total_tokens) AS total_tokens
+		 FROM (SELECT (` + timeCol + ` + ?) / ` + strconv.FormatInt(hourMillis, 10) + ` AS h, ` + requests + ` AS requests, SUM(total_tokens) AS total_tokens
 		       FROM ` + table + where + `
 		       GROUP BY 1) t
 		 GROUP BY 1, 2

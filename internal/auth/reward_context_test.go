@@ -20,17 +20,17 @@ func TestRegistrationRewardSurvivesADisconnect(t *testing.T) {
 
 	reqCtx, disconnect := context.WithCancel(ctx)
 	defer disconnect()
-	f.auth.ReviewSignup = func(context.Context, RegisterInput, int) (SignupReview, error) {
+	f.auth.Hooks.ReviewSignup = func(context.Context, RegisterInput, int) (SignupReview, error) {
 		return SignupReview{Ran: true, Decision: SignupAllow}, nil
 	}
 	// The review's record is the last thing the request does before the reward,
 	// so the browser going away at that point is the case that matters.
-	f.auth.OnSignupReview = func(context.Context, RegisterInput, *user.User, SignupReview) {
+	f.auth.Hooks.OnSignupReview = func(context.Context, RegisterInput, *user.User, SignupReview) {
 		disconnect()
 	}
 	var offered bool
 	var rewardErr error
-	f.auth.RewardInvite = func(rewardCtx context.Context, _ string, _ bool) {
+	f.auth.Hooks.RewardInvite = func(rewardCtx context.Context, _ string, _ bool) {
 		offered = true
 		rewardErr = rewardCtx.Err()
 	}

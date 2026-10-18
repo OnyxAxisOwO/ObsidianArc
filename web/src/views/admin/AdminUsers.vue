@@ -12,7 +12,6 @@ import {
   type Account, type AdminSession, type ApiKey, type CardHolding, type Conversation,
   type Group, type Message, type QuotaWindowKind, type Role, type UsageBreakdown,
 } from '@/admin/api';
-import { ApiError } from '@/api/client';
 import type { UsageSummary } from '@/api/usage';
 import { ADMIN_PERMISSIONS } from '@/admin/permissions';
 import OaCheckList from '@/components/OaCheckList.vue';
@@ -57,6 +56,7 @@ import CreditsField from './CreditsField.vue';
 import ExpiryPresets from './ExpiryPresets.vue';
 import UsageBoard from './usage/UsageBoard.vue';
 import { useAdminView } from './adminView';
+import { errorLine, refusalLine } from './failure-codes';
 
 const view = useAdminView();
 // Null until the first list lands, so the heading shows no count before then.
@@ -159,7 +159,7 @@ function panelFailure(row: Account, failure: unknown): void {
 }
 
 function failureText(failure: unknown): string {
-  return failure instanceof ApiError ? failure.message : String(failure);
+  return refusalLine(failure);
 }
 
 // --- the account panel ------------------------------------------------------------
@@ -1050,7 +1050,7 @@ async function load(): Promise<void> {
   try {
     ({ groups: groups.value } = await adminApi.groupOptions());
   } catch (failure) {
-    namesFailure = failure instanceof Error ? failure.message : String(failure);
+    namesFailure = errorLine(failure);
   }
   loaded.value = true;
   await list();

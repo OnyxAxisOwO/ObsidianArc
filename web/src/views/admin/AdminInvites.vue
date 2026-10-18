@@ -16,8 +16,6 @@ import { useDebounceFn } from '@vueuse/core';
 import { adminApi, type Group, type InviteCode, type InviteStats, type InviteUse } from '@/admin/api';
 import { fetchSite } from '@/api/auth';
 import { inviteLink } from '@/api/invites';
-import { ApiError } from '@/api/client';
-import { codeText } from '@/lib/api-error';
 import { copyToClipboard } from '@/chat/markdown';
 import AdminControlCard from './AdminControlCard.vue';
 import PluginList from './PluginList.vue';
@@ -46,6 +44,7 @@ import { site } from '@/stores/session';
 import AdminFailure from './AdminFailure.vue';
 import { useSettingsDraft } from './settingsDraft';
 import { useAdminView } from './adminView';
+import { refusalLine } from './failure-codes';
 
 const view = useAdminView();
 provideOpenRecord();
@@ -164,7 +163,7 @@ async function loadSettings(): Promise<void> {
     requiredAsStored.value = String(required);
     accept();
   } catch (failure) {
-    settingsError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    settingsError.value = refusalLine(failure);
   } finally {
     settingsLoaded.value = true;
   }
@@ -178,7 +177,7 @@ async function loadGroups(): Promise<void> {
   try {
     groups.value = (await adminApi.groupOptions()).groups ?? [];
   } catch (failure) {
-    groupsError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    groupsError.value = refusalLine(failure);
   }
 }
 
@@ -209,7 +208,7 @@ async function saveSettings(): Promise<void> {
     window.clearTimeout(saveLabelTimer);
     saveLabelTimer = window.setTimeout(() => { saveLabel.value = ''; }, 1500);
   } catch (failure) {
-    saveFlash.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    saveFlash.value = refusalLine(failure);
     saveLabel.value = '';
   } finally {
     savingBusy.value = false;
@@ -226,7 +225,7 @@ async function loadStats(): Promise<void> {
   try {
     stats.value = await adminApi.inviteStats();
   } catch (failure) {
-    statsError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    statsError.value = refusalLine(failure);
   }
 }
 
@@ -283,7 +282,7 @@ async function list(): Promise<void> {
     total.value = result.total;
   } catch (failure) {
     if (ticket !== listRequest) return;
-    listError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    listError.value = refusalLine(failure);
   } finally {
     if (ticket === listRequest) listing.value = false;
   }
@@ -309,7 +308,7 @@ async function loadPartners(): Promise<void> {
     partnerCodes.value = result.codes ?? [];
     partnerTotal.value = result.total;
   } catch (failure) {
-    partnerListError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    partnerListError.value = refusalLine(failure);
   } finally {
     partnerLoading.value = false;
   }
@@ -470,7 +469,7 @@ async function loadUses(id: string): Promise<void> {
       usesTotal.value = result.total;
     }
   } catch (failure) {
-    if (existing.value?.id === id) usesError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    if (existing.value?.id === id) usesError.value = refusalLine(failure);
   } finally {
     if (existing.value?.id === id) usesLoading.value = false;
   }
@@ -532,7 +531,7 @@ async function create(): Promise<void> {
     void loadStats();
     if (partner) void loadPartners();
   } catch (failure) {
-    panelError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    panelError.value = refusalLine(failure);
   } finally {
     busy.value = false;
   }
@@ -549,7 +548,7 @@ async function revoke(): Promise<void> {
     void loadStats();
     if (row.kind === 'partner') void loadPartners();
   } catch (failure) {
-    panelError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    panelError.value = refusalLine(failure);
   } finally {
     busy.value = false;
   }

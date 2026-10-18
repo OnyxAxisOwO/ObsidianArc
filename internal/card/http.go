@@ -86,6 +86,9 @@ func (h *Handlers) use(w http.ResponseWriter, r *http.Request) error {
 		return httpx.Internal(errors.New("card: no reset hook is wired"))
 	}
 
+	// Not chat.SaveBudget, though it is the same length: this is the account's
+	// own action, detached so that a card spent is never left with its reset
+	// undone, and nothing about a turn's bookkeeping decides how long it gets.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 15*time.Second)
 	defer cancel()
 	err := h.store.db.Tx(ctx, func(tx *database.Tx) error {

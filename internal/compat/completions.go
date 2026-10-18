@@ -987,11 +987,6 @@ func abortedWhenGone(failure error, gone bool) error {
 	return failure
 }
 
-// recordBudget bounds how long a turn's ledger write may take once the request
-// is over. The write is detached from the request, so this budget is the only
-// thing that stops a stuck database from holding it open indefinitely.
-const recordBudget = 15 * time.Second
-
 func (h *Handlers) record(
 	ctx context.Context, who caller, resolved model.Resolved,
 	requestID string, usage adapter.Usage, startedAt time.Time, failure error,
@@ -1005,7 +1000,7 @@ func (h *Handlers) record(
 	// Detached and bounded: the request context is cancelled the instant the
 	// client hangs up, and a turn that is not recorded is one the account
 	// never pays for.
-	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), recordBudget)
+	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), chat.SaveBudget)
 	defer cancel()
 
 	h.OnTurn(recordCtx, chat.TurnRecord{

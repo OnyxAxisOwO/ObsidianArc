@@ -197,7 +197,7 @@ func TestLeaderboardTTL30sCache(t *testing.T) {
 
 func TestLeaderboardSingleflightConcurrentAccess(t *testing.T) {
 	h, usageStore, _, adminUser := setupLeaderboardFixture(t)
-	h.Limiter = nil // Focus on singleflight
+	h.Limiter = nil // Focus on the merged build
 
 	ctx := context.Background()
 	_ = usageStore.Write(ctx, usage.Record{

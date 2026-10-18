@@ -90,7 +90,7 @@ func backupAPIError(err error) error {
 		return httpx.Conflict("backup_running", "An instance backup is already running.")
 	}
 	if errors.Is(err, systembackup.ErrNotConfigured) {
-		return httpx.BadRequest("Enter storage credentials and configuration first.")
+		return httpx.BadRequestCode("backup_not_configured", "Enter storage credentials and configuration first.")
 	}
 	// A code rather than only a sentence: the Backup page words this refusal in
 	// the reader's language, which a message written here cannot do.

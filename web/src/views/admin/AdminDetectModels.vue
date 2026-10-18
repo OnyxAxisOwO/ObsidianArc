@@ -15,13 +15,12 @@
 
 import { computed, ref, watch } from 'vue';
 import { adminApi } from '@/admin/api';
-import { ApiError } from '@/api/client';
-import { codeText } from '@/lib/api-error';
 import OaRow from '@/components/OaRow.vue';
 import OaSearchField from '@/components/OaSearchField.vue';
 import { t } from '@/composables/useI18n';
 import { IconCheck, IconRefresh } from '@/icons';
 import { filterDetected } from '@/lib/detect-filter';
+import { refusalLine } from './failure-codes';
 
 export interface DetectedModel {
   model_id: string;
@@ -91,7 +90,7 @@ async function detect(): Promise<void> {
 // Only a code the interface has a sentence for is translated; any other keeps
 // the server's sentence, which an administrator may need verbatim.
 function reasonText(reason: unknown): string {
-  return reason instanceof ApiError ? codeText(reason.code) ?? reason.message : String(reason);
+  return refusalLine(reason);
 }
 
 // An upstream model already configured can still be picked in the editor: a

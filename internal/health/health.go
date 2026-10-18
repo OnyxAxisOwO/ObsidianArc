@@ -19,6 +19,7 @@ package health
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -169,6 +170,94 @@ func (s *Store) Samples(ctx context.Context, modelID string, since int64, limit 
 		return nil, fmt.Errorf("health: samples: %w", err)
 	}
 	return samples, nil
+}
+
+// samplesForBatch is how many models one SamplesFor statement asks about.
+// Each model is one arm of a compound SELECT, and SQLite refuses a compound
+// with more than 500 arms; well under that, the statement stays a size the
+// planner reads quickly.
+const samplesForBatch = 100
+
+// SamplesFor is Samples for many models at once: the same evidence, the same
+// statuses, the same window, and each model's newest perModelLimit rows,
+// keyed by model id. A model with no evidence has no entry.
+//
+// The cap is applied in the database, one ORDER BY ... LIMIT per model, so
+// each arm is exactly the query Samples runs and walks the same (model_id,
+// time) indexes, stopping at its cap. A window function over the whole window
+// would be one arm, but it reads every row of the window before it can cut
+// any, and on a busy ledger that is far more than the page shows.
+func (s *Store) SamplesFor(ctx context.Context, modelIDs []string, since int64, perModelLimit int) (map[string][]Sample, error) {
+	if perModelLimit <= 0 {
+		perModelLimit = 200
+	}
+	seen := make(map[string]bool, len(modelIDs))
+	unique := make([]string, 0, len(modelIDs))
+	for _, modelID := range modelIDs {
+		if !seen[modelID] {
+			seen[modelID] = true
+			unique = append(unique, modelID)
+		}
+	}
+
+	out := make(map[string][]Sample, len(unique))
+	for start := 0; start < len(unique); start += samplesForBatch {
+		batch := unique[start:min(start+samplesForBatch, len(unique))]
+		arms := make([]string, 0, len(batch))
+		args := make([]any, 0, len(batch)*9)
+		for i, modelID := range batch {
+			arms = append(arms, fmt.Sprintf(`SELECT * FROM (
+				SELECT model_id, at, ok, code, message, source FROM (
+					SELECT model_id, started_at AS at,
+					       CASE WHEN status = ? THEN 1 ELSE 0 END AS ok,
+					       error_code AS code, '' AS message, 'user' AS source
+					FROM usage_records
+					WHERE model_id = ? AND started_at >= ? AND status IN (?, ?)
+					UNION ALL
+					SELECT model_id, at, CASE WHEN ok THEN 1 ELSE 0 END AS ok, code, message, 'system' AS source
+					FROM model_probes
+					WHERE model_id = ? AND at >= ?
+				) AS evidence
+				ORDER BY at DESC
+				LIMIT ?
+			) AS m%d`, i))
+			// The statuses are Samples', for Samples' reason.
+			args = append(args, statusOK, modelID, since, statusOK, statusError,
+				modelID, since, perModelLimit)
+		}
+		if err := s.readSamples(ctx, strings.Join(arms, "\nUNION ALL\n"), args, out); err != nil {
+			return nil, err
+		}
+	}
+	// Each arm is ordered inside itself, but nothing orders the rows of a
+	// compound once the arms are joined, so the newest-first order Samples
+	// promises is restored here.
+	for _, samples := range out {
+		sort.SliceStable(samples, func(i, j int) bool { return samples[i].At > samples[j].At })
+	}
+	return out, nil
+}
+
+func (s *Store) readSamples(ctx context.Context, query string, args []any, out map[string][]Sample) error {
+	rows, err := s.db.Query(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("health: samples: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var modelID string
+		var sample Sample
+		var ok int
+		if err := rows.Scan(&modelID, &sample.At, &ok, &sample.Code, &sample.Message, &sample.Source); err != nil {
+			return fmt.Errorf("health: samples: %w", err)
+		}
+		sample.OK = ok == 1
+		out[modelID] = append(out[modelID], sample)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("health: samples: %w", err)
+	}
+	return nil
 }
 
 // The two statuses in usage_records that say something about the model. They

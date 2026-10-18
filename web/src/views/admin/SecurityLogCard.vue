@@ -5,7 +5,6 @@
 
 import { onMounted, ref } from 'vue';
 import { adminApi, type SecurityEvent } from '@/admin/api';
-import { ApiError } from '@/api/client';
 import OaBadge from '@/components/OaBadge.vue';
 import OaPagination from '@/components/OaPagination.vue';
 import type { PageState } from '@/components/table-types';
@@ -16,6 +15,7 @@ import { rememberedPageSize } from '@/lib/page-size';
 import { maskLog, maskUser } from '@/admin/safeMode';
 import AdminControlCard from './AdminControlCard.vue';
 import { eventLabel, formatEventReason, reviewDecision } from './security-text';
+import { refusalLine } from './failure-codes';
 
 // A failed read is reported in the page's own flash line, where it has always
 // appeared, rather than in a second place inside the card.
@@ -38,7 +38,7 @@ async function load(): Promise<void> {
     events.value = result.events ?? [];
     total.value = result.total;
   } catch (failure) {
-    emit('failed', failure instanceof ApiError ? failure.message : String(failure));
+    emit('failed', refusalLine(failure));
   } finally {
     if (ticket === request) loading.value = false;
   }

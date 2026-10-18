@@ -402,12 +402,10 @@ func (s *Store) MarkSeen(ctx context.Context, userID string, announcementIDs []s
 	for start := 0; start < len(announcementIDs); start += markSeenBatch {
 		batch := announcementIDs[start:min(start+markSeenBatch, len(announcementIDs))]
 		args := []any{userID, readAt, true}
-		placeholders := make([]string, 0, len(batch))
 		for _, announcementID := range batch {
-			placeholders = append(placeholders, "?")
 			args = append(args, announcementID)
 		}
-		in := strings.Join(placeholders, ", ")
+		in := database.Placeholders(len(batch))
 		// The published check is a read the insert acts on, so it holds the
 		// row locks Update and MarkRead take: on PostgreSQL a lone INSERT ...
 		// SELECT reads a snapshot from before an unpublish still committing,

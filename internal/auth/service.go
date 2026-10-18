@@ -113,10 +113,6 @@ type Service struct {
 	// challenge rather than a broken one.
 	Challenge      turnstile.Gate
 	LoginChallenge turnstile.Gate
-	// How many third-party sign-ins the card is offering right now. Set by the
-	// wiring, which is the package that knows what is configured: internal/oauth
-	// imports this one. Nil is none.
-	SignInProviderCount func() int
 	// A plugin's checks, in front of the same two doors — see AddGuard —
 	// and how sign-up treats each plugin account field — see SetFieldRule.
 	// Written at setup, and again when a plugin is installed or removed
@@ -126,25 +122,6 @@ type Service struct {
 	fieldRules map[string]func() string
 	// Self-developed proof-of-work manager. Nil is off.
 	PoW *pow.Manager
-	// Challenge failure hook for recording to security events.
-	OnChallengeFailure func(ctx context.Context, event, ip, username, reason string)
-	// Asks a model whether a sign-up looks like a person. Nil is off.
-	//
-	// A function rather than the reviewer itself: the review needs a model,
-	// a provider and an adapter registry, and auth has no business knowing
-	// about any of them. A call failure still carries the mode's fallback
-	// decision; the error exists so the wiring can report why it was needed.
-	ReviewSignup func(ctx context.Context, in RegisterInput, fromAddress int) (SignupReview, error)
-	// A paid disposable-address lookup, configured by the administrator.
-	// Call before account writes, never from inside a transaction.
-	ScreenEmail func(context.Context, string) error
-	// Whether ScreenEmail spends a paid lookup on an address. An account's address
-	// changes are metered by it, and a nil ScreenEmailCharges meters nothing.
-	ScreenEmailCharges func(string) bool
-	// Called after a review has a durable outcome, including a refusal where
-	// no account was created. Recording is best-effort and must not turn an
-	// audit failure into a registration failure.
-	OnSignupReview func(context.Context, RegisterInput, *user.User, SignupReview)
 	// Optional. Nil, or configured with no host, means every feature
 	// that needs mail reports itself as unavailable rather than
 	// failing halfway through.
@@ -164,6 +141,45 @@ type Service struct {
 	// spending a sign-in's allowance on it would lock the same person out of
 	// both. See spendInvite.
 	invites *Limiter
+
+	// What the wiring plugs in: see Hooks. Set before the server serves,
+	// never after.
+	Hooks Hooks
+
+	// Points where a concurrency test stops a request to make a race land. They
+	// live in their own struct so the fields above are the ones production
+	// reads; every hook is nil outside tests.
+	hooks testHooks
+}
+
+// Hooks are the calls the wiring supplies, because what they reach lives in
+// a package that imports this one or has no business being imported here.
+// The zero value is usable: every nil hook is off, except the three invite
+// hooks CheckWired insists on.
+type Hooks struct {
+	// How many third-party sign-ins the card is offering right now. Set by the
+	// wiring, which is the package that knows what is configured: internal/oauth
+	// imports this one. Nil is none.
+	SignInProviderCount func() int
+	// Challenge failure hook for recording to security events.
+	OnChallengeFailure func(ctx context.Context, event, ip, username, reason string)
+	// Asks a model whether a sign-up looks like a person. Nil is off.
+	//
+	// A function rather than the reviewer itself: the review needs a model,
+	// a provider and an adapter registry, and auth has no business knowing
+	// about any of them. A call failure still carries the mode's fallback
+	// decision; the error exists so the wiring can report why it was needed.
+	ReviewSignup func(ctx context.Context, in RegisterInput, fromAddress int) (SignupReview, error)
+	// A paid disposable-address lookup, configured by the administrator.
+	// Call before account writes, never from inside a transaction.
+	ScreenEmail func(context.Context, string) error
+	// Whether ScreenEmail spends a paid lookup on an address. An account's address
+	// changes are metered by it, and a nil ScreenEmailCharges meters nothing.
+	ScreenEmailCharges func(string) bool
+	// Called after a review has a durable outcome, including a refusal where
+	// no account was created. Recording is best-effort and must not turn an
+	// audit failure into a registration failure.
+	OnSignupReview func(context.Context, RegisterInput, *user.User, SignupReview)
 	// Told when the second step is switched on or off, or a recovery code
 	// is spent. Nil records nothing.
 	OnTwoFactor func(context.Context, TwoFactorEvent)
@@ -202,11 +218,6 @@ type Service struct {
 	ConsumeInvite   func(ctx context.Context, tx *database.Tx, code string) (*InviteGrant, error)
 	RecordInviteUse func(ctx context.Context, tx *database.Tx, grant InviteGrant, userID string) error
 	RewardInvite    func(ctx context.Context, userID string, verificationRequired bool)
-
-	// Points where a concurrency test stops a request to make a race land. They
-	// live in their own struct so the fields above are the ones production
-	// reads; every hook is nil outside tests.
-	hooks testHooks
 }
 
 // testHooks are called at the windows a race test has to pause a request in.
@@ -244,13 +255,13 @@ type testHooks struct {
 // hook is set, so the boot fails instead.
 func (s *Service) CheckWired() error {
 	var missing []string
-	if s.ConsumeInvite == nil {
+	if s.Hooks.ConsumeInvite == nil {
 		missing = append(missing, "ConsumeInvite")
 	}
-	if s.RecordInviteUse == nil {
+	if s.Hooks.RecordInviteUse == nil {
 		missing = append(missing, "RecordInviteUse")
 	}
-	if s.RewardInvite == nil {
+	if s.Hooks.RewardInvite == nil {
 		missing = append(missing, "RewardInvite")
 	}
 	if len(missing) > 0 {
@@ -451,8 +462,8 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 		// 2. Cloudflare Turnstile challenge verification
 		if captchaMode == settings.CaptchaModeTurnstile || captchaMode == settings.CaptchaModeBoth {
 			if err := s.Challenge.Check(ctx, in.Turnstile, in.IP); err != nil {
-				if s.OnChallengeFailure != nil {
-					s.OnChallengeFailure(ctx, "turnstile_challenge", in.IP, in.Username, "Turnstile 人机验证未通过")
+				if s.Hooks.OnChallengeFailure != nil {
+					s.Hooks.OnChallengeFailure(ctx, "turnstile_challenge", in.IP, in.Username, "Turnstile 人机验证未通过")
 				}
 				return user.User{}, "", err
 			}
@@ -481,7 +492,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 		// Last of the gates and outside the transaction, for the same two
 		// reasons: it is a call to a provider, and it is the slowest thing
 		// here. Everything cheap has already had its chance to refuse.
-		if s.ReviewSignup != nil {
+		if s.Hooks.ReviewSignup != nil {
 			seen, err := s.countRecentFromIP(ctx, in.IP)
 			if err != nil {
 				return user.User{}, "", err
@@ -489,7 +500,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 			// The error is not returned: when the model fails, ReviewSignup still
 			// answers with the mode's fallback decision, so an error here comes with
 			// a usable verdict by design. The wiring logs the failure itself.
-			review, _ = s.ReviewSignup(ctx, in, seen)
+			review, _ = s.Hooks.ReviewSignup(ctx, in, seen)
 			switch review.Decision {
 			case SignupAllow, SignupRestrict, SignupRefuse:
 			default:
@@ -701,12 +712,12 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 	// nobody by inviting is not this request's problem to retry. A no-op
 	// for the overwhelming majority of registrations, which used no
 	// personal code at all — see invite.Store.Reward.
-	if s.RewardInvite != nil {
+	if s.Hooks.RewardInvite != nil {
 		// The account exists by now, so a browser that disconnects must not cancel
 		// the reward. The bound keeps a stuck database from holding the response;
 		// a reward that still fails is picked up by RewardPending.
 		rewardCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		s.RewardInvite(rewardCtx, created.ID, s.VerificationRequired())
+		s.Hooks.RewardInvite(rewardCtx, created.ID, s.VerificationRequired())
 		cancel()
 	}
 
@@ -773,7 +784,7 @@ func (s *Service) SignupRestrictedUntil() int64 {
 func (s *Service) recordSignupReview(
 	ctx context.Context, in RegisterInput, account *user.User, review SignupReview,
 ) {
-	if s.OnSignupReview == nil || !review.Ran {
+	if s.Hooks.OnSignupReview == nil || !review.Ran {
 		return
 	}
 	// The decision remains useful if the browser goes away just as review
@@ -781,7 +792,7 @@ func (s *Service) recordSignupReview(
 	// registration path indefinitely.
 	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	s.OnSignupReview(recordCtx, in, account, review)
+	s.Hooks.OnSignupReview(recordCtx, in, account, review)
 }
 
 // UpdateProfile applies the fields an account owns about itself.
@@ -980,7 +991,7 @@ func (s *Service) UpdateProfile(ctx context.Context, userID string, in user.Prof
 		if !errors.Is(err, errNeedsEmailScreening) {
 			break
 		}
-		if s.ScreenEmailCharges != nil && s.ScreenEmailCharges(address) {
+		if s.Hooks.ScreenEmailCharges != nil && s.Hooks.ScreenEmailCharges(address) {
 			if err := s.reserveEmailScreen(ctx, userID); err != nil {
 				return user.User{}, err
 			}
@@ -1056,10 +1067,10 @@ func (s *Service) consumeInvite(ctx context.Context, tx *database.Tx, code strin
 		}
 		return nil, nil
 	}
-	if s.ConsumeInvite == nil {
+	if s.Hooks.ConsumeInvite == nil {
 		return nil, ErrInviteInvalid
 	}
-	grant, err := s.ConsumeInvite(ctx, tx, code)
+	grant, err := s.Hooks.ConsumeInvite(ctx, tx, code)
 	if err != nil {
 		return nil, err
 	}
@@ -1147,8 +1158,8 @@ func (s *Service) applyInvite(ctx context.Context, tx *database.Tx, grant *Invit
 			return 0, fmt.Errorf("auth: apply invite group expiry: %w", err)
 		}
 	}
-	if s.RecordInviteUse != nil {
-		if err := s.RecordInviteUse(ctx, tx, *grant, userID); err != nil {
+	if s.Hooks.RecordInviteUse != nil {
+		if err := s.Hooks.RecordInviteUse(ctx, tx, *grant, userID); err != nil {
 			return 0, fmt.Errorf("auth: record invite use: %w", err)
 		}
 	}
@@ -1540,8 +1551,8 @@ func (s *Service) ChangePassword(ctx context.Context, userID, currentPassword, n
 		if err := s.users.SetPasswordHash(ctx, tx, userID, updated); err != nil {
 			return err
 		}
-		if s.RevokeIssued != nil {
-			if err := s.RevokeIssued(ctx, tx, userID); err != nil {
+		if s.Hooks.RevokeIssued != nil {
+			if err := s.Hooks.RevokeIssued(ctx, tx, userID); err != nil {
 				return err
 			}
 		}
@@ -1595,8 +1606,8 @@ func (s *Service) SetPassword(ctx context.Context, userID, newPassword string, a
 		if err := s.users.SetPasswordHash(ctx, tx, userID, hash); err != nil {
 			return err
 		}
-		if s.RevokeIssued != nil {
-			if err := s.RevokeIssued(ctx, tx, userID); err != nil {
+		if s.Hooks.RevokeIssued != nil {
+			if err := s.Hooks.RevokeIssued(ctx, tx, userID); err != nil {
 				return err
 			}
 		}
@@ -1772,5 +1783,5 @@ func (s *Service) isThirdPartyOnlySignup() bool {
 // switched on without its credentials has no button, and refusing every sign-up
 // because of it would leave the page with no way in.
 func (s *Service) hasOAuthProviders() bool {
-	return s.SignInProviderCount != nil && s.SignInProviderCount() > 0
+	return s.Hooks.SignInProviderCount != nil && s.Hooks.SignInProviderCount() > 0
 }

@@ -276,9 +276,9 @@ func (s *Service) Verify(ctx context.Context, token string) (string, error) {
 	// The verification has committed, so a browser that disconnects now must
 	// not cancel the reward. The bound keeps a stuck database from holding the
 	// response; a reward that still fails is picked up by RewardPending.
-	if s.RewardInvite != nil {
+	if s.Hooks.RewardInvite != nil {
 		rewardCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		s.RewardInvite(rewardCtx, userID, s.VerificationRequired())
+		s.Hooks.RewardInvite(rewardCtx, userID, s.VerificationRequired())
 		cancel()
 	}
 	return userID, nil
@@ -422,9 +422,9 @@ func (s *Service) VerifyCode(ctx context.Context, userID, code string) error {
 	// The verification has committed, so a browser that disconnects now must
 	// not cancel the reward. The bound keeps a stuck database from holding the
 	// response; a reward that still fails is picked up by RewardPending.
-	if s.RewardInvite != nil {
+	if s.Hooks.RewardInvite != nil {
 		rewardCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		s.RewardInvite(rewardCtx, userID, s.VerificationRequired())
+		s.Hooks.RewardInvite(rewardCtx, userID, s.VerificationRequired())
 		cancel()
 	}
 	return nil

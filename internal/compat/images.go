@@ -294,10 +294,9 @@ func referenceRefusal(err error) error {
 
 // recordImages settles an image call the way record settles a completion.
 //
-// It is separate because the arithmetic differs rather than the bookkeeping:
-// an image model reports no tokens, so the charge is the model's per-request
-// credit taken once per picture returned. Settling only the reservation would
-// make every picture free and leave no ledger row behind it.
+// It is separate because the arithmetic differs rather than the bookkeeping,
+// and the arithmetic is chat.ImageTurnRecord's, the same the transcript's
+// image calls are charged by.
 func (h *Handlers) recordImages(
 	ctx context.Context, who caller, resolved model.Resolved,
 	requestID string, startedAt time.Time, images int, failure error,
@@ -306,24 +305,11 @@ func (h *Handlers) recordImages(
 		return
 	}
 	status, code := turnOutcome(failure)
-	// A call that came back empty still reached the provider.
-	billable := max(1, images)
 
 	// Detached like record: the provider generated and billed for these pictures
 	// whether or not the client is still listening, so the entry is owed either way.
-	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), recordBudget)
+	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), chat.SaveBudget)
 	defer cancel()
 
-	h.OnTurn(recordCtx, chat.TurnRecord{
-		User:         who.account,
-		Model:        resolved.Model,
-		ProviderID:   resolved.Provider.ID,
-		ProviderName: resolved.Provider.Name,
-		RequestID:    requestID,
-		Credits:      resolved.Model.Credits(adapter.Usage{}) * float64(billable),
-		Status:       status,
-		ErrorCode:    code,
-		StartedAt:    startedAt,
-		FinishedAt:   time.Now(),
-	})
+	h.OnTurn(recordCtx, chat.ImageTurnRecord(who.account, resolved, requestID, startedAt, images, status, code))
 }

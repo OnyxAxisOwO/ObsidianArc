@@ -124,7 +124,7 @@ func TestRecordDeviceFiresTheHookOnlyForANewDevice(t *testing.T) {
 	ctx := context.Background()
 
 	var seen []NewDeviceEvent
-	f.auth.OnNewDevice = func(_ context.Context, e NewDeviceEvent) {
+	f.auth.Hooks.OnNewDevice = func(_ context.Context, e NewDeviceEvent) {
 		seen = append(seen, e)
 	}
 
@@ -292,7 +292,7 @@ func TestNewDeviceNoticesStopAtTheCapButEveryDeviceIsRecorded(t *testing.T) {
 	ctx := context.Background()
 
 	var notices int
-	f.auth.OnNewDevice = func(context.Context, NewDeviceEvent) { notices++ }
+	f.auth.Hooks.OnNewDevice = func(context.Context, NewDeviceEvent) { notices++ }
 
 	account, token, err := f.auth.Register(ctx, RegisterInput{Username: "arc", Password: "a-good-password"})
 	if err != nil {

@@ -142,7 +142,7 @@ func (s *Store) Create(ctx context.Context, q database.Queryer, in CreateInput) 
 		record.APIAccess, record.AllowStats, record.AllowDeleteConversations, record.AllowTerminal, record.ShowExpiry,
 		record.SortOrder, record.CreatedAt, record.UpdatedAt)
 	if err != nil {
-		if isUnique(err) {
+		if database.IsUnique(err) {
 			return Group{}, ErrNameTaken
 		}
 		return Group{}, fmt.Errorf("group: create: %w", err)
@@ -315,7 +315,7 @@ func (s *Store) Update(ctx context.Context, q database.Queryer, groupID string, 
 
 	result, err := q.Exec(ctx, `UPDATE user_groups SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...)
 	if err != nil {
-		if isUnique(err) {
+		if database.IsUnique(err) {
 			return Group{}, ErrNameTaken
 		}
 		return Group{}, fmt.Errorf("group: update: %w", err)
@@ -389,9 +389,4 @@ func checkName(value string) (string, error) {
 		return "", ErrInvalidName
 	}
 	return trimmed, nil
-}
-
-func isUnique(err error) bool {
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "unique") || strings.Contains(message, "duplicate")
 }

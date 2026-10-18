@@ -1126,7 +1126,7 @@ func TestRewardAfterVerificationSurvivesADisconnect(t *testing.T) {
 			defer disconnect()
 			var offered bool
 			var rewardErr error
-			f.auth.RewardInvite = func(rewardCtx context.Context, _ string, _ bool) {
+			f.auth.Hooks.RewardInvite = func(rewardCtx context.Context, _ string, _ bool) {
 				disconnect()
 				offered = true
 				rewardErr = rewardCtx.Err()

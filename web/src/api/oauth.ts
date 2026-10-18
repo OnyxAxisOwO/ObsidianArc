@@ -70,6 +70,44 @@ export function signInURL(
 }
 
 /**
+ * Starts a sign-in as a form post rather than a navigation to signInURL.
+ *
+ * Used when the request carries a challenge token or a proof of work: both
+ * are one-use, but in an address they land in proxy logs, the browser's
+ * history and the Referer the provider's page is sent. A form post keeps them
+ * in the body, and the server answers it with the same redirect. The plain
+ * link stays for a sign-in that carries neither.
+ */
+export function submitSignIn(
+  provider: string,
+  options: {
+    next?: string;
+    turnstile?: string;
+    pow?: PoWSolution;
+    register?: boolean;
+  } = {},
+): void {
+  const form = document.createElement('form');
+  form.method = 'POST';
+  form.action = `/api/auth/oauth/start/${encodeURIComponent(provider)}`;
+  form.hidden = true;
+  const fields: Record<string, string> = {};
+  if (options.next) fields['next'] = options.next;
+  if (options.turnstile) fields['turnstile'] = options.turnstile;
+  if (options.pow) fields['pow'] = JSON.stringify(options.pow);
+  if (options.register) fields['register'] = '1';
+  for (const [name, value] of Object.entries(fields)) {
+    const input = document.createElement('input');
+    input.type = 'hidden';
+    input.name = name;
+    input.value = value;
+    form.append(input);
+  }
+  document.body.append(form);
+  form.submit();
+}
+
+/**
  * Starts connecting a provider to this account, and answers with the address the
  * browser has to leave for: the provider's consent screen, which comes back to
  * this site when it is done.

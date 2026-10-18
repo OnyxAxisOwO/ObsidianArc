@@ -19,10 +19,10 @@ const (
 // provider sign-ups. Keeping it outside Provision's transaction prevents a
 // slow third-party request from holding the instance registration lock.
 func (s *Service) CheckRegistrationEmail(ctx context.Context, email string) error {
-	if s.ScreenEmail == nil || email == "" {
+	if s.Hooks.ScreenEmail == nil || email == "" {
 		return nil
 	}
-	return s.ScreenEmail(ctx, email)
+	return s.Hooks.ScreenEmail(ctx, email)
 }
 
 // reserveEmailScreen spends one of the account's places in the hourly allowance

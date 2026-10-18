@@ -75,8 +75,8 @@ func (s *Service) Attach() httpx.Middleware {
 			// handler, so the in-process dispatches this request goes on to
 			// make (the web terminal, the chat's tools) see it ended too.
 			ip := ""
-			if s.ClientIP != nil {
-				ip = s.ClientIP(r)
+			if s.Hooks.ClientIP != nil {
+				ip = s.Hooks.ClientIP(r)
 			}
 			if s.backofficeMoved(session, ip, r.UserAgent()) {
 				// Ended for this request whether or not the write lands: a

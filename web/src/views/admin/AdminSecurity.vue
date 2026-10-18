@@ -51,6 +51,7 @@ import SecurityLogCard from './SecurityLogCard.vue';
 import SecurityMailCard from './SecurityMailCard.vue';
 import SecurityUserCheckCard from './SecurityUserCheckCard.vue';
 import { formatEventReason, reviewDecision } from './security-text';
+import { errorLine, refusalLine } from './failure-codes';
 
 const view = useAdminView();
 view.setTitle(() => t('navSecurity'), () => t('securitySubtitle'));
@@ -491,7 +492,7 @@ function runTrial(): void {
         { reason });
     })
     .catch((failure: unknown) => {
-      trial.value.answer = failure instanceof ApiError ? failure.message : String(failure);
+      trial.value.answer = refusalLine(failure);
     })
     .finally(() => { trial.value.running = false; });
 }
@@ -595,7 +596,7 @@ async function load(): Promise<void> {
     initialReviewPrompt.value = values['security.signup_review_prompt'] ?? '';
     accept();
   } catch (failure) {
-    error.value = failure instanceof Error ? failure.message : String(failure);
+    error.value = errorLine(failure);
   } finally {
     loaded.value = true;
   }

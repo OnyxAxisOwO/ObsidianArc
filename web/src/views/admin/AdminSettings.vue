@@ -35,6 +35,7 @@ import { formatBytes } from '@/lib/format';
 import AdminFailure from './AdminFailure.vue';
 import { useAdminView } from './adminView';
 import { refreshSite, site } from '@/stores/session';
+import { errorLine, refusalLine } from './failure-codes';
 
 const view = useAdminView();
 view.setTitle(() => t('adminSettingsTitle'), () => t('controlSettingsSubtitle'));
@@ -338,7 +339,7 @@ async function save(): Promise<void> {
     saveLabel.value = t('saved');
     window.setTimeout(() => { saveLabel.value = ''; }, 1500);
   } catch (failure) {
-    flash.value = failure instanceof ApiError ? failure.message : String(failure);
+    flash.value = refusalLine(failure);
     saveLabel.value = '';
   } finally {
     busy.value = false;
@@ -380,7 +381,7 @@ function importSettings(): void {
     })
     .catch((failure: unknown) => {
       flashOK.value = false;
-      flash.value = failure instanceof ApiError ? failure.message : String(failure);
+      flash.value = refusalLine(failure);
     });
 }
 
@@ -399,7 +400,7 @@ function purge(): void {
     })
     .catch((failure: unknown) => {
       flashOK.value = false;
-      flash.value = failure instanceof ApiError ? failure.message : String(failure);
+      flash.value = refusalLine(failure);
     })
     .finally(() => { purging.value = false; });
 }
@@ -452,7 +453,7 @@ async function uploadLogoFile(file: File): Promise<void> {
   } catch (failure) {
     flashOK.value = false;
     // An Error's own message is the text to show; String() would prefix its class.
-    flash.value = failure instanceof Error ? failure.message : String(failure);
+    flash.value = errorLine(failure);
   } finally {
     uploadingLogo.value = false;
     dragOverLogo.value = false;
@@ -490,7 +491,7 @@ async function clearSiteLogo(): Promise<void> {
   } catch (failure) {
     flashOK.value = false;
     // An Error's own message is the text to show; String() would prefix its class.
-    flash.value = failure instanceof Error ? failure.message : String(failure);
+    flash.value = errorLine(failure);
   } finally {
     uploadingLogo.value = false;
   }
@@ -582,7 +583,7 @@ async function load(): Promise<void> {
     };
     accept();
   } catch (failure) {
-    error.value = failure instanceof Error ? failure.message : String(failure);
+    error.value = errorLine(failure);
   } finally {
     loaded.value = true;
   }

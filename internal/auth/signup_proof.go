@@ -31,8 +31,8 @@ func (s *Service) verifyProof(ctx context.Context, ip, username string, solution
 		return errors.New("auth: pow required but manager not configured")
 	}
 	if solution == nil {
-		if s.OnChallengeFailure != nil {
-			s.OnChallengeFailure(ctx, "pow_challenge", ip, username, "缺少 PoW 解答")
+		if s.Hooks.OnChallengeFailure != nil {
+			s.Hooks.OnChallengeFailure(ctx, "pow_challenge", ip, username, "缺少 PoW 解答")
 		}
 		return pow.ErrMissingSolution
 	}
@@ -52,8 +52,8 @@ func (s *Service) verifyProof(ctx context.Context, ip, username string, solution
 		case errors.Is(err, pow.ErrReplayed):
 			reason = "PoW 挑战已被使用"
 		}
-		if s.OnChallengeFailure != nil {
-			s.OnChallengeFailure(ctx, "pow_challenge", ip, username, reason)
+		if s.Hooks.OnChallengeFailure != nil {
+			s.Hooks.OnChallengeFailure(ctx, "pow_challenge", ip, username, reason)
 		}
 		return err
 	}

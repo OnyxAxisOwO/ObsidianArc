@@ -548,18 +548,16 @@ const requestPictureBatch = 500
 // skipped.
 func (s *Store) requestPictures(ctx context.Context, q database.Queryer, userID string, batch []Message) error {
 	index := make(map[string]int, len(batch))
-	marks := make([]string, 0, len(batch))
 	ids := make([]any, 0, len(batch)+1)
 	ids = append(ids, userID)
 	for position, message := range batch {
 		index[message.ID] = position
-		marks = append(marks, "?")
 		ids = append(ids, message.ID)
 	}
 	attachments, err := q.Query(ctx,
 		`SELECT a.id, a.message_id, a.mime, a.width, a.height, a.size, a.discarded_at
 		 FROM attachments a
-		 WHERE a.user_id = ? AND a.message_id IN (`+strings.Join(marks, ", ")+`)
+		 WHERE a.user_id = ? AND a.message_id IN (`+database.Placeholders(len(batch))+`)
 		 ORDER BY a.created_at`, ids...)
 	if err != nil {
 		return fmt.Errorf("conversation: attachments for request: %w", err)

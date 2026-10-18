@@ -21,8 +21,8 @@ func TestIsUniqueOnlyMatchesAUniqueClash(t *testing.T) {
 		"UNIQUE constraint failed: invite_codes.code":             true,
 		`duplicate key value violates unique constraint "x_pkey"`: true,
 	} {
-		if got := isUnique(errors.New(message)); got != want {
-			t.Errorf("isUnique(%q) = %v, want %v", message, got, want)
+		if got := database.IsUnique(errors.New(message)); got != want {
+			t.Errorf("database.IsUnique(%q) = %v, want %v", message, got, want)
 		}
 	}
 }

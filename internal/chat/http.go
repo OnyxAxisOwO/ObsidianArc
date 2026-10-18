@@ -879,8 +879,9 @@ type imageGenItem struct {
 	Mime          string `json:"mime,omitempty"`
 }
 
-// recordImages writes the ledger entry for an image call and settles what it
-// cost.
+// ImageTurnRecord is the ledger entry for an image call, built in one place
+// for both doors an image request can come through, so they cannot price a
+// picture differently.
 //
 // Image models report no token counts, so the whole charge is the model's
 // per-request credit, taken once for each picture that came back — that being
@@ -888,17 +889,14 @@ type imageGenItem struct {
 // allowance, handed it straight back and settled nothing, so pictures were
 // free and absent from the ledger while the same model used from the
 // transcript was neither.
-func (h *Handlers) recordImages(
-	ctx context.Context, account user.User, resolved model.Resolved,
-	requestID string, startedAt time.Time, images int, status Status, code string,
-) {
-	if h.service.OnTurn == nil {
-		return
-	}
+func ImageTurnRecord(
+	account user.User, resolved model.Resolved, requestID string,
+	startedAt time.Time, images int, status Status, code string,
+) TurnRecord {
 	// A call that came back empty still reached the provider, and the turn
 	// path charges a failed generation the same way.
 	billable := max(1, images)
-	h.service.OnTurn(ctx, TurnRecord{
+	return TurnRecord{
 		User:         account,
 		Model:        resolved.Model,
 		ProviderID:   resolved.Provider.ID,
@@ -909,7 +907,19 @@ func (h *Handlers) recordImages(
 		ErrorCode:    code,
 		StartedAt:    startedAt,
 		FinishedAt:   time.Now(),
-	})
+	}
+}
+
+// recordImages writes the ledger entry for an image call and settles what it
+// cost; see ImageTurnRecord.
+func (h *Handlers) recordImages(
+	ctx context.Context, account user.User, resolved model.Resolved,
+	requestID string, startedAt time.Time, images int, status Status, code string,
+) {
+	if h.service.OnTurn == nil {
+		return
+	}
+	h.service.OnTurn(ctx, ImageTurnRecord(account, resolved, requestID, startedAt, images, status, code))
 }
 
 // imageFailure answers a provider call that failed, with the status that says
@@ -926,6 +936,14 @@ func imageFailure(code, friendly string) error {
 	}
 	return httpx.BadRequestCode(code, "%s", friendly)
 }
+
+// SaveBudget bounds what a turn still owes once its request may be gone: the
+// ledger entry, the transcript's save, the attachments it lets go of. Those
+// run detached from the request, so this is the only thing that stops a
+// stuck database from holding them open for ever. The OpenAI-compatible
+// door's ledger writes use it too, so one turn is not given longer to be
+// recorded through one door than the other.
+const SaveBudget = 15 * time.Second
 
 // pictureFetchBudget is how long each picture the provider only linked to may
 // take to arrive. A picture sent inline never waits on it.
@@ -1126,7 +1144,7 @@ func (h *Handlers) generateImage(w http.ResponseWriter, r *http.Request) error {
 	// Outliving a cancelled request for the same reason the turn path's save
 	// does: the provider generated and billed for these whether or not the
 	// browser is still listening, so the ledger entry is owed either way.
-	saveCtx, cancelSave := context.WithTimeout(context.WithoutCancel(r.Context()), 15*time.Second)
+	saveCtx, cancelSave := context.WithTimeout(context.WithoutCancel(r.Context()), SaveBudget)
 	defer cancelSave()
 
 	if genErr != nil {

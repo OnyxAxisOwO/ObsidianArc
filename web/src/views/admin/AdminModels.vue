@@ -15,7 +15,6 @@ import {
 } from '@/admin/api';
 import { pickJSONFile, saveAsFile } from '@/api/backup';
 import { ApiError } from '@/api/client';
-import { codeText } from '@/lib/api-error';
 import { DAY_MS } from '@/lib/time';
 import OaBadge from '@/components/OaBadge.vue';
 import OaBadgeRow from '@/components/OaBadgeRow.vue';
@@ -49,6 +48,7 @@ import ReasoningTiers from './ReasoningTiers.vue';
 import { reasoningLabel } from './reasoning-labels';
 import { useAdminView } from './adminView';
 import UsageBoard from './usage/UsageBoard.vue';
+import { errorLine, refusalLine } from './failure-codes';
 
 const router = useRouter();
 const route = useRoute();
@@ -238,7 +238,7 @@ async function reorder(reordered: AdminModel[]): Promise<void> {
   try {
     await adminApi.reorderModels(next.map((row) => row.id));
   } catch (failure) {
-    reorderError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    reorderError.value = refusalLine(failure);
   }
   // Either way: on success to show the stored order, and on failure to snap
   // back to it rather than leaving the screen claiming a move never written.
@@ -511,7 +511,7 @@ async function save(): Promise<void> {
     busy.value = false;
     // Only a code the interface has a sentence for is translated; any other
     // keeps the server's sentence, which an administrator may need verbatim.
-    panelError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    panelError.value = refusalLine(failure);
   }
 }
 
@@ -539,7 +539,7 @@ async function createMany(shared: Record<string, unknown>): Promise<void> {
   busy.value = false;
   panelError.value = failed.map((entry) => {
     const failure = (results[entries.indexOf(entry)] as PromiseRejectedResult).reason;
-    return `${entry.model_id}: ${failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure)}`;
+    return `${entry.model_id}: ${refusalLine(failure)}`;
   }).join('; ');
   void load();
 }
@@ -553,7 +553,7 @@ async function remove(): Promise<void> {
     finish();
   } catch (failure) {
     busy.value = false;
-    panelError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    panelError.value = refusalLine(failure);
   }
 }
 
@@ -646,7 +646,7 @@ function importModels(): void {
     })
     .catch((failure: unknown) => {
       report.value = {
-        headline: failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure),
+        headline: refusalLine(failure),
         skipped: [],
       };
     })
@@ -671,7 +671,7 @@ async function load(): Promise<void> {
     groups.value = groupsResult.groups;
     meta.value = metaResult;
   } catch (failure) {
-    error.value = failure instanceof Error ? failure.message : String(failure);
+    error.value = errorLine(failure);
     loaded.value = true;
     return;
   }

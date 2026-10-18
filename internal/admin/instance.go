@@ -413,13 +413,15 @@ type valueRule struct {
 var valueRules = []valueRule{
 	{[]string{settings.LandingMode}, func(_, value string) error {
 		if !settings.ValidLandingMode(value) {
-			return httpx.BadRequest("Unknown landing mode %q.", value)
+			return httpx.BadRequestCode("landing_mode_unknown", "Unknown landing mode %q.", value).
+				WithDetails(map[string]any{"value": value})
 		}
 		return nil
 	}},
 	{[]string{settings.SiteAuthCardPosition}, func(_, value string) error {
 		if !settings.ValidAuthCardPosition(value) {
-			return httpx.BadRequest("Unknown auth card position %q.", value)
+			return httpx.BadRequestCode("auth_card_position_unknown", "Unknown auth card position %q.", value).
+				WithDetails(map[string]any{"value": value})
 		}
 		return nil
 	}},
@@ -427,7 +429,8 @@ var valueRules = []valueRule{
 	// only a non-empty value that fails the format is refused.
 	{[]string{settings.PWAThemeColor, settings.PWABackgroundColor}, func(key, value string) error {
 		if value != "" && !settings.ValidHexColor(value) {
-			return httpx.BadRequest("Setting %q must be a #rrggbb colour.", key)
+			return httpx.BadRequestCode("setting_colour_invalid", "Setting %q must be a #rrggbb colour.", key).
+				WithDetails(map[string]any{"setting": key})
 		}
 		return nil
 	}},
@@ -436,7 +439,7 @@ var valueRules = []valueRule{
 	// to wonder why the install prompt has no icon.
 	{[]string{settings.PWAIconURL}, func(_, value string) error {
 		if !settings.ValidPWAIconURL(value) {
-			return httpx.BadRequest("The PWA icon must be a path on this server or a data URI.")
+			return httpx.BadRequestCode("pwa_icon_invalid", "The PWA icon must be a path on this server or a data URI.")
 		}
 		return nil
 	}},
@@ -448,7 +451,7 @@ var valueRules = []valueRule{
 			return nil
 		}
 		if _, _, ok := conversation.ParseDailyTime(value); !ok {
-			return httpx.BadRequest("The daily cleanup time must be HH:MM, or empty for never.")
+			return httpx.BadRequestCode("cleanup_time_invalid", "The daily cleanup time must be HH:MM, or empty for never.")
 		}
 		return nil
 	}},
@@ -457,19 +460,22 @@ var valueRules = []valueRule{
 	// browser.
 	{[]string{settings.UsageDisplay}, func(_, value string) error {
 		if !settings.ValidUsageDisplay(value) {
-			return httpx.BadRequest("Unknown usage display %q.", value)
+			return httpx.BadRequestCode("usage_display_unknown", "Unknown usage display %q.", value).
+				WithDetails(map[string]any{"value": value})
 		}
 		return nil
 	}},
 	{[]string{settings.HomeNoticeTone}, func(_, value string) error {
 		if !settings.ValidHomeNoticeTone(value) {
-			return httpx.BadRequest("Unknown notice tone %q.", value)
+			return httpx.BadRequestCode("notice_tone_unknown", "Unknown notice tone %q.", value).
+				WithDetails(map[string]any{"value": value})
 		}
 		return nil
 	}},
 	{[]string{settings.LeaderboardIdentity}, func(_, value string) error {
 		if !settings.ValidLeaderboardIdentity(value) {
-			return httpx.BadRequest("Unknown leaderboard identity %q.", value)
+			return httpx.BadRequestCode("leaderboard_identity_unknown", "Unknown leaderboard identity %q.", value).
+				WithDetails(map[string]any{"value": value})
 		}
 		return nil
 	}},
@@ -508,7 +514,7 @@ func (h *Handlers) referenceRefused(ctx context.Context, key, value string) (ref
 	}
 	if key == settings.RegistrationGroup {
 		if !id.Valid(value) {
-			return httpx.BadRequest("Malformed group id."), nil
+			return httpx.BadRequestCode("malformed_group_id", "Malformed group id."), nil
 		}
 		if _, err := h.groups.ByID(ctx, nil, value); err != nil {
 			if errors.Is(err, group.ErrNotFound) {
@@ -519,7 +525,7 @@ func (h *Handlers) referenceRefused(ctx context.Context, key, value string) (ref
 		return nil, nil
 	}
 	if !id.Valid(value) {
-		return httpx.BadRequest("Malformed model id."), nil
+		return httpx.BadRequestCode("malformed_model_id", "Malformed model id."), nil
 	}
 	if _, err := h.models.ByID(ctx, value); err != nil {
 		if errors.Is(err, model.ErrNotFound) {
@@ -577,10 +583,12 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 			return permissionDenied()
 		}
 		if !h.writable(key) {
-			return httpx.BadRequest("Unknown setting %q.", key)
+			return httpx.BadRequestCode("setting_unknown", "Unknown setting %q.", key).
+				WithDetails(map[string]any{"setting": key})
 		}
 		if len(value) > settings.MaxValueBytes {
-			return httpx.BadRequest("Setting %q is too long.", key)
+			return httpx.BadRequestCode("setting_too_long", "Setting %q is too long.", key).
+				WithDetails(map[string]any{"setting": key})
 		}
 	}
 
@@ -640,8 +648,9 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 		if raw, present := body[key]; present {
 			value, err := strconv.Atoi(strings.TrimSpace(raw))
 			if err != nil || value < bounds[0] || value > bounds[1] {
-				return httpx.BadRequest("Setting %q must be between %d and %d.",
-					key, bounds[0], bounds[1])
+				return httpx.BadRequestCode("setting_out_of_range", "Setting %q must be between %d and %d.",
+					key, bounds[0], bounds[1]).
+					WithDetails(map[string]any{"setting": key, "min": bounds[0], "max": bounds[1]})
 			}
 		}
 	}
@@ -650,10 +659,12 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 	// there can be is decided here and not by whatever the form happened to send.
 	if over := overlongNotice(body); len(over) > 0 {
 		if over[0] == settings.HomeNotice {
-			return httpx.BadRequest("The notice line is at most %d characters; put the rest in the text that opens from it.",
-				settings.MaxHomeNoticeTitleChars)
+			return httpx.BadRequestCode("notice_title_too_long", "The notice line is at most %d characters; put the rest in the text that opens from it.",
+				settings.MaxHomeNoticeTitleChars).
+				WithDetails(map[string]any{"max": settings.MaxHomeNoticeTitleChars})
 		}
-		return httpx.BadRequest("The notice text is at most %d characters.", settings.MaxHomeNoticeBodyChars)
+		return httpx.BadRequestCode("notice_body_too_long", "The notice text is at most %d characters.", settings.MaxHomeNoticeBodyChars).
+			WithDetails(map[string]any{"max": settings.MaxHomeNoticeBodyChars})
 	}
 
 	if err := h.validateDefined(body); err != nil {
@@ -707,7 +718,7 @@ func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error 
 		return err
 	}
 	if len(body) == 0 {
-		return httpx.BadRequest("That file contains no settings.")
+		return httpx.BadRequestCode("settings_file_empty", "That file contains no settings.")
 	}
 
 	twoFactorCode := body["two_factor_code"]
@@ -912,15 +923,18 @@ var themeChecked = []string{settings.ThemeMode, settings.ThemeAccent, settings.T
 // Only the keys present are checked; a missing one is not being changed.
 func checkThemeSettings(body map[string]string) error {
 	if mode, present := body[settings.ThemeMode]; present && !settings.ValidThemeMode(mode) {
-		return httpx.BadRequest("Unknown theme mode %q.", mode)
+		return httpx.BadRequestCode("theme_mode_unknown", "Unknown theme mode %q.", mode).
+			WithDetails(map[string]any{"value": mode})
 	}
 	for _, key := range []string{settings.ThemeAccent, settings.ThemeBackgroundTint} {
 		if value, present := body[key]; present && !settings.ValidThemeAccent(value) {
-			return httpx.BadRequest("Setting %q must be an accent's name.", key)
+			return httpx.BadRequestCode("setting_accent_invalid", "Setting %q must be an accent's name.", key).
+				WithDetails(map[string]any{"setting": key})
 		}
 	}
 	if value, present := body[settings.ThemeCustomAccent]; present && value != "" && !settings.ValidHexColor(value) {
-		return httpx.BadRequest("Setting %q must be a #rrggbb colour.", settings.ThemeCustomAccent)
+		return httpx.BadRequestCode("setting_colour_invalid", "Setting %q must be a #rrggbb colour.", settings.ThemeCustomAccent).
+			WithDetails(map[string]any{"setting": settings.ThemeCustomAccent})
 	}
 	return nil
 }
@@ -966,7 +980,7 @@ func (h *Handlers) checkOIDCSettings(body map[string]string) error {
 func (h *Handlers) putLoginBackground(w http.ResponseWriter, r *http.Request) error {
 	variant := settings.NormalizeVariant(r.PathValue("variant"))
 	if !settings.ValidLoginBackgroundVariants[variant] {
-		return httpx.BadRequest("Unknown login background variant.")
+		return httpx.BadRequestCode("login_background_variant_unknown", "Unknown login background variant.")
 	}
 
 	var body struct {
@@ -995,9 +1009,9 @@ func (h *Handlers) putLoginBackground(w http.ResponseWriter, r *http.Request) er
 		at, err := h.settings.SetHTMLBackground(r.Context(), variant, *body.HTML)
 		switch {
 		case errors.Is(err, settings.ErrLoginBackgroundTooLarge):
-			return httpx.BadRequest("That page is too large.")
+			return httpx.BadRequestCode("page_too_large", "That page is too large.")
 		case errors.Is(err, settings.ErrLoginBackgroundUnsupported):
-			return httpx.BadRequest("The page is empty.")
+			return httpx.BadRequestCode("page_empty", "The page is empty.")
 		case err != nil:
 			return httpx.Internal(err)
 		}
@@ -1019,16 +1033,16 @@ func (h *Handlers) putLoginBackground(w http.ResponseWriter, r *http.Request) er
 	raw = strings.ReplaceAll(raw, "\t", "")
 	data, err := base64.StdEncoding.DecodeString(raw)
 	if err != nil {
-		return httpx.BadRequest("Image data is not valid base64.")
+		return httpx.BadRequestCode("image_base64_invalid", "Image data is not valid base64.")
 	}
 
 	at, err := h.settings.SetLoginBackground(r.Context(), variant, data)
 	if err != nil {
 		switch {
 		case errors.Is(err, settings.ErrLoginBackgroundUnsupported):
-			return httpx.BadRequest("Login backgrounds must be JPEG, PNG, WebP or AVIF.")
+			return httpx.BadRequestCode("login_background_type", "Login backgrounds must be JPEG, PNG, WebP or AVIF.")
 		case errors.Is(err, settings.ErrLoginBackgroundTooLarge):
-			return httpx.BadRequest("That image is too large.")
+			return httpx.BadRequestCode("image_too_large", "That image is too large.")
 		default:
 			return httpx.Internal(err)
 		}
@@ -1043,7 +1057,7 @@ func (h *Handlers) putLoginBackground(w http.ResponseWriter, r *http.Request) er
 func (h *Handlers) deleteLoginBackground(w http.ResponseWriter, r *http.Request) error {
 	variant := settings.NormalizeVariant(r.PathValue("variant"))
 	if !settings.ValidLoginBackgroundVariants[variant] {
-		return httpx.BadRequest("Unknown login background variant.")
+		return httpx.BadRequestCode("login_background_variant_unknown", "Unknown login background variant.")
 	}
 
 	if err := h.settings.DeleteLoginBackground(r.Context(), variant); err != nil {
@@ -1073,16 +1087,16 @@ func (h *Handlers) putLogo(w http.ResponseWriter, r *http.Request) error {
 	raw = strings.ReplaceAll(raw, "\t", "")
 	data, err := base64.StdEncoding.DecodeString(raw)
 	if err != nil {
-		return httpx.BadRequest("Image data is not valid base64.")
+		return httpx.BadRequestCode("image_base64_invalid", "Image data is not valid base64.")
 	}
 
 	at, err := h.settings.SetSiteLogo(r.Context(), data)
 	if err != nil {
 		switch {
 		case errors.Is(err, settings.ErrLogoUnsupported):
-			return httpx.BadRequest("Logo must be PNG, JPEG, SVG, WebP, AVIF, GIF or ICO.")
+			return httpx.BadRequestCode("logo_type", "Logo must be PNG, JPEG, SVG, WebP, AVIF, GIF or ICO.")
 		case errors.Is(err, settings.ErrLogoTooLarge):
-			return httpx.BadRequest("That image is too large.")
+			return httpx.BadRequestCode("image_too_large", "That image is too large.")
 		default:
 			return httpx.Internal(err)
 		}

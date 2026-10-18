@@ -962,7 +962,7 @@ func (s *Store) ProfilesByID(ctx context.Context, q database.Queryer, ids []stri
 			args[i] = id
 		}
 		rows, err := q.Query(ctx,
-			`SELECT `+s.columns()+` FROM users WHERE id IN (`+strings.TrimSuffix(strings.Repeat("?, ", len(batch)), ", ")+`)`,
+			`SELECT `+s.columns()+` FROM users WHERE id IN (`+database.Placeholders(len(batch))+`)`,
 			args...)
 		if err != nil {
 			return nil, fmt.Errorf("user: profiles by id: %w", err)

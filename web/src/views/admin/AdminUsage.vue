@@ -16,7 +16,6 @@ import {
   type Group, type QuotaWindowKind, type UsageBreakdown, type UsagePoint,
   type UsageRecord, type UsageReport, type UsageTotals,
 } from '@/admin/api';
-import { ApiError } from '@/api/client';
 import OaCellStack from '@/components/OaCellStack.vue';
 import OaFormSection from '@/components/OaFormSection.vue';
 import OaHoldButton from '@/components/OaHoldButton.vue';
@@ -50,6 +49,7 @@ import UsagePlot from './usage/UsagePlot.vue';
 import { DAY, HOUR, fillBuckets, formatDuration, percent } from './usage/scale';
 import type { BoardMetric, PlotPoint } from './usage/shape';
 import { toDateTimeLocal } from './shared';
+import { errorLine, refusalLine } from './failure-codes';
 
 interface RangePreset {
   key: string;
@@ -242,7 +242,7 @@ async function loadRecords(quiet = false, signal?: AbortSignal): Promise<void> {
   } catch (failure) {
     if (signal?.aborted || isAbortError(failure)) return;
     if (!quiet && ticket === recordRequest) {
-      recordError.value = failure instanceof Error ? failure.message : String(failure);
+      recordError.value = errorLine(failure);
     }
   } finally {
     if (ticket === recordRequest) recordsBusy.value = false;
@@ -320,7 +320,7 @@ async function load(): Promise<void> {
     applyReport(summary);
   } catch (failure) {
     if (currentSummaryCtrl.signal.aborted || isAbortError(failure)) return;
-    if (ticket === summaryRequest) error.value = failure instanceof Error ? failure.message : String(failure);
+    if (ticket === summaryRequest) error.value = errorLine(failure);
   } finally {
     if (summaryController === currentSummaryCtrl) {
       summaryController = null;
@@ -606,7 +606,7 @@ async function openPolicy(): Promise<void> {
     // A failed read is not an empty list. The blank form would show no limit
     // anywhere, and Save would write those blanks over the stored instance
     // defaults, so the panel stays shut and the page says what went wrong.
-    policyReadError.value = failure instanceof ApiError ? failure.message : String(failure);
+    policyReadError.value = refusalLine(failure);
     return;
   }
   const windows = {} as typeof policyForm.value.windows;
@@ -651,7 +651,7 @@ async function savePolicy(): Promise<void> {
     policyOpen.value = false;
     refreshAfterChange();
   } catch (failure) {
-    policyError.value = failure instanceof ApiError ? failure.message : String(failure);
+    policyError.value = refusalLine(failure);
   } finally {
     policyBusy.value = false;
   }
@@ -702,7 +702,7 @@ async function runReset(): Promise<void> {
     celebrate();
     refreshAfterChange();
   } catch (failure) {
-    resetError.value = failure instanceof ApiError ? failure.message : String(failure);
+    resetError.value = refusalLine(failure);
   }
 }
 

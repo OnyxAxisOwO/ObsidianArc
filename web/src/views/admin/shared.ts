@@ -3,9 +3,9 @@
 import { adminApi, type AdminModel } from '@/admin/api';
 import { ApiError } from '@/api/client';
 import { t } from '@/composables/useI18n';
-import { codeText } from '@/lib/api-error';
 import { onSignOut } from '@/stores/session';
 import { toLocalInput } from './localTime';
+import { adminCodeText } from './failure-codes';
 
 /**
  * The line an administration screen shows for a failed request.
@@ -21,7 +21,7 @@ import { toLocalInput } from './localTime';
  * the screen gets the generic line.
  */
 export function failureText(failure: unknown): string {
-  if (failure instanceof ApiError) return codeText(failure.code) ?? failure.message;
+  if (failure instanceof ApiError) return adminCodeText(failure.code, failure.details) ?? failure.message;
   if (failure instanceof Error) return failure.message;
   console.warn('request failed', failure);
   return t('failed');

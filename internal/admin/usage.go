@@ -10,10 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/sync/singleflight"
-
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/flight"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/notify"
@@ -64,7 +63,7 @@ func (h *Handlers) resetQuota(w http.ResponseWriter, r *http.Request) error {
 
 	case "group":
 		if !id.Valid(body.ID) {
-			return httpx.BadRequest("A group is required.")
+			return httpx.BadRequestCode("group_required", "A group is required.")
 		}
 		// The count is for the answer only. Naming every member to reset them
 		// meant asking the user list for as many rows as the group holds, and
@@ -85,7 +84,7 @@ func (h *Handlers) resetQuota(w http.ResponseWriter, r *http.Request) error {
 
 	case "user":
 		if !id.Valid(body.ID) {
-			return httpx.BadRequest("An account is required.")
+			return httpx.BadRequestCode("account_required", "An account is required.")
 		}
 		if err := h.authorisePolicyScope(r, quota.ScopeUser, body.ID, false); err != nil {
 			return err
@@ -98,7 +97,7 @@ func (h *Handlers) resetQuota(w http.ResponseWriter, r *http.Request) error {
 		return httpx.WriteJSON(w, http.StatusOK, map[string]any{"accounts": 1})
 	}
 
-	return httpx.BadRequest("Reset everyone, a group, or one account.")
+	return httpx.BadRequestCode("usage_reset_scope", "Reset everyone, a group, or one account.")
 }
 
 // How long a cached usage answer is served. An answer is a dozen queries over
@@ -197,11 +196,11 @@ type usageCache struct {
 	// allowanceRankingPrefix; see allowances.go.
 	summary     ttlCache[map[string]any]
 	breakdown   ttlCache[[]usage.Breakdown]
-	summarySF   singleflight.Group
-	breakdownSF singleflight.Group
+	summarySF   flight.Group
+	breakdownSF flight.Group
 	// The allowances ranking is built once per search and group for each
 	// short window, and paged from that copy; see allowances.go.
-	allowanceSF singleflight.Group
+	allowanceSF flight.Group
 	// Bumped by every write that changes what an account has left, so a ranking
 	// built before the write is neither cached nor handed to a request after
 	// it. Guarded by mu; see forgetAllowanceRankings.
@@ -269,13 +268,13 @@ func breakdownCacheKey(dimension string, filter usage.Filter, metric string) str
 // must not fail the rest. It holds an aggregation slot until its answer is
 // built and stored, and an *httpx.Error from it is the answer as worded.
 func cachedAggregate[V any](
-	r *http.Request, flight *singleflight.Group, key string,
+	r *http.Request, group *flight.Group, key string,
 	lookup func() (V, bool), store func(V), build func(ctx context.Context) (V, error),
 ) (V, error) {
 	if cached, ok := lookup(); ok {
 		return cached, nil
 	}
-	res, err, _ := flight.Do(key, func() (any, error) {
+	res, err, _ := group.Do(key, func() (any, error) {
 		if cached, ok := lookup(); ok {
 			return cached, nil
 		}
@@ -325,13 +324,14 @@ func filterFrom(r *http.Request) (usage.Filter, error) {
 		{"provider_id", filter.ProviderID},
 	} {
 		if param.value != "" && !id.Valid(param.value) {
-			return usage.Filter{}, httpx.BadRequest("Malformed %s.", param.name)
+			return usage.Filter{}, httpx.BadRequestCode("malformed_filter_id", "Malformed %s.", param.name).
+				WithDetails(map[string]any{"param": param.name})
 		}
 	}
 	switch filter.Status {
 	case "", usage.StatusOK, usage.StatusError, usage.StatusAborted, usage.StatusRejected:
 	default:
-		return usage.Filter{}, httpx.BadRequest("Unknown status filter.")
+		return usage.Filter{}, httpx.BadRequestCode("status_filter_unknown", "Unknown status filter.")
 	}
 
 	const hourMS = int64(time.Hour / time.Millisecond)
@@ -385,7 +385,7 @@ func zoneFrom(r *http.Request) (time.Duration, error) {
 	}
 	minutes, err := strconv.Atoi(raw)
 	if err != nil || minutes < -14*60 || minutes > 14*60 {
-		return 0, httpx.BadRequest("Malformed tz.")
+		return 0, httpx.BadRequestCode("malformed_tz", "Malformed tz.")
 	}
 	return time.Duration(minutes) * time.Minute, nil
 }
@@ -585,7 +585,7 @@ func (h *Handlers) usageBreakdown(w http.ResponseWriter, r *http.Request) error 
 	switch dimension {
 	case "model", "provider", "user", "group", "status":
 	default:
-		return httpx.BadRequest("Unknown dimension.")
+		return httpx.BadRequestCode("dimension_unknown", "Unknown dimension.")
 	}
 	metric := r.URL.Query().Get("metric")
 
@@ -728,21 +728,24 @@ type policyRequest struct {
 // or left blank.
 func checkPolicyFigures(rpm, tpm *int64, windows map[quota.Window]quota.Limits) error {
 	if rpm != nil && *rpm < 0 {
-		return httpx.BadRequest("The requests-per-minute limit cannot be negative.")
+		return httpx.BadRequestCode("rpm_negative", "The requests-per-minute limit cannot be negative.")
 	}
 	if tpm != nil && *tpm < 0 {
-		return httpx.BadRequest("The tokens-per-minute limit cannot be negative.")
+		return httpx.BadRequestCode("tpm_negative", "The tokens-per-minute limit cannot be negative.")
 	}
 	for _, window := range quota.AllowanceWindows {
 		limits := windows[window]
 		if limits.Requests != nil && *limits.Requests <= 0 {
-			return httpx.BadRequest("The %s request limit must be greater than zero, or blank for none.", string(window))
+			return httpx.BadRequestCode("window_request_limit", "The %s request limit must be greater than zero, or blank for none.", string(window)).
+				WithDetails(map[string]any{"window": string(window)})
 		}
 		if limits.Tokens != nil && *limits.Tokens <= 0 {
-			return httpx.BadRequest("The %s token limit must be greater than zero, or blank for none.", string(window))
+			return httpx.BadRequestCode("window_token_limit", "The %s token limit must be greater than zero, or blank for none.", string(window)).
+				WithDetails(map[string]any{"window": string(window)})
 		}
 		if limits.Credits != nil && *limits.Credits <= 0 {
-			return httpx.BadRequest("The %s credit limit must be greater than zero, or blank for none.", string(window))
+			return httpx.BadRequestCode("window_credit_limit", "The %s credit limit must be greater than zero, or blank for none.", string(window)).
+				WithDetails(map[string]any{"window": string(window)})
 		}
 	}
 	return nil
@@ -766,17 +769,18 @@ func (h *Handlers) savePolicy(w http.ResponseWriter, r *http.Request) error {
 		body.ScopeID = ""
 	case quota.ScopeGroup, quota.ScopeUser:
 		if !id.Valid(body.ScopeID) {
-			return httpx.BadRequest("A group or user must be identified.")
+			return httpx.BadRequestCode("policy_target_required", "A group or user must be identified.")
 		}
 	default:
-		return httpx.BadRequest("Scope must be global, group or user.")
+		return httpx.BadRequestCode("policy_scope_invalid", "Scope must be global, group or user.")
 	}
 
 	for window := range body.Windows {
 		switch window {
 		case quota.Window5H, quota.WindowWeek, quota.WindowMonth:
 		default:
-			return httpx.BadRequest("Unknown window %q.", string(window))
+			return httpx.BadRequestCode("window_unknown", "Unknown window %q.", string(window)).
+				WithDetails(map[string]any{"window": string(window)})
 		}
 	}
 	if err := checkPolicyFigures(body.RPM, body.TPM, body.Windows); err != nil {
@@ -847,10 +851,10 @@ func (h *Handlers) deletePolicy(w http.ResponseWriter, r *http.Request) error {
 		scopeID = ""
 	case quota.ScopeGroup, quota.ScopeUser:
 		if !id.Valid(scopeID) {
-			return httpx.BadRequest("A group or user must be identified.")
+			return httpx.BadRequestCode("policy_target_required", "A group or user must be identified.")
 		}
 	default:
-		return httpx.BadRequest("Scope must be global, group or user.")
+		return httpx.BadRequestCode("policy_scope_invalid", "Scope must be global, group or user.")
 	}
 
 	if err := h.authorisePolicyScope(r, scope, scopeID, true); err != nil {

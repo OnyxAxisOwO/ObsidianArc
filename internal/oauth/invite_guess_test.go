@@ -29,7 +29,7 @@ const guessesAllowed = 31
 func TestAGuessThroughTheCompletionFormRunsOut(t *testing.T) {
 	f := newFixture(t)
 	populate(t, f)
-	f.auth.ConsumeInvite = func(context.Context, *database.Tx, string) (*auth.InviteGrant, error) {
+	f.auth.Hooks.ConsumeInvite = func(context.Context, *database.Tx, string) (*auth.InviteGrant, error) {
 		return nil, auth.ErrInviteInvalid
 	}
 	ctx := context.Background()
@@ -75,11 +75,11 @@ func TestABurstOfWrongCodesThroughTheFormIsCountedOnce(t *testing.T) {
 	f := newFixture(t)
 	populate(t, f)
 	require(t, f, settings.OAuthAllowSignup, "true")
-	f.auth.ConsumeInvite = func(context.Context, *database.Tx, string) (*auth.InviteGrant, error) {
+	f.auth.Hooks.ConsumeInvite = func(context.Context, *database.Tx, string) (*auth.InviteGrant, error) {
 		return nil, auth.ErrInviteInvalid
 	}
 	var screened atomic.Int64
-	f.auth.ScreenEmail = func(context.Context, string) error {
+	f.auth.Hooks.ScreenEmail = func(context.Context, string) error {
 		screened.Add(1)
 		// Long enough that every request in the burst is in flight at once.
 		time.Sleep(20 * time.Millisecond)
@@ -139,7 +139,7 @@ func TestTheCompletionFormSendsRetryAfterWithTheBudget(t *testing.T) {
 	require(t, f, settings.OAuthRequireUsername, "true")
 	f.configure(t, "github")
 	stubGitHubAs(t, "4218", "octocat")
-	f.auth.ConsumeInvite = func(context.Context, *database.Tx, string) (*auth.InviteGrant, error) {
+	f.auth.Hooks.ConsumeInvite = func(context.Context, *database.Tx, string) (*auth.InviteGrant, error) {
 		return nil, auth.ErrInviteInvalid
 	}
 	_, mux := handlers(t, f)

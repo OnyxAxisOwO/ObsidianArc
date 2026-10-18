@@ -25,8 +25,6 @@ import {
   adminApi,
   type Feedback, type FeedbackStatus, type FeedbackSummary, type FeedbackThread,
 } from '@/admin/api';
-import { ApiError } from '@/api/client';
-import { codeText } from '@/lib/api-error';
 import OaBadge from '@/components/OaBadge.vue';
 import OaConfirmButton from '@/components/OaConfirmButton.vue';
 import OaIconButton from '@/components/OaIconButton.vue';
@@ -46,6 +44,7 @@ import { rememberedPageSize } from '@/lib/page-size';
 import { maskUser } from '@/admin/safeMode';
 import AdminFailure from './AdminFailure.vue';
 import { useAdminView } from './adminView';
+import { refusalLine } from './failure-codes';
 
 const view = useAdminView();
 view.setTitle(() => t('navFeedback'), () => t('feedbackSubtitle'));
@@ -158,7 +157,7 @@ async function load(): Promise<void> {
     }
   } catch (failure) {
     if (mine !== ticket) return;
-    const message = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    const message = refusalLine(failure);
     // The first load has nothing to keep on screen, so it is the whole page
     // that failed; a later one still has a list worth leaving up.
     if (!summary.value) error.value = message;
@@ -226,7 +225,7 @@ async function open(target: Feedback | string): Promise<void> {
     opened.value = fetched.feedback;
   } catch (failure) {
     if (mine !== openTicket) return;
-    const message = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    const message = refusalLine(failure);
     if (opened.value) panelError.value = message;
     else openError.value = message;
   } finally {
@@ -277,7 +276,7 @@ async function reply(): Promise<void> {
     await load();
   } catch (failure) {
     if (thread.value?.feedback.id === id) {
-      panelError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+      panelError.value = refusalLine(failure);
     }
   } finally {
     busy.value = false;
@@ -296,7 +295,7 @@ async function removeReply(replyID: string): Promise<void> {
     await load();
   } catch (failure) {
     if (thread.value?.feedback.id === id) {
-      panelError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+      panelError.value = refusalLine(failure);
     }
   } finally {
     busy.value = false;
@@ -317,7 +316,7 @@ async function setStatus(next: FeedbackStatus): Promise<void> {
     await load();
   } catch (failure) {
     if (opened.value?.id === id) {
-      panelError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+      panelError.value = refusalLine(failure);
     }
   } finally {
     busy.value = false;
@@ -341,7 +340,7 @@ async function remove(): Promise<void> {
     await load();
   } catch (failure) {
     if (opened.value?.id === id) {
-      panelError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+      panelError.value = refusalLine(failure);
     }
   } finally {
     busy.value = false;

@@ -96,17 +96,17 @@ func (h *Handlers) listUsers(w http.ResponseWriter, r *http.Request) error {
 		Offset:   intParam(query.Get("offset"), 0),
 	}
 	if filter.GroupID != "" && !id.Valid(filter.GroupID) {
-		return httpx.BadRequest("Malformed group id.")
+		return httpx.BadRequestCode("malformed_group_id", "Malformed group id.")
 	}
 	switch filter.Role {
 	case "", user.RoleUser, user.RoleAdmin, user.RoleSuperAdmin:
 	default:
-		return httpx.BadRequest("Unknown role filter.")
+		return httpx.BadRequestCode("role_filter_unknown", "Unknown role filter.")
 	}
 	switch filter.Status {
 	case "", user.StatusActive, user.StatusDisabled:
 	default:
-		return httpx.BadRequest("Unknown status filter.")
+		return httpx.BadRequestCode("status_filter_unknown", "Unknown status filter.")
 	}
 
 	users, total, err := h.users.List(r.Context(), filter)
@@ -301,20 +301,22 @@ func (h *Handlers) checkNewUser(ctx context.Context, body *newUserRequest) error
 		body.Role = user.RoleUser
 	}
 	if body.Role != user.RoleUser && body.Role != user.RoleAdmin && body.Role != user.RoleSuperAdmin {
-		return httpx.BadRequest("Role must be user, admin or super_admin.")
+		return httpx.BadRequestCode("role_invalid", "Role must be user, admin or super_admin.")
 	}
 	if body.Status == "" {
 		body.Status = user.StatusActive
 	}
 	if body.Status != user.StatusActive && body.Status != user.StatusDisabled {
-		return httpx.BadRequest("Status must be active or disabled.")
+		return httpx.BadRequestCode("account_status_invalid", "Status must be active or disabled.")
 	}
 	if utf8.RuneCountInString(strings.TrimSpace(body.BanReason)) > user.MaxBanReasonChars {
-		return httpx.BadRequest("Ban reason must be %d characters or fewer.", user.MaxBanReasonChars)
+		return httpx.BadRequestCode("ban_reason_too_long", "Ban reason must be %d characters or fewer.", user.MaxBanReasonChars).
+			WithDetails(map[string]any{"max": user.MaxBanReasonChars})
 	}
 	for _, permission := range body.AdminPermissions {
 		if !user.ValidPermission(permission) {
-			return httpx.BadRequest("Unknown permission %q.", permission)
+			return httpx.BadRequestCode("permission_unknown", "Unknown permission %q.", permission).
+				WithDetails(map[string]any{"value": permission})
 		}
 	}
 	// Grants only mean anything on an administrator, and leaving them on a
@@ -324,7 +326,7 @@ func (h *Handlers) checkNewUser(ctx context.Context, body *newUserRequest) error
 	}
 	if body.GroupID != "" {
 		if !id.Valid(body.GroupID) {
-			return httpx.BadRequest("Malformed group id.")
+			return httpx.BadRequestCode("malformed_group_id", "Malformed group id.")
 		}
 		if _, err := h.groups.ByID(ctx, nil, body.GroupID); err != nil {
 			return translateGroupError(err)
@@ -396,31 +398,33 @@ func (h *Handlers) updateUser(w http.ResponseWriter, r *http.Request) error {
 	// Shape first, and outside the transaction: a malformed request should be
 	// refused without taking a lock the rest of the instance queues behind.
 	if body.Role != nil && *body.Role != user.RoleUser && *body.Role != user.RoleAdmin && *body.Role != user.RoleSuperAdmin {
-		return httpx.BadRequest("Role must be user, admin or super_admin.")
+		return httpx.BadRequestCode("role_invalid", "Role must be user, admin or super_admin.")
 	}
 	if body.AdminPermissions != nil {
 		for _, permission := range *body.AdminPermissions {
 			if !user.ValidPermission(permission) {
-				return httpx.BadRequest("Unknown permission %q.", permission)
+				return httpx.BadRequestCode("permission_unknown", "Unknown permission %q.", permission).
+					WithDetails(map[string]any{"value": permission})
 			}
 		}
 	}
 	if body.Status != nil && *body.Status != user.StatusActive && *body.Status != user.StatusDisabled {
-		return httpx.BadRequest("Status must be active or disabled.")
+		return httpx.BadRequestCode("account_status_invalid", "Status must be active or disabled.")
 	}
 	if body.BanReason != nil && utf8.RuneCountInString(strings.TrimSpace(*body.BanReason)) > user.MaxBanReasonChars {
-		return httpx.BadRequest("Ban reason must be %d characters or fewer.", user.MaxBanReasonChars)
+		return httpx.BadRequestCode("ban_reason_too_long", "Ban reason must be %d characters or fewer.", user.MaxBanReasonChars).
+			WithDetails(map[string]any{"max": user.MaxBanReasonChars})
 	}
 	if body.APIRestrictionHours != nil &&
 		(*body.APIRestrictionHours < 0 || *body.APIRestrictionHours > 24*365) {
-		return httpx.BadRequest("API restriction hours must be between 0 and 8760.")
+		return httpx.BadRequestCode("api_restriction_hours_range", "API restriction hours must be between 0 and 8760.")
 	}
 	if body.APIRestrictionHours != nil && body.APIRestricted == nil {
-		return httpx.BadRequest("API restriction hours require an API restriction choice.")
+		return httpx.BadRequestCode("api_restriction_choice_required", "API restriction hours require an API restriction choice.")
 	}
 	if body.GroupID != nil && *body.GroupID != "" {
 		if !id.Valid(*body.GroupID) {
-			return httpx.BadRequest("Malformed group id.")
+			return httpx.BadRequestCode("malformed_group_id", "Malformed group id.")
 		}
 		if _, err := h.groups.ByID(r.Context(), nil, *body.GroupID); err != nil {
 			return translateGroupError(err)
@@ -428,7 +432,7 @@ func (h *Handlers) updateUser(w http.ResponseWriter, r *http.Request) error {
 	}
 	if body.GroupExpiresAt != nil {
 		if body.GroupID == nil || (*body.GroupID == "" && *body.GroupExpiresAt != 0) {
-			return httpx.BadRequest("A group is required when setting membership expiry.")
+			return httpx.BadRequestCode("membership_expiry_needs_group", "A group is required when setting membership expiry.")
 		}
 		if err := validateMembershipExpiry(*body.GroupExpiresAt); err != nil {
 			return err
@@ -847,7 +851,7 @@ func (h *Handlers) userTranscript(w http.ResponseWriter, r *http.Request) error 
 	record, err := h.conversations.Get(r.Context(), nil, userID, conversationID)
 	if err != nil {
 		if errors.Is(err, conversation.ErrNotFound) {
-			return httpx.NotFound("No such conversation.")
+			return httpx.NotFoundCode("conversation_not_found", "No such conversation.")
 		}
 		return httpx.Internal(err)
 	}
@@ -976,7 +980,7 @@ func (h *Handlers) createGroup(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	if body.Name == nil {
-		return httpx.BadRequest("A name is required.")
+		return httpx.BadRequestCode("name_required", "A name is required.")
 	}
 	if err := checkGroupModelAccess(body.ModelGrants); err != nil {
 		return err
@@ -1157,7 +1161,7 @@ func translateUserError(err error) error {
 	}
 	switch {
 	case errors.Is(err, user.ErrNotFound):
-		return httpx.NotFound("No such account.")
+		return httpx.NotFoundCode("account_not_found", "No such account.")
 	case errors.Is(err, user.ErrEmailTaken):
 		return httpx.Conflict("email_taken", "That email address is already registered.")
 	case errors.Is(err, user.ErrUsernameTaken):
@@ -1176,11 +1180,11 @@ func translateUserError(err error) error {
 func translateGroupError(err error) error {
 	switch {
 	case errors.Is(err, group.ErrNotFound):
-		return httpx.NotFound("No such group.")
+		return httpx.NotFoundCode("group_not_found", "No such group.")
 	case errors.Is(err, group.ErrNameTaken):
 		return httpx.Conflict("group_exists", "A group with that name already exists.")
 	case errors.Is(err, group.ErrInvalidName):
-		return httpx.BadRequest("Name must be 1-40 characters.")
+		return httpx.BadRequestCode("group_name_length", "Name must be 1-40 characters.")
 	case errors.Is(err, group.ErrDeleteDefault), errors.Is(err, group.ErrUnsetDefault):
 		return httpx.Conflict("default_group", "Make another group the default first.")
 	case errors.Is(err, group.ErrDeleteLast):

@@ -156,7 +156,7 @@ func TestParallelFirstRegistrationsCreateOnlyOneAdmin(t *testing.T) {
 func TestParallelFirstRegistrationsScreenEveryNonAdministrator(t *testing.T) {
 	f := newFixture(t)
 	var screened atomic.Int32
-	f.auth.ScreenEmail = func(context.Context, string) error {
+	f.auth.Hooks.ScreenEmail = func(context.Context, string) error {
 		screened.Add(1)
 		return usercheck.ErrDisposable
 	}
@@ -204,7 +204,7 @@ func TestRegisteredAddressDoesNotSpendPaidScreeningLookup(t *testing.T) {
 		t.Fatal(err)
 	}
 	var calls atomic.Int32
-	f.auth.ScreenEmail = func(context.Context, string) error {
+	f.auth.Hooks.ScreenEmail = func(context.Context, string) error {
 		calls.Add(1)
 		return nil
 	}
@@ -294,13 +294,13 @@ func TestSignupReviewCanRestrictAPIWithoutRefusingTheAccount(t *testing.T) {
 	}
 
 	until := time.Now().Add(30 * time.Hour).UnixMilli()
-	f.auth.ReviewSignup = func(context.Context, RegisterInput, int) (SignupReview, error) {
+	f.auth.Hooks.ReviewSignup = func(context.Context, RegisterInput, int) (SignupReview, error) {
 		return SignupReview{
 			Ran: true, Decision: SignupRestrict, Reason: "generated-looking handle", RestrictedUntil: until,
 		}, nil
 	}
 	var recorded SignupReview
-	f.auth.OnSignupReview = func(_ context.Context, _ RegisterInput, account *user.User, review SignupReview) {
+	f.auth.Hooks.OnSignupReview = func(_ context.Context, _ RegisterInput, account *user.User, review SignupReview) {
 		if account == nil {
 			t.Error("a successful restricted registration had no account in its review event")
 		}
@@ -334,11 +334,11 @@ func TestSignupReviewCanRefuseWithoutCreatingAnAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	f.auth.ReviewSignup = func(context.Context, RegisterInput, int) (SignupReview, error) {
+	f.auth.Hooks.ReviewSignup = func(context.Context, RegisterInput, int) (SignupReview, error) {
 		return SignupReview{Ran: true, Decision: SignupRefuse, Reason: "automated"}, nil
 	}
 	called := false
-	f.auth.OnSignupReview = func(_ context.Context, _ RegisterInput, account *user.User, review SignupReview) {
+	f.auth.Hooks.OnSignupReview = func(_ context.Context, _ RegisterInput, account *user.User, review SignupReview) {
 		called = true
 		if account != nil || review.Decision != SignupRefuse {
 			t.Errorf("refusal event = account %+v, review %+v", account, review)
@@ -1143,7 +1143,7 @@ func TestOIDCOnlySignupEnforcedAndToggleable(t *testing.T) {
 	if err := f.settings.Set(ctx, settings.OAuthOIDCOnlySignup, "true"); err != nil {
 		t.Fatal(err)
 	}
-	f.auth.SignInProviderCount = onSwitches(f)
+	f.auth.Hooks.SignInProviderCount = onSwitches(f)
 
 	admin, _, err := f.auth.Register(ctx, RegisterInput{Username: "admin", Password: "a-good-password"})
 	if err != nil {
@@ -1222,7 +1222,7 @@ func TestThirdPartyOnlySignupEnforcedAndToggleable(t *testing.T) {
 	if err := f.settings.Set(ctx, settings.OAuthThirdPartyOnlySignup, "true"); err != nil {
 		t.Fatal(err)
 	}
-	f.auth.SignInProviderCount = onSwitches(f)
+	f.auth.Hooks.SignInProviderCount = onSwitches(f)
 
 	admin, _, err := f.auth.Register(ctx, RegisterInput{Username: "admin", Password: "a-good-password"})
 	if err != nil {
@@ -1294,7 +1294,7 @@ func TestThirdPartyOnlySignupIgnoresAProviderTheCardDoesNotOffer(t *testing.T) {
 	if err := f.settings.Set(ctx, settings.OAuthThirdPartyOnlySignup, "true"); err != nil {
 		t.Fatal(err)
 	}
-	f.auth.SignInProviderCount = func() int { return 0 }
+	f.auth.Hooks.SignInProviderCount = func() int { return 0 }
 
 	if _, _, err := f.auth.Register(ctx, RegisterInput{Username: "second", Password: "a-good-password"}); err != nil {
 		t.Fatalf("with no provider on the card, a password sign-up must be allowed, got %v", err)
@@ -1311,7 +1311,7 @@ func TestAPasswordWriteRevokesWhatWasIssuedInTheSameTransaction(t *testing.T) {
 	}
 
 	var asked []string
-	f.auth.RevokeIssued = func(_ context.Context, _ database.Queryer, userID string) error {
+	f.auth.Hooks.RevokeIssued = func(_ context.Context, _ database.Queryer, userID string) error {
 		asked = append(asked, userID)
 		return errors.New("the identity provider is unreachable")
 	}
@@ -1325,7 +1325,7 @@ func TestAPasswordWriteRevokesWhatWasIssuedInTheSameTransaction(t *testing.T) {
 		t.Errorf("sessions were ended by a change that was rolled back: %v", err)
 	}
 
-	f.auth.RevokeIssued = func(_ context.Context, _ database.Queryer, userID string) error {
+	f.auth.Hooks.RevokeIssued = func(_ context.Context, _ database.Queryer, userID string) error {
 		asked = append(asked, userID)
 		return nil
 	}
@@ -1364,7 +1364,7 @@ func TestAGuardsRestrictionLapsesAndIsNotTheReviewersOwn(t *testing.T) {
 			return Verdict{Restrict: true, Reason: "unsure"}, nil
 		},
 	})
-	f.auth.ReviewSignup = func(context.Context, RegisterInput, int) (SignupReview, error) {
+	f.auth.Hooks.ReviewSignup = func(context.Context, RegisterInput, int) (SignupReview, error) {
 		return SignupReview{Ran: true, Decision: SignupAllow}, nil
 	}
 

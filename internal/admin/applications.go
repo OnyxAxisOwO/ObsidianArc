@@ -137,7 +137,7 @@ func callbacksRefused() error {
 
 func applicationError(err error) error {
 	if errors.Is(err, idp.ErrNotFound) {
-		return httpx.NotFound("No such application.")
+		return httpx.NotFoundCode("application_not_found", "No such application.")
 	}
 	if errors.Is(err, idp.ErrTrustedApplication) {
 		return trustedApplicationRefused()
@@ -155,7 +155,7 @@ func applicationError(err error) error {
 		return httpx.BadRequest("%s", message)
 	}
 	if errors.Is(err, idp.ErrInvalidRequest) {
-		return httpx.BadRequest("A public application has no secret to rotate.")
+		return httpx.BadRequestCode("application_public_no_secret", "A public application has no secret to rotate.")
 	}
 	return httpx.Internal(err)
 }

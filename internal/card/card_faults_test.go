@@ -102,8 +102,8 @@ func TestAForeignKeyFailureIsNotReportedAsAnAlreadyRedeemedCode(t *testing.T) {
 		"CHECK constraint failed: cards >= 0":                     false,
 		"NOT NULL constraint failed: redemptions.user_id":         false,
 	} {
-		if got := isUnique(errors.New(message)); got != want {
-			t.Errorf("isUnique(%q) = %v, want %v", message, got, want)
+		if got := database.IsUnique(errors.New(message)); got != want {
+			t.Errorf("database.IsUnique(%q) = %v, want %v", message, got, want)
 		}
 	}
 

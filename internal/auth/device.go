@@ -255,12 +255,12 @@ func (s *Service) learnDevice(ctx context.Context, w http.ResponseWriter, r *htt
 // succeeded, and a slow or failing subscriber must not turn it into a
 // failure the person seizes on retrying.
 func (s *Service) newDeviceEvent(ctx context.Context, account user.User, ip, ua string, at int64) {
-	if s.OnNewDevice == nil {
+	if s.Hooks.OnNewDevice == nil {
 		return
 	}
 	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	s.OnNewDevice(recordCtx, NewDeviceEvent{Account: account, IP: ip, UserAgent: ua, At: at})
+	s.Hooks.OnNewDevice(recordCtx, NewDeviceEvent{Account: account, IP: ip, UserAgent: ua, At: at})
 }
 
 // newDeviceMailWanted is the gate: the operator's switch, mail actually being

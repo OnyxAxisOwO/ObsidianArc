@@ -484,7 +484,7 @@ func (h *Handlers) meta(w http.ResponseWriter, _ *http.Request) error {
 func pathID(r *http.Request, name string) (string, error) {
 	value := r.PathValue(name)
 	if !id.Valid(value) {
-		return "", httpx.BadRequest("Malformed identifier.")
+		return "", httpx.BadRequestCode("malformed_identifier", "Malformed identifier.")
 	}
 	return value, nil
 }
@@ -492,25 +492,25 @@ func pathID(r *http.Request, name string) (string, error) {
 func translateProviderError(err error) error {
 	switch {
 	case errors.Is(err, provider.ErrNotFound):
-		return httpx.NotFound("No such provider.")
+		return httpx.NotFoundCode("provider_not_found", "No such provider.")
 	case errors.Is(err, provider.ErrNameTaken):
 		return httpx.Conflict("provider_exists", "A provider with that name already exists.")
 	case errors.Is(err, provider.ErrInvalidName):
-		return httpx.BadRequest("Name must be 1-60 characters.")
+		return httpx.BadRequestCode("provider_name_length", "Name must be 1-60 characters.")
 	case errors.Is(err, provider.ErrInvalidKind):
-		return httpx.BadRequest("Provider type must be openai or anthropic.")
+		return httpx.BadRequestCode("provider_kind_invalid", "Provider type must be openai or anthropic.")
 	case errors.Is(err, provider.ErrInvalidStyle):
-		return httpx.BadRequest("Unknown reasoning style.")
+		return httpx.BadRequestCode("reasoning_style_unknown", "Unknown reasoning style.")
 	case errors.Is(err, provider.ErrRouted):
 		return httpx.Conflict("provider_routed", "Models on other providers route into this one. Clear those routes first.")
 	case errors.Is(err, provider.ErrKeyRequired):
-		return httpx.BadRequest("An API key is required.")
+		return httpx.BadRequestCode("api_key_required", "An API key is required.")
 	case errors.Is(err, provider.ErrKeyNeededForMove):
 		return httpx.BadRequestCode("provider_key_needed", "A new base URL needs the API key entered again.")
 	case errors.Is(err, provider.ErrBaseURLNeedsSuperAdmin):
 		return httpx.ForbiddenCode("super_admin_required", "Only a super administrator can set or change a provider's base URL.")
 	case errors.Is(err, provider.ErrTooManyHeaders):
-		return httpx.BadRequest("At most 20 extra headers.")
+		return httpx.BadRequestCode("too_many_headers", "At most 20 extra headers.")
 	case errors.Is(err, provider.ErrHiddenHeader):
 		return httpx.BadRequestCode("header_hidden", "A header value shown as a hint cannot be saved. Enter the value again.")
 	case errors.Is(err, provider.ErrInvalidHeaderName):
@@ -528,11 +528,13 @@ func translateProviderError(err error) error {
 		return httpx.BadRequestCode("header_duplicate", "Header name %s matches another header once spaces are trimmed and letter case is ignored. Keep one of them.", name).
 			WithDetails(map[string]any{"name": name})
 	case errors.Is(err, provider.ErrTooManyKeys):
-		return httpx.BadRequest("At most %d API keys.", provider.MaxAPIKeys)
+		return httpx.BadRequestCode("too_many_api_keys", "At most %d API keys.", provider.MaxAPIKeys).
+			WithDetails(map[string]any{"max": provider.MaxAPIKeys})
 	case errors.Is(err, provider.ErrKeyTooLong):
-		return httpx.BadRequest("An API key is at most %d characters.", provider.MaxAPIKeyChars)
+		return httpx.BadRequestCode("api_key_too_long", "An API key is at most %d characters.", provider.MaxAPIKeyChars).
+			WithDetails(map[string]any{"max": provider.MaxAPIKeyChars})
 	case errors.Is(err, provider.ErrInvalidRotation):
-		return httpx.BadRequest("Key rotation must be sequential or random.")
+		return httpx.BadRequestCode("key_rotation_invalid", "Key rotation must be sequential or random.")
 	case errors.Is(err, provider.ErrKeysChanged):
 		return httpx.Conflict("provider_keys_changed", "The API keys were changed meanwhile. Open the provider again.")
 	case errors.Is(err, provider.ErrInvalidBaseURL):

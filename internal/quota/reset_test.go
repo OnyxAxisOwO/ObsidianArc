@@ -93,7 +93,7 @@ func TestResetAllRestartsAllowanceWindowsFromNow(t *testing.T) {
 	if err := service.ResetAll(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Reserve(ctx, person, Estimate{}); err != nil {
+	if _, err := service.ReserveFor(ctx, person, "", Estimate{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	after, err := service.SummaryFor(ctx, person)

@@ -160,7 +160,7 @@ func (h *Handlers) importModels(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	if len(body.Models) == 0 {
-		return httpx.BadRequest("That file contains no models.")
+		return httpx.BadRequestCode("catalogue_file_empty", "That file contains no models.")
 	}
 	// Refused before the first model is written: a file with one misspelt
 	// level would otherwise import everything above it and then stop.

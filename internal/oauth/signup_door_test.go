@@ -157,6 +157,68 @@ func TestAProviderSignUpThroughTheRegisterPageStillOpensAnAccount(t *testing.T) 
 	}
 }
 
+// postStart sends the sign-in page's form, the way the page now goes through
+// the door: the one-use token and proof in the body, not the address.
+func postStart(mux *http.ServeMux, path string, form url.Values) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, request)
+	return recorder
+}
+
+// The register page's form post passes the challenge from its body and opens
+// the account, exactly as the query-string navigation does.
+func TestAProviderSignUpPostedFromTheRegisterPageOpensAnAccount(t *testing.T) {
+	f := newFixture(t)
+	populate(t, f)
+	f.configure(t, "github")
+	stubGitHubAs(t, "4218", "octocat")
+	h, mux := handlers(t, f)
+	h.SignupChallenge = (&signupSwitch{on: true}).gate()
+
+	begun := postStart(mux, "/api/auth/oauth/start/github", url.Values{
+		"register": {"1"}, "turnstile": {"good"}, "next": {"/settings"},
+	})
+	if begun.Code != http.StatusSeeOther {
+		t.Fatalf("start = %d %s, want a 303 the browser follows with a GET", begun.Code, begun.Body.String())
+	}
+	target, err := url.Parse(begun.Header().Get("Location"))
+	if err != nil || target.Query().Get("state") == "" {
+		t.Fatalf("start sent the browser to %q", begun.Header().Get("Location"))
+	}
+	back := get(mux, "/api/auth/oauth/callback/github?code=the-code&state="+target.Query().Get("state"),
+		begun.Result().Cookies(), nil)
+	if location := back.Header().Get("Location"); location != "/settings" {
+		t.Fatalf("callback = %q, want the sign-in to finish where it was going", location)
+	}
+	if total := accountCount(t, f); total != 2 {
+		t.Errorf("accounts = %d, want the new one opened", total)
+	}
+}
+
+// A post reads only its body. A token glued onto the form's address is not
+// read, so the challenge is failed and the browser goes back to the page it
+// came from, with a 303.
+func TestAPostedStartDoesNotReadTheQueryString(t *testing.T) {
+	f := newFixture(t)
+	populate(t, f)
+	f.configure(t, "github")
+	h, mux := handlers(t, f)
+	h.SignupChallenge = (&signupSwitch{on: true}).gate()
+
+	begun := postStart(mux, "/api/auth/oauth/start/github?turnstile=good", url.Values{
+		"register": {"1"}, "turnstile": {"bad"},
+	})
+	if begun.Code != http.StatusSeeOther {
+		t.Fatalf("start = %d, want 303", begun.Code)
+	}
+	if location := begun.Header().Get("Location"); !strings.Contains(location, "oauth_error=challenge_failed") ||
+		!strings.HasPrefix(location, "/register") {
+		t.Fatalf("start sent the browser to %q, want the register page told the challenge failed", location)
+	}
+}
+
 // With the challenge switched off, a provider sign-up opens an account as it
 // always did, whichever door it came through.
 func TestWithTheSignUpChallengeOffAProviderSignUpOpensAnAccount(t *testing.T) {

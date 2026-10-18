@@ -48,7 +48,7 @@ func TestConcurrentReserveSettleAndReleaseTakeRowsInOneOrder(t *testing.T) {
 		go func() {
 			defer wait.Done()
 			for round := range rounds {
-				res, err := service.Reserve(ctx, person, reserved)
+				res, err := service.ReserveFor(ctx, person, "", reserved, nil)
 				if err != nil {
 					t.Errorf("worker %d reserve: %v", worker, err)
 					return
@@ -246,7 +246,7 @@ func concurrentAccountRun(t *testing.T, tokenRate, withBar bool) {
 		t.Fatal(err)
 	}
 	for range 3 {
-		if _, err := f.svc.Reserve(ctx, person, Estimate{Tokens: 100}); err != nil {
+		if _, err := f.svc.ReserveFor(ctx, person, "", Estimate{Tokens: 100}, nil); err != nil {
 			t.Fatal(err)
 		}
 		if err := f.svc.Settle(ctx, person, Estimate{Tokens: 100}, Estimate{Tokens: 70, Credits: 0.5}); err != nil {

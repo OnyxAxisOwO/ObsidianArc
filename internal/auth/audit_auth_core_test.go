@@ -222,11 +222,11 @@ func TestAnAccountCannotSpendTheScreeningAllowanceWithoutLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	lookups := 0
-	f.auth.ScreenEmail = func(context.Context, string) error {
+	f.auth.Hooks.ScreenEmail = func(context.Context, string) error {
 		lookups++
 		return nil
 	}
-	f.auth.ScreenEmailCharges = func(string) bool { return true }
+	f.auth.Hooks.ScreenEmailCharges = func(string) bool { return true }
 
 	for i := 0; i < emailScreensPerHour; i++ {
 		address := fmt.Sprintf("member%d@example.com", i)

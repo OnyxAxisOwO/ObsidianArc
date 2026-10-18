@@ -76,13 +76,13 @@ func (h *Handlers) usageAllowances(w http.ResponseWriter, r *http.Request) error
 	query := r.URL.Query()
 	groupID := query.Get("group_id")
 	if groupID != "" && !id.Valid(groupID) {
-		return httpx.BadRequest("Malformed group id.")
+		return httpx.BadRequestCode("malformed_group_id", "Malformed group id.")
 	}
 	state := query.Get("state")
 	switch state {
 	case "", "low", "exhausted":
 	default:
-		return httpx.BadRequest("Unknown state filter.")
+		return httpx.BadRequestCode("state_filter_unknown", "Unknown state filter.")
 	}
 
 	ranked, err := h.rankedAllowances(r.Context(), query.Get("q"), groupID)
@@ -136,7 +136,7 @@ func (h *Handlers) usageAllowances(w http.ResponseWriter, r *http.Request) error
 
 // rankedAllowances answers the ranking for one search and group from the cache
 // when it is fresh. The cache is the usage summary's, with the same lifetime,
-// and singleflight keeps a page scroll that arrives while the ranking is being
+// and flight keeps a page scroll that arrives while the ranking is being
 // built from starting a second build.
 func (h *Handlers) rankedAllowances(ctx context.Context, search, groupID string) (rankedAllowances, error) {
 	key := allowanceRankingKey(groupID, search)
@@ -144,7 +144,7 @@ func (h *Handlers) rankedAllowances(ctx context.Context, search, groupID string)
 		return ranked, nil
 	}
 	// The generation is read before the build starts, and it is part of the
-	// singleflight key. A request that comes after a write therefore never joins
+	// flight key. A request that comes after a write therefore never joins
 	// a build begun before it, and a build that finishes after a write is not
 	// cached, because the write may have changed what it read.
 	generation := h.allowanceGenerationNow()

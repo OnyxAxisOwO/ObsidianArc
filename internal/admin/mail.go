@@ -86,10 +86,10 @@ func (h *Handlers) testMail(w http.ResponseWriter, r *http.Request) error {
 	to := strings.TrimSpace(body.To)
 	address, err := netmail.ParseAddress(to)
 	if err != nil || address.Address != to {
-		return httpx.BadRequest("A recipient email address is required.")
+		return httpx.BadRequestCode("mail_recipient_required", "A recipient email address is required.")
 	}
 	if !h.Mail.Sender().Configured() {
-		return httpx.BadRequest("SMTP is not configured.")
+		return httpx.BadRequestCode("smtp_not_configured", "SMTP is not configured.")
 	}
 	allowed, err := h.Mail.ClaimTestSend(r.Context(), time.Now())
 	if err != nil {

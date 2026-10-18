@@ -20,6 +20,7 @@ import { initials } from '@/lib/account';
 import { maskCredential } from '@/admin/safeMode';
 import { isSuperAdmin } from '@/stores/session';
 import AdminControlCard from './AdminControlCard.vue';
+import { refusalLine } from './failure-codes';
 
 // The server's own address arrives with this list, and the sign-in providers'
 // callback hints on the page are built from it (see callbackURL there), so
@@ -40,7 +41,7 @@ const draft = ref({ name: '', description: '', redirects: '', public: false, tru
 const copied = ref('');
 
 function failed(failure: unknown): void {
-  flash.value = failure instanceof ApiError ? failure.message : String(failure);
+  flash.value = refusalLine(failure);
 }
 
 function copy(value: string): void {

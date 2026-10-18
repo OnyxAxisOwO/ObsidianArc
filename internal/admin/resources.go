@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/flight"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
-	"golang.org/x/sync/singleflight"
 )
 
 // The storage totals scan every attachment the instance holds. The page asks
@@ -35,7 +35,7 @@ var storageScanTimeout = 30 * time.Second
 type storageState struct {
 	mu     sync.Mutex
 	totals *storageTotals
-	flight singleflight.Group
+	flight flight.Group
 }
 
 func (h *Handlers) cachedStorage() (storageTotals, bool) {

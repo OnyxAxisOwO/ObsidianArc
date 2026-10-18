@@ -171,13 +171,13 @@ Online documentation is hosted on Cloudflare Pages:
 
 | 指标 / Metric | 实测数据 / Measurement |
 | --- | --- |
-| 二进制体积 / Binary size | 27.10 MB（Linux amd64，本仓库不自带插件，其中插件运行时约 2.8 MB；使用 `-tags nosqlite` 为 23.40 MB） |
+| 二进制体积 / Binary size | 27.16 MB（Linux amd64，本仓库不自带插件，其中插件运行时约 2.8 MB；使用 `-tags nosqlite` 为 23.46 MB） |
 | 冷启动就绪时间 / Cold start | ~28 ms |
 | 空闲内存占用 / Idle RSS | ~16 MB |
 | 20 并发流式峰值 / Peak under 20 concurrency | ~54 MB 内存，11 个 OS 线程 |
-| 首次加载传输体积 / Wire payload | 打开对话界面传输 205.59 kB（179.18 kB JS + 26.41 kB CSS，服务器以 gzip 最高压缩级别发送；构建产物的 gzip 估算为 206.32 kB）；中文语言包 (51.60 kB)、管理后台 (170.57 kB JS + 15.24 kB CSS，后台独用的英文词条和样式随它加载)、终端 (8.05 kB JS + 1.63 kB CSS)、公式渲染器 (3.79 kB)、访客官网首页 (4.14 kB)、访客落地页 (3.12 kB)，以及每个编进二进制的插件各一个小分包，按需加载；以插件包安装的插件，其浏览器端模块只在启用后才取 |
+| 首次加载传输体积 / Wire payload | 打开对话界面传输 205.69 kB（179.28 kB JS + 26.41 kB CSS，服务器以 gzip 最高压缩级别发送；构建产物的 gzip 估算为 206.43 kB）；中文语言包 (54.04 kB)、管理后台 (173.67 kB JS + 15.24 kB CSS，后台独用的英文词条和样式随它加载)、终端 (8.05 kB JS + 1.63 kB CSS)、公式渲染器 (3.79 kB)、访客官网首页 (4.14 kB)、访客落地页 (3.12 kB)，以及每个编进二进制的插件各一个小分包，按需加载；以插件包安装的插件，其浏览器端模块只在启用后才取 |
 | 后台常驻协程 / Background goroutines | 3 个（请求日志写入、10 分钟清理、备份调度） |
-| Go 直接依赖 / Direct Go dependencies | 5 个（SQLite 驱动、pgx、x/crypto、x/sync（只用 singleflight）、wazero——插件包的沙箱） |
+| Go 直接依赖 / Direct Go dependencies | 4 个（SQLite 驱动、pgx、x/crypto、wazero——插件包的沙箱） |
 | 前端运行时依赖 / Frontend runtime dependencies | 4 个（`vue`、`vue-router`、`@vueuse/core`、`lucide-vue-next`） |
 
 ---

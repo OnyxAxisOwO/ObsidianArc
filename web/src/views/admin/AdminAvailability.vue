@@ -7,8 +7,6 @@
 
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { adminApi, type ModelHealth } from '@/admin/api';
-import { ApiError } from '@/api/client';
-import { codeText } from '@/lib/api-error';
 import { loadModels } from '@/chat/useModels';
 import OaBadge from '@/components/OaBadge.vue';
 import OaSearchField from '@/components/OaSearchField.vue';
@@ -25,6 +23,7 @@ import { t } from '@/composables/useI18n';
 import { maskProvider } from '@/admin/safeMode';
 import AdminFailure from './AdminFailure.vue';
 import { useAdminView } from './adminView';
+import { errorLine, refusalLine } from './failure-codes';
 
 const view = useAdminView();
 view.setTitle(() => t('navAvailability'), () => t('availabilitySubtitle'));
@@ -100,7 +99,7 @@ async function save(): Promise<void> {
     window.clearTimeout(saveLabelTimer);
     saveLabelTimer = window.setTimeout(() => { saveLabel.value = ''; }, 1500);
   } catch (failure) {
-    flash.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    flash.value = refusalLine(failure);
     saveLabel.value = '';
   } finally {
     busy.value = false;
@@ -129,7 +128,7 @@ async function resetUptime(): Promise<void> {
     flashSuccessTimer = window.setTimeout(() => { flashSuccess.value = ''; }, 3000);
     await reloadFigures();
   } catch (failure) {
-    flash.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    flash.value = refusalLine(failure);
   } finally {
     resetting.value = false;
   }
@@ -161,7 +160,7 @@ async function probeAllModels(): Promise<void> {
     // Only a code the interface has a sentence for is translated; any other
     // keeps the server's sentence, which an administrator may need verbatim.
     if (abort.signal.aborted) flash.value = t('stopped');
-    else flash.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
+    else flash.value = refusalLine(failure);
   } finally {
     probing.value = false;
     probeAbort = null;
@@ -202,7 +201,7 @@ async function load(): Promise<void> {
     models.value = healthData.models;
     accept();
   } catch (failure) {
-    error.value = failure instanceof Error ? failure.message : String(failure);
+    error.value = errorLine(failure);
   } finally {
     loaded.value = true;
   }

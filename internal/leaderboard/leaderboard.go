@@ -29,9 +29,8 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/sync/singleflight"
-
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/flight"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
@@ -89,7 +88,7 @@ type Handlers struct {
 
 	mu    sync.RWMutex
 	cache map[string]*cachedBoard
-	sf    singleflight.Group
+	sf    flight.Group
 }
 
 func NewHandlers(set *settings.Service, usageStore *usage.Store, users *user.Store, models *model.Store) *Handlers {
