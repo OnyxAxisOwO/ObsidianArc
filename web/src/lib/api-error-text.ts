@@ -2,6 +2,16 @@ import { ApiError } from '@/api/client';
 import { t, type StringKey } from '@/composables/useI18n';
 
 /**
+ * A failure whose sentence was written for logs rather than for a reader: a
+ * server error, the 'internal' code, or no answer at all. One rule, shared by
+ * every helper that turns a failure into a line, so no two of them disagree
+ * about which sentences a reader may see.
+ */
+export function serverFailure(failure: ApiError): boolean {
+  return failure.status === 0 || failure.status >= 500 || failure.code === 'internal';
+}
+
+/**
  * The line a person reads when a request fails.
  *
  * A failure the screen has a code for is translated. A server failure, or no
@@ -20,6 +30,6 @@ export function apiFailureText(
   // translated whatever its status, as the header above promises.
   const key = Object.hasOwn(codes, failure.code) ? codes[failure.code] : undefined;
   if (key) return t(key);
-  if (failure.status === 0 || failure.status >= 500 || failure.code === 'internal') return t(fallback);
+  if (serverFailure(failure)) return t(fallback);
   return failure.message;
 }

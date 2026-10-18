@@ -26,6 +26,12 @@ export const ACCENTS = {
 export type AccentName = keyof typeof ACCENTS;
 
 export const ACCENT_NAMES = Object.keys(ACCENTS) as AccentName[];
+
+/** Own keys only, so a stored "constructor" is not taken for a preset. */
+export function isAccentName(value: string): value is AccentName {
+  return Object.hasOwn(ACCENTS, value);
+}
+
 // Black and white. The accent now drives every surface, not just the buttons,
 // so the default has to be the one that imposes least on an instance that
 // never opens the picker. The :root fallbacks in chat.css are this accent's

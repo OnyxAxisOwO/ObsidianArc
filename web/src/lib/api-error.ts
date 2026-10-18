@@ -13,6 +13,7 @@
 
 import { ApiError } from '@/api/client';
 import { t, type StringKey } from '@/composables/useI18n';
+import { serverFailure } from '@/lib/api-error-text';
 import { absoluteTime } from '@/lib/format';
 
 const CODE_KEYS: Record<string, StringKey> = {
@@ -108,8 +109,7 @@ export function apiErrorText(error: unknown): string {
   const text = codeText(error.code);
   if (text) return text;
   // A server failure's sentence is English and was written for logs and API
-  // clients, so a reader on a Chinese screen gets the screen's own fallback, as
-  // apiFailureText gives. Mirrors that rule so the two helpers do not disagree.
-  if (error.status === 0 || error.status >= 500 || error.code === 'internal') return t('failed');
+  // clients, so a reader on a Chinese screen gets the screen's own fallback.
+  if (serverFailure(error)) return t('failed');
   return error.message;
 }

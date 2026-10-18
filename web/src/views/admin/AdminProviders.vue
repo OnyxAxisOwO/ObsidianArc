@@ -10,6 +10,7 @@
 import { computed, nextTick, onMounted, ref } from 'vue';
 import { adminApi, type KeyRotation, type Meta, type Provider, type ProviderKind, type ReasoningStyle } from '@/admin/api';
 import { ApiError } from '@/api/client';
+import { apiFailureText } from '@/lib/api-error-text';
 import OaBadge from '@/components/OaBadge.vue';
 import OaBadgeRow from '@/components/OaBadgeRow.vue';
 import OaBulkBar from '@/components/OaBulkBar.vue';
@@ -279,7 +280,8 @@ async function save(): Promise<void> {
 /**
  * The server words its refusals in English. The ones this page has words for
  * are translated here, for a save and a delete alike, so both read in the
- * language the person chose. A code not listed keeps the server's sentence.
+ * language the person chose. A code not listed keeps the server's sentence,
+ * unless it is a server failure: that sentence was written for the logs.
  */
 function refusalText(failure: ApiError): string {
   switch (failure.code) {
@@ -292,7 +294,7 @@ function refusalText(failure: ApiError): string {
     case 'header_duplicate':
       return t('providerHeaderDuplicate', { name: String(failure.details['name'] ?? '') });
     case 'header_hidden': return t('providerHeaderHidden');
-    default: return failure.message;
+    default: return apiFailureText(failure, 'failed');
   }
 }
 

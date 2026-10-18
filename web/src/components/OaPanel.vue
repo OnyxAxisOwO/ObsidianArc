@@ -71,9 +71,23 @@ const emit = defineEmits<{
   (event: 'back'): void;
 }>();
 
+// Named once and handed to OaResizer below, because the column reads the
+// stored width before the resizer has mounted and the two must name the same
+// key and the same property.
 const PANEL_WIDTH_KEY = 'obsidian-arc-panel-width';
-/** How long the frame takes to travel, matching the stylesheet. */
+const PANEL_WIDTH_VAR = '--oa-panel-width';
+/**
+ * How long the frame takes to travel: the 0.34s margin and transform
+ * transitions on `.oa-panel` in _surfaces.scss. Above 1101px its width moves
+ * in 0.28s, inside this, so waiting for the longer of the two is still right.
+ */
 const ZOOM_MS = 340;
+/**
+ * A column folding away slides out by a negative margin before it is hidden.
+ * Past this much it is on its way out, and is left out of the widths shared
+ * among the columns that stay.
+ */
+const SLIDING_OUT_MARGIN_PX = -50;
 /**
  * When the interior swaps layouts, partway through the frame's travel.
  *
@@ -142,7 +156,7 @@ const width = storedWidth(PANEL_WIDTH_KEY, props.width);
 //
 // It cannot run in onMounted: the column sits in a Teleport that is absent until
 // the row arrives, and a panel in the first render mounts before that.
-watch(panel, (el) => el?.style.setProperty('--oa-panel-width', `${width}px`), { flush: 'post' });
+watch(panel, (el) => el?.style.setProperty(PANEL_WIDTH_VAR, `${width}px`), { flush: 'post' });
 
 onMounted(async () => {
   // Already in place: it took the previous panel's column, at its width.
@@ -206,6 +220,11 @@ let restoreSiblings: (() => void) | null = null;
  * without this the content behind it snaps wider before the panel has grown
  * far enough to cover it.
  */
+/** Puts back the flex each pinned column had before it was pinned. */
+function restoreFlex(pinned: Array<[HTMLElement, string]>): void {
+  for (const [node, previous] of pinned) node.style.flex = previous;
+}
+
 function freezeSiblings(): () => void {
   const row = host.value;
   const self = panel.value;
@@ -216,14 +235,12 @@ function freezeSiblings(): () => void {
     pinned.push([child, child.style.flex]);
     child.style.flex = `0 0 ${child.getBoundingClientRect().width}px`;
   }
-  return () => {
-    for (const [node, previous] of pinned) node.style.flex = previous;
-  };
+  return () => restoreFlex(pinned);
 }
 
 function isChildHidden(child: HTMLElement): boolean {
   const style = window.getComputedStyle(child);
-  return style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.marginLeft) < -50;
+  return style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.marginLeft) < SLIDING_OUT_MARGIN_PX;
 }
 
 /**
@@ -268,9 +285,7 @@ function freezeSiblingsForDrawer(drawerWidth: number): () => void {
       : `0 0 ${child.getBoundingClientRect().width}px`;
   }
 
-  return () => {
-    for (const [node, previous] of pinned) node.style.flex = previous;
-  };
+  return () => restoreFlex(pinned);
 }
 
 function toggleFullscreen(onDone?: () => void): boolean {
@@ -458,9 +473,9 @@ defineExpose({
 
       <OaResizer
         edge="left"
-        css-variable="--oa-panel-width"
+        :css-variable="PANEL_WIDTH_VAR"
         :style-target="panel"
-        storage-key="obsidian-arc-panel-width"
+        :storage-key="PANEL_WIDTH_KEY"
         :min="320"
         :max="720"
         :fallback="props.width"

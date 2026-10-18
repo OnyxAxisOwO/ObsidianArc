@@ -245,7 +245,7 @@ export interface CreateTerminalSessionOptions {
  * Small enough that a long-running command is trimmed promptly, large enough
  * that an ordinary table is still one block.
  */
-const maxTokensPerBlock = 400;
+const MAX_TOKENS_PER_BLOCK = 400;
 
 /**
  * Every token is one span the page mounts, and a coloured listing can put 400
@@ -295,7 +295,7 @@ export function createTerminalSession(options: CreateTerminalSessionOptions): Te
     // Capped by block count, not by rendered line count: a block can hold
     // embedded newlines, and computing how those wrap needs the pane's own
     // column width, which this module never measures. Output also rolls over
-    // to a new block every maxTokensPerBlock tokens, so one SSE chunk can span
+    // to a new block every MAX_TOKENS_PER_BLOCK tokens, so one SSE chunk can span
     // several blocks and one block can hold several chunks; the total is
     // bounded by MAX_RETAINED_TOKENS.
     //
@@ -337,7 +337,7 @@ export function createTerminalSession(options: CreateTerminalSessionOptions): Te
       // put everything into one block that the cap could never evict, so a
       // tab left on `watch` grew until the browser gave out. Starting a new
       // block every so often is what puts that output back under the cap.
-      if (!currentOutputBlock || currentOutputBlock.tokens.length >= maxTokensPerBlock) {
+      if (!currentOutputBlock || currentOutputBlock.tokens.length >= MAX_TOKENS_PER_BLOCK) {
         currentOutputBlock = pushBlock('output', []);
       }
       currentOutputBlock.tokens.push(token);
@@ -381,7 +381,11 @@ export function createTerminalSession(options: CreateTerminalSessionOptions): Te
     running.value = true;
     currentOutputBlock = null;
     const tokenizer = createAnsiTokenizer();
-    let outcome: RunOutcome | null = null;
+    // Cast rather than annotated: the handlers below assign it, and TypeScript
+    // does not see assignments made inside a callback, so an annotated `null`
+    // would be narrowed to null for good and `outcome !== null` would read as
+    // never after the stream ends.
+    let outcome = null as RunOutcome | null;
     // Only `lang` changes the language a tab carries. The done frame echoes the
     // session language after every command, so a comparison against what was
     // sent cannot tell a `lang` that set the language it already had from an

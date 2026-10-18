@@ -24,11 +24,13 @@
 // will, and its emulator, history and ANSI decoder would otherwise be on the
 // first paint of everyone who only came to chat.
 
-import { createRouter, createWebHistory, type RouteLocationRaw, type RouteRecordRaw } from 'vue-router';
+import {
+  createRouter, createWebHistory, type RouteLocationNormalized, type RouteLocationRaw, type RouteRecordRaw,
+} from 'vue-router';
 import { safeNext, serverOwned } from '@/lib/next';
 import { BACKOFFICE_PANEL_PARAM } from '@/composables/usePanelExit';
 import { SESSION_LOST } from '@/api/session-ended';
-import { currentUser, isAdmin, pendingSecondFactor, siteInfo } from '@/stores/session';
+import { currentUser, pendingSecondFactor, siteInfo } from '@/stores/session';
 import AboutPanel from '@/views/AboutPanel.vue';
 import ArchivePanel from '@/views/ArchivePanel.vue';
 import AuthView from '@/views/AuthView.vue';
@@ -146,6 +148,27 @@ function arrive(next: string): RouteLocationRaw {
   return { path: target.path, query: target.query, hash: target.hash, replace: true };
 }
 
+// Where a gate the visitor has just cleared lets them go on to: the `next`
+// they were stopped on the way to. One copy for every gate, because the
+// server's own pages need a real navigation and a gate that forgot that would
+// draw "no such page" in place of the request another site is waiting on.
+function goOn(to: RouteLocationNormalized): RouteLocationRaw | false {
+  const next = safeNext(to.query['next']);
+  if (next && serverOwned(next)) {
+    window.location.assign(next);
+    return false;
+  }
+  return arrive(next);
+}
+
+// Holds a signed-in account at the page a policy wants it on, remembering
+// where it was going. The chat itself is not worth carrying: it is where
+// goOn lands without a `next` anyway.
+function holdAt(path: string, to: RouteLocationNormalized): RouteLocationRaw {
+  const next = to.path === '/' ? undefined : to.fullPath;
+  return { path, query: next ? { next } : {}, replace: true };
+}
+
 router.beforeEach((to) => {
   const signedIn = !!currentUser.value;
   const needsSession = to.matched.some((record) => record.meta['auth']);
@@ -168,16 +191,10 @@ router.beforeEach((to) => {
   // anything else. The server refuses the rest regardless; this only saves
   // drawing a screen made of refusals.
   if (signedIn && currentUser.value?.two_factor_enrol && to.path !== '/two-factor') {
-    const next = to.path === '/' ? undefined : to.fullPath;
-    return { path: '/two-factor', query: next ? { next } : {}, replace: true };
+    return holdAt('/two-factor', to);
   }
   if (to.path === '/two-factor' && signedIn && !currentUser.value?.two_factor_enrol) {
-    const next = safeNext(to.query['next']);
-    if (next && serverOwned(next)) {
-      window.location.assign(next);
-      return false;
-    }
-    return arrive(next);
+    return goOn(to);
   }
 
   // The operator's OIDC policy wants every account to link an identity
@@ -186,16 +203,10 @@ router.beforeEach((to) => {
   // send each other back and forth. See oauth.Service.BindingGate for why the
   // server holds the same order.
   if (signedIn && currentUser.value?.oidc_binding_required && !currentUser.value?.two_factor_enrol && to.path !== '/bind-oidc') {
-    const next = to.path === '/' ? undefined : to.fullPath;
-    return { path: '/bind-oidc', query: next ? { next } : {}, replace: true };
+    return holdAt('/bind-oidc', to);
   }
   if (to.path === '/bind-oidc' && signedIn && !currentUser.value?.oidc_binding_required) {
-    const next = safeNext(to.query['next']);
-    if (next && serverOwned(next)) {
-      window.location.assign(next);
-      return false;
-    }
-    return arrive(next);
+    return goOn(to);
   }
 
   // The address itself. Signed in it is the chat; signed out it is whatever
@@ -223,12 +234,7 @@ router.beforeEach((to) => {
   // sign-in page was carrying somewhere to go, which is a request somebody
   // made rather than a page they wandered onto.
   if (signedIn && (to.path === '/login' || to.path === '/register')) {
-    const next = safeNext(to.query['next']);
-    if (next && serverOwned(next)) {
-      window.location.assign(next);
-      return false;
-    }
-    return arrive(next);
+    return goOn(to);
   }
 
   // The terminal is offered by group. The server refuses the account either
@@ -261,14 +267,3 @@ router.beforeEach((to) => {
 
   return true;
 });
-
-/**
- * Whether the reader may see the backoffice.
- *
- * Not a redirect: an administrator's link opened by somebody else should say
- * so over the product rather than bounce them silently to the chat, so the
- * refusal is drawn by the admin screen itself.
- */
-export function mayAdminister(): boolean {
-  return isAdmin.value;
-}

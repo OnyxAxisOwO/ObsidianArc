@@ -37,7 +37,12 @@ onPaletteChange(() => { paletteVersion.value += 1; });
 
 const slices = computed(() => fold(props.data, props.max, props.otherLabel));
 const empty = computed(() => !slices.value.length || slices.value.every((slice) => slice.value <= 0));
-const colours = computed(() => (void paletteVersion.value, palette(slices.value.length)));
+const colours = computed(() => {
+  // palette() reads the accent from computed CSS, which Vue cannot watch, so
+  // the version is read here only to make a theme change recompute the ramp.
+  void paletteVersion.value;
+  return palette(slices.value.length);
+});
 
 const total = computed(() => slices.value.reduce((sum, slice) => sum + slice.value, 0));
 const barRows = computed(() => bars(slices.value, colours.value));
@@ -50,6 +55,17 @@ function share(value: number): number {
 
 function hit(key: string): boolean {
   return props.selectable && !!key;
+}
+
+// A bar, a wedge and a legend row all select the same way, so a click on any
+// of them is one rule rather than three copies that could drift apart.
+function select(slice: Slice): void {
+  if (hit(slice.key)) emit('select', slice.key);
+}
+
+// The folded "other" entry has no key of its own, so its label stands in.
+function sliceKey(slice: Slice): string {
+  return slice.key || slice.label;
 }
 </script>
 
@@ -65,7 +81,7 @@ function hit(key: string): boolean {
       >
         <rect
           v-for="bar in barRows"
-          :key="bar.slice.key || bar.slice.label"
+          :key="sliceKey(bar.slice)"
           x="0"
           :y="bar.y"
           :width="bar.length"
@@ -73,7 +89,7 @@ function hit(key: string): boolean {
           rx="6"
           :fill="bar.colour"
           :class="{ 'oa-chart-hit': hit(bar.slice.key) }"
-          @click="hit(bar.slice.key) && emit('select', bar.slice.key)"
+          @click="select(bar.slice)"
         >
           <title>{{ bar.slice.label }} — {{ props.format(bar.slice.value) }}</title>
         </rect>
@@ -91,11 +107,11 @@ function hit(key: string): boolean {
         <template v-else>
           <path
             v-for="wedge in pieWedges"
-            :key="wedge.slice.key || wedge.slice.label"
+            :key="sliceKey(wedge.slice)"
             :d="wedge.path"
             :fill="wedge.colour"
             :class="{ 'oa-chart-hit': hit(wedge.slice.key) }"
-            @click="hit(wedge.slice.key) && emit('select', wedge.slice.key)"
+            @click="select(wedge.slice)"
           >
             <title>{{ wedge.slice.label }} — {{ props.format(wedge.slice.value) }} ({{ wedge.share }}%)</title>
           </path>
@@ -105,14 +121,14 @@ function hit(key: string): boolean {
       <ul class="oa-chart-legend">
         <li
           v-for="(slice, index) in slices"
-          :key="slice.key || slice.label"
+          :key="sliceKey(slice)"
           class="oa-chart-legend-row"
         >
           <span class="oa-chart-swatch" :style="{ background: colours[index] }" />
           <span
             class="oa-chart-legend-label"
             :class="{ 'oa-chart-hit': hit(slice.key) }"
-            @click="hit(slice.key) && emit('select', slice.key)"
+            @click="select(slice)"
           >{{ slice.label }}</span>
           <span class="oa-chart-legend-value">{{ props.format(slice.value) }}</span>
           <span class="oa-chart-legend-share">{{ share(slice.value) }}%</span>

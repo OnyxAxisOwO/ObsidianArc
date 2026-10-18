@@ -241,6 +241,29 @@ describe('the notifications store', () => {
     expect(activeToasts.value.map((toast) => toast.id)).toEqual(['b']);
   });
 
+  it('gives up on a poll that is accepted and never answered, so the next tick asks again', async () => {
+    // A half-open connection: the request never settles on its own, and only
+    // aborting its signal ends it, the way fetch rejects when aborted.
+    let pollCalls = 0;
+    get.mockImplementation(async (url: string, options?: { signal?: AbortSignal }) => {
+      if (!url.includes('/poll')) return { notifications: [], unread: 0, seen_at: 0, now: 1000 };
+      pollCalls += 1;
+      if (pollCalls > 1) return { notifications: [row('late', 4000)], unread: 1, now: 4000 };
+      return new Promise((_, reject) => {
+        options?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+      });
+    });
+
+    startNotifications();
+    await vi.advanceTimersByTimeAsync(0); // the initial load
+    await vi.advanceTimersByTimeAsync(POLL_MS); // the poll that hangs
+    expect(pollCalls).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(POLL_MS); // past its deadline, so this tick goes out
+    expect(pollCalls).toBe(2);
+    expect(activeToasts.value.map((toast) => toast.id)).toEqual(['late']);
+  });
+
   it('drops a response that lands after sign-out instead of writing into the next session', async () => {
     let resolvePoll!: (value: unknown) => void;
     const pending = new Promise((resolve) => { resolvePoll = resolve; });

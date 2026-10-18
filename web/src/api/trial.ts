@@ -6,6 +6,7 @@
 // account to keep it against.
 
 import { ApiError, fetchApi } from './client';
+import { readSSE, type SSEEvent } from './sse';
 import { t } from '@/composables/useI18n';
 
 export interface TrialMessage {
@@ -56,36 +57,15 @@ export async function streamTrial(
   }
   if (!response.body) throw new ApiError(0, 'stream', t('streamMissing'));
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let result: TrialResult | null = null;
-
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-
-      // SSE frames are separated by a blank line; anything after the last one
-      // is a partial frame and waits for the next chunk. CRLF is accepted
-      // because a proxy may rewrite line endings, and a frame that never closes
-      // is dropped without a word.
-      let boundary = /\r?\n\r?\n/.exec(buffer);
-      while (boundary) {
-        const finished = handleFrame(buffer.slice(0, boundary.index), onDelta);
-        if (finished) result = finished;
-        buffer = buffer.slice(boundary.index + boundary[0].length);
-        boundary = /\r?\n\r?\n/.exec(buffer);
-      }
-    }
-  } catch (failure) {
-    // An error frame or an abort ends the read early. The body is still open
-    // at that point, and left open the server would go on producing an answer
-    // nobody is reading.
-    void reader.cancel().catch(() => {});
-    throw failure;
-  }
+  // Cast rather than annotated: it is set inside the callback, which
+  // TypeScript's narrowing does not follow, so `null` would stick.
+  let result = null as TrialResult | null;
+  // An error frame throws out of the read, and the reader cancels the body
+  // so the server stops producing an answer nobody is reading.
+  await readSSE(response.body, (event) => {
+    const finished = handleFrame(event, onDelta);
+    if (finished) result = finished;
+  }, 'message');
 
   // Only the done frame says how many turns the server counted. A stream
   // that ends without one (a proxy closing the body, or the server giving up
@@ -136,19 +116,10 @@ interface Frame {
 }
 
 /** Returns the result when this frame was the closing one. */
-function handleFrame(frame: string, onDelta: (text: string) => void): TrialResult | null {
-  let event = 'message';
-  const data: string[] = [];
-
-  for (const line of frame.split(/\r?\n/)) {
-    if (line.startsWith('event:')) event = line.slice(6).trim();
-    else if (line.startsWith('data:')) data.push(line.slice(5).trimStart());
-  }
-  if (!data.length) return null;
-
+function handleFrame({ event, data }: SSEEvent, onDelta: (text: string) => void): TrialResult | null {
   let payload: Frame | null = null;
   try {
-    payload = JSON.parse(data.join('\n')) as Frame;
+    payload = JSON.parse(data) as Frame;
   } catch {
     return null;
   }

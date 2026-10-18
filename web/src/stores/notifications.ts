@@ -24,6 +24,12 @@ const POLL_MS = 30_000;
 // that row plus the grace.
 const POLL_GRACE_MS = 10_000;
 const POLL_PAGE = 200;
+// A request that is accepted and never answered (a half-open connection after
+// a laptop wakes) would hold the in-flight gate below, and with it every later
+// poll, until the tab is reloaded. Far longer than this endpoint takes to
+// answer, and shorter than the polling interval, so a stalled ask is given up
+// before the next tick wants the gate.
+const REQUEST_DEADLINE_MS = 20_000;
 
 export interface Toast {
   /** The notification's own id doubles as the toast's — one arrival, one card. */
@@ -43,6 +49,9 @@ export const activeToasts: Ref<Toast[]> = toasts;
 // notification backlog; a burst still reaches the bell list in full, just not
 // the corner of the screen.
 const TOAST_CAP = 3;
+// The bell's own list, which a poll grows from the top. A page of history is
+// what the bell shows; older rows are still on the server.
+const BELL_LIST_CAP = 50;
 
 // The highest created_at this session has already asked about. Zero at boot,
 // which is why the very first fetch is a plain list rather than a poll: a
@@ -67,11 +76,30 @@ let inFlight = false;
 // is where the duplicate stops.
 const seenIds = new Set<string>();
 
-async function load(): Promise<void> {
+/**
+ * Runs one load or poll under the in-flight gate. The generation is taken
+ * before the request goes out, so a response that lands after a sign-out is
+ * dropped, and only the request that set the gate may lift it.
+ */
+async function exclusive(run: (gen: number, signal: AbortSignal) => Promise<void>): Promise<void> {
   const gen = generation;
   inFlight = true;
+  const controller = new AbortController();
+  const deadline = setTimeout(() => controller.abort(), REQUEST_DEADLINE_MS);
   try {
-    const feed = await fetchNotifications();
+    await run(gen, controller.signal);
+  } catch {
+    // A feed nobody could reach is not worth an error state; the next tick
+    // tries again, and whatever this session last knew stays on screen.
+  } finally {
+    clearTimeout(deadline);
+    if (gen === generation) inFlight = false;
+  }
+}
+
+function load(): Promise<void> {
+  return exclusive(async (gen, signal) => {
+    const feed = await fetchNotifications(undefined, signal);
     if (gen !== generation) return; // stale: signed out (or in) since the request went out
     notifications.value = feed.notifications;
     unread.value = feed.unread;
@@ -85,12 +113,7 @@ async function load(): Promise<void> {
     // backlog for its new scope raised as toasts on the next poll.
     cursor = Math.max(newest, feed.now);
     loaded = true;
-  } catch {
-    // A feed nobody could reach is not worth an error state; the next tick
-    // tries again, and whatever this session last knew stays on screen.
-  } finally {
-    if (gen === generation) inFlight = false;
-  }
+  });
 }
 
 /**
@@ -100,15 +123,15 @@ async function load(): Promise<void> {
  * the same page for ever, and nothing newer would ever reach the reader, so
  * the next page starts at the last row of the one before.
  */
-async function pollAfter(after: number): Promise<NotificationPoll> {
-  let feed = await pollNotifications(after);
+async function pollAfter(after: number, signal: AbortSignal): Promise<NotificationPoll> {
+  let feed = await pollNotifications(after, signal);
   const rows = [...feed.notifications];
   while (feed.notifications.length >= POLL_PAGE) {
     // Read and checked per page: an index read is possibly undefined, and the
     // check has to sit beside the read it guards.
     const tail = feed.notifications[feed.notifications.length - 1];
     if (!tail) break;
-    feed = await pollNotifications(tail.created_at + POLL_GRACE_MS);
+    feed = await pollNotifications(tail.created_at + POLL_GRACE_MS, signal);
     rows.push(...feed.notifications);
   }
   return { ...feed, notifications: rows };
@@ -120,10 +143,8 @@ async function poll(): Promise<void> {
     await load();
     return;
   }
-  const gen = generation;
-  inFlight = true;
-  try {
-    const feed = await pollAfter(cursor);
+  await exclusive(async (gen, signal) => {
+    const feed = await pollAfter(cursor, signal);
     if (gen !== generation) return;
     unread.value = feed.unread;
     if (!feed.notifications.length) return;
@@ -148,12 +169,8 @@ async function poll(): Promise<void> {
     // saw.
     toasts.value = [...toasts.value, ...batch].slice(-TOAST_CAP);
     const newestFirst = [...fresh].reverse();
-    notifications.value = [...newestFirst, ...notifications.value].slice(0, 50);
-  } catch {
-    // Transient network hiccup; the next tick tries again.
-  } finally {
-    if (gen === generation) inFlight = false;
-  }
+    notifications.value = [...newestFirst, ...notifications.value].slice(0, BELL_LIST_CAP);
+  });
 }
 
 // A tab nobody can see does not poll. Every open tab used to ask every thirty
@@ -231,7 +248,7 @@ export async function markAllNotificationsRead(): Promise<void> {
 export async function openNotification(n: Notification): Promise<void> {
   dismissToast(n.id);
   if (n.link) void router.push(n.link);
-  const account = generation;
+  const gen = generation;
   try {
     await markNotificationsRead(n.created_at);
   } catch {
@@ -245,7 +262,7 @@ export async function openNotification(n: Notification): Promise<void> {
   // are still raised by the poll that owns them.
   try {
     const feed = await pollNotifications(cursor);
-    if (account === generation) unread.value = feed.unread;
+    if (gen === generation) unread.value = feed.unread;
   } catch {
     // Transient; the next poll corrects it.
   }

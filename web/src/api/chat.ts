@@ -7,7 +7,8 @@
 // generating. Pressing Stop is one `AbortController.abort()`.
 
 import { t } from '@/composables/useI18n';
-import { ApiError, api, fetchApi, noteSessionEnded } from './client';
+import { ApiError, api, fetchApi } from './client';
+import { readSSE, streamRefusal, type SSEEvent } from './sse';
 
 export interface Conversation {
   id: string;
@@ -178,73 +179,14 @@ export async function sendTurn(
     signal,
   });
 
-  if (!response.ok) {
-    // Everything checkable — the model, the permission, the quota — is
-    // checked before the stream opens, so a refusal is still an ordinary
-    // JSON error with a real status.
-    const text = await response.text();
-    let code = 'error';
-    let message = t('failed');
-    let details: Record<string, unknown> = {};
-    try {
-      const body = JSON.parse(text) as { error?: { code?: string; message?: string } & Record<string, unknown> };
-      if (body.error) {
-        const { code: bodyCode, message: bodyMessage, ...rest } = body.error;
-        code = bodyCode ?? code;
-        message = bodyMessage ?? message;
-        details = rest;
-      }
-    } catch {
-      // A non-JSON body (a proxy's error page) leaves the defaults.
-    }
-    // A stream is a request like any other: a session that ended while the
-    // page was open must sign this tab out too, not only the JSON calls.
-    noteSessionEnded(code);
-    throw new ApiError(response.status, code, message, details);
-  }
-
+  // Everything checkable — the model, the permission, the quota — is checked
+  // before the stream opens, so a refusal still has a real status.
+  if (!response.ok) throw await streamRefusal(response);
   if (!response.body) throw new ApiError(0, 'stream', t('streamMissing'));
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-
-  try {
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-
-      // Events are separated by a blank line. `\r\n\r\n` as well as `\n\n`,
-      // because some proxies rewrite line endings and a parser that only knows
-      // about `\n` sees one enormous event that never ends.
-      let boundary = /\r?\n\r?\n/.exec(buffer);
-      while (boundary) {
-        const frame = buffer.slice(0, boundary.index);
-        buffer = buffer.slice(boundary.index + boundary[0].length);
-        boundary = /\r?\n\r?\n/.exec(buffer);
-        dispatch(frame, handlers);
-      }
-    }
-  } catch (error) {
-    // A handler that throws leaves the body open, and the server keeps
-    // generating into it. Cancelling closes the connection, which is what
-    // ends the generation.
-    await reader.cancel().catch(() => undefined);
-    throw error;
-  }
+  await readSSE(response.body, (event) => dispatch(event, handlers));
 }
 
-function dispatch(frame: string, handlers: TurnHandlers): void {
-  let event = '';
-  let data = '';
-
-  for (const line of frame.split(/\r?\n/)) {
-    if (line.startsWith('event:')) event = line.slice(6).trim();
-    else if (line.startsWith('data:')) data += line.slice(5).trim();
-  }
-  if (!data) return;
-
+function dispatch({ event, data }: SSEEvent, handlers: TurnHandlers): void {
   let payload: unknown;
   try {
     payload = JSON.parse(data);
