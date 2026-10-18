@@ -2,22 +2,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, h, nextTick, type App } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
 import { adminApi, type AdminMailSettings, type AdminUserCheckSettings } from '../src/admin/api';
-import type { Account } from '../src/api/auth';
 import { ApiError } from '../src/api/client';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { settingsRefusalText } from '../src/lib/refusal';
 import { adopt, forget } from '../src/stores/session';
 import AdminSecurity from '../src/views/admin/AdminSecurity.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
-import { settle } from './helpers';
+import { settle, button } from './helpers';
+import { makeAccount } from './fixtures/account';
 
-const ADMIN: Account = {
-  id: 'u1', username: 'root', email: 'root@example.com', nickname: 'Root', avatar: '', bio: '',
-  role: 'super_admin', group_id: 'g1', group_expires_at: 0, group_name: 'Default', status: 'active',
-  created_at: 1, updated_at: 1, last_login_at: 1, email_verified: true,
-  allow_stats: true, allow_delete_conversations: true, api_restricted: false,
-  api_restricted_until: 0, api_restriction_source: '',
-};
+const ADMIN = makeAccount({
+  id: 'u1', username: 'root', email: 'root@example.com', nickname: 'Root', role: 'super_admin', last_login_at: 1,
+});
 
 const MAIL: AdminMailSettings = {
   host: 'smtp.example.com', port: 465, username: 'mailer', from: 'arc@example.com',
@@ -36,13 +32,6 @@ let actions: HTMLElement;
 function type(input: HTMLInputElement, value: string): void {
   input.value = value;
   input.dispatchEvent(new Event('input', { bubbles: true }));
-}
-
-function button(root: ParentNode, label: string): HTMLButtonElement {
-  const found = [...root.querySelectorAll<HTMLButtonElement>('button')]
-    .find((node) => node.textContent?.trim() === label || node.getAttribute('aria-label') === label);
-  if (!found) throw new Error(`Missing button: ${label}`);
-  return found;
 }
 
 function fieldInput(root: ParentNode, label: string): HTMLInputElement {
@@ -79,7 +68,6 @@ beforeEach(async () => {
 afterEach(() => {
   app?.unmount();
   app = undefined;
-  document.body.textContent = '';
   vi.restoreAllMocks();
   forget();
 });

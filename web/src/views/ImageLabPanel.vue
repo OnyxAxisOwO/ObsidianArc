@@ -18,6 +18,7 @@ import { ApiError } from '@/api/client';
 import OaConfirmButton from '@/components/OaConfirmButton.vue';
 import OaFormSection from '@/components/OaFormSection.vue';
 import OaIconButton from '@/components/OaIconButton.vue';
+import OaFullscreenButton from '@/components/OaFullscreenButton.vue';
 import OaImageLightbox from '@/components/OaImageLightbox.vue';
 import OaPanel from '@/components/OaPanel.vue';
 import OaSelectField from '@/components/OaSelectField.vue';
@@ -30,9 +31,7 @@ import { loadModels, models } from '@/chat/useModels';
 import {
   IconCheck,
   IconClose,
-  IconCollapse,
   IconDownload,
-  IconExpand,
   IconImage,
   IconPlus,
   IconSpark,
@@ -539,14 +538,7 @@ function galleryDownloadName(item: ImageGenerationRecord): string {
     @confirm="generate"
   >
     <template #actions>
-      <OaIconButton
-        class="oa-icon-btn"
-        :label="t(fullscreen ? 'exitFullscreen' : 'fullscreen')"
-        @click="toggleFullscreen"
-      >
-        <IconCollapse v-if="fullscreen" :size="16" />
-        <IconExpand v-else :size="16" />
-      </OaIconButton>
+      <OaFullscreenButton :fullscreen="fullscreen" @toggle="toggleFullscreen" />
     </template>
 
     <div class="oa-slide-tabs oa-image-lab-tabs" role="tablist">

@@ -23,7 +23,6 @@ afterEach(() => {
   // The open list is module state, so a test that left one open would be read
   // by the next one as a list it opened itself.
   document.dispatchEvent(new PointerEvent('pointerdown'));
-  document.body.textContent = '';
 });
 
 const COLOURS = [

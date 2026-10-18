@@ -4,18 +4,18 @@
 // is saved in the form the importer will accept.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, shallowRef, type App, type Component } from 'vue';
+import { createApp, h, nextTick, ref, shallowRef, type App, type Component } from 'vue';
 import * as authApi from '../src/api/auth';
 import * as backupApi from '../src/api/backup';
 import { ApiError } from '../src/api/client';
 import * as consentApi from '../src/api/consent';
 import * as oauthApi from '../src/api/oauth';
-import type { Account } from '../src/api/auth';
 import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { adopt, forget } from '../src/stores/session';
 import AccountSection from '../src/views/settings/AccountSection.vue';
-import { settle } from './helpers';
+import { settle, button } from './helpers';
+import { makeAccount } from './fixtures/account';
 
 const route = { path: '/settings', fullPath: '/settings', query: {} as Record<string, string>, hash: '', meta: {} };
 const router = { replace: vi.fn() };
@@ -24,12 +24,10 @@ vi.mock('vue-router', () => ({
   useRouter: () => router,
 }));
 
-const ACCOUNT: Account = {
-  id: 'member', username: 'member', email: 'member@example.test', nickname: '', avatar: '', bio: '', role: 'user',
-  group_id: '', group_expires_at: 0, group_name: '', status: 'active', created_at: 0, updated_at: 0,
-  last_login_at: 0, email_verified: true, allow_stats: true, allow_delete_conversations: true,
-  api_restricted: false, api_restricted_until: 0, api_restriction_source: '',
-};
+const ACCOUNT = makeAccount({
+  id: 'member', username: 'member', email: 'member@example.test', nickname: '', group_id: '', group_name: '',
+  created_at: 0, updated_at: 0,
+});
 
 let app: App | undefined;
 let host: HTMLElement;
@@ -39,7 +37,7 @@ beforeEach(async () => {
   route.query = {};
   router.replace.mockClear();
   adopt(ACCOUNT);
-  vi.spyOn(consentApi, 'fetchAuthorizations').mockResolvedValue({ authorizations: [] } as never);
+  vi.spyOn(consentApi, 'fetchAuthorizations').mockResolvedValue({ authorizations: [] });
   host = document.createElement('div');
   document.body.append(host);
 });
@@ -47,7 +45,6 @@ beforeEach(async () => {
 afterEach(() => {
   app?.unmount();
   app = undefined;
-  document.body.textContent = '';
   vi.restoreAllMocks();
   forget();
 });
@@ -58,18 +55,11 @@ async function mount(component: Component): Promise<void> {
   app = createApp({
     setup() {
       providePanelHost(shallowRef(panels));
-      return () => h(component, { query: '' });
+      return () => h(component, { query: '', active: true });
     },
   });
   app.mount(host);
   await settle();
-}
-
-function button(label: string): HTMLButtonElement {
-  const found = [...host.querySelectorAll<HTMLButtonElement>('button')]
-    .find((node) => node.textContent?.trim() === label);
-  if (!found) throw new Error(`Button not found: ${label}`);
-  return found;
 }
 
 /** Every password field on the panel: the current password an address change asks for, and the password group's. */
@@ -96,15 +86,15 @@ describe('the password section', () => {
     // screen's own line in their language.
     expect(host.textContent).not.toContain('Could not reach the server.');
     expect(host.textContent).toContain(t('failed'));
-    expect(button(t('retry'))).toBeTruthy();
+    expect(button(host, t('retry'))).toBeTruthy();
   });
 
   it('shows the form the account actually has once a retry succeeds', async () => {
     const fetchConnections = vi.spyOn(oauthApi, 'fetchConnections')
       .mockRejectedValueOnce(new ApiError(500, 'internal', 'Could not reach the server.'))
-      .mockResolvedValueOnce({ connections: [], providers: [], has_password: false } as never);
+      .mockResolvedValueOnce({ connections: [], providers: [], has_password: false });
     await mount(AccountSection);
-    button(t('retry')).click();
+    button(host, t('retry')).click();
     await settle();
 
     expect(fetchConnections).toHaveBeenCalledTimes(2);
@@ -130,7 +120,7 @@ describe('the password section', () => {
   });
 
   it('does not ask for the current password on an address change once the account is known to have none', async () => {
-    vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({ connections: [], providers: [], has_password: false } as never);
+    vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({ connections: [], providers: [], has_password: false });
     await mount(AccountSection);
 
     type(emailInput(), 'moved@example.test');
@@ -140,7 +130,7 @@ describe('the password section', () => {
   });
 
   it('says a wrong current password in the page language, not the server sentence', async () => {
-    vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({ connections: [], providers: [], has_password: true } as never);
+    vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({ connections: [], providers: [], has_password: true });
     vi.spyOn(authApi, 'changePassword').mockRejectedValue(
       new ApiError(400, 'current_password_wrong', 'Current password is incorrect.'),
     );
@@ -148,24 +138,122 @@ describe('the password section', () => {
 
     type(passwordInputs()[0]!, 'not-the-password');
     type(passwordInputs()[1]!, 'a-better-password');
-    button(t('changePassword')).click();
+    button(host, t('changePassword')).click();
     await settle();
 
     expect(host.textContent).toContain(t('currentPasswordWrong'));
     expect(host.textContent).not.toContain('Current password is incorrect.');
   });
+  // The server answers these with a code; without a sentence of the page's own
+  // the reader saw the server's English on a translated screen.
+  it.each([
+    ['password_unchanged', 'The new password is the same as the current one.', 'errPasswordUnchanged'],
+    ['password_too_short', 'Password must be at least 8 characters.', 'passwordTooShort'],
+    ['password_too_long', 'Password must be at most 256 characters.', 'errPasswordTooLong'],
+  ] as const)('says %s in the page language', async (code, sentence, key) => {
+    await changeLanguage('zh');
+    vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({ connections: [], providers: [], has_password: true });
+    vi.spyOn(authApi, 'changePassword').mockRejectedValue(new ApiError(400, code, sentence));
+    await mount(AccountSection);
+
+    type(passwordInputs()[0]!, 'the-password');
+    type(passwordInputs()[1]!, 'the-password');
+    button(host, t('changePassword')).click();
+    await settle();
+
+    expect(host.textContent).toContain(t(key));
+    expect(host.textContent).not.toContain(sentence);
+  });
+});
+
+describe('the profile section', () => {
+  it.each([
+    ['email_required', 'An email address is required on this server.', 'errEmailRequired'],
+    ['invalid_email', 'Email address is not valid.', 'emailInvalid'],
+    ['bio_too_long', 'Bio must be 500 characters or fewer.', 'errBioTooLong'],
+    ['avatar_too_long', 'Avatar is too large.', 'imageTooLarge'],
+  ] as const)('says %s in the page language', async (code, sentence, key) => {
+    await changeLanguage('zh');
+    vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({ connections: [], providers: [], has_password: true });
+    vi.spyOn(authApi, 'updateProfile').mockRejectedValue(new ApiError(400, code, sentence));
+    await mount(AccountSection);
+
+    button(host, t('save')).click();
+    await settle();
+
+    expect(host.textContent).toContain(t(key));
+    expect(host.textContent).not.toContain(sentence);
+  });
+});
+
+describe('the lists the section reads', () => {
+  async function mountShown(shown: { value: boolean }): Promise<void> {
+    app = createApp({
+      setup() {
+        providePanelHost(shallowRef(document.createElement('div')));
+        return () => h(AccountSection, { query: '', active: shown.value });
+      },
+    });
+    app.mount(host);
+    await settle();
+  }
+
+  it('waits until the section is first shown, and reads them once', async () => {
+    const connections = vi.spyOn(oauthApi, 'fetchConnections')
+      .mockResolvedValue({ connections: [], providers: [], has_password: true });
+    const authorizations = vi.mocked(consentApi.fetchAuthorizations);
+    const shown = ref(false);
+    await mountShown(shown);
+    expect(connections).not.toHaveBeenCalled();
+    expect(authorizations).not.toHaveBeenCalled();
+
+    shown.value = true;
+    await settle();
+    expect(connections).toHaveBeenCalledTimes(1);
+    expect(authorizations).toHaveBeenCalledTimes(1);
+
+    shown.value = false;
+    await nextTick();
+    shown.value = true;
+    await settle();
+    expect(connections).toHaveBeenCalledTimes(1);
+    expect(authorizations).toHaveBeenCalledTimes(1);
+  });
+
+  it('still says a failed read once the section is shown', async () => {
+    vi.spyOn(oauthApi, 'fetchConnections').mockRejectedValue(new ApiError(500, 'internal', 'Could not reach the server.'));
+    const shown = ref(false);
+    await mountShown(shown);
+    expect(host.textContent).not.toContain(t('failed'));
+
+    shown.value = true;
+    await settle();
+    expect(host.textContent).toContain(t('failed'));
+    expect(button(host, t('retry'))).toBeTruthy();
+  });
+
+  it('takes a connection outcome from the address while it is still hidden', async () => {
+    route.query = { oauth: 'connected' };
+    const connections = vi.spyOn(oauthApi, 'fetchConnections')
+      .mockResolvedValue({ connections: [], providers: [], has_password: true });
+    await mountShown(ref(false));
+
+    expect(router.replace).toHaveBeenCalledTimes(1);
+    expect(host.textContent).toContain(t('oauthConnected'));
+    expect(connections).not.toHaveBeenCalled();
+  });
 });
 
 describe('the data section', () => {
   it('says how much a full account let in, rather than a generic failure', async () => {
-    vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({ connections: [], providers: [], has_password: true } as never);
+    vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({ connections: [], providers: [], has_password: true });
     vi.spyOn(backupApi, 'pickJSONFile').mockResolvedValue({ obsidian_arc_export: 1, conversations: [] });
     vi.spyOn(backupApi, 'importAccount').mockRejectedValue(new ApiError(409, 'storage_full', 'This account is full.', {
       conversations: 3, messages: 41, skipped: 0, preferences: false,
     }));
     await mount(AccountSection);
 
-    button(t('importData')).click();
+    button(host, t('importData')).click();
     await settle();
 
     expect(host.textContent).toContain(t('importStorageFull', { conversations: 3, messages: 41 }));
@@ -173,14 +261,14 @@ describe('the data section', () => {
   });
 
   it('says a full account is full, not that an import stopped part way, when the import wrote nothing', async () => {
-    vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({ connections: [], providers: [], has_password: true } as never);
+    vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({ connections: [], providers: [], has_password: true });
     vi.spyOn(backupApi, 'pickJSONFile').mockResolvedValue({ obsidian_arc_export: 1, conversations: [] });
     vi.spyOn(backupApi, 'importAccount').mockRejectedValue(new ApiError(409, 'storage_full', 'This account is full.', {
       conversations: 0, messages: 0, skipped: 0, preferences: false,
     }));
     await mount(AccountSection);
 
-    button(t('importData')).click();
+    button(host, t('importData')).click();
     await settle();
 
     expect(host.textContent).toContain(t('errStorageFull'));
@@ -188,14 +276,14 @@ describe('the data section', () => {
   });
 
   it('says what a failure part way through an import wrote, whatever its code', async () => {
-    vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({ connections: [], providers: [], has_password: true } as never);
+    vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({ connections: [], providers: [], has_password: true });
     vi.spyOn(backupApi, 'pickJSONFile').mockResolvedValue({ obsidian_arc_export: 1, conversations: [] });
     vi.spyOn(backupApi, 'importAccount').mockRejectedValue(new ApiError(500, 'internal', 'Something went wrong on our side.', {
       conversations: 2, messages: 9, skipped: 0, preferences: false,
     }));
     await mount(AccountSection);
 
-    button(t('importData')).click();
+    button(host, t('importData')).click();
     await settle();
 
     expect(host.textContent).toContain(t('importPartialFailed', { conversations: 2, messages: 9 }));
@@ -203,13 +291,13 @@ describe('the data section', () => {
   });
 
   it('saves an export compact, the form the importer accepts', async () => {
-    vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({ connections: [], providers: [], has_password: true } as never);
+    vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({ connections: [], providers: [], has_password: true });
     const backup: backupApi.BackupDocument = { obsidian_arc_export: 1, exported_at: 0, conversations: [] };
     vi.spyOn(backupApi, 'exportAccount').mockResolvedValue(backup);
     const save = vi.spyOn(backupApi, 'saveAsFile').mockImplementation(() => undefined);
     await mount(AccountSection);
 
-    button(t('exportData')).click();
+    button(host, t('exportData')).click();
     await settle();
 
     expect(save).toHaveBeenCalledTimes(1);

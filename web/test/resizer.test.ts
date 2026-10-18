@@ -6,7 +6,6 @@ let app: App | undefined;
 afterEach(() => {
   app?.unmount();
   app = undefined;
-  document.body.textContent = '';
   // The component writes to <body>; a test that fails partway through must not
   // leave that behind for the next one.
   document.body.classList.remove('oa-resizing');

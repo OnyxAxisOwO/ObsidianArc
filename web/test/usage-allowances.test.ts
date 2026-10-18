@@ -66,7 +66,7 @@ describe('UsageAllowances', () => {
   });
 
   it('says when the list is only the newest accounts, and gives the real total', async () => {
-    vi.spyOn(adminApi, 'groupOptions').mockResolvedValue({ groups: [] } as never);
+    vi.spyOn(adminApi, 'groupOptions').mockResolvedValue({ groups: [] });
     vi.spyOn(adminApi, 'usageAllowances').mockResolvedValueOnce({
       ...answer([row('a', 1), row('b', 0.5)]), total: 7000, listed: 2, loaded: 2, capped: true,
     });
@@ -85,7 +85,7 @@ describe('UsageAllowances', () => {
   // note must not present that count as the population, and must say how many
   // accounts it was drawn from.
   it('words a filtered count past the cap as matches among the loaded accounts', async () => {
-    vi.spyOn(adminApi, 'groupOptions').mockResolvedValue({ groups: [] } as never);
+    vi.spyOn(adminApi, 'groupOptions').mockResolvedValue({ groups: [] });
     const ask = vi.spyOn(adminApi, 'usageAllowances')
       .mockResolvedValueOnce({ ...answer([row('a', 1)]), total: 7000, listed: 1, loaded: 5000, capped: true })
       .mockResolvedValueOnce({ ...answer([row('a', 1)]), total: 1, listed: 1, loaded: 5000, capped: true });
@@ -107,7 +107,7 @@ describe('UsageAllowances', () => {
   // used to ask for the same page again, so the reader gets a retry instead,
   // and scrolling waits for it.
   it('stops asking for a next page that failed until the reader retries it', async () => {
-    vi.spyOn(adminApi, 'groupOptions').mockResolvedValue({ groups: [] } as never);
+    vi.spyOn(adminApi, 'groupOptions').mockResolvedValue({ groups: [] });
     const page = (prefix: string) => Array.from({ length: 50 }, (_, index) => row(`${prefix}${index}`, 0.5));
     const ask = vi.spyOn(adminApi, 'usageAllowances')
       .mockResolvedValueOnce({ ...answer(page('a')), total: 120, listed: 120 })

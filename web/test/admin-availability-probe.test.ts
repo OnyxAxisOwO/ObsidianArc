@@ -39,7 +39,6 @@ afterEach(() => {
   app = undefined;
   host.remove();
   actions.remove();
-  document.body.textContent = '';
   vi.restoreAllMocks();
 });
 

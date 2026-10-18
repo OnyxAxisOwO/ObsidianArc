@@ -5,7 +5,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, h, nextTick, shallowRef, type App } from 'vue';
-import { adminApi } from '../src/admin/api';
+import { adminApi, emptyPolicy } from '../src/admin/api';
 import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import AdminUsage from '../src/views/admin/AdminUsage.vue';
@@ -47,12 +47,12 @@ let panels: HTMLElement;
 
 function mount(policies: () => Promise<unknown>, reload: () => void = () => {}): void {
   vi.spyOn(adminApi, 'policies').mockImplementation(policies as typeof adminApi.policies);
-  const savePolicy = vi.spyOn(adminApi, 'savePolicy').mockResolvedValue({ policy: {} as never });
+  const savePolicy = vi.spyOn(adminApi, 'savePolicy').mockResolvedValue({ policy: emptyPolicy('global', '') });
   vi.spyOn(adminApi, 'usage').mockResolvedValue(usagePayload as never);
-  vi.spyOn(adminApi, 'usageRecords').mockResolvedValue({ records: [], total: 0 } as never);
-  vi.spyOn(adminApi, 'groupOptions').mockResolvedValue({ groups: [] } as never);
+  vi.spyOn(adminApi, 'usageRecords').mockResolvedValue({ records: [], total: 0 });
+  vi.spyOn(adminApi, 'groupOptions').mockResolvedValue({ groups: [] });
   // The policy form's credit field prices models with this when it opens.
-  vi.spyOn(adminApi, 'models').mockResolvedValue({ models: [] } as never);
+  vi.spyOn(adminApi, 'models').mockResolvedValue({ models: [] });
   app = createApp({
     setup() {
       providePanelHost(shallowRef(panels));
@@ -81,7 +81,6 @@ beforeEach(async () => {
 afterEach(() => {
   app?.unmount();
   app = undefined;
-  document.body.textContent = '';
   vi.restoreAllMocks();
 });
 

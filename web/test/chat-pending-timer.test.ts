@@ -21,7 +21,6 @@ function mount(render: () => ReturnType<typeof h>): HTMLElement {
 afterEach(() => {
   app?.unmount();
   app = null;
-  document.body.textContent = '';
   vi.restoreAllMocks();
   setStats(false);
   currentUser.value = null;

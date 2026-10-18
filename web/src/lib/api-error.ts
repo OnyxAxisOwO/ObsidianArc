@@ -80,6 +80,18 @@ const CODE_KEYS: Record<string, StringKey> = {
   // land after the redirect to sign-in, so the reader gets the sentence here
   // rather than the server's English.
   session_required: 'errSessionEnded',
+  // The account form's refusals. Its own checks cut a nickname at the length
+  // the server allows and leave the rest to the server, which answers with
+  // these. The two password lengths are the server's constants, so the short
+  // one reuses the sign-up form's sentence and its figure.
+  password_unchanged: 'errPasswordUnchanged',
+  password_too_short: 'passwordTooShort',
+  password_too_long: 'errPasswordTooLong',
+  email_required: 'errEmailRequired',
+  invalid_email: 'emailInvalid',
+  bio_too_long: 'errBioTooLong',
+  // An avatar is a picture, and the upload screens already say this of one.
+  avatar_too_long: 'imageTooLarge',
   // images_unsupported, refusal and provider_rejected have no entry on purpose:
   // their server sentence names what the provider or model said, and a shared
   // translation would erase that. chat.Describe documents the same choice.

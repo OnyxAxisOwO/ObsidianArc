@@ -22,7 +22,6 @@ beforeEach(() => {
 afterEach(() => {
   app?.unmount();
   app = null;
-  document.body.textContent = '';
   vi.restoreAllMocks();
 });
 

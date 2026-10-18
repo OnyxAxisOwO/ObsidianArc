@@ -32,10 +32,10 @@ describe('the credits readout', () => {
       id: 'free', provider_id: 'p1', provider_name: 'P1', model_id: 'free', display_name: 'Free model',
       enabled: true, max_output_tokens: 0, request_weight: 0, output_token_weight: 0,
     } as unknown as AdminModel;
-    vi.spyOn(adminApi, 'models').mockResolvedValue({ models: [free] } as never);
+    vi.spyOn(adminApi, 'models').mockResolvedValue({ models: [free] });
 
     app = createApp({
-      render: () => h(CreditsField as never, { modelValue: 10, 'onUpdate:modelValue': () => {} }),
+      render: () => h(CreditsField, { modelValue: 10, 'onUpdate:modelValue': () => {} }),
     });
     app.mount(host);
     await settle();

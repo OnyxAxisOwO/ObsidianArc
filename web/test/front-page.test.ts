@@ -104,7 +104,6 @@ function observerOf(target: Element | null): StubObserver | undefined {
 afterEach(() => {
   app?.unmount();
   app = undefined;
-  document.body.textContent = '';
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   site.value = null;
@@ -306,6 +305,25 @@ describe('the front page', () => {
       .find((b) => b.textContent?.trim() === t('frontOpenChat'))!;
     signIn.click();
     expect(push).toHaveBeenCalledWith('/login');
+  });
+
+  // The hero's and the closing card's are one definition drawn twice; the
+  // header's is a lighter button of its own.
+  it('draws the sign-up call to action under the headline and on the closing card', async () => {
+    site.value = { ...siteInfo.value, registration_enabled: true };
+    await mount(FrontPage);
+
+    const ctas = [...host.querySelectorAll<HTMLButtonElement>('.oa-btn.primary.oa-front-cta')];
+    expect(ctas).toHaveLength(2);
+    for (const cta of ctas) {
+      expect(cta.textContent?.trim()).toBe(t('frontCreateAccount'));
+      expect(cta.querySelector('svg')).not.toBeNull();
+    }
+    expect(ctas[0]!.closest('.oa-front-hero')).not.toBeNull();
+    expect(ctas[1]!.closest('.oa-front-close-card')).not.toBeNull();
+
+    ctas[1]!.click();
+    expect(push).toHaveBeenCalledWith('/register');
   });
 
   it('says the same things in Chinese', async () => {

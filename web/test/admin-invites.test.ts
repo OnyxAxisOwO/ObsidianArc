@@ -9,7 +9,7 @@ import { provideAdminView } from '../src/views/admin/adminView';
 import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { siteInfo } from '../src/stores/session';
-import { settle } from './helpers';
+import { settle, button } from './helpers';
 import { queriesSent } from './admin-query';
 
 let app: App | undefined;
@@ -28,7 +28,6 @@ beforeEach(async () => {
 afterEach(() => {
   app?.unmount();
   app = undefined;
-  document.body.textContent = '';
   vi.restoreAllMocks();
 });
 
@@ -41,12 +40,6 @@ async function mount(component: Component): Promise<void> {
   } });
   app.mount(host);
   await settle();
-}
-
-function button(root: ParentNode, label: string): HTMLButtonElement {
-  const found = [...root.querySelectorAll<HTMLButtonElement>('button')].find((node) => node.textContent?.trim() === label);
-  if (!found) throw new Error(`Button not found: ${label}`);
-  return found;
 }
 
 function fieldFor(root: ParentNode, label: string): HTMLElement {

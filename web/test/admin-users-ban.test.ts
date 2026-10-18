@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, h, nextTick, shallowRef, type App } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
-import { adminApi, type Account } from '../src/admin/api';
+import { adminApi, emptyPolicy, type Account } from '../src/admin/api';
 import { providePanelHost } from '../src/composables/usePanelHost';
 import { currentUser, site, siteInfo } from '../src/stores/session';
 import { installPlugins } from '../src/plugins/registry';
@@ -250,7 +250,7 @@ describe('AdminUsers, banning with a reason', () => {
   it('saves the account a save started with when another is opened during the save', async () => {
     currentUser.value = account('root', { role: 'super_admin' });
     await mount([account('a'), account('b')]);
-    const policy = vi.spyOn(adminApi, 'savePolicy').mockResolvedValue({} as never);
+    const policy = vi.spyOn(adminApi, 'savePolicy').mockResolvedValue({ policy: emptyPolicy('user', '') });
     const update = deferred<{ user: Account }>();
     vi.mocked(adminApi.updateUser).mockImplementationOnce(() => update.promise);
 
@@ -279,7 +279,7 @@ describe('AdminUsers, banning with a reason', () => {
   it('sends only the fields the operator changed', async () => {
     currentUser.value = account('root', { role: 'super_admin' });
     await mount([account('a', { nickname: 'Old', bio: 'Kept' })]);
-    const policy = vi.spyOn(adminApi, 'savePolicy').mockResolvedValue({} as never);
+    const policy = vi.spyOn(adminApi, 'savePolicy').mockResolvedValue({ policy: emptyPolicy('user', '') });
     rowOf('a').click();
     await settle();
     typeInto(fieldFor(t('nickname')), 'Alpha');
@@ -317,7 +317,7 @@ describe('AdminUsers, banning with a reason', () => {
     await mount([account('a')]);
     const policy = vi.spyOn(adminApi, 'savePolicy')
       .mockRejectedValueOnce(new Error('policy store down'))
-      .mockResolvedValue({} as never);
+      .mockResolvedValue({ policy: emptyPolicy('user', '') });
     rowOf('a').click();
     await settle();
     typeInto(fieldFor(t('nickname')), 'Alpha');

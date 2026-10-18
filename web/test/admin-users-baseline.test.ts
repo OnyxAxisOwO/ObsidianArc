@@ -54,7 +54,7 @@ describe('AdminUsers, the account panel after a change', () => {
     vi.spyOn(adminApi, 'user').mockImplementation(async (id: string) => detailOf(rows.find((row) => row.id === id)!));
     vi.spyOn(adminApi, 'userKeys').mockResolvedValue({ keys: [] });
     vi.spyOn(adminApi, 'userSessions').mockResolvedValue({ sessions: [] });
-    vi.spyOn(adminApi, 'updateUser').mockImplementation(async () => ({ user: rows[0]! }) as never);
+    vi.spyOn(adminApi, 'updateUser').mockImplementation(async () => ({ user: rows[0]! }));
 
     const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { render: () => null } }] });
     app = createApp({
@@ -106,7 +106,7 @@ describe('AdminUsers, the account panel after a change', () => {
     rowOf('a').click();
     await settle();
     const save = deferred<{ user: Account }>();
-    vi.mocked(adminApi.updateUser).mockImplementation(() => save.promise as never);
+    vi.mocked(adminApi.updateUser).mockImplementation(() => save.promise);
     typeIn(fieldFor(t('nickname')), 'Changed');
     await nextTick();
 

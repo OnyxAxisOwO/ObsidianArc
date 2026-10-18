@@ -12,7 +12,6 @@ let app: App | undefined;
 afterEach(() => {
   app?.unmount();
   app = undefined;
-  document.body.textContent = '';
 });
 
 function mount(src: string): void {

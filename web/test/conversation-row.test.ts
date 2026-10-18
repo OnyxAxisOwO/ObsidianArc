@@ -83,7 +83,6 @@ beforeEach(() => {
 afterEach(() => {
   app?.unmount();
   app = null;
-  document.body.textContent = '';
   vi.restoreAllMocks();
   vi.mocked(renameConversation).mockReset();
   renamingID.value = '';

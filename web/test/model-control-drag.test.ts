@@ -53,7 +53,6 @@ describe('ModelControl effort drag', () => {
   afterEach(() => {
     app?.unmount();
     app = null;
-    document.body.textContent = '';
   });
 
   it('commits the stop it was released on', async () => {

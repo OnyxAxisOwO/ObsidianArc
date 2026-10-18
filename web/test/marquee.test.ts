@@ -7,7 +7,6 @@ let app: App | undefined;
 afterEach(() => {
   app?.unmount();
   app = undefined;
-  document.body.textContent = '';
 });
 
 describe('OaMarquee component', () => {

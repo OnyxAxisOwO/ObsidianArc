@@ -5,7 +5,7 @@
 // settings panel, because one would be claiming to commit things it has
 // nothing to do with.
 
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { changePassword, updateProfile } from '@/api/auth';
 import { exportAccount, importAccount, pickJSONFile, saveAsFile } from '@/api/backup';
@@ -35,7 +35,10 @@ import { pinnedProvider, pluginRefusal } from '@/plugins/registry';
 import { adopt, currentPreferences, currentUser, requireUser, siteInfo } from '@/stores/session';
 import { matchesSettings } from './search';
 
-const props = withDefaults(defineProps<{ query?: string }>(), { query: '' });
+// `active` is whether the section is on screen (absent reads as false, as a
+// boolean prop does). It mounts with the panel, for the address below, but
+// reads what it lists only once it is first shown.
+const props = withDefaults(defineProps<{ query?: string; active?: boolean }>(), { query: '' });
 
 // Worked out once per change of the query or the language rather than once
 // per group on every render: matchesSettings translates each group's terms,
@@ -292,9 +295,18 @@ onMounted(() => {
     delete query['oauth_error'];
     void router.replace({ path: route.path, query, hash: route.hash });
   }
+});
+
+// The panel opens on whichever category was asked for, and the two lists are
+// not worth two requests to a reader who never opens this one. A failed read
+// still says so the first time the section is seen, which is when it loads.
+// Once: switching back to the section is not a reason to read them again.
+function readLists(): void {
   void loadConnections();
   void loadAuthorizations();
-});
+}
+if (props.active) readLists();
+else watch(() => props.active, readLists, { once: true });
 
 async function saveProfile(): Promise<void> {
   const fieldError = fieldProblem(fields.value, fieldPlan.value);

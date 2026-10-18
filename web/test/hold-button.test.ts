@@ -20,7 +20,6 @@ beforeEach(() => {
 afterEach(() => {
   app?.unmount();
   app = undefined;
-  document.body.textContent = '';
   vi.useRealTimers();
 });
 

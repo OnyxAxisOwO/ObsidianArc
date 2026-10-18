@@ -226,9 +226,23 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
 | Binary (SQLite + embedded SPA) | < 30 MB | 27.10 MB (23.40 MB `-tags nosqlite`, Linux amd64, Go 1.27.2); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 206.11 kB to open the chat (179.70 JS + 26.41 CSS), sent by the server at gzip's best level; the build's gzip column reads 206.79 kB (179.94 JS + 26.85 CSS) |
+| Frontend, on the wire | < 135 kB | 206.31 kB to open the chat (179.89 JS + 26.43 CSS), sent by the server at gzip's best level; the build's gzip column reads 206.98 kB (180.12 JS + 26.86 CSS) |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-10-18 (UTC), after the account form's refusals were given
+sentences of the page's own. A password change refused as unchanged or too
+long, and a profile refused for its address, bio or avatar, read in the
+reader's language instead of the server's English; the streaming caret takes
+its blink phase from the page clock, so the last block being rebuilt on every
+frame no longer holds it still; the account section of settings reads its
+connections and authorizations the first time it is shown rather than when the
+panel opens; and the five panels' full-screen switches are one component.
+206.31 kB to open the chat (179.89 JS + 26.43 CSS), up 0.20 kB; the build's
+estimate is 206.98 kB, 0.02 kB under the bundle test's 207 kB, which is why
+the sign-in screen's split into smaller parts waits: each part measured as
+more first paint, not less. The Chinese dictionary is 53.46 kB and the public
+front page 4.17 kB; the other lazy chunks are unchanged.
 
 Remeasured on 2026-10-18 (UTC), after a round of interface review fixes. A
 refused request and a refused stream now read their error body through one

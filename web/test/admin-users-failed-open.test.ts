@@ -197,12 +197,12 @@ describe('AdminUsers, when an account detail fails to load', () => {
     vi.mocked(adminApi.user).mockImplementation(async (id: string) => ({
       ...detailOf(account(id)),
       cards: { available, expired: 0, used: 0, total: 2, cards: [] },
-    }) as never);
+    }));
     rowOf('a').click();
     await settle();
     vi.spyOn(adminApi, 'rescheduleCards').mockImplementation(async () => {
       available = 1;
-      return { moved: 2 } as never;
+      return { moved: 2 };
     });
 
     buttonNamed(t('rescheduleCards', { count: 2 })).click();

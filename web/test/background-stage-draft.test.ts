@@ -171,7 +171,7 @@ describe('the HTML background editor', () => {
     const page = { url: '/stage.html', html: true };
     let answer!: (response: Response) => void;
     vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => { answer = resolve; })));
-    const remove = vi.spyOn(adminApi, 'deleteLoginBackground').mockResolvedValue(undefined as never);
+    const remove = vi.spyOn(adminApi, 'deleteLoginBackground').mockResolvedValue(undefined);
     app = createApp({ render: () => h(BackgroundStage, { prefix: '', backgrounds: { landscape_light: page, landscape_dark: page } }) });
     app.mount(host);
     await settle();

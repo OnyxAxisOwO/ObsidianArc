@@ -3,7 +3,6 @@ import { createApp, h, nextTick, type App, type Component } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
 import { adminApi, type AdminMailSettings, type AdminUserCheckSettings } from '../src/admin/api';
 import * as authApi from '../src/api/auth';
-import type { Account } from '../src/api/auth';
 import { api, ApiError } from '../src/api/client';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { describeNotification } from '../src/lib/notification-text';
@@ -20,20 +19,18 @@ import { provideAdminView } from '../src/views/admin/adminView';
 import PluginList from '../src/views/admin/PluginList.vue';
 import PluginUserActions from '../src/views/admin/PluginUserActions.vue';
 import example from './fixtures/example.plugin';
-import { settle } from './helpers';
+import { settle, button } from './helpers';
+import { makeAccount } from './fixtures/account';
 
 // The plugin framework's browser half: which plugins load, how the core
 // forms draw what a plugin declares, and that a plugin's settings travel
 // with the page's own save. The plugin is a made-up one (fixtures/), because
 // the core ships none; each real plugin's tests live with it.
 
-const ADMIN: Account = {
-  id: 'admin', username: 'founder', email: '', nickname: '', avatar: '', bio: '',
-  role: 'super_admin', group_id: '', group_expires_at: 0, group_name: '', status: 'active',
-  created_at: 1, updated_at: 1, last_login_at: 1, email_verified: true,
-  allow_stats: true, allow_delete_conversations: true, api_restricted: false,
-  api_restricted_until: 0, api_restriction_source: '',
-};
+const ADMIN = makeAccount({
+  id: 'admin', username: 'founder', email: '', nickname: '', role: 'super_admin', group_id: '', group_name: '',
+  last_login_at: 1,
+});
 
 let app: App | undefined;
 let host: HTMLElement;
@@ -69,13 +66,6 @@ function type(input: HTMLInputElement, value: string): void {
   input.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
-function button(root: ParentNode, label: string): HTMLButtonElement {
-  const found = [...root.querySelectorAll<HTMLButtonElement>('button')]
-    .find((node) => node.textContent?.trim() === label);
-  if (!found) throw new Error(`Missing button: ${label}`);
-  return found;
-}
-
 beforeEach(async () => {
   await changeLanguage('en');
   host = document.createElement('div');
@@ -86,7 +76,6 @@ beforeEach(async () => {
 afterEach(() => {
   app?.unmount();
   app = undefined;
-  document.body.textContent = '';
   vi.restoreAllMocks();
   installPlugins([]);
   setModuleImporter(null);

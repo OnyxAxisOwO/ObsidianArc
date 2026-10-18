@@ -7,6 +7,7 @@ import { IconArchive } from '../src/icons';
 import { searchAdminFeatures, visibleAdminPages, type AdminPageSpec } from '../src/views/admin/features';
 import { provideAdminView } from '../src/views/admin/adminView';
 import AdminBackupPage from '../src/views/admin/AdminBackup.vue';
+import { button } from './helpers';
 
 let app: App | undefined;
 let host: HTMLElement;
@@ -45,7 +46,6 @@ beforeEach(async () => {
 afterEach(() => {
   app?.unmount();
   app = undefined;
-  document.body.textContent = '';
   if (visibilityDescriptor) Object.defineProperty(document, 'visibilityState', visibilityDescriptor);
   else Reflect.deleteProperty(document, 'visibilityState');
   vi.restoreAllMocks();
@@ -75,13 +75,6 @@ function fieldInput(label: string): HTMLInputElement {
   const input = field?.querySelector<HTMLInputElement>('input');
   if (!input) throw new Error(`Missing field: ${label}`);
   return input;
-}
-
-function button(root: ParentNode, label: string): HTMLButtonElement {
-  const found = [...root.querySelectorAll<HTMLButtonElement>('button')]
-    .find((node) => node.textContent?.trim() === label);
-  if (!found) throw new Error(`Missing button: ${label}`);
-  return found;
 }
 
 describe('admin instance backup', () => {

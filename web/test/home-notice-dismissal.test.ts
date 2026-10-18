@@ -55,7 +55,6 @@ afterEach(() => {
   site.value = null;
   app?.unmount();
   app = null;
-  document.body.textContent = '';
 });
 
 describe('HomeNotice dismissal', () => {

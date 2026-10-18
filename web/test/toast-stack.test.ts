@@ -39,7 +39,6 @@ afterEach(() => {
   app?.unmount();
   app = null;
   host.remove();
-  document.body.textContent = '';
   stopNotifications();
   vi.clearAllMocks();
   vi.useRealTimers();

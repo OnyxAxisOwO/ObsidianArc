@@ -10,7 +10,7 @@ import { changeLanguage, t } from '../src/composables/useI18n';
 import FeedbackPanel from '../src/views/FeedbackPanel.vue';
 import AdminFeedback from '../src/views/admin/AdminFeedback.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
-import { settle } from './helpers';
+import { settle, button } from './helpers';
 import { queriesSent } from './admin-query';
 
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: vi.fn() }) }));
@@ -31,7 +31,6 @@ beforeEach(async () => {
 afterEach(() => {
   app?.unmount();
   app = undefined;
-  document.body.textContent = '';
   vi.restoreAllMocks();
   site.value = null;
 });
@@ -47,13 +46,6 @@ async function mount(component: Component): Promise<void> {
   });
   app.mount(host);
   await settle();
-}
-
-function button(root: ParentNode, label: string): HTMLButtonElement {
-  const found = [...root.querySelectorAll<HTMLButtonElement>('button')]
-    .find((node) => node.textContent?.trim() === label);
-  if (!found) throw new Error(`Button not found: ${label}`);
-  return found;
 }
 
 function type(node: HTMLInputElement | HTMLTextAreaElement, value: string): void {

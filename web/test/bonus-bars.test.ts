@@ -45,7 +45,6 @@ beforeEach(async () => {
 afterEach(() => {
   app?.unmount();
   app = null;
-  document.body.textContent = '';
   vi.clearAllMocks();
 });
 

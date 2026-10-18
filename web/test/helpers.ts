@@ -1,7 +1,9 @@
-// Waits that several test files share. Each file used to carry its own copy,
-// and the copies drifted — three rounds in one file, four in the next, for no
-// reason either recorded — so a test that passed in one file could fail when
-// moved to another. This is not a .test.ts file, so vitest never runs it.
+// Waits and queries that several test files share. Each file used to carry
+// its own copy, and the copies drifted — three rounds in one file, four in the
+// next, a button lookup that took the first match in one and the last in
+// another, for no reason either recorded — so a test that passed in one file
+// could fail when moved to another. This is not a .test.ts file, so vitest
+// never runs it.
 //
 // Not every file's settle belongs here: one under fake timers has to advance
 // those timers instead, and one waiting for a transition class needs a frame.
@@ -97,4 +99,34 @@ export function recallHistory(session: { draft: { value: string }; recall(direct
   for (let i = 0; i <= lines.length; i += 1) session.recall('down');
   session.draft.value = draft;
   return lines;
+}
+
+// Queries. A missing control throws with its label, because a lookup that
+// returns undefined hands the failure to the next line as a null dereference
+// that says nothing about which button was not there.
+
+function buttonsNamed(root: ParentNode, label: string): HTMLButtonElement[] {
+  const buttons = [...root.querySelectorAll<HTMLButtonElement>('button')];
+  // By its text first; an icon button has none, so its accessible name is
+  // the fallback rather than an equal, and a text match is never displaced.
+  const byText = buttons.filter((node) => node.textContent?.trim() === label);
+  return byText.length ? byText : buttons.filter((node) => node.getAttribute('aria-label') === label);
+}
+
+/** The first button under `root` named `label`. */
+export function button(root: ParentNode, label: string): HTMLButtonElement {
+  const found = buttonsNamed(root, label)[0];
+  if (!found) throw new Error(`Button not found: ${label}`);
+  return found;
+}
+
+/**
+ * The last button under `root` named `label`, not the first: OaPanel appends
+ * each new panel at the end of its host, so with a second panel open its
+ * buttons come after the first's.
+ */
+export function lastButton(root: ParentNode, label: string): HTMLButtonElement {
+  const found = buttonsNamed(root, label).at(-1);
+  if (!found) throw new Error(`Button not found: ${label}`);
+  return found;
 }

@@ -44,7 +44,6 @@ afterEach(() => {
   site.value = null;
   app?.unmount();
   app = null;
-  document.body.textContent = '';
   vi.restoreAllMocks();
   vi.useRealTimers();
 });

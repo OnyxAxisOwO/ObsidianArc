@@ -82,7 +82,7 @@ afterEach(() => {
 
 describe('a plugin page\'s Save', () => {
   it('keeps an edit typed while Save was in flight, and settles only the keys it sent', async () => {
-    vi.spyOn(adminApi, 'settings').mockResolvedValue({ settings: { 'tips.one': 'a', 'tips.two': 'b' } } as never);
+    vi.spyOn(adminApi, 'settings').mockResolvedValue({ settings: { 'tips.one': 'a', 'tips.two': 'b' } });
     const reply = deferred<{ settings: Record<string, string> }>();
     const saveSpy = vi.spyOn(adminApi, 'saveSettings').mockImplementation(() => reply.promise);
     await mountPage();

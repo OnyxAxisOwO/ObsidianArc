@@ -7,7 +7,7 @@ import { changeLanguage, t } from '../src/composables/useI18n';
 import AdminSecurity from '../src/views/admin/AdminSecurity.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
 import settingsFixture from './fixtures/settings.json';
-import { settle } from './helpers';
+import { settle, button } from './helpers';
 
 let app: App | undefined;
 let host: HTMLElement;
@@ -39,15 +39,8 @@ beforeEach(async () => {
 afterEach(() => {
   app?.unmount();
   app = undefined;
-  document.body.textContent = '';
   vi.restoreAllMocks();
 });
-
-function button(root: ParentNode, label: string): HTMLButtonElement {
-  const found = [...root.querySelectorAll<HTMLButtonElement>('button')].find((node) => node.textContent?.trim() === label || node.getAttribute('aria-label') === label);
-  if (!found) throw new Error(`Missing button: ${label}`);
-  return found;
-}
 
 async function mountSecurity(): Promise<void> {
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { render: () => null } }] });

@@ -20,7 +20,6 @@ beforeEach(async () => {
 afterEach(() => {
   app?.unmount();
   app = null;
-  document.body.textContent = '';
 });
 
 function row(key: string, requests: number): UsageBreakdown {
@@ -34,7 +33,7 @@ const rows = [row('alpha', 50), row('beta', 40), row('gamma', 30), row('delta', 
 
 function mount(over: { selectable: boolean; rows?: UsageBreakdown[]; limit?: number }): HTMLElement {
   app = createApp({
-    render: () => h(UsageBoard as never, {
+    render: () => h(UsageBoard, {
       rows: over.rows ?? rows,
       kind: 'model',
       metric: 'requests',

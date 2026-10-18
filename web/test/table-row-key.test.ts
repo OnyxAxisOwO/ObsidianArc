@@ -17,7 +17,6 @@ let app: App | undefined;
 afterEach(() => {
   app?.unmount();
   app = undefined;
-  document.body.textContent = '';
 });
 
 function mount(rows: Ref<Item[]>, columns: Column<Item>[], extra: Record<string, unknown> = {}): HTMLElement {

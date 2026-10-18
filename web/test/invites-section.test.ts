@@ -8,7 +8,7 @@ import { changeLanguage, t, tn } from '../src/composables/useI18n';
 import { absoluteTime } from '../src/lib/format';
 import * as markdown from '../src/chat/markdown';
 import InvitesSection from '../src/views/settings/InvitesSection.vue';
-import { settle } from './helpers';
+import { settle, button } from './helpers';
 
 // The "Invites" settings card: claiming somebody else's code (always
 // present), and — when personal invites are on — an account's own code, its
@@ -52,7 +52,6 @@ beforeEach(async () => {
 afterEach(() => {
   app?.unmount();
   app = undefined;
-  document.body.textContent = '';
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
@@ -69,13 +68,6 @@ async function mount(component: Component, props: Record<string, unknown> = {}):
   });
   app.mount(host);
   await settle();
-}
-
-function button(label: string): HTMLButtonElement {
-  const found = [...host.querySelectorAll<HTMLButtonElement>('button')]
-    .find((node) => node.textContent?.trim() === label);
-  if (!found) throw new Error(`Button not found: ${label}`);
-  return found;
 }
 
 function claimInput(): HTMLInputElement {
@@ -96,7 +88,7 @@ describe('the invites card', () => {
     await mount(InvitesSection);
 
     expect(host.textContent).toContain(t('inviteClaimTitle'));
-    expect(() => button(t('inviteClaimSubmit'))).not.toThrow();
+    expect(() => button(host, t('inviteClaimSubmit'))).not.toThrow();
     expect(host.textContent).not.toContain(t('inviteYourCode'));
   });
 
@@ -223,7 +215,7 @@ describe('the invites card', () => {
     await mount(InvitesSection);
 
     await type(claimInput(), 'PARTNER1');
-    button(t('inviteClaimSubmit')).click();
+    button(host, t('inviteClaimSubmit')).click();
     await settle();
 
     expect(claim).toHaveBeenCalledWith('PARTNER1');
@@ -245,7 +237,7 @@ describe('the invites card', () => {
       await mount(InvitesSection);
 
       await type(claimInput(), 'CODE1');
-      button(t('inviteClaimSubmit')).click();
+      button(host, t('inviteClaimSubmit')).click();
       await settle();
 
       expect(host.textContent).toContain(expected);
@@ -304,9 +296,9 @@ describe('the invites card', () => {
       .mockResolvedValue({ ...ON, code: 'ZZZZ9999', used: 0, invitees: [] });
     await mount(InvitesSection);
 
-    button(t('inviteRegenerate')).click();
+    button(host, t('inviteRegenerate')).click();
     await settle();
-    button(t('confirmWord')).click();
+    button(host, t('confirmWord')).click();
     await settle();
 
     expect(regenerate).toHaveBeenCalled();
@@ -323,13 +315,13 @@ describe('the invites card', () => {
 
     // Claim box is still rendered
     expect(host.textContent).toContain(t('inviteClaimTitle'));
-    expect(() => button(t('inviteClaimSubmit'))).not.toThrow();
+    expect(() => button(host, t('inviteClaimSubmit'))).not.toThrow();
 
     // Error and retry button are shown; a server failure reads as the screen's
     // own line rather than the English it came with.
     expect(host.textContent).not.toContain('Network connection failed');
     expect(host.textContent).toContain(t('failed'));
-    const retryBtn = button(t('retry'));
+    const retryBtn = button(host, t('retry'));
     expect(retryBtn).not.toBeNull();
 
     // Clicking retry reloads the data
@@ -348,7 +340,7 @@ describe('the invites card', () => {
     await mount(InvitesSection);
 
     await type(claimInput(), 'LIFETIME');
-    button(t('inviteClaimSubmit')).click();
+    button(host, t('inviteClaimSubmit')).click();
     await settle();
 
     expect(claim).toHaveBeenCalledWith('LIFETIME');
@@ -362,7 +354,7 @@ describe('the invites card', () => {
       .mockResolvedValue({ group_id: 'g1', group_name: 'Basic', days: 7, expires_at: Date.now() + 7 * 86400000 });
     await mount(InvitesSection);
 
-    button(t('inviteClaimSubmit')).click();
+    button(host, t('inviteClaimSubmit')).click();
     await settle();
 
     expect(router.replace).toHaveBeenCalledWith({ path: '/settings', query: {} });
@@ -374,9 +366,9 @@ describe('the invites card', () => {
       .mockRejectedValue(new ApiError(429, 'too_many_attempts', 'rate limited', { retry_after_seconds: 45 }));
     await mount(InvitesSection);
 
-    button(t('inviteRegenerate')).click();
+    button(host, t('inviteRegenerate')).click();
     await settle();
-    button(t('confirmWord')).click();
+    button(host, t('confirmWord')).click();
     await settle();
 
     expect(host.textContent).toContain(t('tooManyAttempts', { count: 45 }));

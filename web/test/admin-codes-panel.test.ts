@@ -9,7 +9,7 @@ import * as markdown from '../src/chat/markdown';
 import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { provideAdminView } from '../src/views/admin/adminView';
-import { settle } from './helpers';
+import { settle, button } from './helpers';
 
 let app: App | undefined;
 let host: HTMLElement;
@@ -22,13 +22,12 @@ beforeEach(async () => {
   panels = document.createElement('div');
   actions = document.createElement('div');
   document.body.append(host, panels, actions);
-  vi.spyOn(adminApi, 'codes').mockResolvedValue({ codes: [] } as never);
+  vi.spyOn(adminApi, 'codes').mockResolvedValue({ codes: [] });
 });
 
 afterEach(() => {
   app?.unmount();
   app = undefined;
-  document.body.textContent = '';
   vi.restoreAllMocks();
 });
 
@@ -41,12 +40,6 @@ async function mount(): Promise<void> {
   } });
   app.mount(host);
   await settle();
-}
-
-function button(root: ParentNode, label: string): HTMLButtonElement {
-  const found = [...root.querySelectorAll<HTMLButtonElement>('button')].find((node) => node.textContent?.trim() === label);
-  if (!found) throw new Error(`Button not found: ${label}`);
-  return found;
 }
 
 function fieldFor(root: ParentNode, label: string): HTMLElement {
@@ -70,7 +63,7 @@ describe('generating a batch of codes from a cleared number', () => {
   // A cleared card count used to mint one card per code, and a cleared card
   // length thirty days, neither of them shown in the panel once it was sent.
   it('does not mint a batch while a number is blank, and says that a field is empty', async () => {
-    const create = vi.spyOn(adminApi, 'createCode').mockResolvedValue({ codes: [] } as never);
+    const create = vi.spyOn(adminApi, 'createCode').mockResolvedValue({ codes: [] });
     await mount();
     await openNewBatch();
 
@@ -94,7 +87,7 @@ describe('copying a minted batch', () => {
         id: 'c1', code: 'ABCD2345EFGH', name: '', windows: [], cards: 10, claimed: 0,
         card_days: 30, expires_at: 0, note: '', created_at: Date.now(),
       } as unknown as RedemptionCode],
-    } as never);
+    });
     vi.spyOn(markdown, 'copyToClipboard').mockResolvedValue(false);
     await mount();
     await openNewBatch();

@@ -14,14 +14,13 @@
 // with.
 
 import { computed, reactive, ref, watch } from 'vue';
-import OaIconButton from '@/components/OaIconButton.vue';
+import OaFullscreenButton from '@/components/OaFullscreenButton.vue';
 import OaPanel from '@/components/OaPanel.vue';
 import OaScrollArea from '@/components/OaScrollArea.vue';
 import OaSearchField from '@/components/OaSearchField.vue';
 import { t, type StringKey } from '@/composables/useI18n';
 import { usePanelExit } from '@/composables/usePanelExit';
 import { usePanelFullscreen } from '@/composables/usePanelFullscreen';
-import { IconCollapse, IconExpand } from '@/icons';
 import AccountSection from './settings/AccountSection.vue';
 import AppearanceSection from './settings/AppearanceSection.vue';
 import ChatSection from './settings/ChatSection.vue';
@@ -84,7 +83,8 @@ const visibleSections = computed(() => {
 // one loads its own data on mount, and the reader is usually looking at one
 // category. Once mounted it stays, so a draft survives a switch to another section.
 // The account section is the exception: it takes the outcome of a connection from
-// the address as it mounts, wherever the reader is, so it must mount with the panel.
+// the address as it mounts, wherever the reader is, so it must mount with the panel;
+// its lists still wait for it to show (its `active`).
 const mounted = reactive<Record<SettingsSection, boolean>>({
   appearance: false,
   chat: false,
@@ -130,14 +130,7 @@ function select(next: Category): void {
     @close="panels.close('replace')"
   >
     <template #actions>
-      <OaIconButton
-        class="oa-icon-btn"
-        :label="t(fullscreen ? 'exitFullscreen' : 'fullscreen')"
-        @click="toggleFullscreen"
-      >
-        <IconCollapse v-if="fullscreen" :size="16" />
-        <IconExpand v-else :size="16" />
-      </OaIconButton>
+      <OaFullscreenButton :fullscreen="fullscreen" @toggle="toggleFullscreen" />
     </template>
 
     <OaSearchField v-model="query" class="oa-settings-search" :label="t('searchSettings')" />
@@ -181,7 +174,7 @@ function select(next: Category): void {
           <AppearanceSection v-if="mounted.appearance" v-show="visibleSections.appearance" />
           <ChatSection v-if="mounted.chat" v-show="visibleSections.chat" />
           <div v-show="visibleSections.account" class="oa-settings-group">
-            <AccountSection v-if="mounted.account" :query="query" />
+            <AccountSection v-if="mounted.account" :query="query" :active="visibleSections.account" />
           </div>
           <div v-show="visibleSections.security" class="oa-settings-group">
             <SecuritySection v-if="mounted.security" :query="query" />

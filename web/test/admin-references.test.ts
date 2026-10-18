@@ -15,7 +15,7 @@ describe('the reference selectors', () => {
     const get = vi.spyOn(api, 'get').mockResolvedValue({
       groups: [{ id: 'g1', name: 'Pro' }],
       providers: [{ id: 'p1', name: 'Prov', kind: 'openai', enabled: true }],
-    } as never);
+    });
 
     const [groups, providers] = await Promise.all([adminApi.groupOptions(), adminApi.providerOptions()]);
 
@@ -26,7 +26,7 @@ describe('the reference selectors', () => {
   });
 
   it('reads again when asked after the earlier answer has come back', async () => {
-    const get = vi.spyOn(api, 'get').mockResolvedValue({ groups: [] } as never);
+    const get = vi.spyOn(api, 'get').mockResolvedValue({ groups: [] });
 
     await adminApi.groupOptions();
     await adminApi.groupOptions();

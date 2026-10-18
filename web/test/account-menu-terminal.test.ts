@@ -8,6 +8,7 @@ import AccountMenu from '../src/layouts/AccountMenu.vue';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { installPlugins } from '../src/plugins/registry';
 import { adopt, currentUser, forget } from '../src/stores/session';
+import { makeAccount } from './fixtures/account';
 
 // The menu asks for the unread feedback count when it mounts; nothing here is
 // about that, and there is no server to ask.
@@ -17,13 +18,9 @@ vi.mock('../src/stores/feedback', () => ({
   forgetFeedbackUnread: vi.fn(),
 }));
 
-const base: Account = {
-  id: 'member', username: 'member', nickname: 'Member', email: '', bio: '', avatar: '',
-  role: 'user', status: 'active', group_id: 'g', group_expires_at: 0, group_name: 'Default',
-  created_at: 0, updated_at: 0, last_login_at: 0, email_verified: true,
-  allow_stats: true, allow_delete_conversations: true,
-  api_restricted: false, api_restricted_until: 0, api_restriction_source: '',
-};
+const base = makeAccount({
+  id: 'member', username: 'member', nickname: 'Member', email: '', group_id: 'g', created_at: 0, updated_at: 0,
+});
 
 let app: App | undefined;
 
@@ -43,7 +40,6 @@ beforeEach(async () => { await changeLanguage('en'); });
 afterEach(() => {
   app?.unmount();
   app = undefined;
-  document.body.textContent = '';
   installPlugins([]);
 });
 

@@ -11,8 +11,9 @@ import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { MASK_PLACEHOLDER, safeModeCategories, safeModeEnabled } from '../src/admin/safeMode';
 import { adopt, forget } from '../src/stores/session';
-import { settle } from './helpers';
+import { settle, button } from './helpers';
 import { queriesSent } from './admin-query';
+import { makeAccount } from './fixtures/account';
 
 vi.mock('../src/api/backup', () => ({ saveAsFile: vi.fn() }));
 
@@ -32,7 +33,6 @@ beforeEach(async () => {
 afterEach(() => {
   app?.unmount();
   app = undefined;
-  document.body.textContent = '';
   vi.restoreAllMocks();
   forget();
   vi.mocked(saveAsFile).mockClear();
@@ -54,24 +54,15 @@ function input(node: HTMLInputElement, value: string): void {
   node.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
-function button(root: ParentNode, label: string): HTMLButtonElement {
-  const found = [...root.querySelectorAll<HTMLButtonElement>('button')].find((node) => node.textContent?.trim() === label);
-  if (!found) throw new Error(`Button not found: ${label}`);
-  return found;
-}
-
 function code(value: string, at: string): RedemptionCode {
   return { id: value, code: value, cards: 1, claimed: 0, card_days: 10, expires_at: 0, note: '', created_at: new Date(at).getTime() };
 }
 
 describe('administrator roles on the user detail panel', () => {
-  const member: Account = {
-    id: 'member', username: 'member', nickname: 'Member', email: '', bio: '', avatar: '',
-    role: 'user', status: 'active', group_id: '', group_expires_at: 0, admin_permissions: [],
-    created_at: Date.now(), updated_at: Date.now(), last_login_at: 0, group_name: '',
-    email_verified: true, allow_stats: true, allow_delete_conversations: true,
-    api_restricted: false, api_restricted_until: 0, api_restriction_source: '',
-  };
+  const member = makeAccount({
+    id: 'member', username: 'member', nickname: 'Member', email: '', group_id: '', admin_permissions: [],
+    created_at: Date.now(), updated_at: Date.now(), group_name: '',
+  });
 
   async function openMember(permissions: string[]): Promise<void> {
     adopt({ ...member, id: 'operator', role: 'admin', admin_permissions: permissions });
@@ -233,13 +224,10 @@ describe('administrator roles on the user detail panel', () => {
 // be able to mint a new one by pressing the wrong button, and the two must
 // not be able to disagree about which date they read.
 describe('moving the expiry on cards an account already holds', () => {
-  const holder: Account = {
-    id: 'holder', username: 'holder', nickname: 'Holder', email: '', bio: '', avatar: '',
-    role: 'user', status: 'active', group_id: '', group_expires_at: 0, admin_permissions: [],
-    created_at: Date.now(), updated_at: Date.now(), last_login_at: 0, group_name: '',
-    email_verified: true, allow_stats: true, allow_delete_conversations: true,
-    api_restricted: false, api_restricted_until: 0, api_restriction_source: '',
-  };
+  const holder = makeAccount({
+    id: 'holder', username: 'holder', nickname: 'Holder', email: '', group_id: '', admin_permissions: [],
+    created_at: Date.now(), updated_at: Date.now(), group_name: '',
+  });
 
   // Two spendable, one already lapsed — the lapsed one is invisible in the
   // list and still has to be counted by the button that would move it.

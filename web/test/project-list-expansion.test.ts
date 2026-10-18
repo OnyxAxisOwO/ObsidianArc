@@ -71,7 +71,6 @@ describe('ProjectList expansion', () => {
   afterEach(() => {
     app?.unmount();
     app = null;
-    document.body.textContent = '';
   });
 
   it('shows the newest list when an older request for the same project resolves last', async () => {

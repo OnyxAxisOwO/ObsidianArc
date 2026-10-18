@@ -23,7 +23,7 @@ describe('relativeTime', () => {
 });
 
 describe('remembered page size', () => {
-  afterEach(() => { localStorage.clear(); document.body.textContent = ''; });
+  afterEach(() => { localStorage.clear(); });
 
   // Asking for a hundred rows used to last until the next reload, then go
   // back to twenty.
@@ -70,7 +70,6 @@ describe('OaTable sort cycling', () => {
   afterEach(() => {
     app?.unmount();
     app = null;
-    document.body.textContent = '';
   });
 
   it('reaches rows beyond fifty, changes page size, and recovers after filtering', async () => {

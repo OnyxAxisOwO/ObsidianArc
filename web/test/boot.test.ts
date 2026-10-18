@@ -7,6 +7,7 @@ import type { Account } from '../src/api/auth';
 import { conversations } from '../src/chat/useChat';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { until } from './helpers';
+import { makeAccount } from './fixtures/account';
 
 // The whole application, mounted.
 //
@@ -16,29 +17,10 @@ import { until } from './helpers';
 // without throwing. A component graph this size fails by exploding at mount,
 // which no amount of unit testing catches.
 
-const ACCOUNT: Account = {
-  id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
-  username: 'ada',
-  email: 'ada@example.com',
-  nickname: 'Ada',
-  avatar: '',
-  bio: '',
-  role: 'user',
-  group_id: 'g1',
-  group_expires_at: 0,
-  group_name: 'Default',
-  status: 'active',
-  created_at: Date.now(),
-  updated_at: Date.now(),
-  last_login_at: Date.now(),
-  email_verified: true,
-      allow_stats: true,
-      allow_delete_conversations: true,
-      api_restricted: false,
-      api_restricted_until: 0,
-      api_restriction_source: '',
-      signup_user_agent: 'Mozilla/5.0 ObsidianArcTest/1.0',
-};
+const ACCOUNT = makeAccount({
+  id: '01ARZ3NDEKTSV4RRFFQ69G5FAV', created_at: Date.now(), updated_at: Date.now(), last_login_at: Date.now(),
+  signup_user_agent: 'Mozilla/5.0 ObsidianArcTest/1.0',
+});
 
 /**
  * Every endpoint the screens under test reach for, answered with an empty but
@@ -228,7 +210,6 @@ afterEach(() => {
   app?.unmount();
   app = null;
   host.remove();
-  document.body.textContent = '';
   forget();
   vi.unstubAllGlobals();
 });
@@ -244,7 +225,7 @@ describe('the application, mounted', () => {
     await router.push('/admin/users');
     await new Promise((resolve) => setTimeout(resolve, 0));
     await new Promise((resolve) => requestAnimationFrame(resolve));
-    expect(host.querySelector('.oa-permission-empty')).toBeNull();
+    expect(host.querySelector('[role="alert"]')).toBeNull();
     expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes('/api/admin/users'))).toBe(true);
   });
   it('shows the sign-in card to a visitor', async () => {
@@ -412,7 +393,7 @@ describe('the application, mounted', () => {
     await mountAt('/admin/providers');
 
     expect(host.querySelector('.oa-admin-rail')).not.toBeNull();
-    expect(document.querySelector('.oa-modal-overlay')).toBeNull();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
   });
 
   it('names an address that resolves to nothing', async () => {
@@ -624,7 +605,7 @@ describe('the screens the mounted application draws', () => {
       await nextTick();
     }
     expect(calls).toContain('POST /api/profile/two-factor/backoffice');
-    expect(host.querySelector('.oa-2fa-unlock')).toBeNull();
+    expect(host.querySelector('[role="dialog"]')).toBeNull();
     expect(host.querySelector('#usersList')).not.toBeNull();
 
     // The server says the visit ran out: the page gives way to the door.

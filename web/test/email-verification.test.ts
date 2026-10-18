@@ -3,7 +3,6 @@ import { createApp, h, nextTick, type App, type Component } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
 import { adminApi, type AdminMailSettings, type AdminUserCheckSettings } from '../src/admin/api';
 import * as authApi from '../src/api/auth';
-import type { Account } from '../src/api/auth';
 import { ApiError } from '../src/api/client';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import AuthView from '../src/views/AuthView.vue';
@@ -14,15 +13,10 @@ import { provideAdminView } from '../src/views/admin/adminView';
 import { adopt, forget, site, siteInfo } from '../src/stores/session';
 import { refusalText } from '../src/lib/refusal';
 import { verificationErrorText } from '../src/lib/verification-error';
-import { settle } from './helpers';
+import { settle, button } from './helpers';
+import { makeAccount } from './fixtures/account';
 
-const ACCOUNT: Account = {
-  id: 'u1', username: 'ada', email: 'ada@example.com', nickname: 'Ada', avatar: '', bio: '',
-  role: 'user', group_id: 'g1', group_expires_at: 0, group_name: 'Default', status: 'active',
-  created_at: 1, updated_at: 1, last_login_at: 1, email_verified: false,
-  allow_stats: true, allow_delete_conversations: true, api_restricted: false,
-  api_restricted_until: 0, api_restriction_source: '',
-};
+const ACCOUNT = makeAccount({ id: 'u1', last_login_at: 1, email_verified: false });
 
 const MAIL: AdminMailSettings = {
   host: 'smtp.example.com', port: 465, username: 'mailer', from: 'arc@example.com',
@@ -60,13 +54,6 @@ function type(input: HTMLInputElement | HTMLTextAreaElement, value: string): voi
   input.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
-function button(root: ParentNode, label: string): HTMLButtonElement {
-  const found = [...root.querySelectorAll<HTMLButtonElement>('button')]
-    .find((node) => node.textContent?.trim() === label || node.getAttribute('aria-label') === label);
-  if (!found) throw new Error(`Missing button: ${label}`);
-  return found;
-}
-
 async function mount(component: Component, path = '/'): Promise<void> {
   testRouter = createRouter({
     history: createMemoryHistory(),
@@ -96,7 +83,6 @@ afterEach(() => {
   app?.unmount();
   app = undefined;
   testRouter = undefined;
-  document.body.textContent = '';
   vi.restoreAllMocks();
   forget();
   site.value = null;

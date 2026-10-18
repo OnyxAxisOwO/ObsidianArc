@@ -17,7 +17,7 @@ import type { ActionCardSpec, ChallengeProof, UserEntryView, UserFormValues, Use
 import PluginUserPanel from '../src/views/PluginUserPanel.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
 import PluginActionCard from '../src/views/admin/PluginActionCard.vue';
-import { settle } from './helpers';
+import { settle, button } from './helpers';
 
 vi.mock('../src/lib/pow', () => ({
   solvePoW: vi.fn(() => ({ promise: Promise.resolve({ salt: 's', nonce: 7 }), cancel() {} })),
@@ -46,13 +46,6 @@ async function mount(component: Component, props: Record<string, unknown> = {}):
   app.use(router);
   app.mount(host);
   await settle();
-}
-
-function button(root: ParentNode, label: string): HTMLButtonElement {
-  const found = [...root.querySelectorAll<HTMLButtonElement>('button')]
-    .find((node) => node.textContent?.trim() === label);
-  if (!found) throw new Error(`Missing button: ${label}`);
-  return found;
 }
 
 function label(root: ParentNode, text: string): HTMLElement | undefined {

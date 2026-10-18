@@ -16,7 +16,6 @@ describe('OaLineChart', () => {
   afterEach(async () => {
     app?.unmount();
     app = null;
-    document.body.textContent = '';
     await changeLanguage('en');
   });
 

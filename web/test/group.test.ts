@@ -16,7 +16,6 @@ let app: App | null = null;
 afterEach(() => {
   app?.unmount();
   app = null;
-  document.body.textContent = '';
 });
 
 function mount(render: () => ReturnType<typeof h>): HTMLElement {

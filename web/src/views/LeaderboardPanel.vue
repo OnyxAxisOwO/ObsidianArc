@@ -22,12 +22,12 @@ import {
   type LeaderboardPeriod,
 } from '@/api/leaderboard';
 import OaFormSection from '@/components/OaFormSection.vue';
-import OaIconButton from '@/components/OaIconButton.vue';
+import OaFullscreenButton from '@/components/OaFullscreenButton.vue';
 import OaPanel from '@/components/OaPanel.vue';
 import { t } from '@/composables/useI18n';
 import { usePanelExit } from '@/composables/usePanelExit';
 import { usePanelFullscreen } from '@/composables/usePanelFullscreen';
-import { IconCollapse, IconExpand, IconTrophy } from '@/icons';
+import { IconTrophy } from '@/icons';
 import { initials, safeAvatar } from '@/lib/account';
 import { compactNumber } from '@/lib/format';
 
@@ -174,14 +174,7 @@ onBeforeUnmount(() => {
     @close="panels.close('replace')"
   >
     <template #actions>
-      <OaIconButton
-        class="oa-icon-btn"
-        :label="t(fullscreen ? 'exitFullscreen' : 'fullscreen')"
-        @click="toggleFullscreen"
-      >
-        <IconCollapse v-if="fullscreen" :size="16" />
-        <IconExpand v-else :size="16" />
-      </OaIconButton>
+      <OaFullscreenButton :fullscreen="fullscreen" @toggle="toggleFullscreen" />
     </template>
 
     <div v-if="data" class="oa-board-content">

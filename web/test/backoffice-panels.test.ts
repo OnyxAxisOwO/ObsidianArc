@@ -3,11 +3,11 @@ import { createApp, nextTick, type App as VueApp } from 'vue';
 import App from '../src/App.vue';
 import { router } from '../src/router';
 import { adopt, forget, site, siteInfo } from '../src/stores/session';
-import type { Account } from '../src/api/auth';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { installPlugins } from '../src/plugins/registry';
 import type { ArcPlugin } from '../src/plugins/types';
 import { settle, until } from './helpers';
+import { makeAccount } from './fixtures/account';
 
 // A panel from the account menu, opened while the backoffice is on screen.
 //
@@ -17,31 +17,12 @@ import { settle, until } from './helpers';
 // give back exactly that address. The chat's own behaviour is checked after
 // them, since it is the same menu.
 
-const ACCOUNT: Account = {
-  id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
-  username: 'ada',
-  email: 'ada@example.com',
-  nickname: 'Ada',
-  avatar: '',
-  bio: '',
-  role: 'user',
-  group_id: 'g1',
-  group_expires_at: 0,
-  group_name: 'Default',
-  status: 'active',
-  created_at: Date.now(),
-  updated_at: Date.now(),
-  last_login_at: Date.now(),
-  email_verified: true,
-  allow_stats: true,
-  allow_delete_conversations: true,
-  api_restricted: false,
-  api_restricted_until: 0,
-  api_restriction_source: '',
+const ACCOUNT = makeAccount({
+  id: '01ARZ3NDEKTSV4RRFFQ69G5FAV', created_at: Date.now(), updated_at: Date.now(), last_login_at: Date.now(),
   signup_user_agent: 'Mozilla/5.0 ObsidianArcTest/1.0',
-};
+});
 
-const ADMIN: Account = { ...ACCOUNT, role: 'super_admin' };
+const ADMIN = makeAccount({ ...ACCOUNT, role: 'super_admin' });
 
 /**
  * The answers the screens opened here reach for, in the shapes they expect: a
@@ -126,6 +107,15 @@ async function mountAt(path: string): Promise<void> {
 }
 
 /** Opens the account menu and chooses the item with this title. */
+// The account section reads its connections only once it is shown, so a test
+// that wants the list opens that category the way a reader does.
+function openAccountCategory(): void {
+  const tab = [...host.querySelectorAll<HTMLButtonElement>('.oa-settings-tab')]
+    .find((node) => node.textContent?.trim() === t('account'));
+  if (!tab) throw new Error('no account category in the settings panel');
+  tab.click();
+}
+
 async function chooseFromAccountMenu(title: string): Promise<void> {
   host.querySelector<HTMLButtonElement>('.oa-account-btn')!.click();
   await settle();
@@ -225,7 +215,6 @@ afterEach(() => {
   app?.unmount();
   app = null;
   host.remove();
-  document.body.textContent = '';
   forget();
   installPlugins([]);
   vi.unstubAllGlobals();
@@ -370,6 +359,7 @@ describe('a panel from the account menu, opened over the backoffice', () => {
     adopt(ADMIN);
     await mountAt('/admin/providers?keep=1#models');
     await chooseFromAccountMenu(t('settings'));
+    openAccountCategory();
     await until(() => !!host.querySelector('.oa-connection button'), 'the list of connections');
     host.querySelector<HTMLButtonElement>('.oa-connection button')!.click();
     await until(() => connectNext() !== null, 'the connect request');
@@ -529,6 +519,7 @@ describe('the same menu from the chat', () => {
   it('brings a connection back to the settings screen, as it always has', async () => {
     adopt(ACCOUNT);
     await mountAt('/settings');
+    openAccountCategory();
     await until(() => !!host.querySelector('.oa-connection button'), 'the list of connections');
     host.querySelector<HTMLButtonElement>('.oa-connection button')!.click();
     await until(() => connectNext() !== null, 'the connect request');

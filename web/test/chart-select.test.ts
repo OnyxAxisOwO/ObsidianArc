@@ -28,7 +28,6 @@ describe('OaChart selection', () => {
   afterEach(() => {
     app?.unmount();
     app = null;
-    document.body.textContent = '';
   });
 
   function mount(selectable: boolean, picked: string[]): HTMLElement {

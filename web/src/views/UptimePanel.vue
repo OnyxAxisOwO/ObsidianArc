@@ -11,13 +11,13 @@ import { api } from '@/api/client';
 import { apiErrorText } from '@/lib/api-error';
 import OaBadge from '@/components/OaBadge.vue';
 import OaFormSection from '@/components/OaFormSection.vue';
-import OaIconButton from '@/components/OaIconButton.vue';
+import OaFullscreenButton from '@/components/OaFullscreenButton.vue';
 import OaLineChart from '@/components/OaLineChart.vue';
 import OaPanel from '@/components/OaPanel.vue';
 import { t } from '@/composables/useI18n';
 import { usePanelExit } from '@/composables/usePanelExit';
 import { usePanelFullscreen } from '@/composables/usePanelFullscreen';
-import { IconChevron, IconCollapse, IconExpand } from '@/icons';
+import { IconChevron } from '@/icons';
 import { maskProvider } from '@/admin/safeMode';
 import { formatUptime } from '@/lib/format';
 import { canAdmin, siteInfo } from '@/stores/session';
@@ -111,14 +111,7 @@ onMounted(load);
     @close="panels.close('replace')"
   >
     <template #actions>
-      <OaIconButton
-        class="oa-icon-btn"
-        :label="t(fullscreen ? 'exitFullscreen' : 'fullscreen')"
-        @click="toggleFullscreen"
-      >
-        <IconCollapse v-if="fullscreen" :size="16" />
-        <IconExpand v-else :size="16" />
-      </OaIconButton>
+      <OaFullscreenButton :fullscreen="fullscreen" @toggle="toggleFullscreen" />
     </template>
 
     <div v-if="data" class="oa-uptime-content">

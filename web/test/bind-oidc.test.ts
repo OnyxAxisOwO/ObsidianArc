@@ -12,22 +12,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, h, type App } from 'vue';
 import { createMemoryHistory, createRouter, type Router } from 'vue-router';
-import type { Account } from '@/api/auth';
 import { api } from '@/api/client';
 import { changeLanguage, t } from '@/composables/useI18n';
 import { forget, site, siteInfo } from '@/stores/session';
 import BindOIDCView from '@/views/BindOIDCView.vue';
 import { settle, stubLocation } from './helpers';
+import { makeAccount } from './fixtures/account';
 
 const SSO = { id: 'oidc', name: 'Campus SSO' };
 
-const ACCOUNT: Account = {
-  id: 'me', username: 'member', nickname: 'Member', email: '', bio: '', avatar: '',
-  role: 'user', status: 'active', group_id: 'g', group_expires_at: 0, group_name: 'Default',
-  created_at: 0, updated_at: 0, last_login_at: 0, email_verified: true,
-  allow_stats: true, allow_delete_conversations: true,
-  api_restricted: false, api_restricted_until: 0, api_restriction_source: '',
-};
+const ACCOUNT = makeAccount({
+  id: 'me', username: 'member', nickname: 'Member', email: '', group_id: 'g', created_at: 0, updated_at: 0,
+});
 
 let app: App | null = null;
 let host: HTMLElement;
@@ -44,7 +40,6 @@ afterEach(() => {
   app = null;
   site.value = null;
   forget();
-  document.body.textContent = '';
   vi.restoreAllMocks();
 });
 

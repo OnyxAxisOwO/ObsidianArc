@@ -71,7 +71,6 @@ beforeEach(() => {
 afterEach(() => {
   app?.unmount();
   app = null;
-  document.body.textContent = '';
   vi.clearAllMocks();
   vi.useRealTimers();
 });
@@ -226,7 +225,7 @@ describe('UsagePanel', () => {
       }
       return panelRoutes({ totals: totals(0), turns: [] })(url);
     });
-    vi.mocked(api.post).mockResolvedValue(undefined as never);
+    vi.mocked(api.post).mockResolvedValue(undefined);
 
     mountPanel();
     await advance(0);

@@ -20,7 +20,6 @@ beforeEach(() => {
 afterEach(() => {
   app?.unmount();
   app = null;
-  document.body.textContent = '';
 });
 
 describe('Non-linear animation & expand/collapse transitions', () => {

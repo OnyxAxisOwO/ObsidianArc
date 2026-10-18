@@ -19,7 +19,7 @@ import { provideOpenRecord } from '../src/views/admin/openRecord';
 import PluginList from '../src/views/admin/PluginList.vue';
 import PluginActionCard from '../src/views/admin/PluginActionCard.vue';
 import { safeModeCategories, safeModeEnabled } from '../src/admin/safeMode';
-import { PAST_PANEL_ZOOM_MS, settle, wait } from './helpers';
+import { PAST_PANEL_ZOOM_MS, settle, wait, button } from './helpers';
 
 const deferred = <T,>() => {
   let resolve!: (value: T) => void;
@@ -46,13 +46,6 @@ async function mount(component: Component, props: Record<string, unknown> = {}):
   app.use(router);
   app.mount(host);
   await settle();
-}
-
-function button(root: ParentNode, label: string): HTMLButtonElement {
-  const found = [...root.querySelectorAll<HTMLButtonElement>('button')]
-    .find((node) => node.textContent?.trim() === label);
-  if (!found) throw new Error(`Missing button: ${label}`);
-  return found;
 }
 
 function input(root: ParentNode, label: string): HTMLInputElement | HTMLTextAreaElement {
