@@ -486,17 +486,14 @@
   border-radius: 999px;
   border: 2px solid var(--ai-outline-variant);
   border-top-color: var(--ai-primary);
-  animation: oa-terminal-spin 0.7s linear infinite;
+  /* The chat's own turn, not a second copy of it. */
+  animation: ai-chat-spin 0.7s linear infinite;
 }
 
 .oa-terminal-cancel {
   width: 26px;
   height: 26px;
   flex-shrink: 0;
-}
-
-@keyframes oa-terminal-spin {
-  to { transform: rotate(360deg); }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -204,10 +204,13 @@
   color: var(--ai-primary);
 }
 
+/* As tall as the curve it stands in for — the usage report's 190px plot,
+   its 10px row gap and its 14px axis — so a period with no requests does
+   not shorten the card under the reader. */
 .oa-viz-empty {
   display: grid;
   place-items: center;
-  min-height: 180px;
+  min-height: 214px;
   margin: 0;
   color: var(--ai-text-secondary);
   font-size: 12px;

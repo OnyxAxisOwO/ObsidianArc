@@ -290,6 +290,26 @@ describe('phone and state rules in the stylesheet source', () => {
     expect(bodies(reduced, '.oa-panel').join('')).not.toMatch(/transform:\s*none/);
   });
 
+  it('writes each reduced-motion reset after the rule it resets', () => {
+    // A media query adds no weight, so a reset written above its base rule
+    // loses to it: the settings navigation kept fading, and the issued key
+    // kept glowing, for readers who had asked for less motion.
+    const surfaces = sheet('_surfaces.scss');
+    const reduced = blocks(surfaces, '@media (prefers-reduced-motion: reduce)');
+    const cases: Array<[string, 'transition' | 'animation']> = [
+      ['.oa-settings-rail-item', 'transition'],
+      ['.oa-settings-tab', 'transition'],
+      ['.oa-key-token-pulse', 'animation'],
+      ['.oa-key-row', 'animation'],
+    ];
+
+    for (const [selector, property] of cases) {
+      const declared = bodies(surfaces, selector).filter((body) => new RegExp(`(^|[;\\s])${property}:`).test(body));
+      expect(declared.at(-1), selector).toMatch(new RegExp(`${property}:\\s*none`));
+      expect(bodies(reduced, selector).join(''), selector).toMatch(new RegExp(`${property}:\\s*none`));
+    }
+  });
+
   it('declares each card list and card row once, so no later rule silently wins', () => {
     // Two rules for the same selector at the same specificity: the later one
     // won every property it set, and the earlier one's padding and radius

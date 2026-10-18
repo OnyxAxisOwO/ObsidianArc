@@ -1406,9 +1406,7 @@
 @media (prefers-reduced-motion: reduce) {
   .oa-admin-rail,
   .oa-admin.rail-collapsed .oa-admin-rail,
-  .oa-admin-nav,
-  .oa-settings-rail-item,
-  .oa-settings-tab {
+  .oa-admin-nav {
     transition: none;
   }
 }
@@ -1705,6 +1703,16 @@
   font-weight: 600;
 }
 
+/* Here, after the two rules it stills, and not in the block with the admin
+   navigation: at the same weight the later rule wins, and the base rules'
+   own transitions above used to win over a reset written before them. */
+@media (prefers-reduced-motion: reduce) {
+  .oa-settings-rail-item,
+  .oa-settings-tab {
+    transition: none;
+  }
+}
+
 .oa-settings-panel {
   display: flex;
   flex-direction: column;
@@ -1992,14 +2000,11 @@
   transition: background-color 0.15s ease;
 }
 
+/* Only the room for the chevron. The chevron itself is .oa-field .oa-select's,
+   and every select in these panels sits in an .oa-field; the padding above
+   would otherwise take back the space the arrow is drawn in. */
 .oa-settings-panel .oa-select {
-  appearance: none;
   padding-right: 30px;
-  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
-    linear-gradient(135deg, currentColor 50%, transparent 50%);
-  background-position: calc(100% - 16px) calc(50% + 1px), calc(100% - 11px) calc(50% + 1px);
-  background-size: 5px 5px, 5px 5px;
-  background-repeat: no-repeat;
 }
 
 .oa-settings-panel input:not([type='range']):hover,
@@ -2514,6 +2519,18 @@
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+/* After every key rule it resets, since at the same weight the later rule
+   wins. The issued key's glow loops for as long as the key is on screen,
+   which is the motion a reader who asked for less would notice most. */
+@media (prefers-reduced-motion: reduce) {
+  .oa-key-row,
+  .oa-key-token-pulse,
+  .oa-keys-edit-animated,
+  .oa-key-issued-animated {
+    animation: none;
   }
 }
 
@@ -4125,9 +4142,11 @@
 // the header and multi-column cards cleanly. It re-centres the head that the
 // general full-screen rule now pushes to the frame edges, because here the
 // head is meant to line up with the wide centred grid below it, not with the
-// window's corners.
+// window's corners. The leaderboard borrows this layout, centred body and
+// all, so its head is centred with it.
 .oa-panel.fullscreen:has(.oa-uptime-content) .oa-panel-head,
-.oa-panel.fullscreen:has(.oa-uptime-body) .oa-panel-head {
+.oa-panel.fullscreen:has(.oa-uptime-body) .oa-panel-head,
+.oa-panel.fullscreen:has(.oa-board-body) .oa-panel-head {
   max-width: 1480px;
   margin: 0 auto;
 }

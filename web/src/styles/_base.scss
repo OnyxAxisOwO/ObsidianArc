@@ -100,7 +100,11 @@ textarea:placeholder-shown::selection {
 .has-wallpaper .oa-admin-main {
   background: color-mix(in srgb, var(--ai-surface-container) var(--ai-surface-opacity, 100%), transparent);
   /* A whole filter rather than a length, so that "no blur" is `none` and not
-     `blur(0px)`: the second one still promotes the card to its own layer. */
+     `blur(0px)`: the second one still promotes the card to its own layer.
+     A known cost, kept on purpose: behind an html wallpaper that animates,
+     every card re-blurs what is behind it on every frame. Dropping the blur
+     there would quietly switch off a setting the operator chose, so the
+     price is the operator's to weigh, not this rule's to refuse. */
   -webkit-backdrop-filter: var(--ai-surface-filter, none);
   backdrop-filter: var(--ai-surface-filter, none);
 }
