@@ -102,7 +102,7 @@ onBeforeUnmount(stop);
         @keyup="stop"
         @blur="stop"
       >
-        <span class="oa-bigbutton-label">{{ holding ? props.holdingLabel : props.label }}</span>
+        <span>{{ holding ? props.holdingLabel : props.label }}</span>
       </button>
     </div>
   </div>

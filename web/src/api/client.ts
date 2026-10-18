@@ -138,14 +138,15 @@ function networkDetail(error: unknown): string {
 }
 
 export const api = {
-  get: <T>(path: string, options?: RequestOptions) => request<T>('GET', path, options ?? {}),
+  // No `?? {}` here: request's own default already stands in for a missing options.
+  get: <T>(path: string, options?: RequestOptions) => request<T>('GET', path, options),
   post: <T>(path: string, body?: unknown, options?: RequestOptions) =>
     request<T>('POST', path, { ...options, body }),
   patch: <T>(path: string, body?: unknown, options?: RequestOptions) =>
     request<T>('PATCH', path, { ...options, body }),
   put: <T>(path: string, body?: unknown, options?: RequestOptions) =>
     request<T>('PUT', path, { ...options, body }),
-  delete: <T>(path: string, options?: RequestOptions) => request<T>('DELETE', path, options ?? {}),
+  delete: <T>(path: string, options?: RequestOptions) => request<T>('DELETE', path, options),
   /** POST a file, as a form. */
   upload: <T>(path: string, form: FormData, options?: RequestOptions) =>
     request<T>('POST', path, { ...options, form }),

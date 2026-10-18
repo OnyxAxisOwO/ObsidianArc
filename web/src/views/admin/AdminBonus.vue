@@ -31,7 +31,7 @@ import OaTextField from '@/components/OaTextField.vue';
 import type { Column, SortState } from '@/components/table-types';
 import { t, tn } from '@/composables/useI18n';
 import { maskProvider, maskUser } from '@/admin/safeMode';
-import { apiErrorText } from '@/lib/api-error';
+import { apiErrorText, codeText } from '@/lib/api-error';
 import { absoluteTime, relativeTime } from '@/lib/format';
 import { IconCheck, IconGift } from '@/icons';
 import AdminControlCard from './AdminControlCard.vue';
@@ -43,6 +43,11 @@ import { useAdminView } from './adminView';
 
 const view = useAdminView();
 view.setTitle(() => t('bonusTitle'), () => t('bonusSubtitle'));
+
+// The server clamps a grant to this many days (internal/admin/bonus.go), so a
+// larger figure would be shortened without a word. The field stops at the same
+// figure for that reason.
+const MAX_GRANT_DAYS = 3650;
 
 const bars = ref<BonusBarRow[]>([]);
 const models = ref<AdminModel[]>([]);
@@ -167,7 +172,11 @@ async function saveBar(): Promise<void> {
     panel.value = 'closed';
     await refreshBars();
   } catch (failure) {
-    panelError.value = failure instanceof ApiError ? poolRefusal(failure.code) ?? failure.message : String(failure);
+    // Only a code the interface has a sentence for is translated; any other
+    // keeps the server's sentence, which an administrator may need verbatim.
+    panelError.value = failure instanceof ApiError
+      ? poolRefusal(failure.code) ?? codeText(failure.code) ?? failure.message
+      : String(failure);
   } finally {
     busy.value = false;
   }
@@ -180,7 +189,7 @@ async function refreshBars(): Promise<void> {
   try {
     bars.value = (await adminApi.bonusBars()).bars;
   } catch (failure) {
-    pageError.value = failure instanceof ApiError ? failure.message : String(failure);
+    pageError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
   }
 }
 
@@ -192,7 +201,7 @@ async function removeBar(): Promise<void> {
     panel.value = 'closed';
     await refreshBars();
   } catch (failure) {
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    panelError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
   } finally {
     busy.value = false;
   }
@@ -314,7 +323,7 @@ async function loadGrants(barID: string, offset: number): Promise<void> {
     grantsTotal.value = result.total;
   } catch (failure) {
     if (mine !== grantsTicket) return;
-    grantsError.value = failure instanceof ApiError ? failure.message : String(failure);
+    grantsError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
   } finally {
     if (mine === grantsTicket) grantsLoading.value = false;
   }
@@ -340,7 +349,7 @@ async function revoke(row: BonusGrantRow): Promise<void> {
   try {
     revoked = (await adminApi.revokeBonusGrant(row.id)).revoked;
   } catch (failure) {
-    grantsError.value = failure instanceof ApiError ? failure.message : String(failure);
+    grantsError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
     return;
   }
   flash.value = t('bonusRevoked', { amount: credits(revoked) });
@@ -414,7 +423,7 @@ async function loadCheckin(): Promise<void> {
     const current = await adminApi.checkinSettings();
     checkin.value = { ...current, rules: current.rules ?? [], daily: current.daily?.kind ? current.daily : { kind: '' } };
   } catch (failure) {
-    checkinLoadError.value = failure instanceof ApiError ? failure.message : String(failure);
+    checkinLoadError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
   }
 }
 
@@ -434,7 +443,7 @@ async function saveCheckin(): Promise<void> {
     checkin.value = await adminApi.saveCheckinSettings(checkin.value);
     checkinFlash.value = t('checkinSaved');
   } catch (failure) {
-    checkinError.value = failure instanceof ApiError ? failure.message : String(failure);
+    checkinError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
   } finally {
     checkinBusy.value = false;
   }
@@ -612,7 +621,7 @@ onMounted(load);
     <OaSelectField v-if="grantForm.to === 'group'" v-model="grantForm.group" :label="t('bonusGrantGroupField')" :options="groupChoices" />
     <OaTextField v-if="grantForm.to === 'named'" v-model="grantForm.names" :label="t('bonusGrantNamesField')" :hint="t('bonusGrantNamesHint')" />
     <OaNumberField v-model="grantForm.amount" :label="t('bonusGrantAmount')" :min="0" :step="0.1" />
-    <OaNumberField v-model="grantForm.days" :label="t('bonusGrantDays')" :hint="t('bonusGrantDaysHint')" :min="1" :max="3650" />
+    <OaNumberField v-model="grantForm.days" :label="t('bonusGrantDays')" :hint="t('bonusGrantDaysHint')" :min="1" :max="MAX_GRANT_DAYS" />
     <OaTextField v-model="grantForm.note" :label="t('bonusGrantNote')" :max-length="200" />
   </OaPanel>
 </template>

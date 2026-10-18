@@ -5,9 +5,10 @@
 // names the accounts that redeemed it; the account panel answers the inverse
 // question, which cards one person still holds.
 
-import { computed, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { adminApi, type CodeRedemption, type RedemptionCode } from '@/admin/api';
 import { ApiError } from '@/api/client';
+import { codeText } from '@/lib/api-error';
 import { saveAsFile } from '@/api/backup';
 import { copyToClipboard } from '@/chat/markdown';
 import OaBadge from '@/components/OaBadge.vue';
@@ -27,6 +28,7 @@ import { formatCardScope } from '@/lib/card-scope';
 import { useBulk } from '@/composables/useBulk';
 import { usePanelSlot } from '@/composables/usePanelSlot';
 import { relativeTime } from '@/lib/format';
+import { DAY_MS } from '@/lib/time';
 import { maskCredential, maskUser } from '@/admin/safeMode';
 import AdminFailure from './AdminFailure.vue';
 import { useAdminView } from './adminView';
@@ -158,7 +160,7 @@ async function loadRedemptions(codeID: string): Promise<void> {
     if (existing.value?.id === codeID) redemptions.value = result.redemptions ?? [];
   } catch (failure) {
     if (existing.value?.id === codeID) {
-      redemptionsError.value = failure instanceof ApiError ? failure.message : String(failure);
+      redemptionsError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
     }
   } finally {
     if (existing.value?.id === codeID) redemptionsLoading.value = false;
@@ -170,7 +172,16 @@ async function create(): Promise<void> {
     panelError.value = t('cardResetScopeRequired');
     return;
   }
-  const batch = form.value.count ?? 1;
+  // A blank box is not a value. A default written in its place would mint codes
+  // the panel does not show (one code, thirty days), and a minted code cannot
+  // be given different numbers afterwards, so the batch waits for numbers.
+  const batch = form.value.count;
+  const cards = form.value.cards;
+  const cardDays = form.value.cardDays;
+  if (batch === null || cards === null || cardDays === null) {
+    panelError.value = t('settingNumberRequired');
+    return;
+  }
   const days = form.value.expiresDays;
   busy.value = true;
   panelError.value = '';
@@ -180,17 +191,19 @@ async function create(): Promise<void> {
       name: form.value.name.trim(),
       windows: selectedWindows(),
       count: batch,
-      cards: form.value.cards ?? 1,
-      card_days: form.value.cardDays ?? 30,
+      cards,
+      card_days: cardDays,
       // Zero is "never", which is what an empty field means here.
-      expires_at: days && days > 0 ? Date.now() + days * 24 * 3600 * 1000 : 0,
+      expires_at: days && days > 0 ? Date.now() + days * DAY_MS : 0,
     });
     // Generated codes exist nowhere else until they are copied off this
     // screen, so the panel turns into the list rather than closing over them.
     minted.value = created;
     void load();
   } catch (failure) {
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    // Only a code the interface has a sentence for is translated; any other
+    // keeps the server's sentence, which an administrator may need verbatim.
+    panelError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
   } finally {
     busy.value = false;
   }
@@ -214,14 +227,24 @@ async function remove(): Promise<void> {
     void load();
   } catch (failure) {
     busy.value = false;
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    panelError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
   }
 }
+
+// The result is written onto the button and taken off again after a moment, so
+// the next copy starts from the usual label rather than the last result. The
+// timer is kept so a newer result is not cleared early, and cancelled on leave.
+let copyLabelTimer = 0;
+onBeforeUnmount(() => window.clearTimeout(copyLabelTimer));
 
 function copyAll(): void {
   const lines = (minted.value ?? []).map((entry) => entry.code).join('\n');
   void copyToClipboard(lines).then((ok) => {
-    if (ok) copyLabel.value = t('copied');
+    // A refused copy says so: the codes are only on this screen until copied,
+    // and a button that stayed silent would read as having copied them.
+    copyLabel.value = ok ? t('copied') : t('copyFailed');
+    window.clearTimeout(copyLabelTimer);
+    copyLabelTimer = window.setTimeout(() => { copyLabel.value = ''; }, 1500);
   });
 }
 

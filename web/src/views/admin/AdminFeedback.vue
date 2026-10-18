@@ -26,6 +26,7 @@ import {
   type Feedback, type FeedbackStatus, type FeedbackSummary, type FeedbackThread,
 } from '@/admin/api';
 import { ApiError } from '@/api/client';
+import { codeText } from '@/lib/api-error';
 import OaBadge from '@/components/OaBadge.vue';
 import OaConfirmButton from '@/components/OaConfirmButton.vue';
 import OaIconButton from '@/components/OaIconButton.vue';
@@ -92,10 +93,13 @@ let openTicket = 0;
 // Typing is the one filter that changes on every keystroke, so it waits for
 // the typist to stop rather than asking the server about every letter. The
 // three selects below are a click each and go straight through.
+// The pause after the last keystroke before a search goes out. The users and
+// invites search boxes wait the same, so the three feel the same to type in.
+const SEARCH_WAIT_MS = 250;
 let searchTimer = 0;
 watch(search, () => {
   window.clearTimeout(searchTimer);
-  searchTimer = window.setTimeout(narrow, 250);
+  searchTimer = window.setTimeout(narrow, SEARCH_WAIT_MS);
 });
 onBeforeUnmount(() => window.clearTimeout(searchTimer));
 
@@ -132,6 +136,13 @@ async function load(): Promise<void> {
   try {
     const data = await adminApi.feedback(query());
     if (mine !== ticket) return;
+    // A page past the end, because the list shrank under it (a row deleted,
+    // a sliding window moving on), is asked again for its last page rather
+    // than left empty: with one page left the pager shows no way back.
+    if (data.total > 0 && offset.value >= data.total) {
+      offset.value = Math.floor((data.total - 1) / pageSize.value) * pageSize.value;
+      await load(); return;
+    }
     rows.value = data.feedback;
     total.value = data.total;
     summary.value = data.summary;
@@ -147,7 +158,7 @@ async function load(): Promise<void> {
     }
   } catch (failure) {
     if (mine !== ticket) return;
-    const message = failure instanceof ApiError ? failure.message : String(failure);
+    const message = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
     // The first load has nothing to keep on screen, so it is the whole page
     // that failed; a later one still has a list worth leaving up.
     if (!summary.value) error.value = message;
@@ -215,7 +226,7 @@ async function open(target: Feedback | string): Promise<void> {
     opened.value = fetched.feedback;
   } catch (failure) {
     if (mine !== openTicket) return;
-    const message = failure instanceof ApiError ? failure.message : String(failure);
+    const message = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
     if (opened.value) panelError.value = message;
     else openError.value = message;
   } finally {
@@ -266,7 +277,7 @@ async function reply(): Promise<void> {
     await load();
   } catch (failure) {
     if (thread.value?.feedback.id === id) {
-      panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+      panelError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
     }
   } finally {
     busy.value = false;
@@ -285,7 +296,7 @@ async function removeReply(replyID: string): Promise<void> {
     await load();
   } catch (failure) {
     if (thread.value?.feedback.id === id) {
-      panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+      panelError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
     }
   } finally {
     busy.value = false;
@@ -306,7 +317,7 @@ async function setStatus(next: FeedbackStatus): Promise<void> {
     await load();
   } catch (failure) {
     if (opened.value?.id === id) {
-      panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+      panelError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
     }
   } finally {
     busy.value = false;
@@ -330,7 +341,7 @@ async function remove(): Promise<void> {
     await load();
   } catch (failure) {
     if (opened.value?.id === id) {
-      panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+      panelError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
     }
   } finally {
     busy.value = false;

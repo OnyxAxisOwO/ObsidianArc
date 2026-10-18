@@ -15,6 +15,8 @@ import {
 } from '@/admin/api';
 import { pickJSONFile, saveAsFile } from '@/api/backup';
 import { ApiError } from '@/api/client';
+import { codeText } from '@/lib/api-error';
+import { DAY_MS } from '@/lib/time';
 import OaBadge from '@/components/OaBadge.vue';
 import OaBadgeRow from '@/components/OaBadgeRow.vue';
 import OaBulkBar from '@/components/OaBulkBar.vue';
@@ -197,6 +199,9 @@ function uptime(row: AdminModel): { text: string; tone: 'default' | 'muted' | 'd
   if (!status || status.samples === 0) return { text: t('healthUnknown'), tone: 'muted' };
   // Down is danger; up but not clean is a warning, because a model at 96% is
   // failing one turn in twenty and that is worth a colour.
+  // 0.99 is the line the server draws for "up" (internal/server/server.go), so
+  // the colour agrees with the state it was computed from. 0.995 only decides
+  // whether the percentage keeps its decimal place near the top of the scale.
   const tone = status.state !== 'up' ? 'danger' : status.uptime >= 0.99 ? 'default' : 'warning';
   const result: { text: string; tone: typeof tone; title?: string } = {
     text: `${(status.uptime * 100).toFixed(status.uptime >= 0.995 ? 0 : 1)}%`,
@@ -233,7 +238,7 @@ async function reorder(reordered: AdminModel[]): Promise<void> {
   try {
     await adminApi.reorderModels(next.map((row) => row.id));
   } catch (failure) {
-    reorderError.value = failure instanceof ApiError ? failure.message : String(failure);
+    reorderError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
   }
   // Either way: on success to show the stored order, and on failure to snap
   // back to it rather than leaving the screen claiming a move never written.
@@ -345,7 +350,7 @@ async function loadUsers(modelID: string): Promise<void> {
   users.value = null;
   if (!canAdmin('usage')) return;
   try {
-    const since = Date.now() - 30 * 86_400_000;
+    const since = Date.now() - 30 * DAY_MS;
     const { rows } = await adminApi.usageBreakdown('user', `model_id=${modelID}&since=${since}&metric=tokens`);
     if (ticket === usersRequest) users.value = rows;
   } catch {
@@ -504,7 +509,9 @@ async function save(): Promise<void> {
     finish();
   } catch (failure) {
     busy.value = false;
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    // Only a code the interface has a sentence for is translated; any other
+    // keeps the server's sentence, which an administrator may need verbatim.
+    panelError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
   }
 }
 
@@ -532,7 +539,7 @@ async function createMany(shared: Record<string, unknown>): Promise<void> {
   busy.value = false;
   panelError.value = failed.map((entry) => {
     const failure = (results[entries.indexOf(entry)] as PromiseRejectedResult).reason;
-    return `${entry.model_id}: ${failure instanceof ApiError ? failure.message : String(failure)}`;
+    return `${entry.model_id}: ${failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure)}`;
   }).join('; ');
   void load();
 }
@@ -546,7 +553,7 @@ async function remove(): Promise<void> {
     finish();
   } catch (failure) {
     busy.value = false;
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    panelError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
   }
 }
 
@@ -585,6 +592,9 @@ function portable(row: AdminModel): Record<string, unknown> {
     sort_order: row.sort_order,
     reasoning_style: row.reasoning_style,
     reasoning_tiers: row.reasoning_tiers,
+    // The import writes whatever the file says here, an absent key as empty,
+    // so a catalogue taken out and back in without it lost every override.
+    request_override: row.request_override ?? '',
     route_to: target ? { provider: target.provider_name, model_id: target.model_id } : null,
     supports_reasoning: row.supports_reasoning,
     supports_images: row.supports_images,
@@ -636,7 +646,7 @@ function importModels(): void {
     })
     .catch((failure: unknown) => {
       report.value = {
-        headline: failure instanceof ApiError ? failure.message : String(failure),
+        headline: failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure),
         skipped: [],
       };
     })

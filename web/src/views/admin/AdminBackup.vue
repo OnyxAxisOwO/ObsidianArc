@@ -6,6 +6,7 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { useDocumentVisibility, useIntervalFn } from '@vueuse/core';
 import { adminApi, type AdminBackup, type AdminBackupInput, type StorageType } from '@/admin/api';
 import { ApiError } from '@/api/client';
+import { codeText } from '@/lib/api-error';
 import OaBadge from '@/components/OaBadge.vue';
 import OaNumberField from '@/components/OaNumberField.vue';
 import OaSelectField from '@/components/OaSelectField.vue';
@@ -71,16 +72,25 @@ const storageTypeChoices = computed<ReadonlyArray<Choice<StorageType>>>(() => [
   { value: 'webdav', label: t('backupTypeWebDAV') },
 ]);
 
-function collect(): AdminBackupInput {
+// The draft as the page holds it. A blank interval or retention stays null: a
+// default written in its place would be saved under a box that still reads
+// empty, and the page would then show one number and store another.
+type BackupDraft = Omit<AdminBackupInput, 'interval_hours' | 'retention_hours'> & {
+  interval_hours: number | null;
+  retention_hours: number | null;
+};
+
+function collect(): BackupDraft {
   return {
     ...form.value,
     type: form.value.type || 's3',
-    interval_hours: form.value.interval_hours ?? 24,
-    retention_hours: form.value.retention_hours ?? 168,
+    interval_hours: form.value.interval_hours,
+    retention_hours: form.value.retention_hours,
   };
 }
 
 const dirty = computed(() => baseline.value !== JSON.stringify(collect()));
+const fieldsFilled = computed(() => form.value.interval_hours !== null && form.value.retention_hours !== null);
 const actionDisabled = computed(() => (
   busy.value || dirty.value || !snapshot.value?.configured || !!snapshot.value.running
 ));
@@ -147,8 +157,10 @@ watch(
   { flush: 'post' },
 );
 
+// A server sentence is kept unless its code has a reader's translation: a 503
+// from the storage is the operator's only clue, and it arrives untranslated.
 function message(failure: unknown): string {
-  return failure instanceof ApiError ? failure.message : String(failure);
+  return failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
 }
 
 // Matched by code so the refusal reads in the operator's language; the server's
@@ -219,11 +231,12 @@ async function refreshStatus(fromAction = false): Promise<void> {
 }
 
 async function save(): Promise<void> {
-  if (!loaded.value || busy.value || !dirty.value) return;
+  const { interval_hours: interval, retention_hours: retention } = form.value;
+  if (!loaded.value || busy.value || !dirty.value || interval === null || retention === null) return;
   busy.value = true;
   actionError.value = '';
   notice.value = '';
-  const input = collect();
+  const input: AdminBackupInput = { ...collect(), interval_hours: interval, retention_hours: retention };
   try {
     await adminApi.saveBackup(input);
     // Clear the one-time input only if it still contains what this request
@@ -289,7 +302,7 @@ onMounted(load);
     <span v-if="loaded" class="oa-control-save-state" :class="{ dirty }" role="status">
       <span class="oa-dashboard-dot" />{{ dirty ? t('controlUnsaved') : t('controlSaved') }}
     </span>
-    <button type="button" class="oa-btn primary" :disabled="busy || !loaded || !!error || !dirty" @click="save">
+    <button type="button" class="oa-btn primary" :disabled="busy || !loaded || !!error || !dirty || !fieldsFilled" @click="save">
       {{ busy ? t('saving') : t('save') }}
     </button>
   </Teleport>
@@ -324,6 +337,7 @@ onMounted(load);
 
         <OaNumberField v-model="form.interval_hours" :label="t('backupInterval')" :hint="t('backupIntervalHint')" :min="1" :step="1" />
         <OaNumberField v-model="form.retention_hours" :label="t('backupRetention')" :hint="t('backupRetentionHint')" :min="1" :step="1" />
+        <p v-if="!fieldsFilled" class="oa-field-hint" role="alert">{{ t('settingNumberRequired') }}</p>
       </AdminControlCard>
 
       <AdminControlCard id="backupStatus" :title="t('backupStatus')" :hint="t('backupStatusHint')" :icon="IconServer">

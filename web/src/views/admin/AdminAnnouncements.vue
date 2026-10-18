@@ -9,6 +9,7 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { adminApi, type Announcement } from '@/admin/api';
 import { ApiError } from '@/api/client';
+import { codeText } from '@/lib/api-error';
 import OaBadge from '@/components/OaBadge.vue';
 import OaBadgeRow from '@/components/OaBadgeRow.vue';
 import OaBulkBar from '@/components/OaBulkBar.vue';
@@ -147,7 +148,7 @@ async function save(): Promise<void> {
     finish();
   } catch (failure) {
     busy.value = false;
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    panelError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
   }
 }
 
@@ -160,7 +161,7 @@ async function remove(): Promise<void> {
     finish();
   } catch (failure) {
     busy.value = false;
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    panelError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : String(failure);
   }
 }
 

@@ -16,6 +16,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { BACKOFFICE_PANEL_PARAM } from '@/composables/usePanelExit';
 import { adminApi, type LogEntry, type LogFacets, type LogOption } from '@/admin/api';
 import { ApiError } from '@/api/client';
+import { codeText } from '@/lib/api-error';
 import OaPagination from '@/components/OaPagination.vue';
 import type { PageState } from '@/components/table-types';
 import OaBadge from '@/components/OaBadge.vue';
@@ -24,10 +25,11 @@ import OaPanel from '@/components/OaPanel.vue';
 import OaSelectField from '@/components/OaSelectField.vue';
 import OaTextField from '@/components/OaTextField.vue';
 import type { Choice } from '@/components/choice';
-import { RefreshCw } from 'lucide-vue-next';
+import { IconRefresh } from '@/icons';
 import { t, type StringKey } from '@/composables/useI18n';
 import { absoluteTime, relativeTime } from '@/lib/format';
 import { rememberedPageSize } from '@/lib/page-size';
+import { HOUR_MS } from '@/lib/time';
 import { maskUser, maskLog } from '@/admin/safeMode';
 import AdminFailure from './AdminFailure.vue';
 import { useAdminView } from './adminView';
@@ -82,8 +84,9 @@ watch(
 const facets = ref<LogFacets | null>(null);
 const entries = ref<LogEntry[]>([]);
 const total = ref(0);
-const offset = ref(0);
-const error = ref('');
+// A failed facets answer costs the filter controls, not the list: the list does
+// not read the facets, so the two are shown and failed separately.
+const facetsError = ref('');
 const listError = ref('');
 const loading = ref(true);
 const opened = ref<LogEntry | null>(null);
@@ -93,7 +96,7 @@ let facetRequest = 0;
 function since(): number {
   const entry = WINDOWS.find((window) => window.value === query.value.window);
   if (!entry || entry.hours === 0) return 0;
-  return Date.now() - entry.hours * 60 * 60 * 1000;
+  return Date.now() - entry.hours * HOUR_MS;
 }
 
 function listQuery(): string {
@@ -132,24 +135,27 @@ function narrow(): void {
   void paint();
 }
 
+// The facets and the list go out together. The list does not read the facets,
+// so waiting for them held the rows back by a whole round trip for nothing.
 async function reload(): Promise<void> {
-  error.value = '';
   // Ticketed like paint(): a window changed twice in quick succession sends
   // two requests, and the older answer must not land after the newer one.
   const ticket = ++facetRequest;
-  try {
-    // The facets follow the window: which accounts and models appear in the
-    // last hour is a different list from the last month's.
-    const at = since();
-    const next = await adminApi.logFacets(at > 0 ? `?since=${at}` : '');
-    if (ticket !== facetRequest) return;
-    facets.value = next;
-  } catch (failure) {
-    if (ticket !== facetRequest) return;
-    error.value = failure instanceof Error ? failure.message : String(failure);
-    return;
-  }
-  await paint();
+  facetsError.value = '';
+  // The facets follow the window: which accounts and models appear in the
+  // last hour is a different list from the last month's.
+  const at = since();
+  const facetsDone = adminApi.logFacets(at > 0 ? `?since=${at}` : '').then(
+    (next) => { if (ticket === facetRequest) facets.value = next; },
+    (failure: unknown) => {
+      if (ticket !== facetRequest) return;
+      // Without facets the filter controls cannot be drawn, so they give way to
+      // the failure; the retry asks for both again.
+      facets.value = null;
+      facetsError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : t('failed');
+    },
+  );
+  await Promise.all([facetsDone, paint()]);
 }
 
 async function paint(): Promise<void> {
@@ -159,13 +165,19 @@ async function paint(): Promise<void> {
   try {
     const data = await adminApi.logs(listQuery());
     if (ticket !== listRequest) return;
+    // A page past the end, because the list shrank under it (a row deleted,
+    // a sliding window moving on), is asked again for its last page rather
+    // than left empty: with one page left the pager shows no way back.
+    if (data.total > 0 && query.value.offset >= data.total) {
+      query.value.offset = Math.floor((data.total - 1) / pageSize.value) * pageSize.value;
+      await paint(); return;
+    }
     entries.value = data.entries;
     total.value = data.total;
-    offset.value = data.offset;
   } catch (failure) {
     if (ticket !== listRequest) return;
     entries.value = [];
-    listError.value = failure instanceof ApiError ? failure.message : t('failed');
+    listError.value = failure instanceof ApiError ? codeText(failure.code) ?? failure.message : t('failed');
   } finally {
     if (ticket === listRequest) loading.value = false;
   }
@@ -231,14 +243,12 @@ onMounted(reload);
     <!-- A refresh icon, which it had not been: the button was a chevron, and
          read as a control that collapsed something. -->
     <OaIconButton class="oa-icon-btn" :label="t('refresh')" :disabled="loading" @click="reload">
-      <RefreshCw :size="15" :class="{ 'is-refreshing': loading }" aria-hidden="true" />
+      <IconRefresh :size="15" :class="{ 'is-refreshing': loading }" aria-hidden="true" />
     </OaIconButton>
   </Teleport>
 
-  <AdminFailure v-if="error" :message="error" @retry="reload" />
-
-  <div v-else class="oa-log-page">
-    <div v-if="facets" id="logsFilter" class="oa-viz-card oa-log-filters">
+  <div class="oa-log-page">
+    <div v-if="facets" id="logsFilter" class="oa-viz-card">
       <div class="oa-log-filter-grid">
         <OaSelectField
           v-model="query.window"
@@ -307,12 +317,13 @@ onMounted(reload);
         </span>
       </div>
     </div>
+    <AdminFailure v-else-if="facetsError" :message="facetsError" @retry="reload" />
 
     <!-- Columns rather than two stacked lines per row: the questions asked of
          a log — which ones failed, whose, how slow — are asked down a column,
          and a column is only readable when every row puts the same thing in
          the same place. -->
-    <div id="logsTable" class="oa-viz-card oa-log-results">
+    <div id="logsTable" class="oa-viz-card">
       <p v-if="loading && !entries.length" class="oa-table-empty">{{ t('loading') }}</p>
       <p v-else-if="listError" class="oa-table-empty">{{ listError }}</p>
       <p v-else-if="!entries.length" class="oa-table-empty">{{ t('logEmpty') }}</p>

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, h, nextTick, reactive, type App } from 'vue';
 import { adminApi } from '../src/admin/api';
 import { ApiError } from '../src/api/client';
+import { t } from '../src/composables/useI18n';
 import AdminDetectModels, { type DetectedModel } from '../src/views/admin/AdminDetectModels.vue';
 
 const settle = async () => {
@@ -106,10 +107,10 @@ describe('detected models', () => {
 
     expect(options()[0]!.querySelector('.oa-detect-known')).not.toBeNull();
     expect(options()[2]!.getAttribute('aria-selected')).toBe('true');
-    // The client always throws ApiError, so the failure reads as its bare
-    // message. A plain Error takes the String(error) branch and shows
+    // Each refusal names its model, so the row that did not make it can be
+    // found. A plain Error takes the String(error) branch and would show
     // "Error: boom", which no real request produces.
-    expect(host.querySelector('.oa-group-row-meta')?.textContent).toBe('boom');
+    expect(host.querySelector('.oa-group-row-meta')?.textContent).toBe('qwen3.6-27b: boom');
     expect(host.textContent).not.toContain('Error: boom');
 
     created.mockClear();
@@ -119,6 +120,25 @@ describe('detected models', () => {
     [...host.querySelectorAll<HTMLButtonElement>('.oa-btn.primary')].at(-1)!.click();
     await settle();
     expect(created.mock.calls.map(([body]) => body['model_id'])).toEqual(['qwen3.6-27b']);
+  });
+
+  it('names every row that failed with its reason, and translates a code the page knows', async () => {
+    vi.spyOn(adminApi, 'createModel')
+      .mockRejectedValueOnce(new ApiError(409, 'model_routed', 'Another model routes to this one.'))
+      .mockRejectedValueOnce(new ApiError(500, 'internal', 'boom'));
+    mount({ mode: 'add', canAdd: true });
+    await detect();
+
+    options()[0]!.click();
+    options()[2]!.click();
+    await nextTick();
+    [...host.querySelectorAll<HTMLButtonElement>('.oa-btn.primary')].at(-1)!.click();
+    await settle();
+
+    // A code with a reader's sentence shows that sentence; one without keeps the
+    // server's, so an administrator still sees what the request said.
+    expect(host.querySelector('.oa-group-row-meta')?.textContent)
+      .toBe(`gpt-5.5: ${t('errModelRouted')}; qwen3.6-27b: boom`);
   });
 
   it('drops a detection that comes back for a provider the editor has since left', async () => {

@@ -7,7 +7,7 @@ import OaTable from '../src/components/OaTable.vue';
 import { providePanelHost } from '../src/composables/usePanelHost';
 import { t } from '../src/composables/useI18n';
 import AdminAnnouncements from '../src/views/admin/AdminAnnouncements.vue';
-import { pickJSONFile } from '../src/api/backup';
+import { pickJSONFile, saveAsFile } from '../src/api/backup';
 import AdminModels from '../src/views/admin/AdminModels.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
 
@@ -16,6 +16,7 @@ import { provideAdminView } from '../src/views/admin/adminView';
 vi.mock('../src/api/backup', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/api/backup')>()),
   pickJSONFile: vi.fn(),
+  saveAsFile: vi.fn(),
 }));
 
 const settle = async () => {
@@ -501,6 +502,19 @@ describe('AdminModels, what the filter hides', () => {
     await settle();
     expect(panels.querySelectorAll('.oa-code-line')).toHaveLength(3);
     expect(warn.mock.calls.some((args) => String(args[0]).includes('Duplicate keys'))).toBe(false);
+  });
+
+  // The export is what an import reads back, field for field. The request
+  // override was added to the form and the save but not to the export, so a
+  // catalogue moved between instances arrived without its overrides.
+  it('exports the request override so an import gives it back', async () => {
+    await mount([{ ...model('a'), request_override: '{"temperature":0.2}' }]);
+    [...actions.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.trim() === t('exportModels'))!.click();
+
+    const [, contents] = vi.mocked(saveAsFile).mock.lastCall!;
+    const exported = JSON.parse(contents) as { models: Array<Record<string, unknown>> };
+    expect(exported.models[0]!['request_override']).toBe('{"temperature":0.2}');
   });
 });
 

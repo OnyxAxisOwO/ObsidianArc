@@ -224,7 +224,6 @@ const activeInfo = computed(() => {
         <g
           v-for="(m, i) in mapped"
           :key="i"
-          class="oa-linechart-point-group"
           @mouseenter="hovered = i"
         >
           <!-- Transparent wider hit target for easier touch/hover -->
