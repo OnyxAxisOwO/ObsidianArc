@@ -163,7 +163,13 @@ func (m *Manager) dropRetiredSeams(old, next *arcx.Manifest) {
 
 // detach takes everything l attached away. It is what an uninstall and a
 // failed update do, and it never fails: there is nothing to say no to.
-func (m *Manager) detach(l *loaded) {
+func (m *Manager) detach(l *loaded) { m.detachSeams(l, false) }
+
+// detachSeams is detach, leaving the plugin's guards where they are when
+// keepGuards says so: a rollback that is about to put another version's guards
+// in their place replaces them in one step instead, because a door whose check
+// is missing for a moment is open for that moment.
+func (m *Manager) detachSeams(l *loaded, keepGuards bool) {
 	// Console commands are added by AttachConsole whether or not a host is
 	// there, so they come off on the same terms; otherwise a package removed
 	// before the host arrives keeps its commands and the backend they close over.
@@ -181,7 +187,9 @@ func (m *Manager) detach(l *loaded) {
 		for _, b := range man.OAuthBindings {
 			h.OAuth.UnbindSubject(b.Field)
 		}
-		h.Auth.RemoveGuards(l.name)
+		if !keepGuards {
+			h.Auth.RemoveGuards(l.name)
+		}
 		h.AuthHandlers.Unextend(l.name)
 		h.InviteHandlers.RemoveDecorators(l.name)
 	}
@@ -427,7 +435,7 @@ func (m *Manager) runCommand(ctx context.Context, l *loaded, c arcx.ConsoleComma
 		} `json:"out"`
 	}
 	info := wasm.CallInfo{Lang: rt.Session.Lang, IP: rt.Session.IP, Actor: actorOf(rt.Session.Actor)}
-	st := &callState{console: rt}
+	st := &callState{console: rt, endpoints: c.Endpoints}
 	err := m.invoke(ctx, l, info, "console", arg, &out, st)
 	if err != nil {
 		return commandFailure(err, st.consoleErrs)

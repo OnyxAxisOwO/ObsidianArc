@@ -14,18 +14,26 @@ import (
 
 // The console decides what a command may do by what it declares: a read-only
 // command is not refused the partial-name and watch --count guards that a
-// writing one is. console.call must not be a way round that, so a backend
-// whose command declared only reads cannot send a write through it.
-func TestAPackageCallsOnlyTheMethodsItDeclares(t *testing.T) {
+// writing one is, and a command not marked destructive is not asked for --yes.
+// console.call must not be a way round that, so a backend reaches the
+// endpoints its command declared, by method and path, and no others.
+func TestAPackageCallsOnlyTheEndpointsItDeclares(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		endpoints []string
 		method    string
+		path      string
 		ok        bool
 	}{
-		{"a read from a read command", []string{"GET /api/admin/groups"}, "GET", true},
-		{"a write from a read command", []string{"GET /api/admin/groups"}, "POST", false},
-		{"a write from a write command", []string{"POST /api/admin/groups"}, "POST", true},
+		{"a read from a read command", []string{"GET /api/admin/groups"}, "GET", "/api/admin/groups", true},
+		{"a write from a read command", []string{"GET /api/admin/groups"}, "POST", "/api/admin/groups", false},
+		{"a write from a write command", []string{"POST /api/admin/groups"}, "POST", "/api/admin/groups", true},
+		{"a delete from a command that declared a create", []string{"POST /api/admin/groups"}, "DELETE", "/api/admin/groups", false},
+		{"a write elsewhere from a write command", []string{"POST /api/admin/groups"}, "POST", "/api/admin/users", false},
+		{"a read with a query string", []string{"GET /api/admin/groups"}, "GET", "/api/admin/groups?limit=5", true},
+		{"a path parameter", []string{"PATCH /api/admin/groups/{id}"}, "PATCH", "/api/admin/groups/01ABC", true},
+		{"a path parameter that climbs out", []string{"PATCH /api/admin/groups/{id}/x"}, "PATCH", "/api/admin/groups/../x", false},
+		{"a path one segment longer", []string{"PATCH /api/admin/groups/{id}"}, "PATCH", "/api/admin/groups/01ABC/members", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newRig(t)
@@ -46,10 +54,13 @@ func TestAPackageCallsOnlyTheMethodsItDeclares(t *testing.T) {
 			host := r.manager.hostFunc(&loaded{name: "demo", pkg: &arcx.Package{
 				Manifest: &arcx.Manifest{Permissions: []string{arcx.PermConsole}},
 			}})
-			raw := json.RawMessage(`{"method":"` + tc.method + `","path":"/api/admin/groups"}`)
+			raw, err := json.Marshal(map[string]string{"method": tc.method, "path": tc.path})
+			if err != nil {
+				t.Fatal(err)
+			}
 			var refused error
 			cmds[0].Run = func(ctx context.Context, rt *console.Runtime) error {
-				_, refused = host(&wasm.Call{Ctx: ctx, State: &callState{console: rt}}, "console.call", raw)
+				_, refused = host(&wasm.Call{Ctx: ctx, State: &callState{console: rt, endpoints: tc.endpoints}}, "console.call", raw)
 				return nil
 			}
 			if err := c.AddCommands("demo", cmds); err != nil {
@@ -66,13 +77,13 @@ func TestAPackageCallsOnlyTheMethodsItDeclares(t *testing.T) {
 				if refused != nil {
 					t.Fatalf("the call was refused: %v", refused)
 				}
-				if len(sent) != 1 || sent[0] != tc.method+" /api/admin/groups" {
+				if len(sent) != 1 || sent[0] != tc.method+" "+tc.path {
 					t.Errorf("the admin API was sent %v, want one %s", sent, tc.method)
 				}
 				return
 			}
 			if hostCode(refused) != "bad_argument" {
-				t.Fatalf("a %s from a read command: %v, want bad_argument", tc.method, refused)
+				t.Fatalf("%s %s: %v, want bad_argument", tc.method, tc.path, refused)
 			}
 			if len(sent) != 0 {
 				t.Errorf("the refused call still reached the admin API: %v", sent)

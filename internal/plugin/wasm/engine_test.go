@@ -36,6 +36,9 @@ func guest(t *testing.T) []byte {
 			guestErr = err
 			return
 		}
+		// The module is read into memory below, so the directory is not needed
+		// past this build; left behind, every run would leave one in the temp dir.
+		defer os.RemoveAll(dir)
 		out := filepath.Join(dir, "guest.wasm")
 		cmd := exec.Command("go", "build", "-buildmode=c-shared", "-o", out, "./testdata/guest")
 		cmd.Env = append(os.Environ(), "GOOS=wasip1", "GOARCH=wasm")

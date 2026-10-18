@@ -353,14 +353,14 @@ func (h *Handlers) installPackage(w http.ResponseWriter, r *http.Request) error 
 
 func translate(err error) error {
 	var setting *SettingError
-	var preflight *PreflightError
+	var refusal *PreflightError
 	switch {
 	case errors.As(err, &setting):
 		return httpx.BadRequestCode("plugin_setting_invalid", "Setting %q: %s", setting.Key, setting.Reason)
 	case errors.Is(err, arcx.ErrInvalid):
 		return httpx.BadRequestCode("invalid_package", "%s", strings.TrimPrefix(err.Error(), arcx.ErrInvalid.Error()+": "))
-	case errors.As(err, &preflight):
-		return httpx.BadRequestCode("plugin_cannot_install", "%s", preflight.Reason)
+	case errors.As(err, &refusal):
+		return httpx.BadRequestCode("plugin_cannot_install", "%s", refusal.Reason)
 	case errors.Is(err, ErrNameTaken):
 		return httpx.Conflict("plugin_name_taken", "A built-in plugin already has that name.")
 	case errors.Is(err, ErrUnchanged):

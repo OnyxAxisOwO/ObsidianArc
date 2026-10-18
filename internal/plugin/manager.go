@@ -379,6 +379,7 @@ func (m *Manager) Install(ctx context.Context, actor Actor, name string, opts In
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := time.Now().UnixMilli()
+	var rec record
 	err = m.db.Tx(ctx, func(tx *database.Tx) error {
 		current, err := m.lock(ctx, tx, name)
 		if err != nil {
@@ -395,11 +396,8 @@ func (m *Manager) Install(ctx context.Context, actor Actor, name string, opts In
 		if err := m.settings.WriteMany(ctx, tx, values); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx,
-			`UPDATE plugin_installs SET state = ?, version = ?, installed_at = ?, installed_by = ?,
-			 updated_at = ?, updated_by = ? WHERE name = ?`,
-			string(state), p.Manifest().Version, now, actor.ID, now, actor.ID, name); err != nil {
-			return fmt.Errorf("plugin: install %s: %w", name, err)
+		if rec, err = writeInstallRow(ctx, tx, name, state, p.Manifest().Version, now, actor.ID); err != nil {
+			return err
 		}
 		return m.audit(ctx, tx, actor, name, decision)
 	})
@@ -407,9 +405,22 @@ func (m *Manager) Install(ctx context.Context, actor Actor, name string, opts In
 		return err
 	}
 	m.settings.Remember(values)
-	m.set(name, record{State: state, Version: p.Manifest().Version,
-		InstalledAt: now, InstalledBy: actor.ID, UpdatedAt: now, UpdatedBy: actor.ID})
+	m.set(name, rec)
 	return nil
+}
+
+// writeInstallRow marks name installed in state, and is the record the manager
+// keeps for it once the transaction commits. A compiled-in plugin and a package
+// are installed through it both, so a column added to plugin_installs is written
+// by one statement rather than two that can fall out of step.
+func writeInstallRow(ctx context.Context, tx *database.Tx, name string, state State, version string, now int64, actorID string) (record, error) {
+	if _, err := tx.Exec(ctx,
+		`UPDATE plugin_installs SET state = ?, version = ?, installed_at = ?, installed_by = ?,
+		 updated_at = ?, updated_by = ? WHERE name = ?`,
+		string(state), version, now, actorID, now, actorID, name); err != nil {
+		return record{}, fmt.Errorf("plugin: install %s: %w", name, err)
+	}
+	return record{State: state, Version: version, InstalledAt: now, InstalledBy: actorID, UpdatedAt: now, UpdatedBy: actorID}, nil
 }
 
 // Enable switches an installed plugin on.
@@ -771,17 +782,31 @@ func (m *Manager) info(p Plugin, r record) Info {
 	return info
 }
 
-func (m *Manager) contributions(p Plugin) Contributions {
-	name := p.Name()
-	c := Contributions{Settings: []SettingInfo{}, Fields: []string{}, Guards: []string{},
+// newContributions is a Contributions with every list empty rather than nil,
+// so the backoffice reads [] for a plugin that brought nothing of a kind.
+func newContributions() Contributions {
+	return Contributions{Settings: []SettingInfo{}, Fields: []string{}, Guards: []string{},
 		CaptchaModes: []string{}, AdminRoutes: []RouteInfo{}, PublicRoutes: []string{},
 		Commands: []string{}, Migrations: []string{}}
+}
+
+// settingInfo is one setting as the backoffice lists it. A secret's default is
+// left out: it is a credential the plugin shipped, and the plugin list is not
+// where a credential is shown. A compiled-in plugin and a package both list
+// their settings through it, so the rule is written once.
+func settingInfo(key, def string, secret bool) SettingInfo {
+	info := SettingInfo{Key: key, Secret: secret}
+	if !secret {
+		info.Default = def
+	}
+	return info
+}
+
+func (m *Manager) contributions(p Plugin) Contributions {
+	name := p.Name()
+	c := newContributions()
 	for _, d := range settings.DefinitionsOf(name) {
-		info := SettingInfo{Key: d.Key, Secret: d.Secret}
-		if !d.Secret {
-			info.Default = d.Default
-		}
-		c.Settings = append(c.Settings, info)
+		c.Settings = append(c.Settings, settingInfo(d.Key, d.Default, d.Secret))
 	}
 	for _, f := range user.Fields() {
 		if f.Plugin == name {

@@ -370,13 +370,9 @@ func (m *Manager) InstallPackage(ctx context.Context, actor Actor, pkg *arcx.Pac
 			if opts.Enable {
 				state, decision = StateEnabled, "install_enable"
 			}
-			if _, err := tx.Exec(ctx,
-				`UPDATE plugin_installs SET state = ?, version = ?, installed_at = ?, installed_by = ?,
-				 updated_at = ?, updated_by = ? WHERE name = ?`,
-				string(state), version, now, actor.ID, now, actor.ID, name); err != nil {
-				return fmt.Errorf("plugin: install %s: %w", name, err)
+			if rec, err = writeInstallRow(ctx, tx, name, state, version, now, actor.ID); err != nil {
+				return err
 			}
-			rec = record{State: state, Version: version, InstalledAt: now, InstalledBy: actor.ID, UpdatedAt: now, UpdatedBy: actor.ID}
 		default:
 			if _, err := tx.Exec(ctx,
 				`UPDATE plugin_installs SET version = ?, updated_at = ?, updated_by = ? WHERE name = ?`,
@@ -387,6 +383,13 @@ func (m *Manager) InstallPackage(ctx context.Context, actor Actor, pkg *arcx.Pac
 			rec.Version, rec.UpdatedAt, rec.UpdatedBy = version, now, actor.ID
 		}
 
+		// From here until the transaction ends, a request to an update of an
+		// enabled package is already answered by the new version: its routes and
+		// guards are live while the rows that say so are not yet written. That is
+		// the price of attaching inside the transaction, which is what lets a seam
+		// that refuses roll the rows back; attaching after the transaction would
+		// leave a stored version with nothing attached when attaching fails. A
+		// transaction that fails afterwards is undone by restoreInstall.
 		m.swapPackages(func(p map[string]*loaded) { p[name] = nl })
 		attached = true
 		if old != nil {
@@ -422,8 +425,20 @@ func (m *Manager) InstallPackage(ctx context.Context, actor Actor, pkg *arcx.Pac
 // the new one holds, such as the single OAuth subject binding, and what only the
 // new version brought must not outlive the rollback. If the old one will not
 // attach, its guards are left as refusals rather than absent (see refusingGuards).
+//
+// When there is an old version its doors stay guarded throughout: the new
+// version's guards give way to refusals in one step, and the old version's
+// replace those in one step when it attaches. Clearing them first would let a
+// sign-up through unchecked while the old version's other seams go back on.
 func (m *Manager) restoreInstall(name string, old, nl *loaded) {
-	m.detach(nl)
+	if old == nil {
+		m.detach(nl)
+	} else {
+		if m.host != nil {
+			m.host.Auth.ReplaceGuards(name, refusingGuards(name, old.pkg.Manifest, nl.pkg.Manifest))
+		}
+		m.detachSeams(nl, true)
+	}
 	if old != nil {
 		m.swapPackages(func(p map[string]*loaded) { p[name] = old })
 		if err := m.attach(old); err != nil {
@@ -979,15 +994,11 @@ func (m *Manager) packageInfo(l *loaded, r record) Info {
 		SHA256:      l.pkg.SHA256, Size: len(l.pkg.Raw), Source: l.source,
 		HasUI: man.UI != nil, Fault: l.faulted(),
 	}
-	c := Contributions{Settings: []SettingInfo{}, Fields: []string{}, Guards: []string{},
-		CaptchaModes: append([]string{}, man.CaptchaModes...), AdminRoutes: []RouteInfo{}, PublicRoutes: []string{},
-		Commands: []string{}, Migrations: []string{}, Purges: l.pkg.HasPurge()}
+	c := newContributions()
+	c.CaptchaModes = append(c.CaptchaModes, man.CaptchaModes...)
+	c.Purges = l.pkg.HasPurge()
 	for _, s := range man.Settings {
-		item := SettingInfo{Key: s.Key, Secret: s.Secret}
-		if !s.Secret {
-			item.Default = s.Default
-		}
-		c.Settings = append(c.Settings, item)
+		c.Settings = append(c.Settings, settingInfo(s.Key, s.Default, s.Secret))
 	}
 	for _, f := range man.Fields {
 		c.Fields = append(c.Fields, f.Key)
