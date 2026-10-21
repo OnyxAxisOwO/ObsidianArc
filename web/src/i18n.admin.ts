@@ -1285,6 +1285,7 @@ export const enAdmin = {
   resetUptimeConfirm: 'Reset now?',
   resetUptimeHint: 'Resets system uptime duration and all model availability statistics, drops probe history, and re-enables auto-disabled models.',
   resetUptimeDone: 'Uptime and availability statistics have been reset.',
+  resetUptimeNotReenabled: 'These models are still switched off: {models}. A model stays off while its provider is; for any other, the server log has the cause.',
   modelHealthOverview: 'Model Health Overview',
   viewUptimePage: 'View Public Uptime Page',
   exportModels: 'Export',

@@ -123,11 +123,25 @@ async function resetUptime(): Promise<void> {
   flash.value = '';
   flashSuccess.value = '';
   try {
-    await adminApi.resetHealth();
+    const result = await adminApi.resetHealth();
     flashSuccess.value = t('resetUptimeDone');
     window.clearTimeout(flashSuccessTimer);
     flashSuccessTimer = window.setTimeout(() => { flashSuccess.value = ''; }, 3000);
+    // Names read before the reload: a model the reset could not reach is in
+    // the list either way, and a reload that fails must not lose them.
+    const names = new Map(models.value.map((m) => [m.model_id, m.name]));
     await reloadFigures();
+    // The reset itself succeeded, so this is not a failure of it; but a model
+    // it left off is something to act on, and the count alone never said
+    // which one. It stays on screen rather than flashing past with the
+    // success line.
+    const refused = result.models_not_reenabled ?? [];
+    if (refused.length > 0) {
+      const notice = t('resetUptimeNotReenabled', {
+        models: refused.map((id) => names.get(id) ?? id).join(', '),
+      });
+      flash.value = flash.value ? `${notice} ${flash.value}` : notice;
+    }
   } catch (failure) {
     flash.value = failureText(failure);
   } finally {

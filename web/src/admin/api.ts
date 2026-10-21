@@ -1227,7 +1227,13 @@ export const adminApi = {
   probeAllModels: (onProgress: (progress: ProbeProgress) => void, options?: { signal?: AbortSignal }) =>
     streamProbeAllModels(onProgress, options?.signal),
   resetHealth: () =>
-    api.post<{ reset_at: number; probes_cleared: number; models_reenabled: number }>(
+    api.post<{
+      reset_at: number;
+      probes_cleared: number;
+      models_reenabled: number;
+      /** Present only when the reset left a model off; absent when there was none. */
+      models_not_reenabled?: string[];
+    }>(
       '/api/admin/health/reset',
     ),
   resources: () => api.get<Resources>('/api/admin/resources'),

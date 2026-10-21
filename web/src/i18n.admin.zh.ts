@@ -1279,6 +1279,7 @@ export const zhAdmin: Record<AdminKey, string> = {
   resetUptimeConfirm: '确定重置？',
   resetUptimeHint: '重置系统运行时间计数器与所有模型的可用性统计数据，清除过往失败探测记录，并重新启用被自动禁用的模型。',
   resetUptimeDone: '系统运行时间与可用性统计已成功重置。',
+  resetUptimeNotReenabled: '以下模型仍处于关闭状态：{models}。服务商关闭时其模型保持关闭；其余情况的原因见服务器日志。',
   modelHealthOverview: '模型健康状态概览',
   viewUptimePage: '打开公开可用性页面',
   exportModels: '导出',
