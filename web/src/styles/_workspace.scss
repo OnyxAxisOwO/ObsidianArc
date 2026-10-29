@@ -271,27 +271,32 @@
 }
 
 /* The model popover is not an OaMenu, but it opens and closes the same way;
-   one declaration keeps the two from drifting apart in timing. */
+   one declaration keeps the two from drifting apart in timing. Blur and
+   scale share a curve so the menu comes into focus as it grows. */
 .oa-menu,
 .ai-model-pop {
   opacity: 0;
   transform: scale(0.12) translateZ(0);
+  filter: blur(12px);
   will-change: transform, opacity;
   backface-visibility: hidden;
   -webkit-backface-visibility: hidden;
   isolation: isolate;
   transition:
     opacity 0.12s cubic-bezier(0.4, 0, 1, 1),
-    transform 0.14s cubic-bezier(0.4, 0, 1, 1);
+    transform 0.14s cubic-bezier(0.4, 0, 1, 1),
+    filter 0.14s cubic-bezier(0.4, 0, 1, 1);
 }
 
 .oa-menu.open,
 .ai-model-pop.open {
   opacity: 1;
   transform: scale(1) translateZ(0);
+  filter: none;
   transition:
     opacity 0.18s var(--ai-ease-out),
-    transform 0.26s cubic-bezier(0.12, 0.9, 0.2, 1);
+    transform 0.26s cubic-bezier(0.12, 0.9, 0.2, 1),
+    filter 0.26s cubic-bezier(0.12, 0.9, 0.2, 1);
 }
 
 .oa-menu-left {
@@ -310,6 +315,7 @@
   .ai-model-pop.open {
     transition: none;
     transform: none;
+    filter: none;
   }
 }
 
