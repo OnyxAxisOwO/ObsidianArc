@@ -67,6 +67,34 @@ describe('OaMenu document listeners', () => {
     expect(menus[0]!.value!.isOpen()).toBe(false);
   });
 
+  it('keeps a drag that began inside open, but accepts a keyboard click outside', async () => {
+    const menus = await mountMenus(1);
+    menus[0]!.value!.open();
+    await nextTick();
+    const inside = document.querySelector<HTMLElement>('.oa-menu p')!;
+    const outside = document.querySelector<HTMLElement>('.outside')!;
+    inside.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    outside.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
+    expect(menus[0]!.value!.isOpen()).toBe(true);
+    outside.click();
+    expect(menus[0]!.value!.isOpen()).toBe(false);
+  });
+
+  it('removes outside listeners when closed or unmounted', async () => {
+    const added = vi.spyOn(window, 'addEventListener');
+    const removed = vi.spyOn(window, 'removeEventListener');
+    const menus = await mountMenus(1);
+    menus[0]!.value!.open();
+    await nextTick();
+    app!.unmount();
+    app = undefined;
+    for (const name of ['pointerdown', 'click']) {
+      const listeners = added.mock.calls.filter(([event]) => event === name);
+      expect(listeners).toHaveLength(1);
+      expect(removed.mock.calls).toContainEqual(listeners[0]);
+    }
+  });
+
   it('a second menu opened from its trigger closes the first', async () => {
     const menus = await mountMenus(2);
     document.querySelector<HTMLButtonElement>('.trigger-0')!.click();

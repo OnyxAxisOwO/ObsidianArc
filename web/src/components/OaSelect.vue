@@ -22,7 +22,7 @@
 // frame callback cannot outlive the trigger it was watching.
 
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
-import { useEventListener, useRafFn } from '@vueuse/core';
+import { useEventListener } from '@vueuse/core';
 import { placeList } from '@/lib/select-placement';
 import { t } from '@/composables/useI18n';
 import { Search } from 'lucide-vue-next';
@@ -164,7 +164,7 @@ async function openList(): Promise<void> {
   if (!open.value) return;
   settle();
   anchor = null;
-  follow.resume();
+  follow();
 
   // WebKit does not focus a button on click, and every key this control reads
   // arrives on the trigger. Without this the arrows, Enter and Escape are all
@@ -206,7 +206,7 @@ function close(): void {
   shown.value = false;
   typed = '';
   if (currentlyOpen === close) currentlyOpen = null;
-  follow.pause();
+  cancelAnimationFrame(followFrame);
   window.clearTimeout(hideTimer);
   hideTimer = window.setTimeout(() => {
     if (!open.value) mounted.value = false;
@@ -232,7 +232,12 @@ function choose(value: T): void {
  * This is scroll, resize, an animating panel and a torn-down screen in one
  * mechanism, rather than a listener for each and nothing at all for the last.
  */
-const follow = useRafFn(() => {
+// Only an open list needs a frame handle; no reactive clock is consumed.
+let followFrame = 0;
+function follow(): void {
+  if (!open.value) return;
+  followFrame = requestAnimationFrame(follow);
+
   const button = trigger.value;
   if (!button) return;
   if (!button.isConnected) {
@@ -253,7 +258,7 @@ const follow = useRafFn(() => {
   if (anchor?.width !== box.width) measure();
   anchor = { top: box.top, left: box.left, width: box.width };
   place();
-}, { immediate: false });
+}
 
 useEventListener(document, 'pointerdown', (event: Event) => {
   if (!open.value) return;
@@ -362,7 +367,7 @@ watch(rows, async () => {
 
 onBeforeUnmount(() => {
   window.clearTimeout(hideTimer);
-  follow.pause();
+  cancelAnimationFrame(followFrame);
   if (currentlyOpen === close) currentlyOpen = null;
 });
 

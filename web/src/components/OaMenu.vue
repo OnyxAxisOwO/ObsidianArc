@@ -13,7 +13,6 @@
 // holding a stale list.
 
 import { nextTick, onBeforeUnmount, ref } from 'vue';
-import { onClickOutside } from '@vueuse/core';
 
 const props = defineProps<{
   /** Extra class on the positioning wrapper, for alignment overrides. */
@@ -194,15 +193,28 @@ function onKey(event: KeyboardEvent): void {
 // that every key and click ran through for nothing. Attached from inside the
 // press that opens the menu, after the window's capture phase for that click
 // has run, so the opening click cannot count as one outside.
-let stopOutside: (() => void) | null = null;
+// The menu needs only composed-path containment. Keeping that small rule here
+// avoids shipping iframe, ignore-list and multi-root handling on every page.
+let pressedInside = false;
+function contains(event: Event): boolean {
+  return !!group.value && event.composedPath().includes(group.value);
+}
+function onPointer(event: Event): void {
+  pressedInside = contains(event);
+}
+function onOutside(event: MouseEvent): void {
+  if (!contains(event) && (event.detail === 0 || !pressedInside)) close();
+}
 function listen(on: boolean): void {
   if (on) {
+    pressedInside = false;
     document.addEventListener('keydown', onKey, true);
-    stopOutside ??= onClickOutside(group, () => close());
+    window.addEventListener('pointerdown', onPointer, true);
+    window.addEventListener('click', onOutside, true);
   } else {
     document.removeEventListener('keydown', onKey, true);
-    stopOutside?.();
-    stopOutside = null;
+    window.removeEventListener('pointerdown', onPointer, true);
+    window.removeEventListener('click', onOutside, true);
   }
 }
 

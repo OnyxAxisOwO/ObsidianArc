@@ -228,7 +228,7 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
 | Binary (SQLite + embedded SPA) | < 30 MB | 28.12 MB (24.42 MB `-tags nosqlite`, Linux amd64, Go 1.27.3), 0.41 MB of it the frontend's brotli copies and 0.41 MB the embedded zone database; this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 174.19 kB to open the chat with brotli (153.98 JS + 20.21 CSS); 207.61 kB with gzip (183.85 JS + 23.76 CSS), which the budget holds; the brotli is a copy compressed at build time, the gzip is Go's, made as it goes out |
+| Frontend, on the wire | < 135 kB | 173.47 kB to open the chat with brotli (153.30 JS + 20.17 CSS); 206.67 kB with gzip (182.96 JS + 23.71 CSS), which the budget holds; the brotli is a copy compressed at build time, the gzip is Go's, made as it goes out |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
 
@@ -236,12 +236,15 @@ Remeasured on 2026-10-29, after Rune was added below the backoffice overview.
 Its conversation, work-mode controls and geometric ASCII field stay in the
 existing backoffice chunk; all 18 core assets and the 208 kB build budget
 remain unchanged. The ordinary chat field now reads its geometry on resize
-instead of on every animation frame. First paint is 207.61 kB with Go's gzip
-(183.85 JS + 23.76 CSS), 174.19 kB with brotli (153.98 JS + 20.21 CSS).
-The backoffice adds 178.43 kB JS + 15.67 kB CSS with gzip; its Chinese adds
+instead of on every animation frame. Menu containment and select following
+use small native listeners and frame handles; the proof-of-work search is
+serialized once for both execution paths, so the bundler minifies both.
+Backoffice frame styles travel with the backoffice. First paint is 206.67 kB with Go's gzip
+(182.96 JS + 23.71 CSS), 173.47 kB with brotli (153.30 JS + 20.17 CSS).
+The backoffice adds 178.43 kB JS + 15.72 kB CSS with gzip; its Chinese adds
 38.24 kB. Linux amd64, Go 1.27.3, `-trimpath -ldflags '-s -w'` produces
-28,119,200 bytes (24,420,512 without SQLite); the brotli copies total
-413,371 bytes. These are the figures used in the current tables.
+28,115,104 bytes (24,416,416 without SQLite); the brotli copies total
+412,678 bytes. These are the figures used in the current tables.
 
 Rune uses a permission-filtered console catalogue and the existing command
 transport, so every operation reaches the same backoffice authorization,
@@ -968,10 +971,10 @@ What each reader actually downloads, as the server sends it (2026-10-29):
 
 | | gzip | brotli |
 | --- | --- | --- |
-| English, not an administrator | 207.61 kB | 174.19 kB |
-| Chinese, not an administrator | 228.38 kB | 191.47 kB |
-| …and a conversation containing a formula | 232.14 kB | 194.72 kB |
-| Chinese administrator, backoffice open | 460.72 kB | 379.97 kB |
+| English, not an administrator | 206.67 kB | 173.47 kB |
+| Chinese, not an administrator | 227.43 kB | 190.75 kB |
+| …and a conversation containing a formula | 231.19 kB | 194.00 kB |
+| Chinese administrator, backoffice open | 459.82 kB | 379.28 kB |
 | Anybody, once they open the terminal | +9.73 kB | +8.74 kB |
 | A visitor to an instance whose front door is the front page | +8.06 kB | +7.08 kB |
 | A signed-out visitor to an instance whose front door is the intro or trial | +3.74 kB | +3.25 kB |

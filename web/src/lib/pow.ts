@@ -79,12 +79,11 @@ function sha256(ascii: string): string {
   return result;
 }
 
-// Used only where Web Workers and Blobs do not exist at all (the jsdom tests).
-// It is deliberately not a fallback for a Worker that fails to start: a search
-// on the page's own thread would freeze the very screen it runs for.
-function solveDirectly(challenge: PoWChallenge): number {
+// This search is serialized alongside the hash for the Worker, so neither
+// function may close over module state. Tests call it directly without eval.
+function findNonce(challenge: PoWChallenge, hash: (text: string) => string): number {
   for (let n = 0; n <= challenge.maxNumber; n++) {
-    if (sha256(challenge.salt + n) === challenge.challenge) return n;
+    if (hash(challenge.salt + n) === challenge.challenge) return n;
   }
   return -1;
 }
@@ -125,7 +124,7 @@ export function solvePoW(challenge: PoWChallenge): PoWTask {
 
   const promise = new Promise<PoWSolution>((resolve, reject) => {
     if (typeof Worker === 'undefined' || typeof Blob === 'undefined') {
-      const nonce = solveDirectly(challenge);
+      const nonce = findNonce(challenge, sha256);
       if (nonce < 0) {
         reject(new Error('PoW challenge exhausted without solution'));
       } else {
@@ -135,21 +134,12 @@ export function solvePoW(challenge: PoWChallenge): PoWTask {
     }
 
     try {
-      const code = `
-        var sha256 = ${sha256.toString()};
-        self.onmessage = function(e) {
-          var c = e.data.challenge;
-          var s = e.data.salt;
-          var max = e.data.maxNumber;
-          for (var n = 0; n <= max; n++) {
-            if (sha256(s + n) === c) {
-              self.postMessage({ ok: true, nonce: n });
-              return;
-            }
-          }
-          self.postMessage({ ok: false, error: 'exhausted' });
-        };
-      `;
+      // Serializing both functions lets the bundler minify the search too,
+      // rather than shipping a second, unminified loop inside a string.
+      const code = `var sha256 = ${sha256.toString()}; self.onmessage = ({data}) => {
+        const nonce = (${findNonce.toString()})(data, sha256);
+        self.postMessage(nonce < 0 ? {ok: false, error: 'exhausted'} : {ok: true, nonce});
+      };`;
 
       const blob = new Blob([code], { type: 'application/javascript' });
       workerUrl = URL.createObjectURL(blob);
@@ -178,7 +168,7 @@ export function solvePoW(challenge: PoWChallenge): PoWTask {
       });
     } catch (failure) {
       // A Worker that will not start (a CSP that blocks it, say) is not solved
-      // on the page's own thread, for the reason solveDirectly gives, so the
+      // on the page's own thread, which would freeze the screen, so the
       // failure is reported as the solver's own error.
       cleanup();
       reject(new Error('PoW worker could not start', { cause: failure }));

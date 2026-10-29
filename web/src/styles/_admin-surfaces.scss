@@ -17,6 +17,51 @@
 
 @use 'mixins';
 
+/* The backoffice frame stays with its content; regular-account panels use
+   the shared surface primitives and never render either class. */
+.oa-admin {
+  /* The containing block for a full-screen panel. */
+  position: relative;
+  display: flex;
+  gap: 14px;
+  height: 100%;
+  min-height: 0;
+  /* Clips the side panel while it slides in and out, so the page never grows
+     a horizontal scrollbar mid-animation. `clip` rather than `hidden`, because
+     a hidden box is still a scroll container: focusing a field in a panel that
+     had not slid in yet made the browser scroll the whole row across to find
+     it, so the panel appeared to jump rather than arrive. */
+  overflow: clip;
+}
+
+.oa-admin-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  /* A record panel and a user panel open together are wider than what is
+     left of a laptop screen, and with nothing holding the page open it was
+     squeezed to a strip one character wide. It keeps this much, and the
+     panels give up the rest (see .oa-panel). */
+  min-width: 300px;
+  min-height: 0;
+  border-radius: 18px;
+  background: var(--ai-surface-container);
+  overflow: hidden;
+  isolation: isolate;
+}
+
+@media (max-width: 900px) {
+  .oa-admin {
+    flex-direction: column;
+  }
+
+  /* Panels are overlays here, so nothing in the row needs room kept for it,
+     and a phone is narrower than the minimum plus its gutters. */
+  .oa-admin-main {
+    min-width: 0;
+  }
+}
+
 /* --- rail ---------------------------------------------------------------- */
 
 .oa-admin-rail {
