@@ -366,6 +366,7 @@ watch(rows, async () => {
 });
 
 onBeforeUnmount(() => {
+  open.value = false;
   window.clearTimeout(hideTimer);
   cancelAnimationFrame(followFrame);
   if (currentlyOpen === close) currentlyOpen = null;

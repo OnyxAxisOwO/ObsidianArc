@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createApp, h, ref, type App } from 'vue';
 import OaSelect from '../src/components/OaSelect.vue';
 import OaSelectField from '../src/components/OaSelectField.vue';
@@ -20,6 +20,7 @@ beforeEach(() => {
 afterEach(() => {
   app?.unmount();
   app = null;
+  vi.restoreAllMocks();
   // The open list is module state, so a test that left one open would be read
   // by the next one as a list it opened itself.
   document.dispatchEvent(new PointerEvent('pointerdown'));
@@ -73,6 +74,18 @@ async function settle(): Promise<void> {
 }
 
 describe('the option list', () => {
+  it('does not start a frame loop when unmounted while opening', async () => {
+    const control = mount();
+    const frames = vi.spyOn(window, 'requestAnimationFrame');
+    control.trigger.click();
+    app!.unmount();
+    app = null;
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(frames).not.toHaveBeenCalled();
+    expect(list()).toBeNull();
+  });
+
   it('includes a search box by default in both standalone and field selectors', async () => {
     app = createApp({ render: () => h('div', [
       h(OaSelect, { choices: COLOURS, modelValue: 'red' }),
