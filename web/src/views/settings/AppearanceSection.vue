@@ -2,13 +2,15 @@
 import { computed, ref, watch } from 'vue';
 import { Palette } from 'lucide-vue-next';
 import OaSelectField from '@/components/OaSelectField.vue';
+import OaSwitchField from '@/components/OaSwitchField.vue';
+import { asciiFieldAllowed } from '@/chat/useChat';
 import { changeLanguage, currentLanguage, t, type Language } from '@/composables/useI18n';
 import { useTheme } from '@/composables/useTheme';
 import { IconAuto, IconCheck, IconMoon, IconSpark, IconSun } from '@/icons';
 import { ACCENTS, ACCENT_NAMES, accentPalette, baseAccent, normalizeHex, type AccentName } from '@/theme/color-utils';
 import { ACCENT_LABELS, BACKGROUND_TINTS } from '@/theme/accent-labels';
 import { backgroundAccent, setBackgroundAccent, setAccentPreference, type ThemeMode } from '@/theme/theme';
-import { persistTheme, syncPreferences } from '@/stores/session';
+import { currentPreferences, persistTheme, syncPreferences } from '@/stores/session';
 import WallpaperSection from './WallpaperSection.vue';
 
 const theme = useTheme();
@@ -44,6 +46,10 @@ function chooseBackground(value: AccentName | ''): void {
   // The palette also colours panels over a wallpaper, so neither choice replaces the other.
   syncPreferences({ background_accent: value });
 }
+// Its own switch rather than part of the enforced theme: it is motion, not
+// colour, and somebody who finds it distracting should be able to turn it off
+// whatever the instance's look is. Offered only while the instance draws it.
+const asciiField = ref(currentPreferences.value['ascii_field'] !== false);
 function onTheme(mode: ThemeMode): void { persistTheme(mode); }
 // Each language named in itself, so the list reads the same in either one
 // and needs nothing recomputed when the language changes.
@@ -122,6 +128,8 @@ async function onLanguage(next: Language): Promise<void> {
         </button>
       </div>
     </section>
+    <OaSwitchField v-if="asciiFieldAllowed" v-model="asciiField" :label="t('asciiField')" :hint="t('asciiFieldHint')"
+      @update:model-value="syncPreferences({ ascii_field: $event })" />
     <OaSelectField :model-value="currentLanguage()" :label="t('languageLabel')" :hint="t('languageHint')"
       :options="LANGUAGES" @update:model-value="onLanguage" />
     <p v-if="languageFlash" class="oa-field-hint" role="alert">{{ languageFlash }}</p>

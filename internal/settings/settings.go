@@ -52,6 +52,10 @@ const (
 	ThemeTranslucency   = "theme.surface_translucency"
 	ThemePanelBlur      = "theme.panel_blur"
 	ThemeEnforce        = "theme.enforce"
+	// The drifting characters behind an empty conversation. On by default, and
+	// each reader may still switch it off for themselves; off here is off for
+	// everyone, and the reader's own switch is not offered.
+	ThemeAsciiField = "theme.ascii_field"
 	// The About panel's heading and Markdown introduction. Empty is the normal
 	// state and means "use the instance name and the built-in introduction",
 	// so an operator who never opens this screen still gets a sensible page.
@@ -726,6 +730,7 @@ var Defaults = map[string]string{
 	ThemeTranslucency:     "20",
 	ThemePanelBlur:        "12",
 	ThemeEnforce:          "false",
+	ThemeAsciiField:       "true",
 	AboutTitle:            "",
 	AboutBody:             "",
 	AboutShowSoftwareInfo: "true",

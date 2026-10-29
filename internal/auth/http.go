@@ -242,6 +242,7 @@ func (h *Handlers) site(w http.ResponseWriter, r *http.Request) error {
 		"setup_required":              !populated,
 		"health_show_users":           h.settings.Bool(settings.HealthShowUsers),
 		"leaderboard_show_users":      h.settings.Bool(settings.LeaderboardShowUsers),
+		"ascii_field":                 h.settings.Bool(settings.ThemeAsciiField),
 		"allow_archive_conversations": allowArchive,
 		// So the sign-up form can mark the field required and say which
 		// addresses will be accepted, instead of finding out on submit.

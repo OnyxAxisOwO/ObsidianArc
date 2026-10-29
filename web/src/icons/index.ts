@@ -25,7 +25,8 @@
 import { h, render, type FunctionalComponent } from 'vue';
 import {
   Archive as LucideArchive, Check as LucideCheck, ChevronDown as LucideChevronDown,
-  Download as LucideDownload, Github as LucideGithub, MessageSquare as LucideMessageSquare,
+  Download as LucideDownload, Folder as LucideFolder, FolderOutput as LucideFolderOutput,
+  FolderPlus as LucideFolderPlus, Github as LucideGithub, MessageSquare as LucideMessageSquare,
   MoreVertical as LucideMoreVertical, Pencil as LucidePencil, Puzzle as LucidePuzzle,
   RefreshCw as LucideRefreshCw,
   Terminal as LucideTerminal, Trophy as LucideTrophy, createLucideIcon,
@@ -127,6 +128,11 @@ export const IconTrophy = wrap(LucideTrophy as unknown as AnyComponent);
 // So is the plugins screen, and a puzzle piece is what an extension is drawn
 // as everywhere else.
 export const IconPuzzle = wrap(LucidePuzzle as unknown as AnyComponent);
+// Folders are new as well: a project in the rail is drawn as one, and lucide's
+// folder, its folder with a plus and its folder with an arrow out are the set.
+export const IconFolder = wrap(LucideFolder as unknown as AnyComponent);
+export const IconFolderPlus = wrap(LucideFolderPlus as unknown as AnyComponent);
+export const IconFolderOutput = wrap(LucideFolderOutput as unknown as AnyComponent);
 // The two sign-in marks. GitHub's is lucide's own; Google has none, so its G
 // is drawn here as a single path in one colour rather than the four-colour
 // asset, which would be the only hardcoded hue in the interface.

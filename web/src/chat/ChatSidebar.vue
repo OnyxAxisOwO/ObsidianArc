@@ -1,5 +1,12 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+// The rail: one list, folders above and the loose conversations below. It
+// used to be two tabs, history and projects, and a conversation filed in a
+// project then appeared in both — once in the history, once under its
+// project — while nothing on either tab could move it from one to the other.
+// One list makes each conversation appear once, where it is filed, and the
+// filing a drag.
+
+import { computed, onMounted, ref, shallowRef, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import OaConfirmButton from '@/components/OaConfirmButton.vue';
 import OaIconButton from '@/components/OaIconButton.vue';
@@ -10,13 +17,13 @@ import { matchesSearch } from '@/lib/search';
 import { t } from '@/composables/useI18n';
 import { useLatestTimeout } from '@/composables/useLatestTimeout';
 import { usePanelHost } from '@/composables/usePanelHost';
-import { IconPlus, IconTrash } from '@/icons';
+import { IconFolderPlus, IconPlus, IconTrash } from '@/icons';
+import { loadProjects, projectList, projectMax } from '@/stores/projects';
 import ConversationRow from './ConversationRow.vue';
-import ProjectList from './ProjectList.vue';
 import {
   activeID, archiveConversation, canDelete, clearEverything,
-  conversations, openConversation, pendingID, RAIL_LIMIT, railFull, removeConversation, RISE_MS,
-  startNewConversation,
+  conversations, dropConversation, dropTarget, offerConversationDrop, openConversation, pendingID,
+  RAIL_LIMIT, railFull, removeConversation, RISE_MS, startNewConversation,
 } from './useChat';
 import { useRowMenu } from './useRowMenu';
 
@@ -24,13 +31,54 @@ import { useRowMenu } from './useRowMenu';
 // the handle writes the custom property on the row rather than a width here.
 const row = usePanelHost();
 
-// Which list the rail shows. Local and unpersisted: it is a view of the
-// rail, not a fact about the account, so it does not need to survive a
-// reload the way the pending project in workspace.ts does.
-const activeTab = ref<'history' | 'projects'>('history');
 const query = ref('');
+const searching = computed(() => query.value.trim() !== '');
+// A search is a find, not a look at the filing: its results come from every
+// folder at once, flat, so a conversation is found whichever folder it is in.
 const filteredConversations = computed(() => conversations.value.filter((entry) =>
   matchesSearch(query.value, entry.title || t('newChat'))));
+// The rail's list holds filed conversations too; they are drawn under their
+// folders, which read their own lists, so only the loose ones are drawn here.
+// refreshList reads the loose ones separately, so filed conversations filling
+// the newest of the list cannot crowd them out of it.
+const looseConversations = computed(() => conversations.value.filter((entry) => !entry.project_id));
+
+// The create form lives with the folders it adds to, and its button in the
+// head beside the new chat, where it can be reached whether or not any
+// folder exists yet.
+const creatingFolder = ref(false);
+
+// The folders are hidden while a search shows its flat results, and a form
+// opened inside them would be opened out of sight, with nowhere for focus to
+// land. Starting a folder is not a search, so it ends the one in progress.
+function toggleCreatingFolder(): void {
+  if (!creatingFolder.value) query.value = '';
+  creatingFolder.value = !creatingFolder.value;
+}
+// Folder management is needed only by accounts with folders, or when one is
+// being made. Load it alongside the list rather than on every first paint.
+const folderContent = shallowRef<typeof import('./ProjectList.vue')['default'] | null>(null);
+const folderLoading = ref(false);
+const folderFailed = ref(false);
+async function loadFolders(): Promise<void> {
+  if (folderContent.value || folderLoading.value) return;
+  folderLoading.value = true;
+  folderFailed.value = false;
+  try {
+    folderContent.value = (await import('./ProjectList.vue')).default;
+  } catch {
+    folderFailed.value = true;
+  } finally {
+    folderLoading.value = false;
+  }
+}
+onMounted(() => void loadProjects().catch(() => {}));
+watch(() => projectList.value.length > 0 || creatingFolder.value, (needed) => {
+  if (needed) void loadFolders();
+}, { immediate: true });
+
+const atFolderMax = computed(() => projectMax.value > 0 && projectList.value.length >= projectMax.value);
+const blank = computed(() => !conversations.value.length && !projectList.value.length && !creatingFolder.value);
 
 // The armed delete inside it is cleared with this list, so it is made here in
 // setup rather than by each row.
@@ -47,6 +95,24 @@ function cancelFileDrop(event: DragEvent): void {
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'none';
 }
 
+// A dragged row over the rail but off every place it could be dropped lights
+// nothing. The targets mark themselves on their own dragover, which reaches
+// them before it bubbles here.
+function onRailDragOver(event: DragEvent): void {
+  cancelFileDrop(event);
+  if (dropTarget.value === null) return;
+  const over = event.target as Element | null;
+  if (!over?.closest?.('.ai-drop-zone')) dropTarget.value = null;
+}
+
+// Leaving the rail altogether: a leave into one of its own children is only
+// the pointer crossing a row, and the next dragover says where it is.
+function onRailDragLeave(event: DragEvent): void {
+  const into = event.relatedTarget as Node | null;
+  if (into && (event.currentTarget as Node).contains(into)) return;
+  dropTarget.value = null;
+}
+
 // A short rise on the row that just became current, so switching reads as a
 // different conversation rather than the list quietly repainting.
 const switched = ref(false);
@@ -61,59 +127,63 @@ watch(activeID, () => {
 const route = useRoute();
 const router = useRouter();
 
+function returnToChat(): void {
+  if (route?.path === '/terminal') void router?.push('/');
+}
+
 function onSelectConversation(id: string): void {
   void openConversation(id);
-  if (route?.path === '/terminal') void router?.push('/');
+  returnToChat();
 }
 
 function onNewChat(): void {
   startNewConversation();
-  if (route?.path === '/terminal') void router?.push('/');
+  returnToChat();
 }
 </script>
 
 <template>
-  <div class="ai-chat-sidebar" @dragover="cancelFileDrop" @drop="cancelFileDrop">
+  <div class="ai-chat-sidebar" @dragover="onRailDragOver" @dragleave="onRailDragLeave" @drop="cancelFileDrop">
     <div class="ai-chat-sidebar-head">
-      <!-- Replaces the old static "History" label: the tab a reader is on
-           already says what the list below is, so the label and the switch
-           are one control instead of two that could disagree. -->
-      <div class="oa-slide-tabs" role="tablist">
-        <span
-          class="oa-slide-pill"
-          :class="{ second: activeTab === 'projects' }"
-          aria-hidden="true"
-        />
-        <button
-          type="button"
-          class="oa-slide-tab ai-sidebar-tab"
-          :class="{ active: activeTab === 'history' }"
-          role="tab"
-          :aria-selected="activeTab === 'history'"
-          @click="activeTab = 'history'"
-        >{{ t('tabHistory') }}</button>
-        <button
-          type="button"
-          class="oa-slide-tab ai-sidebar-tab"
-          :class="{ active: activeTab === 'projects' }"
-          role="tab"
-          :aria-selected="activeTab === 'projects'"
-          @click="activeTab = 'projects'"
-        >{{ t('tabProjects') }}</button>
+      <div class="ai-rail-head-row">
+        <button type="button" class="ai-chat-new ai-history-new-btn" @click="onNewChat">
+          <span class="ai-chat-new-mark"><IconPlus :size="13" /></span>
+          <span>{{ t('newChat') }}</span>
+        </button>
+        <OaIconButton
+          class="ai-rail-folder-btn"
+          :class="{ active: creatingFolder }"
+          :label="t('newProject')"
+          :disabled="atFolderMax && !creatingFolder"
+          :aria-pressed="creatingFolder ? 'true' : 'false'"
+          @click="toggleCreatingFolder"
+        ><IconFolderPlus :size="15" /></OaIconButton>
+      </div>
+      <div v-if="conversations.length" class="ai-history-search-row">
+        <OaSearchField v-model="query" class="oa-history-search" :label="t('searchHistory')" />
       </div>
     </div>
 
-    <template v-if="activeTab === 'history'">
-      <div class="ai-history-search-row">
-        <OaSearchField v-model="query" class="oa-history-search" :label="t('searchHistory')" />
-        <OaIconButton class="ai-history-new-btn" :label="t('newChat')" @click="onNewChat">
-          <IconPlus :size="16" />
-        </OaIconButton>
+    <OaScrollArea wrap-class="ai-chat-list-wrap" scroll-class="ai-chat-list">
+      <!-- Nothing yet is a moment, not an error: the matrix the wait for an
+           answer pulses with, at rest, and a line on what will fill this. -->
+      <div v-if="blank && !searching" class="ai-chat-list-blank">
+        <span class="ai-dots ai-dots-rest" aria-hidden="true"><i v-for="n in 15" :key="n" /></span>
+        <p class="ai-chat-list-blank-title">{{ t('noHistory') }}</p>
+        <p class="ai-chat-list-blank-body">{{ t('noHistoryHint') }}</p>
       </div>
 
-      <OaScrollArea wrap-class="ai-chat-list-wrap" scroll-class="ai-chat-list">
-        <p v-if="!conversations.length" class="ai-chat-list-empty">{{ t('noHistory') }}</p>
-        <p v-else-if="!filteredConversations.length" class="ai-chat-list-empty" role="status">{{ t('noSearchResults') }}</p>
+      <component
+        :is="folderContent"
+        v-if="folderContent"
+        v-model:creating="creatingFolder"
+        :searching="searching"
+        @navigate="returnToChat"
+      />
+      <button v-else-if="folderFailed" type="button" class="oa-btn" @click="loadFolders">{{ t('retry') }}</button>
+
+      <template v-if="searching">
+        <p v-if="!filteredConversations.length" class="ai-chat-list-empty" role="status">{{ t('noSearchResults') }}</p>
         <ConversationRow
           v-for="conversation in filteredConversations"
           :key="conversation.id"
@@ -126,28 +196,57 @@ function onNewChat(): void {
           @archive="archiveConversation(conversation)"
           @remove="removeConversation(conversation)"
         />
-        <!-- The search filters the rail, and a full rail is only the latest
+        <!-- The search filters the rail, and a full read is only the latest
              conversations; without this an older one reads as not existing. -->
-        <p v-if="railFull && query.trim()" class="ai-chat-list-empty" role="note">
+        <p v-if="railFull" class="ai-chat-list-empty" role="note">
           {{ t('searchRecentOnly', { count: RAIL_LIMIT }) }}
         </p>
-      </OaScrollArea>
+      </template>
 
-      <div class="ai-chat-sidebar-foot" :hidden="conversations.length === 0">
-        <OaConfirmButton
-          v-if="canDelete"
-          class="ai-chat-clear-all"
-          :armed-label="t('clearAllConfirm')"
-          :armed-title="t('confirmClearAll')"
-          @confirm="clearEverything"
-        >
-          <IconTrash :size="12" />
-          <span>{{ t('clearAll') }}</span>
-        </OaConfirmButton>
-      </div>
-    </template>
+      <!-- The loose conversations, and the place a filed one is dropped to
+           take it out of its folder. It runs to the foot of the list, so the
+           whole of the room under the folders takes the drop. -->
+      <section
+        v-else-if="!blank"
+        class="ai-rail-section ai-rail-loose ai-drop-zone"
+        :class="{ 'drop-target': dropTarget === '' }"
+        :aria-label="t('conversationsHeading')"
+        @dragover="offerConversationDrop($event, '')"
+        @drop="dropConversation($event, '')"
+      >
+        <!-- Only beside folders: over the one list there is, a heading says
+             nothing the list does not. -->
+        <div v-if="projectList.length" class="ai-rail-section-head">
+          <span>{{ t('conversationsHeading') }}</span>
+          <span class="ai-rail-count">{{ looseConversations.length }}</span>
+        </div>
+        <ConversationRow
+          v-for="conversation in looseConversations"
+          :key="conversation.id"
+          :conversation="conversation"
+          :menu="rowMenu"
+          :active="conversation.id === activeID"
+          :pending="conversation.id === pendingID"
+          :switched="conversation.id === activeID && switched"
+          @open="onSelectConversation(conversation.id)"
+          @archive="archiveConversation(conversation)"
+          @remove="removeConversation(conversation)"
+        />
+      </section>
+    </OaScrollArea>
 
-    <ProjectList v-else />
+    <div class="ai-chat-sidebar-foot" :hidden="conversations.length === 0">
+      <OaConfirmButton
+        v-if="canDelete"
+        class="ai-chat-clear-all"
+        :armed-label="t('clearAllConfirm')"
+        :armed-title="t('confirmClearAll')"
+        @confirm="clearEverything"
+      >
+        <IconTrash :size="12" />
+        <span>{{ t('clearAll') }}</span>
+      </OaConfirmButton>
+    </div>
 
     <OaResizer
       edge="right"

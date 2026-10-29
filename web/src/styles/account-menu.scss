@@ -1,0 +1,167 @@
+@use 'mixins' as *;
+
+/* Loaded with the account menu so unopened menus cost no first-paint styles. */
+.oa-acct-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 4px;
+  padding: 8px 4px 10px;
+  /* Quiet solid hairlines keep the groups distinct without the visual noise
+     of the former edge-to-edge dashes. */
+  border-bottom: 1px solid color-mix(in srgb, var(--ai-outline-variant) 45%, transparent);
+}
+
+.oa-acct-head .oa-avatar {
+  width: 32px;
+  height: 32px;
+  font-size: 12px;
+}
+
+.oa-acct-id {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.oa-acct-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  @include ellipsis;
+}
+
+/* An identifier, so it is set like the product's other figures. */
+.oa-acct-handle,
+.oa-acct-email {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  color: var(--ai-text-secondary);
+  @include ellipsis;
+}
+
+/* The address is often the longest thing in the menu. Contained inline, it
+   reports no width of its own, so the menu is as wide as its rows make it and
+   the address fills what the column has, ellipsized past that. */
+.oa-acct-email {
+  contain: inline-size;
+}
+
+/* The group and the role, right-aligned against the name and the handle on
+   the left: two short facts set as text, in the column the row would
+   otherwise leave empty. */
+.oa-acct-facts {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 1;
+  align-items: flex-end;
+  gap: 1px;
+  min-width: 0;
+  max-width: 45%;
+}
+
+.oa-acct-fact {
+  max-width: 100%;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--ai-text-secondary);
+  @include ellipsis;
+}
+
+/* Grows to its content and shrinks once the window is shorter than the
+   menu. `flex-basis: auto`, not `flex: 1`: a zero basis in a column with no
+   height of its own would let the list collapse to nothing. */
+.oa-acct-scroll-wrap {
+  position: relative;
+  display: flex;
+  flex: 0 1 auto;
+  min-height: 0;
+  /* Out into the panel's padding and back, so a focused row's ring is not
+     cut off at the scroller's edge while the rows stay where they were. */
+  margin: 0 -4px;
+}
+
+.oa-acct-scroll-wrap .oa-overlay-track {
+  top: 8px;
+  bottom: 8px;
+  right: 0;
+}
+
+.oa-acct-scroll {
+  flex: 1;
+  min-width: 0;
+  /* What is left of a short window once the header, the head and the foot
+     have theirs; the panel's old cap was 600px less the header. */
+  max-height: min(440px, calc(100vh - 240px));
+  padding: 0 4px;
+  overflow-y: auto;
+  scrollbar-width: none;
+  @include hidden-scrollbar;
+}
+
+.oa-acct-section {
+  display: flex;
+  flex-direction: column;
+  padding: 6px 4px;
+}
+
+.oa-acct-section + .oa-acct-section {
+  border-top: 1px solid color-mix(in srgb, var(--ai-outline-variant) 45%, transparent);
+}
+
+/* The section labels are the catalogue's: small, uppercase, quiet, and
+   indented to the row titles rather than to the icons, so the labels and
+   the words under them start on one line. */
+.oa-acct-label {
+  padding: 4px 8px 4px 31px;
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ai-text-secondary);
+  user-select: none;
+}
+
+.oa-acct-foot {
+  display: flex;
+  flex-direction: column;
+  /* A separate fill marks the fixed actions; matching the menu's outer
+     padding keeps their titles aligned with the scrolling rows above. */
+  margin: 4px -6px -6px;
+  padding: 6px 10px;
+  border-radius: 14px 14px 0 0;
+  background: var(--ai-surface-container-high);
+}
+
+/* Rows a little tighter than a menu's default: there are a dozen of them, and
+   the shared 8px padding made the account menu taller than most windows. */
+.oa-menu-account .oa-menu-item {
+  padding: 6px 8px;
+}
+
+.oa-menu-account .oa-menu-row {
+  gap: 9px;
+}
+
+/* One column of icons, all one muted grey: an icon is the row's index, and
+   the title beside it is what is read. Under the pointer it comes up with
+   the title, so the row changes in tone rather than in shape. */
+.oa-menu-account .oa-menu-row > svg {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  color: var(--ai-text-secondary);
+  transition: color 0.13s ease;
+}
+
+.oa-menu-account .oa-menu-item:hover .oa-menu-row > svg,
+.oa-menu-account .oa-menu-item:focus-visible .oa-menu-row > svg {
+  color: var(--ai-text);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .oa-menu-account .oa-menu-row > svg {
+    transition: none;
+  }
+}

@@ -347,9 +347,6 @@ async function save(): Promise<void> {
 
   const payload = modelPayload(form.value, trimmedOverride);
   if (creating.value) payload.provider_id = form.value.providerID;
-  // The avatar has no field in this form, so a copy would silently lose one
-  // that had been set through the API.
-  if (template.value) payload.avatar = template.value.avatar;
 
   if (many.value) {
     await createMany(payload);

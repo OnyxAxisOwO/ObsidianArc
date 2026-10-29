@@ -8,6 +8,14 @@ import { providePanelHost } from '../src/composables/usePanelHost';
 import { currentUser } from '../src/stores/session';
 import { t } from '../src/composables/useI18n';
 import * as chatModule from '../src/chat/useChat';
+import * as chatApi from '../src/api/chat';
+
+// The rail reads its folders as it mounts. Answered here, so that read never
+// reaches a fetch a test has stubbed to count its own requests.
+vi.mock('@/api/projects', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/api/projects')>()),
+  listProjects: vi.fn(async () => ({ projects: [], max: 0 })),
+}));
 
 let app: App | null = null;
 let host: HTMLElement;
@@ -17,6 +25,7 @@ beforeEach(() => {
   host = document.createElement('div');
   document.body.appendChild(host);
   chatModule.conversations.value = [];
+  chatModule.railFull.value = false;
   chatModule.activeID.value = '';
   // The menu brings a short list's row into view after its opening transition;
   // jsdom has no layout to scroll, and the timer would fire into a later test.
@@ -38,13 +47,17 @@ async function settle(): Promise<void> {
 
 describe('ChatSidebar new layout and 3-dots context menu', () => {
   // The rail holds the latest conversations only and its search filters what
-  // it holds, so a full rail says the search may be missing older ones.
+  // it holds, so a full read says the search may be missing older ones.
   for (const [count, shown] of [[chatModule.RAIL_LIMIT, true], [5, false]] as const) {
     it(`${shown ? 'says' : 'does not say'} the search covers only the latest conversations with ${count} listed`, async () => {
-      chatModule.conversations.value = Array.from({ length: count }, (_, index) => ({
+      const rows = Array.from({ length: count }, (_, index) => ({
         id: `c${index}`, title: `Chat ${index}`, model_id: 'm', pinned: false, message_count: 1,
         created_at: 0, updated_at: 0,
       }));
+      const list = vi.spyOn(chatApi, 'listConversations').mockImplementation(async () => ({ conversations: rows }));
+      await chatModule.refreshList();
+      list.mockRestore();
+      expect(chatModule.conversations.value).toHaveLength(count);
       app = createApp({
         setup() {
           providePanelHost(ref(host));
@@ -65,7 +78,7 @@ describe('ChatSidebar new layout and 3-dots context menu', () => {
     });
   }
 
-  it('renders a square new chat button beside the search field', () => {
+  it('opens the rail with a new chat row and a new folder beside it', () => {
     app = createApp({
       setup() {
         providePanelHost(ref(host));
@@ -74,12 +87,14 @@ describe('ChatSidebar new layout and 3-dots context menu', () => {
     });
     app.mount(host);
 
-    const searchRow = host.querySelector('.ai-history-search-row');
-    expect(searchRow).not.toBeNull();
-    const searchField = searchRow?.querySelector('.oa-history-search');
-    expect(searchField).not.toBeNull();
-    const newBtn = searchRow?.querySelector('.ai-history-new-btn');
-    expect(newBtn).not.toBeNull();
+    const newBtn = host.querySelector('.ai-history-new-btn');
+    expect(newBtn?.classList.contains('ai-chat-new')).toBe(true);
+    expect(newBtn?.parentElement?.querySelector('.ai-rail-folder-btn')).not.toBeNull();
+    // One list now: the tabs it replaced are gone.
+    expect(host.querySelector('[role="tablist"]')).toBeNull();
+    // Nothing to search in an empty history, so no field to search it with.
+    expect(host.querySelector('.ai-history-search-row')).toBeNull();
+    expect(host.querySelector('.ai-chat-list-blank')).not.toBeNull();
   });
 
   it('renders 3-dots more menu button on conversation item even when canDelete is false', async () => {

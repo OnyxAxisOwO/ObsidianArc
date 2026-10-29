@@ -55,7 +55,7 @@ const SEARCH_GROUPS = {
   ],
   secSiteTheme: [
     'secSiteTheme', 'siteThemeHint', 'siteThemeMode', 'siteThemeAccent', 'siteThemeTint', 'siteThemeEnforce',
-    'siteThemeEnforceHint',
+    'siteThemeEnforceHint', 'siteAsciiField', 'siteAsciiFieldHint',
   ],
   secAppBg: ['appBgTitle', 'appBgHint', 'dim', 'blur', 'panelTranslucency', 'panelBlur', 'bgHtmlEdit', 'bgHtmlTitle'],
   secPWA: [
@@ -223,6 +223,7 @@ const form = ref({
   themeTranslucency: 20,
   themePanelBlur: 12,
   themeEnforce: false,
+  asciiField: true,
 });
 
 const enabledModels = computed(() => models.value.filter((entry) => entry.enabled));
@@ -311,6 +312,7 @@ function collect(): Record<string, string> {
     'theme.surface_translucency': String(form.value.themeTranslucency),
     'theme.panel_blur': String(form.value.themePanelBlur),
     'theme.enforce': String(form.value.themeEnforce),
+    'theme.ascii_field': String(form.value.asciiField),
   };
 }
 
@@ -600,6 +602,7 @@ async function load(): Promise<void> {
       themeTranslucency: Number(values['theme.surface_translucency'] ?? 20),
       themePanelBlur: Number(values['theme.panel_blur'] ?? 12),
       themeEnforce: values['theme.enforce'] === 'true',
+      asciiField: values['theme.ascii_field'] !== 'false',
     };
     accept();
   } catch (failure) {
@@ -778,6 +781,7 @@ onMounted(load);
           </div>
         </OaRow>
         <OaSwitchField v-model="form.themeEnforce" :label="t('siteThemeEnforce')" :hint="t('siteThemeEnforceHint')" />
+        <OaSwitchField v-model="form.asciiField" :label="t('siteAsciiField')" :hint="t('siteAsciiFieldHint')" />
       </AdminControlCard>
       <AdminControlCard id="secAppBg" v-show="visible('secAppBg')" :title="t('appBgTitle')" :icon="IconImage" :hint="t('appBgHint')">
         <BackgroundStage

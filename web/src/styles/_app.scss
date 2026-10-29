@@ -501,20 +501,54 @@
 .oa-account-btn {
   position: relative;
   display: inline-flex;
+  flex-shrink: 0;
   align-items: center;
   gap: 7px;
-  max-width: 220px;
-  padding: 4px 10px 4px 5px;
-  border: 1px solid transparent;
+  box-sizing: border-box;
+  height: 32px;
+  max-width: 200px;
+  padding: 0 11px 0 4px;
+  border: none;
   border-radius: 999px;
-  background: transparent;
+  /* The utilities' fill, so the chip and the pill beside it read as one
+     group of controls at one height. */
+  background: var(--ai-surface-container);
   color: var(--ai-text);
+  font: inherit;
   font-size: 12.5px;
+  font-weight: 500;
   cursor: pointer;
+  transition: background-color 0.15s ease;
 }
 
 .oa-account-btn:hover {
-  background: var(--ai-state-hover);
+  background: var(--ai-surface-container-high);
+}
+
+/* It had no ring of its own, so a keyboard user saw the browser's outline
+   on the one control in the header that is not an .oa-icon-btn. */
+.oa-account-btn:focus-visible {
+  @include mixins.focus-ring;
+}
+
+/* 24px inside the 32px chip leaves the same 4px at the top, bottom and left,
+   which is what makes the avatar read as set into the chip rather than
+   floating in it. */
+.oa-account-btn .oa-avatar {
+  width: 24px;
+  height: 24px;
+  font-size: 10.5px;
+}
+
+$unread-dot: 7px;
+
+/* Clears the dot's footprint plus a 2px gap out of the element under it.
+   The half pixel between the two stops is the edge's anti-aliasing. */
+@mixin unread-cutout($x, $y) {
+  $r: $unread-dot * 0.5 + 2px;
+
+  -webkit-mask-image: radial-gradient(circle at $x $y, transparent $r, #000 $r + 0.5px);
+  mask-image: radial-gradient(circle at $x $y, transparent $r, #000 $r + 0.5px);
 }
 
 /* An answer is waiting on one of this account's reports. A dot rather than a
@@ -525,38 +559,60 @@
 .oa-account-dot,
 .oa-bell-dot {
   position: absolute;
-  width: 7px;
-  height: 7px;
+  width: $unread-dot;
+  height: $unread-dot;
   border-radius: 50%;
   background: var(--ai-danger);
 }
 
+/* The dot is set apart from the avatar or the glyph by a gap cut out of them
+   (unread-cutout above), not by a ring painted around the dot. A painted ring
+   has to name the fill beneath it, and the fill beneath it changes: the hover
+   fill, the frosted chip on a wallpaper. A hole shows whichever it is. */
 .oa-account-dot {
   top: 3px;
-  left: 26px;
+  left: 22px;
+}
+
+/* Avatar-relative: the chip's 4px inset puts the avatar's corner at (4, 4),
+   so the dot's centre (25.5, 6.5) in the chip is (21.5, 2.5) here. */
+.oa-account-btn.has-unread .oa-avatar {
+  @include unread-cutout(21.5px, 2.5px);
 }
 
 .oa-account-name {
   @include ellipsis;
 }
 
-/* The top-right account dropdown: longer and taller than a compact select
-   menu, with room for avatar, badges, and all eight navigation items without
-   prematurely forcing a scrollbar. */
+/* The brand goes at this width already (_workspace.scss); the name goes
+   with it, and the chip closes to the avatar in the same 4px it sits in. */
+@media (max-width: 480px) {
+  .oa-account-name {
+    display: none;
+  }
+
+  .oa-account-btn {
+    padding: 0 4px;
+  }
+}
+
+/* The top-right account dropdown. The panel itself does not scroll: the head
+   and the foot are fixed and only the sections between them do, inside an
+   OaScrollArea, so the panel gives up its own overflow and its height cap and
+   the scroller takes them. */
 .oa-menu-account {
-  min-width: 260px;
-  max-width: 360px;
-  max-height: min(600px, calc(100vh - 72px));
-  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  min-width: 248px;
+  max-width: 300px;
+  max-height: none;
+  overflow: hidden;
+  padding: 6px;
 }
 
-.oa-menu-account .oa-menu-head {
-  padding: 10px 12px 12px;
-  margin-bottom: 6px;
-}
-
-.oa-menu-account .oa-menu-item {
-  padding: 9px 12px;
+/* The trigger stays on the first paint; the menu rows load with its content. */
+@media (prefers-reduced-motion: reduce) {
+  .oa-account-btn { transition: none; }
 }
 
 .oa-menu-head {
@@ -565,12 +621,6 @@
   gap: 10px;
   padding: 8px 10px 10px;
   margin-bottom: 4px;
-}
-
-.oa-menu-head-text {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
 }
 
 .oa-menu-head-name {
@@ -877,9 +927,18 @@ body.oa-resizing * {
   position: relative;
 }
 
+/* From the button's centre rather than its edge, because the glyph is
+   centred: the hole below is in the glyph's own coordinates, and an
+   edge-anchored dot would drift off it in a button of another size. */
 .oa-bell-dot {
-  top: 6px;
-  right: 6px;
+  top: calc(50% - 10px);
+  left: calc(50% + 3px);
+}
+
+/* The 16px glyph's corner is 8px left of and above the centre, so the dot's
+   centre (+6.5, -6.5) from there is (14.5, 1.5) on the glyph. */
+.oa-bell.has-unread > svg {
+  @include unread-cutout(14.5px, 1.5px);
 }
 
 .oa-menu-announce {

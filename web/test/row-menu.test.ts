@@ -62,7 +62,7 @@ describe('the conversation row menu', () => {
   // A project's conversations sit inside two overflow-hidden boxes for the
   // open/close slide, which cut the menu down to a few pixels.
   it('lifts the project list clips while a row menu is mounted inside it', () => {
-    const scss = fs.readFileSync(path.resolve(__dirname, '../src/styles/_chat.scss'), 'utf8');
+    const scss = fs.readFileSync(path.resolve(__dirname, '../src/styles/folders.scss'), 'utf8');
     const rule = /\.ai-project-convs-collapse\.open:has\(\.ai-chat-context-menu\),\s*\.ai-project-convs-collapse\.open:has\(\.ai-chat-context-menu\) > \.ai-project-convs-inner \{([^}]*)\}/
       .exec(scss)?.[1] ?? '';
     expect(rule).toMatch(/overflow:\s*visible/);

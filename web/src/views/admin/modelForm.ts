@@ -12,6 +12,8 @@ export interface ModelForm {
   systemPrompt: string;
   displayName: string;
   description: string;
+  /** `mark:<id>`, `mark:none`, an inline image, a same-site path, or empty for a guess. */
+  avatar: string;
   enabled: boolean;
   hidden: boolean;
   sortOrder: number | null;
@@ -76,6 +78,7 @@ export function formFromModel(
     systemPrompt: source?.system_prompt ?? '',
     displayName: source?.display_name ?? '',
     description: source?.description ?? '',
+    avatar: source?.avatar ?? '',
     enabled: source?.enabled ?? true,
     hidden: source?.hidden ?? false,
     sortOrder: source?.sort_order ?? 0,
@@ -115,8 +118,7 @@ export function isOverrideObject(text: string): boolean {
 /**
  * The body a save sends, from the form. A blank override is sent as `{}`
  * rather than omitted, so clearing the field clears the stored one. The
- * provider and the avatar are the caller's to add: only a new model names its
- * provider, and only a copy carries an avatar this form has no field for.
+ * provider is the caller's to add: only a new model names its provider.
  */
 export function modelPayload(form: ModelForm, trimmedOverride: string): AdminModelInput {
   return {
@@ -129,6 +131,7 @@ export function modelPayload(form: ModelForm, trimmedOverride: string): AdminMod
     system_prompt: form.systemPrompt.trim(),
     display_name: form.displayName.trim(),
     description: form.description.trim(),
+    avatar: form.avatar.trim(),
     enabled: form.enabled,
     hidden: form.hidden,
     sort_order: form.sortOrder ?? 0,

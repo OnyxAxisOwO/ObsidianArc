@@ -386,6 +386,7 @@ describe('the leaderboard entry in the account menu', () => {
     app.mount(host);
     await nextTick();
     host.querySelector<HTMLButtonElement>('.oa-account-btn')!.click();
+    await vi.waitFor(() => expect(host.querySelector('.oa-acct-head')).not.toBeNull());
     await nextTick();
     return document.body.textContent ?? '';
   }

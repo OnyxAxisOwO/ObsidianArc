@@ -26,6 +26,7 @@ import { IconCheck, IconCopy } from '@/icons';
 import { maskProvider } from '@/admin/safeMode';
 import AdminControlCard from './AdminControlCard.vue';
 import AdminDetectModels, { type DetectedModel } from './AdminDetectModels.vue';
+import ModelIconField from './ModelIconField.vue';
 import ReasoningTiers from './ReasoningTiers.vue';
 import { reasoningLabel } from './reasoning-labels';
 import { useAdminView } from './adminView';
@@ -190,6 +191,7 @@ defineExpose({
           :max-length="80"
         />
       </template>
+      <ModelIconField v-model="form.avatar" :name="form.displayName || form.modelID" />
       <OaTextArea
         v-model="form.description"
         :label="t('description')"

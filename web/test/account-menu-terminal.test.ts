@@ -32,6 +32,7 @@ async function openMenu(account: Account): Promise<HTMLElement> {
   app.mount(host);
   await nextTick();
   host.querySelector<HTMLButtonElement>('.oa-account-btn')!.click();
+  await vi.waitFor(() => expect(host.querySelector('.oa-acct-head')).not.toBeNull());
   await nextTick();
   return document.body;
 }

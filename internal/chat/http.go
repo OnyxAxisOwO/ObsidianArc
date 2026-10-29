@@ -565,9 +565,14 @@ func (h *Handlers) updateConversation(w http.ResponseWriter, r *http.Request) er
 		Title    *string `json:"title"`
 		Pinned   *bool   `json:"pinned"`
 		Archived *bool   `json:"archived"`
+		// Files it under a project, or takes it out of one with "".
+		ProjectID *string `json:"project_id"`
 	}
 	if err := httpx.DecodeJSON(w, r, &body, 8*1024); err != nil {
 		return err
+	}
+	if body.ProjectID != nil && *body.ProjectID != "" && !id.Valid(*body.ProjectID) {
+		return httpx.BadRequest("Malformed project id.")
 	}
 
 	if body.Archived != nil && *body.Archived {
@@ -577,7 +582,7 @@ func (h *Handlers) updateConversation(w http.ResponseWriter, r *http.Request) er
 	}
 
 	record, err := h.conversations.Update(r.Context(), account.ID, conversationID,
-		conversation.Update{Title: body.Title, Pinned: body.Pinned, Archived: body.Archived})
+		conversation.Update{Title: body.Title, Pinned: body.Pinned, Archived: body.Archived, ProjectID: body.ProjectID})
 	if err != nil {
 		return translateConversationError(err)
 	}
@@ -821,6 +826,8 @@ func translateConversationError(err error) error {
 		return httpx.NotFound("No such conversation.")
 	case errors.Is(err, conversation.ErrMessageNotFound):
 		return httpx.NotFound("No such message.")
+	case errors.Is(err, conversation.ErrProjectNotFound):
+		return httpx.NotFound("No such project.")
 	case errors.Is(err, conversation.ErrTitleTooLong):
 		return httpx.BadRequest("Title must be %d characters or fewer.", conversation.MaxTitleChars)
 	default:

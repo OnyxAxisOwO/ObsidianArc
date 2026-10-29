@@ -69,6 +69,46 @@ describe('ModelControl effort drag', () => {
     expect(setReasoning).toHaveBeenCalledWith({ enabled: true, effort: 'medium' });
   });
 
+  it('slides old and new labels together, without restarting within a stop', async () => {
+    app = createApp(ModelControl);
+    app.mount(host);
+    const range = await openSlider();
+    const holder = host.querySelector('.ai-pop-effort-label')!;
+    const initial = holder.firstElementChild!;
+    const current = () => [...holder.children].find((node) => node.textContent === range.getAttribute('aria-valuetext'))!;
+    range.dispatchEvent(new Event('pointerdown'));
+    range.value = '1';
+    range.dispatchEvent(new Event('input'));
+    await nextTick();
+    const first = current();
+    expect(first).not.toBe(initial);
+    expect(initial.isConnected).toBe(true);
+    expect(initial.classList.contains('ai-effort-up-leave-active')).toBe(true);
+    expect(first.classList.contains('ai-effort-up-enter-active')).toBe(true);
+    expect(host.querySelector('.ai-pop-effort-label')).toBe(holder);
+
+    range.value = '1.2';
+    range.dispatchEvent(new Event('input'));
+    await nextTick();
+    expect(current()).toBe(first);
+
+    range.value = '2';
+    range.dispatchEvent(new Event('input'));
+    await nextTick();
+    expect(current()).not.toBe(first);
+    expect(first.isConnected).toBe(true);
+    expect(setReasoning).not.toHaveBeenCalled();
+
+    range.value = '1';
+    range.dispatchEvent(new Event('input'));
+    await nextTick();
+    expect(current().classList.contains('ai-effort-down-enter-active')).toBe(true);
+    await vi.waitFor(() => expect(holder.children).toHaveLength(1));
+    expect(holder.textContent).toBe(range.getAttribute('aria-valuetext'));
+    window.dispatchEvent(new Event('pointerup'));
+    expect(setReasoning).toHaveBeenCalledTimes(1);
+  });
+
   it('does not commit a drag the component was unmounted during', async () => {
     app = createApp(ModelControl);
     app.mount(host);

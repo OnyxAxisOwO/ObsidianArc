@@ -98,6 +98,9 @@ export interface SiteInfo {
   health_show_users?: boolean;
   /** Whether readers may open the leaderboard. Absent on an older server. */
   leaderboard_show_users?: boolean;
+  /** Whether the instance draws the background behind an empty conversation.
+   *  Absent on an older server, which never drew one. */
+  ascii_field?: boolean;
   allow_archive_conversations?: boolean;
   // True while the instance has no accounts at all: the first person to
   // register becomes the administrator.

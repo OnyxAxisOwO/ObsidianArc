@@ -227,10 +227,37 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 27.98 MB (24.28 MB `-tags nosqlite`, Linux amd64, Go 1.27.2), 0.39 MB of it the frontend's brotli copies and 0.41 MB the embedded zone database; this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 169.11 kB to open the chat with brotli (149.65 JS + 19.46 CSS); 201.41 kB with gzip (178.60 JS + 22.81 CSS), which the budget holds; the brotli is a copy compressed at build time, the gzip is Go's, made as it goes out |
+| Binary (SQLite + embedded SPA) | < 30 MB | 28.06 MB (24.36 MB `-tags nosqlite`, Linux amd64, Go 1.27.3), 0.41 MB of it the frontend's brotli copies and 0.41 MB the embedded zone database; this repository ships no plugin |
+| Frontend, on the wire | < 135 kB | 174.17 kB to open the chat with brotli (153.96 JS + 20.21 CSS); 207.60 kB with gzip (183.84 JS + 23.76 CSS), which the budget holds; the brotli is a copy compressed at build time, the gzip is Go's, made as it goes out |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-10-29, after the history and folders became one rail
+with drag and menu filing, and the header and account menu were regrouped.
+The account menu's content and styles load on first open; the folder list's
+content and styles load only for an account with folders or when starting
+one. The triggers, loose rows and shared rename form remain on the entry.
+The two deliberate splits keep the existing 208 kB build budget: the entry
+is 207.60 kB with Go's gzip (183.84 JS + 23.76 CSS), 174.17 kB with brotli
+(153.96 JS + 20.21 CSS). An account with folders also fetches 3.75 / 3.30 kB
+(gzip / brotli); opening the account menu adds 2.52 / 2.15 kB. This is
+18 core assets, each optional component owning its script and stylesheet.
+The Linux amd64 binary, Go 1.27.3, `-trimpath -ldflags '-s -w'`, is
+28,057,760 bytes (24,359,072 without SQLite); its brotli copies total about
+0.41 MB. The current tables above and below use this build.
+
+Remeasured on 2026-10-28 (UTC), after the empty conversation gained a field
+of drifting characters behind it (with a switch for the instance and one
+for each reader), the wait for a first token a dot-matrix pill, the model
+list a search field, keyboard, tiles and an effort meter, and the rail a new
+head and empty state:
+206.66 kB with gzip (183.17 JS + 23.49 CSS) and 173.44 kB with brotli
+(153.40 JS + 20.04 CSS), 5.25 and 4.33 kB more than below. Both are on the
+first paint because the empty conversation is what the chat opens on, and
+they took the bundle test's gzip budget from 204 kB to 208 kB, raised on
+purpose and said so in the test. The vendors' model marks are a chunk of
+their own, 6.51 kB gzipped, fetched the first time a model tile is drawn;
+the other lazy chunks are unchanged.
 
 Remeasured on 2026-10-19 (UTC), after the build stopped writing gzip copies.
 Node's zlib picks its matching code by CPU: the same first paint gzipped at
@@ -297,7 +324,7 @@ build's estimate is 206.43 kB, 0.57 kB under the bundle test's 207 kB. The
 backoffice's refusals now carry codes, and their sentences, in both
 languages, travel with the backoffice and the Chinese dictionary rather than
 the entry: backoffice 173.67 kB plus 15.24 kB of stylesheet, Chinese
-dictionary 54.04 kB. The binary is 27.16 MB (23.46 MB without SQLite), built
+dictionary 54.04 kB. The binary is 27.16 MB (23.49 MB without SQLite), built
 the same way as below.
 
 Remeasured on 2026-10-18 (UTC), after the review fixes: the Options API branch
@@ -341,7 +368,7 @@ transcript's list no longer renders again on every streamed frame and
 switching conversations redraws only the two rows that changed. Inline
 emphasis remembers a marker that has no closing instead of scanning for one
 again from every later opener. 205.82 kB to open the chat (179.41 JS + 26.41
-CSS), up 0.16 kB; the build's estimate is 206.59 kB, 0.41 kB under the bundle
+CSS), up 0.16 kB; the build's estimate is 206.66 kB, 0.41 kB under the bundle
 test's 207 kB. The backoffice is 167.26 kB plus 15.24 kB of stylesheet, the
 public front page 4.13 kB and the terminal 8.04 kB; the other lazy chunks are
 unchanged.
@@ -906,23 +933,30 @@ is whether this project's own code grows, not whether the framework does. It
 moved from 130 to 135 kB when the measured bundle reached 131.05 kB rather
 than leaving a target the shipped usage controls no longer met.
 
-The seven pieces most people never need are split off: the administration
+The pieces fetched only when needed are split off: the administration
 backoffice (with its own English and its own stylesheet), the terminal (with
 its stylesheet), the Chinese dictionary, the backoffice's Chinese, the LaTeX
 renderer, the public front
 page, and the landing page (the intro or trial a signed-out visitor sees on an
-instance that chose one), each of those last two with its stylesheet.
-What each reader actually downloads, as the server sends it (2026-10-19):
+instance that chose one), each of those last two with its stylesheet. The vendors' model marks, the
+account menu's content and stylesheet, and the folder list's content and
+stylesheet are optional chunks too.
+What each reader actually downloads, as the server sends it (2026-10-29):
 
 | | gzip | brotli |
 | --- | --- | --- |
-| English, not an administrator | 201.41 kB | 169.11 kB |
-| Chinese, not an administrator | 221.76 kB | 186.03 kB |
-| …and a conversation containing a formula | 225.53 kB | 189.29 kB |
-| Chinese administrator, backoffice open | 444.88 kB | 367.36 kB |
-| Anybody, once they open the terminal | +9.73 kB | +8.75 kB |
+| English, not an administrator | 207.60 kB | 174.17 kB |
+| Chinese, not an administrator | 228.37 kB | 191.44 kB |
+| …and a conversation containing a formula | 232.13 kB | 194.69 kB |
+| Chinese administrator, backoffice open | 453.43 kB | 374.10 kB |
+| Anybody, once they open the terminal | +9.73 kB | +8.74 kB |
 | A visitor to an instance whose front door is the front page | +8.06 kB | +7.08 kB |
 | A signed-out visitor to an instance whose front door is the intro or trial | +3.74 kB | +3.25 kB |
+
+The baseline excludes the optional account menu, folder list and model marks.
+Accounts with folders fetch the folder chunk after the list is read, and the
+menu chunk is added if an administrator enters the backoffice through it.
+Opening model tiles adds 6.27 kB gzip / 5.63 kB brotli of vendor marks.
 
 Route-level splitting would shave the first paint further and is deliberately
 switched off for everything but the backoffice and the terminal: /settings, /keys, /usage and

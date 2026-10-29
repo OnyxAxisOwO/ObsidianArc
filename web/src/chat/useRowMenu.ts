@@ -7,9 +7,11 @@
 import { ref } from 'vue';
 import { useArmedItem } from './useArmedItem';
 
-// Roughly three rows and their padding; the menu is measured against the list
-// it hangs in, not the window, because that list clips it.
-const MENU_HEIGHT = 124;
+// Roughly four rows and their padding — rename, move to a folder, archive,
+// delete; the menu is measured against the list it hangs in, not the window,
+// because that list clips it. The folders it can unfold are not counted: they
+// are asked for after it has opened, and it brings itself into view then.
+const MENU_HEIGHT = 164;
 
 /**
  * Must be called during setup: the armed delete's timer is cleared when the

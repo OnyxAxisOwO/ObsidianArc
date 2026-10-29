@@ -274,3 +274,49 @@
     filter: blur(5px);
   }
 }
+
+/* The model's mark, chosen from tiles that are the picker's own: the preview
+   is the thing a reader will see, at the size they will see it. */
+.oa-model-icon-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.oa-model-icon-choice {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 10px 4px 8px;
+  border: none;
+  border-radius: 12px;
+  background: var(--ai-surface-container-low);
+  color: var(--ai-text-secondary);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.13s ease, color 0.13s ease;
+
+  > span:last-child {
+    max-width: 100%;
+    @include ellipsis;
+  }
+
+  &:hover {
+    background: var(--ai-state-hover);
+    color: var(--ai-text);
+  }
+
+  &.active {
+    background: var(--ai-surface-container-high);
+    color: var(--ai-text);
+    box-shadow: inset 0 0 0 1.5px var(--ai-text);
+  }
+
+  &:focus-visible {
+    @include focus-ring;
+  }
+}

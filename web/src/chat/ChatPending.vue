@@ -52,6 +52,14 @@ watch(statsWanted, (wanted) => {
   timer = window.setInterval(tick, 100);
 }, { immediate: true });
 
+/**
+ * A 3×3 matrix lit by a wave running from one corner to the other, so the
+ * delay is the cell's distance along that diagonal.
+ */
+function dotDelay(i: number): string {
+  return `${((i % 3) + Math.floor(i / 3)) * 0.12}s`;
+}
+
 onBeforeUnmount(() => {
   if (timer) window.clearInterval(timer);
 });
@@ -68,8 +76,10 @@ onBeforeUnmount(() => {
     />
     <!-- Still nothing to read, whether or not it is thinking out loud. -->
     <div v-else class="ai-chat-pending">
-      <span class="ai-chat-spinner" />
-      <span>{{ t('thinking') }}</span>
+      <span class="ai-dots" aria-hidden="true">
+        <i v-for="n in 9" :key="n" :style="{ '--d': dotDelay(n - 1) }" />
+      </span>
+      <span class="ai-shimmer">{{ t('thinking') }}</span>
     </div>
 
     <!-- Under the answer, and under the spinner before there is one: the clock

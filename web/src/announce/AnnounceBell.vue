@@ -164,12 +164,13 @@ onMounted(() => void refresh());
     <template #trigger="{ open, toggle }">
       <OaIconButton
         class="oa-icon-btn oa-bell"
+        :class="{ 'has-unread': totalUnread > 0 }"
         :label="label"
         aria-haspopup="menu"
         :aria-expanded="open ? 'true' : 'false'"
         @click="onTrigger(open); toggle()"
       >
-        <IconBell :size="17" />
+        <IconBell :size="16" />
         <span v-if="totalUnread > 0" class="oa-bell-dot" />
       </OaIconButton>
     </template>

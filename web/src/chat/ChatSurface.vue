@@ -13,13 +13,14 @@ import OaScrollArea from '@/components/OaScrollArea.vue';
 import { t, type StringKey } from '@/composables/useI18n';
 import { useLatestTimeout } from '@/composables/useLatestTimeout';
 import { IconMenu, IconPlus } from '@/icons';
+import AsciiField from './AsciiField.vue';
 import ChatComposer from './ChatComposer.vue';
 import ChatChallenge from './ChatChallenge.vue';
 import ChatMessage from './ChatMessage.vue';
 import ChatPending from './ChatPending.vue';
 import ChatSidebar from './ChatSidebar.vue';
 import {
-  active, addImages, addTextFiles, busy, chatChallenge, dragging, draft, flash, historyOpen, isEmpty, justSentID,
+  active, addImages, addTextFiles, asciiFieldWanted, busy, chatChallenge, dragging, draft, flash, historyOpen, isEmpty, justSentID,
   messages, RISE_MS, scrollTick, showPending, startNewConversation, status, submit, suggestions, switchTick,
 } from './useChat';
 import {
@@ -234,6 +235,7 @@ defineExpose({ focus: () => composer.value?.focus() });
     @dragleave="onDragLeave"
     @drop="onDrop"
   >
+    <AsciiField v-if="isEmpty && asciiFieldWanted" />
     <!-- The wide skin hides this bar in favour of the workspace header; it is
          the navigation on a narrow screen, where the rail is an overlay. -->
     <div class="ai-chat-bar">

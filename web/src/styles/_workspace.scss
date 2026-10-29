@@ -57,6 +57,84 @@
   flex: 1;
 }
 
+/* Every control in the header is one size. The shared .oa-icon-btn is 34px,
+   which is right in a panel head; up here it stood beside a 30px account
+   chip, and the row read as things of different heights that happened to
+   share a line. Only the header's own controls are named, by the slot they
+   sit in: a selector reaching every .oa-icon-btn under .oa-header would also
+   reach into the dropdowns that hang from it. */
+.oa-header-leading > .oa-icon-btn,
+.oa-header-slot > .oa-icon-btn,
+.oa-header-slot > .oa-chip-group > .oa-icon-btn,
+.oa-header-tools > .oa-icon-btn,
+.oa-header-tools > .oa-chip-group > .oa-icon-btn {
+  width: 32px;
+  height: 32px;
+
+  /* One glyph size too. The rail toggle, the bell and the theme were drawn
+     at 17px and the image lab and the back chevron at 16, and side by side
+     that pixel showed. */
+  > svg {
+    width: 16px;
+    height: 16px;
+  }
+}
+
+/* The utilities share one fill instead of each being a loose circle. No
+   padding and no gap: a 32px button in a 32px pill lights up as exactly the
+   pill's end cap, so hovering the first or last one draws no shape the pill
+   does not already have. */
+.oa-header-tools {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  border-radius: 999px;
+  background: var(--ai-surface-container);
+}
+
+/* Vue leaves a comment where a v-if renders nothing, and :empty ignores
+   comments, so a pill whose every control is switched off disappears. */
+.oa-header-tools:empty {
+  display: none;
+}
+
+/* Positioned so they paint over the frosted layer below, which is
+   positioned itself. */
+.oa-header-tools > * {
+  position: relative;
+}
+
+/* On a wallpaper the pill is the material, not each control in it: the
+   wallpaper rule in _base.scss frosts every header .oa-icon-btn, and inside
+   the pill that drew three blurred discs on a blurred pill. This comes before
+   the shared hover rule below and matches it in weight, so a button still
+   lights up under the pointer.
+
+   The blur sits on a pseudo-element rather than on the pill: backdrop-filter
+   makes its element a stacking context, and the bell's dropdown, which hangs
+   inside the pill, would then be stacked inside it — under the chat beside
+   it — instead of above the page as every other menu is. */
+.has-wallpaper .oa-header-tools .oa-icon-btn {
+  background: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.has-wallpaper .oa-header-tools {
+  background: transparent;
+}
+
+.has-wallpaper .oa-header-tools::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--ai-surface-container) 38%, transparent);
+  -webkit-backdrop-filter: $frosted-filter;
+  backdrop-filter: $frosted-filter;
+}
+
 .oa-chat-root {
   position: relative;
   display: flex;
@@ -284,9 +362,9 @@
 }
 
 /* The one line under a menu row's name, wherever the row comes from: an
-   OaMenuItem, the account menu's header, a model in the model popover. */
+   OaMenuItem or a model in the model popover. The account menu's handle is
+   not one of them: it is an identifier, set in the figures' monospace. */
 .oa-menu-item-sub,
-.oa-menu-head-sub,
 .ai-pop-model-sub {
   font-size: 10.5px;
   color: var(--ai-text-secondary);

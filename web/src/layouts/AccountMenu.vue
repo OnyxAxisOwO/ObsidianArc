@@ -1,77 +1,31 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
-import { useRouter } from 'vue-router';
-import { logout, type Account } from '@/api/auth';
-import { ApiError } from '@/api/client';
+import { onMounted, ref, shallowRef } from 'vue';
+import type { Account } from '@/api/auth';
 import OaAvatar from '@/components/OaAvatar.vue';
 import OaMenu from '@/components/OaMenu.vue';
-import OaMenuItem from '@/components/OaMenuItem.vue';
 import { t } from '@/composables/useI18n';
-import { usePanelExit } from '@/composables/usePanelExit';
-import { IconArchive, IconChart, IconGear, IconImage, IconInfo, IconKey, IconLogout, IconMessage, IconPulse, IconSliders, IconTerminal, IconTrophy } from '@/icons';
 import { displayName } from '@/lib/account';
-import { userPanels } from '@/plugins/registry';
 import { feedbackUnread, refreshFeedbackUnread } from '@/stores/feedback';
-import { forget, isAdmin } from '@/stores/session';
-import { panelAllowed } from '@/views/panels';
 
 const props = defineProps<{ account: Account }>();
-
-const router = useRouter();
-const panels = usePanelExit();
-
-// Most panels go together after Feedback; one about what the account may
-// spend asks to sit under Usage instead (UserPanelSpec.menu).
-const usagePanels = computed(() => userPanels().filter((panel) => panel.menu === 'usage'));
-const otherPanels = computed(() => userPanels().filter((panel) => panel.menu !== 'usage'));
-
-// Once per page load, like the bell beside it. An answer that arrives while
-// somebody is sitting on the page is found the next time they move, which is
-// the same bargain every other unread mark here makes.
 onMounted(() => void refreshFeedbackUnread());
 
-function go(close: () => void, path: string): void {
-  close();
-  void router.push(path);
-}
-
-// Panels open beside the backoffice when it is what is on screen, rather than
-// replacing it with the chat (see usePanelExit). The menu closes first either
-// way, as it always has.
-function openPanel(close: () => void, path: string): void {
-  close();
-  panels.open(path);
-}
-
-// The account stays on screen until the server has ended the session. Only a
-// 401 proves it is already gone; any other failure leaves the session live, and
-// the next load would sign this browser straight back in, so the menu says so
-// instead of showing a signed-out page that does not hold.
-const SIGN_OUT_WAIT_MS = 10_000;
-const signOutError = ref('');
-const signingOut = ref(false);
-
-async function signOut(close: () => void): Promise<void> {
-  if (signingOut.value) return;
-  signingOut.value = true;
-  signOutError.value = '';
-  // A stalled request must not keep the menu on the account indefinitely.
-  const controller = new AbortController();
-  const deadline = window.setTimeout(() => controller.abort(), SIGN_OUT_WAIT_MS);
+// The trigger is part of every first paint; the grouped menu is needed only
+// when opened. A failed chunk request stays retryable without reloading the chat.
+const content = shallowRef<typeof import('./AccountMenuContent.vue')['default'] | null>(null);
+const loading = ref(false);
+const failed = ref(false);
+async function loadContent(): Promise<void> {
+  if (content.value || loading.value) return;
+  loading.value = true;
+  failed.value = false;
   try {
-    await logout(controller.signal);
-  } catch (failure) {
-    if (!(failure instanceof ApiError && failure.isAuth)) {
-      signOutError.value = t('signOutFailed');
-      return;
-    }
+    content.value = (await import('./AccountMenuContent.vue')).default;
+  } catch {
+    failed.value = true;
   } finally {
-    window.clearTimeout(deadline);
-    signingOut.value = false;
+    loading.value = false;
   }
-  close();
-  forget();
-  await router.replace('/login');
 }
 </script>
 
@@ -81,10 +35,11 @@ async function signOut(close: () => void): Promise<void> {
       <button
         type="button"
         class="oa-account-btn"
+        :class="{ 'has-unread': feedbackUnread }"
         :title="feedbackUnread ? `${t('account')} · ${t('feedbackHasReply')}` : t('account')"
         aria-haspopup="menu"
         :aria-expanded="open ? 'true' : 'false'"
-        @click="toggle"
+        @click="toggle(); loadContent()"
       >
         <OaAvatar :account="props.account" />
         <!-- A dot rather than a count, for the reason the bell carries one:
@@ -95,102 +50,9 @@ async function signOut(close: () => void): Promise<void> {
     </template>
 
     <template #default="{ close }">
-      <div class="oa-menu-head">
-        <OaAvatar :account="props.account" large />
-        <div class="oa-menu-head-text">
-          <span class="oa-menu-head-name">{{ displayName(props.account) }}</span>
-          <span class="oa-menu-head-sub">
-            {{ props.account.email || `@${props.account.username}` }}
-          </span>
-        </div>
-      </div>
-
-      <div
-        v-if="props.account.group_name"
-        class="oa-menu-head"
-        style="border-bottom: none; padding-top: 0"
-      >
-        <span class="oa-badge">{{ props.account.group_name }}</span>
-        <span v-if="isAdmin" class="oa-badge oa-badge-muted">
-          {{ t(props.account.role === 'super_admin' ? 'superAdmin' : 'admin') }}
-        </span>
-      </div>
-
-      <OaMenuItem :title="t('settings')" @click="openPanel(close, '/settings')">
-        <template #leading><IconGear :size="14" /></template>
-      </OaMenuItem>
-      <OaMenuItem :title="t('navUsage')" @click="openPanel(close, '/usage')">
-        <template #leading><IconChart :size="14" /></template>
-      </OaMenuItem>
-      <OaMenuItem
-        v-for="panel in usagePanels"
-        :key="panel.slug"
-        :title="panel.title()"
-        @click="openPanel(close, `/x/${panel.slug}`)"
-      >
-        <template #leading><component :is="panel.icon ?? IconMessage" :size="14" /></template>
-      </OaMenuItem>
-      <OaMenuItem :title="t('archivedConversations')" @click="openPanel(close, '/archive')">
-        <template #leading><IconArchive :size="14" /></template>
-      </OaMenuItem>
-      <OaMenuItem :title="t('imageLab')" @click="openPanel(close, '/image-lab')">
-        <template #leading><IconImage :size="14" /></template>
-      </OaMenuItem>
-      <OaMenuItem
-        v-if="panelAllowed('uptime')"
-        :title="t('uptimeTitle')"
-        @click="openPanel(close, '/uptime')"
-      >
-        <template #leading><IconPulse :size="14" /></template>
-      </OaMenuItem>
-      <OaMenuItem
-        v-if="panelAllowed('leaderboard')"
-        :title="t('leaderboardTitle')"
-        @click="openPanel(close, '/leaderboard')"
-      >
-        <template #leading><IconTrophy :size="14" /></template>
-      </OaMenuItem>
-      <OaMenuItem :title="t('apiKeys')" @click="openPanel(close, '/keys')">
-        <template #leading><IconKey :size="14" /></template>
-      </OaMenuItem>
-      <!-- Beside the keys, the other thing here for somebody who works from a
-           keyboard. Hidden only when the group has it switched off; a server
-           too old to say is not a refusal. -->
-      <OaMenuItem
-        v-if="props.account.allow_terminal !== false"
-        :title="t('navTerminal')"
-        @click="go(close, '/terminal')"
-      >
-        <template #leading><IconTerminal :size="14" /></template>
-      </OaMenuItem>
-      <OaMenuItem :title="t('feedback')" @click="openPanel(close, '/feedback')">
-        <template #leading><IconMessage :size="14" /></template>
-        <template v-if="feedbackUnread" #trailing>
-          <span class="oa-menu-unread" :title="t('feedbackHasReply')" />
-        </template>
-      </OaMenuItem>
-      <OaMenuItem
-        v-for="panel in otherPanels"
-        :key="panel.slug"
-        :title="panel.title()"
-        @click="openPanel(close, `/x/${panel.slug}`)"
-      >
-        <template #leading><component :is="panel.icon ?? IconMessage" :size="14" /></template>
-      </OaMenuItem>
-      <OaMenuItem :title="t('about')" @click="openPanel(close, '/about')">
-        <template #leading><IconInfo :size="14" /></template>
-      </OaMenuItem>
-      <OaMenuItem
-        v-if="isAdmin"
-        :title="t('administration')"
-        @click="go(close, '/admin')"
-      >
-        <template #leading><IconSliders :size="14" /></template>
-      </OaMenuItem>
-      <OaMenuItem :title="t('signOut')" @click="signOut(close)">
-        <template #leading><IconLogout :size="14" /></template>
-      </OaMenuItem>
-      <p v-if="signOutError" class="oa-menu-empty" role="alert">{{ signOutError }}</p>
+      <component :is="content" v-if="content" :account="props.account" :close="close" />
+      <button v-else-if="failed" type="button" class="oa-menu-item" @click="loadContent">{{ t('retry') }}</button>
+      <p v-else class="oa-menu-empty" role="status">{{ t('loading') }}</p>
     </template>
   </OaMenu>
 </template>

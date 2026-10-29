@@ -18,6 +18,7 @@ import {
   deleteConversation,
   getConversation,
   listConversations,
+  moveConversation as moveConversationApi,
   renameConversation,
   sendTurn,
   uploadAttachment,
@@ -28,8 +29,9 @@ import {
 import { ApiError } from '@/api/client';
 import { t, type StringKey } from '@/composables/useI18n';
 import { apiErrorText, storedErrorText } from '@/lib/api-error';
+import { refreshProjects } from '@/stores/projects';
 import { pendingProjectID } from '@/stores/workspace';
-import { currentPreferences, currentUser, onSignOut } from '@/stores/session';
+import { currentPreferences, currentUser, onSignOut, siteInfo } from '@/stores/session';
 import { ImageError, prepareImage, type PreparedImage } from './image';
 import { currentModel, reasoning } from './useModels';
 import { markFlying, resetFlightState } from './useSendAnimation';
@@ -37,9 +39,10 @@ import { markFlying, resetFlightState } from './useSendAnimation';
 export const MAX_MESSAGE_CHARS = 32000;
 const MAX_IMAGES = 6;
 /**
- * How many conversations the rail holds — the server's own default, asked for
- * by name so the rail can tell when it is full and its search, which only
- * filters what is held, may be missing older ones.
+ * How many conversations each of the rail's two reads asks for — the server's
+ * own default, asked for by name so the rail can tell when a read came back
+ * full and its search, which only filters what is held, may be missing older
+ * ones.
  */
 export const RAIL_LIMIT = 60;
 const SUGGESTIONS_SHOWN = 3;
@@ -200,7 +203,18 @@ export const switchTick = ref(0);
 const pendingView = ref(-1);
 
 export const active = computed(() => conversations.value.find((entry) => entry.id === activeID.value) ?? null);
-export const railFull = computed(() => conversations.value.length >= RAIL_LIMIT);
+/**
+ * Either of the rail's reads came back full, so there may be conversations
+ * older than any it holds. Set by refreshList, which is the only place that
+ * knows what the server was asked; a row archived or deleted since does not
+ * make the reads any less full.
+ */
+export const railFull = ref(false);
+// The loose read came back full: a loose conversation older than every loose
+// one held would not be in the rail had it been read again.
+let looseFull = false;
+// A read started before a move, rename or removal must not restore its old filing.
+let listRevision = 0;
 export const isEmpty = computed(() => messages.value.length === 0 && !busy.value);
 export const stoppable = computed(() => busy.value && controller.value !== null);
 /** The streamed block is rendered by the conversation it is being written into. */
@@ -214,6 +228,16 @@ export const showPending = computed(() => busy.value && pending.value !== null &
  */
 export const statsWanted = computed(
   () => currentUser.value?.allow_stats !== false && currentPreferences.value['show_stats'] === true,
+);
+/**
+ * The instance's switch is the ceiling and the reader's own sits under it, the
+ * way the timing line's group permission does. The reader's is stored only
+ * when they turn it off, so an account that never opened the setting follows
+ * the instance.
+ */
+export const asciiFieldAllowed = computed(() => siteInfo.value.ascii_field !== false);
+export const asciiFieldWanted = computed(
+  () => asciiFieldAllowed.value && currentPreferences.value['ascii_field'] !== false,
 );
 export const canDelete = computed(() => currentUser.value?.allow_delete_conversations !== false);
 export const canArchive = computed(() => currentUser.value?.allow_archive_conversations !== false);
@@ -459,6 +483,10 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
   pendingView.value = switchTick.value;
   pendingID.value = conversationID;
   let turnID = conversationID;
+  // Read once, here, for both the request and the rail's stub: the reader may
+  // point the composer at another folder before the server has answered, and
+  // the conversation is in the folder the request named.
+  const openingProject = conversationID ? '' : pendingProjectID.value;
   setFlash('');
   scrollToEnd();
   // justSentID deliberately stays set for the turn. Clearing it here, in the
@@ -487,7 +515,7 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
         // Only on the turn that opens the conversation. On a later one the
         // server ignores it anyway, and sending a stale one would read as an
         // attempt to move a thread after the fact.
-        ...(conversationID || !pendingProjectID.value ? {} : { project_id: pendingProjectID.value }),
+        ...(openingProject ? { project_id: openingProject } : {}),
         reasoning: {
           enabled: status.value.reasoningAvailable && status.value.reasoningEnabled,
           effort: status.value.reasoningEffort,
@@ -503,7 +531,7 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
           // lands in it — but only if the reader is still on the screen that
           // sent it. Having wandered off, being pulled back is not a fix.
           if (!activeID.value && watching()) activeID.value = turnID;
-          upsertConversationStub(payload.conversation_id, payload.title);
+          upsertConversationStub(payload.conversation_id, payload.title, openingProject);
         },
         onDelta: (text) => bufferDelta(text),
         onReasoning: (text) => bufferDelta('', text),
@@ -647,14 +675,32 @@ export function stop(): void {
 
 // --- conversations ---------------------------------------------------------------
 
-function upsertConversationStub(id: string, title: string): void {
+/**
+ * A conversation a turn has just opened inside a folder. The folder's list is
+ * read separately from the rail's, and a collapsed folder reads nothing, so
+ * this is how the folder hears it should open and read itself — or the
+ * conversation being written into would have no row anywhere in the rail.
+ */
+export const lastOpenedInFolder = ref<{ id: string; projectID: string; seq: number } | null>(null);
+
+// The project is the one the turn opened the conversation in. Without it a
+// conversation started inside a folder sat among the loose ones until the
+// list was read again at the end of the turn.
+function upsertConversationStub(id: string, title: string, projectID: string): void {
+  listRevision += 1;
   const existing = conversations.value.find((entry) => entry.id === id);
   if (existing) {
     if (title) existing.title = title;
     return;
   }
+  if (projectID) {
+    lastOpenedInFolder.value = { id, projectID, seq: (lastOpenedInFolder.value?.seq ?? 0) + 1 };
+    // The folder's count is the server's, and the server has just added one.
+    void refreshProjects().catch(() => {});
+  }
   conversations.value = [{
     id,
+    ...(projectID ? { project_id: projectID } : {}),
     title,
     model_id: status.value.modelID,
     pinned: false,
@@ -664,11 +710,34 @@ function upsertConversationStub(id: string, title: string): void {
   }, ...conversations.value];
 }
 
+/** The server's order for a list of conversations: pinned first, then newest, then id. */
+function railOrder(a: Conversation, b: Conversation): number {
+  if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+  if (a.updated_at !== b.updated_at) return b.updated_at - a.updated_at;
+  return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+}
+
+/**
+ * Two reads, merged. The newest conversations of every kind are what the
+ * search and the header need; the newest loose ones are what the loose list
+ * draws. One read of the newest alone left the loose list empty for an
+ * account whose latest conversations were all filed, with older loose ones
+ * reachable from nowhere.
+ */
 export async function refreshList(): Promise<void> {
   const account = generation;
+  const revision = ++listRevision;
   try {
-    const { conversations: list } = await listConversations({ limit: RAIL_LIMIT });
-    if (account === generation) conversations.value = list;
+    const [{ conversations: newest }, { conversations: loose }] = await Promise.all([
+      listConversations({ limit: RAIL_LIMIT }),
+      listConversations({ limit: RAIL_LIMIT, project_id: '' }),
+    ]);
+    if (account !== generation || revision !== listRevision) return;
+    const merged = new Map<string, Conversation>();
+    for (const entry of [...newest, ...loose]) if (!merged.has(entry.id)) merged.set(entry.id, entry);
+    conversations.value = [...merged.values()].sort(railOrder);
+    looseFull = loose.length >= RAIL_LIMIT;
+    railFull.value = newest.length >= RAIL_LIMIT || looseFull;
   } catch {
     // The rail is a convenience; a failed refresh leaves the last copy.
   }
@@ -816,10 +885,12 @@ export async function rename(conversation: Conversation, next: string): Promise<
   const listed = conversations.value.find((entry) => entry.id === conversation.id);
   const before = conversation.title;
   const listedBefore = listed?.title;
+  listRevision += 1;
   conversation.title = title;
   if (listed) listed.title = title;
   try {
     const { conversation: updated } = await renameConversation(conversation.id, title);
+    listRevision += 1;
     conversation.title = updated.title;
     if (listed) listed.title = updated.title;
   } catch (error) {
@@ -839,6 +910,7 @@ export async function archiveConversation(conversation: Conversation): Promise<b
     setFlash(failureText(error));
     return false;
   }
+  listRevision += 1;
   conversations.value = conversations.value.filter((entry) => entry.id !== conversation.id);
   if (activeID.value === conversation.id) dropActive();
   setFlash(t('archiveSuccess'));
@@ -868,9 +940,163 @@ export async function removeConversation(conversation: Conversation): Promise<bo
     setFlash(failureText(error));
     return false;
   }
+  listRevision += 1;
   conversations.value = conversations.value.filter((entry) => entry.id !== conversation.id);
   if (activeID.value === conversation.id) dropActive();
   return true;
+}
+
+// --- filing into folders ------------------------------------------------------
+//
+// A folder is a project on the server. Filing is one PATCH, and nothing on
+// screen moves until it has been answered: a refused move must leave every
+// list as it was, and the only way to be sure of that is not to have changed
+// any of them yet.
+
+/**
+ * The last move the server accepted. The folders hold lists of their own,
+ * read separately from the rail's, and this is how they hear that a row left
+ * one of them or arrived in another — including a conversation too old to be
+ * in the rail, whose move changes nothing the rail holds. `from` is the
+ * folder the caller saw it in, '' for none or not known.
+ */
+export const lastMove = ref<{ id: string; projectID: string; from: string; seq: number } | null>(null);
+
+/**
+ * True only when the server filed it and every list has been told. `from` is
+ * where the caller's row was, for a conversation the rail does not hold; the
+ * rail's own copy says where it was when it has one.
+ */
+export async function moveConversation(conversationID: string, projectID: string, from = ''): Promise<boolean> {
+  const account = generation;
+  let updated: Conversation;
+  try {
+    ({ conversation: updated } = await moveConversationApi(conversationID, projectID));
+  } catch (error) {
+    if (account === generation) setFlash(failureText(error));
+    return false;
+  }
+  if (account !== generation) return false;
+  listRevision += 1;
+  const filed = updated.project_id || '';
+  const listed = conversations.value.find((entry) => entry.id === conversationID);
+  const left = listed ? listed.project_id || '' : from;
+  if (listed) {
+    listed.project_id = filed;
+  } else if (!filed) {
+    // Out of a folder and into the loose list: the rail is in the server's
+    // order, so it is placed there, and left out when the loose read was full
+    // and it sorts after everything held — it would not be in the rail had
+    // the rail been read again.
+    const at = conversations.value.findIndex((entry) => railOrder(updated, entry) < 0);
+    if (at >= 0) conversations.value.splice(at, 0, updated);
+    else if (!looseFull) conversations.value.push(updated);
+  }
+  // The open conversation is the composer's folder, as reloadActive mirrors it.
+  if (activeID.value === conversationID) pendingProjectID.value = filed;
+  lastMove.value = { id: conversationID, projectID: filed, from: left, seq: (lastMove.value?.seq ?? 0) + 1 };
+  // The counts are the server's, which include archived conversations the
+  // client never lists. A failed read leaves the old counts; the move itself
+  // has happened, so it is not reported as a failure.
+  void refreshProjects().catch(() => {});
+  return true;
+}
+
+/**
+ * A deleted folder keeps its conversations, which the server takes out of it.
+ * The rail's copies still name it, and would otherwise be filed under a
+ * folder that no longer exists — in no list at all — until the next read.
+ */
+export function releaseConversations(projectID: string): void {
+  listRevision += 1;
+  for (const entry of conversations.value) {
+    if (entry.project_id === projectID) entry.project_id = '';
+  }
+  // Deleted folders can hold older rows the rail has never cached.
+  void refreshList();
+}
+
+/** The type a dragged row carries. A file has its own, so the rail can tell them apart. */
+export const CONVERSATION_DRAG_TYPE = 'application/x-arc-conversation';
+
+interface DraggedConversation { id: string; projectID: string }
+
+/**
+ * The row being dragged. A dragover cannot read what is being dragged, only
+ * its types, so this is what lets a folder decline the conversation already
+ * in it rather than light up for a drop that would do nothing.
+ */
+export const draggedConversation = ref<DraggedConversation | null>(null);
+
+/**
+ * Where a drop would land, for the highlight: a folder's id, '' for the loose
+ * list, null for nowhere. One for the whole rail, so two targets can never be
+ * lit at once.
+ */
+export const dropTarget = ref<string | null>(null);
+
+export function startConversationDrag(event: DragEvent, conversation: Conversation): void {
+  const transfer = event.dataTransfer;
+  if (!transfer) return;
+  const projectID = conversation.project_id || '';
+  // Only the custom type, never text/plain: with text on it, a row dropped on
+  // the composer would type its JSON into the draft.
+  transfer.setData(CONVERSATION_DRAG_TYPE, JSON.stringify({ id: conversation.id, project_id: projectID }));
+  transfer.effectAllowed = 'move';
+  draggedConversation.value = { id: conversation.id, projectID };
+}
+
+export function endConversationDrag(): void {
+  draggedConversation.value = null;
+  dropTarget.value = null;
+}
+
+/**
+ * Whether a drag over a target that files into `projectID` may drop there,
+ * marking it as the target when it may. The caller prevents the default only
+ * on true, which is what tells the browser this is a place to drop.
+ */
+export function offerConversationDrop(event: DragEvent, projectID: string): boolean {
+  const types = event.dataTransfer?.types;
+  if (!types || Array.prototype.indexOf.call(types, CONVERSATION_DRAG_TYPE) === -1) return false;
+  // A drag begun in another tab has the type but not the ref; it is let
+  // through, and the drop reads what it carries and decides there.
+  const dragged = draggedConversation.value;
+  if (dragged && dragged.projectID === projectID) {
+    // Whatever was lit is behind the pointer now, and letting go here does
+    // nothing, so nothing may stay lit.
+    dropTarget.value = null;
+    return false;
+  }
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+  dropTarget.value = projectID;
+  return true;
+}
+
+/** Files the row a drop carries into `projectID`; a drop where it already is does nothing. */
+export async function dropConversation(event: DragEvent, projectID: string): Promise<void> {
+  const raw = event.dataTransfer?.getData(CONVERSATION_DRAG_TYPE) ?? '';
+  if (!raw) return;
+  event.preventDefault();
+  // The source row may be gone by the time its dragend would fire — it leaves
+  // the list it was dropped out of — so the drag ends here as well.
+  endConversationDrag();
+  let id = '';
+  let from = '';
+  try {
+    const parsed = JSON.parse(raw) as { id?: unknown; project_id?: unknown };
+    if (typeof parsed.id === 'string') id = parsed.id;
+    if (typeof parsed.project_id === 'string') from = parsed.project_id;
+  } catch {
+    return;
+  }
+  if (!id) return;
+  // The rail's copy is newer than what the drag carried when it has one.
+  const listed = conversations.value.find((entry) => entry.id === id);
+  if (listed) from = listed.project_id || '';
+  if (from === projectID) return;
+  await moveConversation(id, projectID, from);
 }
 
 export async function clearEverything(): Promise<void> {
@@ -890,7 +1116,10 @@ export async function clearEverything(): Promise<void> {
     if (currentUser.value) void refreshList();
     return;
   }
+  listRevision += 1;
   conversations.value = [];
+  railFull.value = false;
+  looseFull = false;
   activeID.value = '';
   messages.value = [];
 }
@@ -915,7 +1144,10 @@ export function resetChat(): void {
   pendingView.value = -1;
   resetFlightState();
   clearAttachments();
+  listRevision += 1;
   conversations.value = [];
+  railFull.value = false;
+  looseFull = false;
   messages.value = [];
   activeID.value = '';
   pendingProjectID.value = '';
@@ -930,6 +1162,10 @@ export function resetChat(): void {
   pending.value = null;
   pendingID.value = '';
   busy.value = false;
+  endConversationDrag();
+  lastMove.value = null;
+  lastOpenedInFolder.value = null;
+  renamingID.value = '';
   suggestions.value = pickSuggestions(SUGGESTIONS_SHOWN);
 }
 

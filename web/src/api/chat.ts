@@ -92,6 +92,16 @@ export function renameConversation(id: string, title: string): Promise<{ convers
   return api.patch<{ conversation: Conversation }>(`/api/conversations/${id}`, { title });
 }
 
+/**
+ * Files a conversation under one of the owner's projects, or with "" takes it
+ * out of every project. The server answers 404 for a project that is not the
+ * owner's or is gone, and leaves updated_at alone, so filing never reorders
+ * the rail.
+ */
+export function moveConversation(id: string, projectID: string): Promise<{ conversation: Conversation }> {
+  return api.patch<{ conversation: Conversation }>(`/api/conversations/${id}`, { project_id: projectID });
+}
+
 export function deleteConversation(id: string): Promise<void> {
   return api.delete<void>(`/api/conversations/${id}`);
 }

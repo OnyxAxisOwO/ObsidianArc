@@ -72,8 +72,8 @@ describe('code splitting invariants in production bundle', () => {
     expect(pluginFiles, `plugin chunks: ${pluginFiles.join(', ')}`).toHaveLength(pluginNames.length);
     const core = files.filter((f) => !pluginFiles.includes(f));
 
-    // Exactly thirteen besides the plugins', and deliberately exact: the project ships no fonts, no
-    // images and no other chunks, so a fourteenth file is either a split that
+    // Exactly eighteen besides the plugins', and deliberately exact: the project ships no fonts, no
+    // images and no other chunks, so an extra file is either a split that
     // was not meant to happen or an asset nobody decided to ship. Route-level
     // splitting in particular produces a dozen of these on its own and is
     // switched off for everything but the backoffice and the terminal — see
@@ -91,9 +91,14 @@ describe('code splitting invariants in production bundle', () => {
     // reader fetches to open a conversation, and a chunk of its own rather
     // than a part of the backoffice's, so an English-reading administrator
     // does not fetch it either (see src/i18n.admin.zh.ts).
+    // Fourteen since the vendors' model marks became vendor-marks-*.js:
+    // fourteen kilobytes of path data a reader needs only once a model tile
+    // is drawn, which is after the first paint (see src/chat/model-marks.ts).
     // A chunk shared between two plugins — a helper both import — shows up
-    // here as a fourteenth file: keep such helpers in the entry instead.
-    expect(core, `unexpected build output: ${core.join(', ')}`).toHaveLength(13);
+    // here as an extra file: keep such helpers in the entry instead.
+    // Eighteen since the account menu content and folder management each
+    // gained a script and stylesheet, fetched only when opened or needed.
+    expect(core, `unexpected build output: ${core.join(', ')}`).toHaveLength(18);
 
     const indexJs = files.filter((f) => /^index-[^.]+\.js$/.test(f));
     const indexCss = files.filter((f) => /^index-[^.]+\.css$/.test(f));
@@ -122,6 +127,23 @@ describe('code splitting invariants in production bundle', () => {
     expect(frontCss.length).toBe(1);
     expect(landingJs.length).toBe(1);
     expect(landingCss.length).toBe(1);
+    for (const owner of ['AccountMenuContent', 'ProjectList']) {
+      for (const extension of ['js', 'css']) {
+        expect(files.filter((file) => new RegExp(`^${owner}-[^.]+\\.${extension}$`).test(file))).toHaveLength(1);
+      }
+    }
+  });
+
+  it('leaves account-menu and folder-only styles off the first paint', () => {
+    const files = builtAssets();
+    const css = (owner: string) => fs.readFileSync(path.join(assetsDir, files.find((file) => new RegExp(`^${owner}-[^.]+\\.css$`).test(file))!), 'utf8');
+    const entry = css('index');
+    for (const [owner, selector] of [['AccountMenuContent', '.oa-acct-head'], ['ProjectList', '.ai-folder-actions']]) {
+      expect(css(owner!)).toContain(selector!);
+      expect(entry).not.toContain(selector!);
+    }
+    // Rename fields are shared with loose rows and must remain styled before a folder is loaded.
+    expect(entry).toContain('.ai-project-form');
   });
 
   // A stylesheet that arrives with one chunk is fetched only by the readers
@@ -449,8 +471,13 @@ describe('code splitting invariants in production bundle', () => {
     // and the backoffice's last controls took about 1.6 kB more. 207 kB until
     // Vue's Options API branch was compiled out, and the front page's and the
     // landing page's stylesheets moved into their own chunks, which took about
-    // 5 kB more.
-    const FIRST_PAINT_GZIP_BUDGET = 204_000;
+    // 5 kB more. Raised from 204 kB to 208 kB on 2026-10-28, deliberately:
+    // the empty conversation's drifting characters, the dot-matrix wait, the
+    // searchable model list with its tiles and effort meter, and the rail's
+    // new head are all on the screen the chat opens on, so a lazy chunk would
+    // only have delayed them; they cost about 5 kB. The vendors' marks, which
+    // are not needed for that first frame, are a chunk of their own.
+    const FIRST_PAINT_GZIP_BUDGET = 208_000;
     const gzipped = firstPaintGzipBytes();
     expect(gzipped, `first paint is ${gzipped} bytes gzipped, budget ${FIRST_PAINT_GZIP_BUDGET}`).toBeLessThanOrEqual(
       FIRST_PAINT_GZIP_BUDGET,

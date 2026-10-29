@@ -111,6 +111,9 @@ var (
 	ErrNotFound        = errors.New("conversation: not found")
 	ErrMessageNotFound = errors.New("conversation: no such message")
 	ErrTitleTooLong    = errors.New("conversation: title must be 120 characters or fewer")
+	// The project a conversation was asked to move into is not one of the
+	// owner's: gone, or somebody else's.
+	ErrProjectNotFound = errors.New("conversation: no such project")
 )
 
 const (
@@ -275,6 +278,8 @@ type Update struct {
 	Title    *string
 	Pinned   *bool
 	Archived *bool
+	// Moves it into a project, or out of every project when empty.
+	ProjectID *string
 }
 
 func (s *Store) Update(ctx context.Context, userID, conversationID string, in Update) (Conversation, error) {
@@ -297,15 +302,32 @@ func (s *Store) Update(ctx context.Context, userID, conversationID string, in Up
 		sets = append(sets, "archived = ?")
 		args = append(args, *in.Archived)
 	}
+	// The owner's project or none. Checked in the statement itself rather than
+	// read first: a project deleted, or never this person's, between a check
+	// and the write would otherwise become a foreign-key error, or worse a
+	// conversation filed under somebody else's project.
+	where := "id = ? AND user_id = ?"
+	var whereArgs []any
+	if in.ProjectID != nil {
+		if *in.ProjectID == "" {
+			sets = append(sets, "project_id = NULL")
+		} else {
+			sets = append(sets, "project_id = ?")
+			args = append(args, *in.ProjectID)
+			where += " AND EXISTS (SELECT 1 FROM projects WHERE id = ? AND user_id = ?)"
+			whereArgs = append(whereArgs, *in.ProjectID, userID)
+		}
+	}
 	if len(sets) == 0 {
 		return s.Get(ctx, nil, userID, conversationID)
 	}
 
-	// updated_at is deliberately not touched: renaming a conversation should
-	// not reorder the rail.
+	// updated_at is deliberately not touched: renaming a conversation, or
+	// filing it, should not reorder the rail.
 	args = append(args, conversationID, userID)
+	args = append(args, whereArgs...)
 	result, err := s.db.Exec(ctx,
-		`UPDATE conversations SET `+strings.Join(sets, ", ")+` WHERE id = ? AND user_id = ?`, args...)
+		`UPDATE conversations SET `+strings.Join(sets, ", ")+` WHERE `+where, args...)
 	if err != nil {
 		return Conversation{}, fmt.Errorf("conversation: update: %w", err)
 	}
@@ -314,6 +336,13 @@ func (s *Store) Update(ctx context.Context, userID, conversationID string, in Up
 		return Conversation{}, fmt.Errorf("conversation: update rows: %w", err)
 	}
 	if affected == 0 {
+		// Which of the two conditions failed decides the answer: a missing
+		// conversation and a missing project are different mistakes.
+		if in.ProjectID != nil && *in.ProjectID != "" {
+			if _, err := s.Get(ctx, nil, userID, conversationID); err == nil {
+				return Conversation{}, ErrProjectNotFound
+			}
+		}
 		return Conversation{}, ErrNotFound
 	}
 	return s.Get(ctx, nil, userID, conversationID)

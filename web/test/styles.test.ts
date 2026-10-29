@@ -532,15 +532,34 @@ describe('focus, width and cascade rules in the stylesheet source', () => {
 describe('control states in the stylesheet source', () => {
   const sheet = (name: string) => fs.readFileSync(path.resolve(__dirname, '../src/styles', name), 'utf8');
 
-  it('dims the new-project button when the list is at its cap', () => {
+  it('dims the new-folder button when the list is at its cap', () => {
     const chat = sheet('_chat.scss');
 
-    expect(chat).toMatch(/\.ai-chat-new:disabled \{[^}]*opacity:\s*0\.5;/);
-    expect(chat).toMatch(/\.ai-chat-new:hover:not\(:disabled\) \{/);
+    expect(chat).toMatch(/\.ai-rail-folder-btn:disabled \{[^}]*opacity:\s*0\.5;/);
+    expect(chat).toMatch(/\.ai-rail-folder-btn:hover:not\(:disabled\),/);
+  });
+
+  it('reveals a folder’s actions on hover only where hover ends, and never reflows the row for them', () => {
+    const chat = sheet('folders.scss');
+    // A tap leaves :hover on a touch screen, so a hover rule outside this
+    // query would lay the actions over the count until the next tap.
+    const hover = /@media \(hover: hover\) \{([\s\S]*?)\n\}/.exec(chat.slice(chat.indexOf('.ai-folder-actions {')));
+    expect(hover?.[1]).toMatch(/\.ai-folder-row:hover \.ai-folder-actions/);
+    expect(chat.match(/\.ai-folder-row:hover/g)).toHaveLength(1);
+    // Laid over the row, so revealing them moves nothing beside them.
+    expect(chat).toMatch(/\.ai-folder-actions \{[^}]*position:\s*absolute;/);
+    expect(chat).not.toMatch(/\.ai-folder-tail/);
+  });
+
+  it('keeps the row menu from scrolling itself, and its folders off the system scrollbar', () => {
+    const chat = sheet('_chat.scss');
+
+    expect(chat).toMatch(/\.oa-menu\.ai-chat-context-menu \{[^}]*max-height:\s*none;[^}]*overflow:\s*visible;/);
+    expect(chat).toMatch(/\.ai-chat-menu-folders \{[^}]*max-height:\s*\d+px;[^}]*scrollbar-width:\s*none;\s*@include hidden-scrollbar;/);
   });
 
   it('shows a project row action faintly where there is no hover to reveal it', () => {
-    const block = /@media \(hover: none\) \{\s*\.ai-project-action-btn \{([^}]*)\}/.exec(sheet('_chat.scss'));
+    const block = /@media \(hover: none\) \{\s*\.ai-project-action-btn \{([^}]*)\}/.exec(sheet('folders.scss'));
 
     expect(block, 'project edit and delete stay invisible on a touch screen').toBeTruthy();
     expect(block![1]).toMatch(/opacity:\s*0\.45/);
@@ -634,6 +653,7 @@ describe('focus and motion on every copy of a control', () => {
       '.oa-reference-remove', '.oa-gallery-btn', '.oa-thread-remove', '.oa-toast-close',
       '.oa-menu-head-action', '.oa-admin-nav', '.oa-admin-subnav-item', '.oa-settings-rail-item',
       '.ai-project-action-btn', '.ai-history-new-btn', '.ai-code-btn', '.oa-btn', '.oa-chip-btn', '.oa-text-btn',
+      '.oa-account-btn', '.ai-chat-list-open', '.ai-folder-open', '.ai-project-new-chat',
     ];
 
     for (const selector of ringed) {

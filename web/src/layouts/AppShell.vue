@@ -75,18 +75,25 @@ defineExpose({ body });
       </a>
       <span class="oa-header-spacer" />
       <span class="oa-header-slot"><slot name="header" /></span>
-      <!-- Only for somebody who has an account to have announcements read
-           against; the sign-in page has its own corner. -->
-      <AnnounceBell v-if="currentUser" />
-      <OaIconButton
-        v-if="currentUser"
-        class="oa-icon-btn"
-        :label="t('imageLab')"
-        @click="panels.open('/image-lab')"
-      >
-        <IconImage :size="16" />
-      </OaIconButton>
-      <OaThemeToggle />
+      <!-- One pill for the three utilities, so they read as a single
+           instrument beside the account rather than three loose glyphs. A
+           theme the instance fixes and a page with nobody signed in can leave
+           it empty, and the stylesheet drops an empty one rather than draw a
+           pill around nothing. -->
+      <div class="oa-header-tools">
+        <!-- Only for somebody who has an account to have announcements read
+             against; the sign-in page has its own corner. -->
+        <AnnounceBell v-if="currentUser" />
+        <OaIconButton
+          v-if="currentUser"
+          class="oa-icon-btn"
+          :label="t('imageLab')"
+          @click="panels.open('/image-lab')"
+        >
+          <IconImage :size="16" />
+        </OaIconButton>
+        <OaThemeToggle />
+      </div>
       <AccountMenu v-if="currentUser" :account="currentUser" />
     </div>
 

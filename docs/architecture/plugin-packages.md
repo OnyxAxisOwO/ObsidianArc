@@ -38,7 +38,7 @@ zip 里只允许上面这些；路径里出现 `..`、绝对路径、反斜杠�
 | `version` | 必须，`1.2.0` 这样的版本。预发布版本（如 `1.4.0-rc.1`）按 SemVer 排在同号正式版之前，`+` 之后的构建元数据不参与比较 |
 | `title`, `description` | 必须有 `title.en`；`{ "en": "...", "zh": "..." }` |
 | `author`, `homepage`, `license` | 显示用；`homepage` 必须是 `http://` 或 `https://` 地址（后台会把它画成链接，`javascript:` 之类的会被拒绝） |
-| `requires.api` | 必须，插件接口的版本，目前是 `5`；服务器提供的更低则拒绝安装。用到参数的 `rest`、`sensitive` 或标志的 `sensitive` 的包须写 `5` |
+| `requires.api` | 必须，插件接口的版本，目前是 `6`；服务器提供的更低则拒绝安装。用到参数的 `rest`、`sensitive` 或标志的 `sensitive` 的包至少须写 `5`；新包建议写 `6`，启用控制台调用的方法与路径校验 |
 | `permissions` | 后端要用的权限，见下 |
 | `backend` | 后端文件，`plugin.wasm` |
 | `hooks` | `describe`（后端告诉浏览器和页面策略「现在该说什么」）、`decorate_invitees`（给邀请人自己的邀请列表加内容）、`sweep`（服务器每 10 分钟的例行清理时、以及启动时，给启用的插件一次机会做定期的事，比如复查外部状态；节奏由插件自己记，多实例时各自都会调用，需用行锁认领；需要 API 4） |
@@ -73,7 +73,7 @@ zip 里只允许上面这些；路径里出现 `..`、绝对路径、反斜杠�
 | `notify` | 往账户的收件箱放通知 | `notify.push` |
 | `security_log` | 写安全日志 | `security.record` |
 | `challenge` | 在自己的表单前使用站点的人机验证：问现在该要哪种（随注册页的验证码设置），并校验浏览器交来的证明。密钥不离开服务器。需要 API 3 | `challenge.describe`、`challenge.verify` |
-| `console` | 以当前操作员身份调用后台接口。一条命令只能调用它在清单 `endpoints` 里声明的接口（方法加路径，`{name}` 匹配一段，查询串不比较），之外的调用以 `bad_argument` 拒绝，所以命令要调的每个后台接口都得列进去 | `console.call`、`console.resolve_user` |
+| `console` | 以当前操作员身份调用后台接口。`requires.api` ≥ 6 时，一条命令只能调用它在清单 `endpoints` 里声明的接口（方法加路径，`{name}` 匹配一段，查询串不比较），之外的调用以 `bad_argument` 拒绝，所以命令要调的每个后台接口都得列进去；API 1–5 的包保留原有的方法级校验 | `console.call`、`console.resolve_user` |
 
 **为别人的账户做事，要发起人持有授权。** 包代表某个请求做事（路由、控制台）时，若操作的账户不是这个请求的发起人自己，发起人必须是在职管理员并持有对应授权：`users`（挂起、删除、收回卡、结束登录、发重置卡）、`usage`（发赠金）。超级管理员总是持有。不持有时调用返回 `permission_denied`，改动不会做。没有发起人的调用（定时任务）不受此限；管理员账户则只能由超级管理员发起的请求改动。
 

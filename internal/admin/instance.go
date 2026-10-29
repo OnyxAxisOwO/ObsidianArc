@@ -224,6 +224,7 @@ var writableSettings = map[string]bool{
 	settings.ThemeTranslucency:          true,
 	settings.ThemePanelBlur:             true,
 	settings.ThemeEnforce:               true,
+	settings.ThemeAsciiField:            true,
 	settings.AboutTitle:                 true,
 	settings.AboutBody:                  true,
 	settings.AboutShowSoftwareInfo:      true,

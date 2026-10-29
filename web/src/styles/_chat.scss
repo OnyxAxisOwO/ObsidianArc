@@ -113,6 +113,10 @@
 
 .ai-chat-main {
   position: relative;
+  /* Its own stacking context, so the ASCII field's negative z-index lands
+     above this card's background and under everything in it, without each
+     child having to be positioned. */
+  isolation: isolate;
   display: flex;
   flex: 1;
   flex-direction: column;
@@ -182,7 +186,7 @@
   gap: 8px;
   width: 100%;
   box-sizing: border-box;
-  padding: 9px 12px;
+  padding: 7px 12px 7px 7px;
   border: none;
   border-radius: 12px;
   background: var(--ai-surface-container-high);
@@ -193,16 +197,21 @@
   transition: background-color 0.15s ease;
 }
 
-.ai-chat-new:hover:not(:disabled) {
+.ai-chat-new:hover {
   background: var(--ai-state-hover);
 }
 
-/* The project list disables this at its cap. Without a look of its own the
-   button kept its full colour and hover, so it read as clickable and simply
-   did nothing; the dimming is the one .oa-btn:disabled uses. */
-.ai-chat-new:disabled {
-  opacity: 0.5;
-  cursor: default;
+/* The plus in a small tile of its own, so the row reads as an action with a
+   mark rather than a sentence that happens to start with a symbol. */
+.ai-chat-new-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  background: var(--ai-primary);
+  color: var(--ai-primary-text);
 }
 
 .ai-history-search-row {
@@ -217,30 +226,58 @@
   min-width: 0;
 }
 
-/* Square rather than round, unlike the other icon controls: it is one row with
-   the search field beside it, which is 36px tall with an 11px radius, and the
-   two have to line up. */
-.ai-history-new-btn {
+/* The new chat is an .ai-chat-new, the shape every "make one" row in the
+   rail takes; this class only keeps its focus ring named, which a test holds
+   every button to. */
+.ai-history-new-btn:focus-visible {
+  @include mixins.focus-ring;
+}
+
+/* The head's two ways to make something, on one row: the new chat takes the
+   width, the new folder sits beside it as a square of the same height, fill
+   and radius, so the pair reads as one strip rather than a row and a stray. */
+.ai-rail-head-row {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.ai-rail-head-row .ai-chat-new {
+  flex: 1;
+  min-width: 0;
+}
+
+.ai-rail-folder-btn {
   display: inline-flex;
+  flex: none;
   align-items: center;
   justify-content: center;
   width: 36px;
-  height: 36px;
-  flex-shrink: 0;
   padding: 0;
   border: none;
-  border-radius: 11px;
-  background: var(--ai-field-bg);
-  color: var(--ai-text);
+  border-radius: 12px;
+  background: var(--ai-surface-container-high);
+  color: var(--ai-text-secondary);
   cursor: pointer;
   transition: background-color 0.15s ease, color 0.15s ease;
 }
 
-.ai-history-new-btn:hover {
-  background: var(--ai-field-bg-hover);
+/* Held while its form is open, so the button says why the form is there. */
+.ai-rail-folder-btn:hover:not(:disabled),
+.ai-rail-folder-btn.active {
+  background: var(--ai-state-hover);
+  color: var(--ai-text);
 }
 
-.ai-history-new-btn:focus-visible {
+/* Disabled at the account's cap. Without a look of its own the button kept
+   its full colour and hover, so it read as clickable and simply did nothing;
+   the dimming is the one .oa-btn:disabled uses. */
+.ai-rail-folder-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.ai-rail-folder-btn:focus-visible {
   @include mixins.focus-ring;
 }
 
@@ -360,6 +397,50 @@
   font-size: 12px;
 }
 
+/* An empty history: no band where rows would be, but the dot matrix at
+   rest, a line, and what will fill it — the rail's one moment of air. */
+.ai-chat-list-blank {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 40px 16px 24px;
+  text-align: center;
+}
+
+.ai-chat-list-blank-title {
+  margin: 8px 0 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ai-text);
+}
+
+.ai-chat-list-blank-body {
+  margin: 0;
+  max-width: 24ch;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--ai-text-secondary);
+}
+
+/* The thinking pill's matrix, five wide and slower: the same mark, idling. */
+.ai-dots.ai-dots-rest {
+  grid-template-columns: repeat(5, 4px);
+  gap: 3px;
+}
+
+.ai-dots.ai-dots-rest > i {
+  width: 4px;
+  height: 4px;
+  animation-duration: 3.2s;
+}
+
+.ai-dots-rest > i:nth-child(5n + 1) { --d: 0s; }
+.ai-dots-rest > i:nth-child(5n + 2) { --d: 0.2s; }
+.ai-dots-rest > i:nth-child(5n + 3) { --d: 0.4s; }
+.ai-dots-rest > i:nth-child(5n + 4) { --d: 0.6s; }
+.ai-dots-rest > i:nth-child(5n) { --d: 0.8s; }
+
 .ai-chat-list-item {
   display: flex;
   align-items: center;
@@ -447,88 +528,66 @@
   }
 }
 
-/* The projects list in the rail. It reuses .ai-chat-list-item,
-   .ai-chat-list-open, .ai-chat-list-empty and .ai-chat-new outright; the
-   tabs that switch to it are .oa-slide-tabs, in _surfaces.scss. */
-
-.ai-project-panel {
+/* The rail's one list, in two sections: the folders, then the conversations
+   in none. Each is headed the way the model picker's sections are — a small
+   label and a monospace figure — and the second is set off from the first by
+   a dashed hairline rather than a box, so the rail stays one sheet. */
+.ai-rail-section {
   display: flex;
-  flex: 1;
   flex-direction: column;
-  gap: 8px;
-  min-height: 0;
-}
-
-.ai-project-meta {
-  font-size: 10.5px;
-  color: var(--ai-text-secondary);
-}
-
-/* The same 26px row action as .ai-chat-list-more, kept as its own class
- * because that one is a menu trigger: the row's context-menu handler finds
- * it with querySelector('.ai-chat-list-more') and clicks it, so a project's
- * edit or delete button carrying that class would be the one clicked.
- */
-.ai-project-action-btn {
-  display: inline-flex;
+  gap: 2px;
   flex-shrink: 0;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  margin-right: 4px;
-  padding: 0;
-  border: none;
-  border-radius: 50%;
-  background: transparent;
+}
+
+/* The figure in the head lines up with the folders' counts below it, which
+   end 12px from the row's edge. */
+.ai-rail-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 4px 12px 4px 10px;
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
   color: var(--ai-text-secondary);
-  opacity: 0;
-  cursor: pointer;
 }
 
-/* Revealed by the row itself, the same way .ai-chat-list-more is: one hover
- * rule on .ai-chat-list-item covers every action button in it.
- */
-.ai-chat-list-item:hover .ai-project-action-btn,
-.ai-project-action-btn:focus-visible {
-  opacity: 1;
+.ai-rail-count {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+  color: var(--ai-text-secondary);
 }
 
-.ai-project-action-btn:hover {
-  background: var(--ai-state-hover);
-  color: var(--ai-text);
+/* Runs to the foot of the list, so all the room under the folders takes a
+   dropped row: a target only as tall as its rows would be a strip to aim at,
+   and nothing at all when every conversation is filed. */
+.ai-rail-loose {
+  flex: 1 0 auto;
 }
 
-.ai-project-action-btn.danger:hover {
-  background: transparent;
-  color: var(--ai-danger);
+.ai-rail-loose > .ai-rail-section-head {
+  margin-top: 6px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--ai-outline-variant);
 }
 
-/* Without this, moving the pointer off the row between the arming click and
- * the confirming one would fade the button out from under an answer the
- * reader is mid-way through giving.
- */
-.ai-project-action-btn.armed {
-  opacity: 1;
+.ai-rail-loose {
+  border-radius: 10px;
 }
 
-/* A touch screen has no hover to reveal these, and an opacity-0 button still
- * takes the tap, so a phone reader would be pressing edit or delete blind.
- * Kept faint, the way .ai-chat-list-more is under the same query. */
-@media (hover: none) {
-  .ai-project-action-btn {
-    opacity: 0.45;
-  }
+/* Where a dragged row would land. A fill and nothing else — no ring that
+   changes the box, no motion — so the list under the pointer does not move
+   while it is being aimed at. */
+.ai-drop-zone.drop-target {
+  background: color-mix(in srgb, var(--ai-primary) 8%, transparent);
 }
 
-.ai-project-action-btn.danger.armed {
-  @include mixins.danger-tint;
-}
-
-/* Keyboard focus on the row's edit and delete buttons is the ring, as on the
- * other icon controls, not the browser's outline. */
-.ai-project-action-btn:focus-visible {
-  @include mixins.focus-ring;
+/* The row on its way somewhere else, left in place and faded so the list
+   keeps its shape under the pointer until the drop lands. */
+.ai-chat-list-item.dragging {
+  opacity: 0.45;
 }
 
 .ai-project-form {
@@ -551,95 +610,77 @@
   transform: none;
 }
 
-.ai-project-title-row {
-  display: flex;
-  align-items: center;
-  min-width: 0;
-  gap: 2px;
-}
-
-.ai-project-chevron {
-  display: inline-flex;
-  align-items: center;
-  flex-shrink: 0;
-  color: var(--ai-text-secondary);
-  transition: transform 0.3s var(--ai-ease-out);
-}
-
-.ai-project-chevron.expanded {
-  transform: rotate(90deg);
-}
-
-.ai-project-convs-collapse {
-  display: grid;
-  grid-template-rows: 0fr;
-  opacity: 0;
-  visibility: hidden;
-  transition:
-    grid-template-rows 0.34s var(--ai-ease-out),
-    opacity 0.26s var(--ai-ease-out),
-    visibility 0.34s;
-  overflow: hidden;
-  /* overflow: hidden drops this item's automatic minimum height to zero, so
-     once the list is taller than its column — a phone, or many projects — the
-     flex column shrinks an open project to nothing: chevron turned, nothing
-     beneath it to tap. */
-  flex-shrink: 0;
-
-  &.open {
-    grid-template-rows: 1fr;
-    opacity: 1;
-    visibility: visible;
-  }
-}
-
-.ai-project-convs-inner {
-  min-height: 0;
-  overflow: hidden;
-}
-
-/* A row's menu is absolutely positioned and not teleported, so the two clips
-   above cut it to the last few pixels of the project's list — rename, archive
-   and delete were out of reach on most rows. The clips are only for the
-   open/close slide, and a menu is opened from a row already showing, so they
-   lift for as long as one is mounted (its fade-out included) and the list it
-   hangs in clips it instead, the way the history tab's does. */
-.ai-project-convs-collapse.open:has(.ai-chat-context-menu),
-.ai-project-convs-collapse.open:has(.ai-chat-context-menu) > .ai-project-convs-inner {
+/* The row menu never scrolls itself: its actions are few, and the one part
+   that can grow, the folders it unfolds, is bounded and scrolls on its own
+   overlay track. A menu that scrolled would show the system's bar, which
+   takes its width from the rows. */
+.oa-menu.ai-chat-context-menu {
+  max-height: none;
   overflow: visible;
 }
 
-.ai-project-convs-wrap {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin: 2px 0 6px 12px;
-  padding-left: 10px;
-  border-left: 2px solid var(--ai-border);
-}
-
-.ai-project-new-chat {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  padding: 6px 8px;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
+/* Turned when the folders below it are unfolded, the way a folder's own
+   chevron in the rail is when its conversations are. */
+.ai-chat-menu-chevron {
+  flex: none;
   color: var(--ai-text-secondary);
-  font-size: 12px;
-  cursor: pointer;
-  transition: background-color 0.15s ease, color 0.15s ease;
+  transition: transform 0.2s var(--ai-ease-out);
 }
 
-.ai-project-new-chat:hover {
-  background: var(--ai-surface-container-high);
-  color: var(--ai-text);
+.ai-chat-menu-chevron.expanded {
+  transform: rotate(90deg);
 }
 
-.ai-project-conv-item {
-  font-size: 12px;
+/* The unfolded folders hang from a dashed hairline in the items' left
+   padding, under the glyph of the item that unfolded them — the rail's tree
+   in small. Their glyphs keep the menu's one column, so their names start
+   where every other item's title does. */
+.ai-chat-menu-folders-wrap {
+  position: relative;
+  display: flex;
+}
+
+.ai-chat-menu-folders-wrap::before {
+  content: '';
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  left: 5px;
+  border-left: 1px dashed var(--ai-outline-variant);
+  pointer-events: none;
+}
+
+.ai-chat-menu-folders-wrap .oa-overlay-track {
+  top: 4px;
+  bottom: 4px;
+  right: -4px;
+}
+
+/* About four and a half folders, so the cut row says there are more. No
+   system scrollbar: the overlay track beside them is OaScrollArea's. */
+.ai-chat-menu-folders {
+  flex: 1;
+  min-width: 0;
+  max-height: 150px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+  @include hidden-scrollbar;
+}
+
+.ai-chat-menu-folder-glyph {
+  flex: none;
+  color: var(--ai-text-secondary);
+}
+
+/* The rail's row buttons took keyboard focus with only the browser's outline.
+   Rounded with the row, so the ring follows the fill it sits on. */
+.ai-chat-list-open {
+  border-radius: 10px;
+}
+
+.ai-chat-list-open:focus-visible {
+  @include mixins.focus-ring;
 }
 
 /* --- transcript -------------------------------------------------------------- */
@@ -1276,12 +1317,94 @@
   }
 }
 
+/* The wait before the first token: a pill with a dot matrix and the word
+   catching the light. It is the one moment nothing else on screen is moving,
+   so it is allowed to; everything about it still comes from the tokens. */
 .ai-chat-pending {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  font-size: 12px;
+  gap: 9px;
+  padding: 7px 14px 7px 11px;
+  border-radius: 999px;
+  background: var(--ai-surface-container);
+  box-shadow: 0 0 0 3px var(--ai-surface-container-low);
+  font-size: 12.5px;
   color: var(--ai-text-secondary);
+}
+
+.ai-dots {
+  display: grid;
+  grid-template-columns: repeat(3, 3px);
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.ai-dots > i {
+  width: 3px;
+  height: 3px;
+  border-radius: 1px;
+  background: var(--ai-text);
+  opacity: 0.18;
+  animation: ai-dot-wave 1.2s var(--ai-ease-loop) var(--d, 0s) infinite;
+}
+
+@keyframes ai-dot-wave {
+  0%, 100% { opacity: 0.18; }
+  35% { opacity: 0.95; }
+}
+
+/* A highlight swept across the text, drawn as the text's own fill so it is
+   the letters that brighten and not a box behind them. */
+.ai-shimmer {
+  background: linear-gradient(
+    100deg,
+    var(--ai-text-secondary) 0%,
+    var(--ai-text-secondary) 40%,
+    var(--ai-text) 50%,
+    var(--ai-text-secondary) 60%,
+    var(--ai-text-secondary) 100%
+  );
+  background-size: 250% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: ai-shimmer 1.8s linear infinite;
+}
+
+@keyframes ai-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: 0% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-dots > i,
+  .ai-shimmer {
+    animation: none;
+  }
+
+  .ai-dots > i {
+    opacity: 0.5;
+  }
+}
+
+/* Behind an empty conversation only (ChatSurface mounts it then). Masked away
+   from the middle, where the greeting and the composer are, so it frames
+   them instead of being read through them. */
+.ai-ascii-field {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  width: 100%;
+  height: 100%;
+  color: var(--ai-text);
+  pointer-events: none;
+  -webkit-mask-image: radial-gradient(ellipse 46% 40% at 50% 46%, transparent 30%, #000 100%);
+  mask-image: radial-gradient(ellipse 46% 40% at 50% 46%, transparent 30%, #000 100%);
+  animation: ai-field-in 1.2s var(--ai-ease-out) both;
+}
+
+@keyframes ai-field-in {
+  from { opacity: 0; }
 }
 
 // An even, square box drawn border-box and turning about its centre. The
@@ -1551,6 +1674,8 @@
   padding: 14px 12px;
   border: none;
   border-radius: 18px;
+  /* Named so what is laid over a row can stand on the rail's own fill. */
+  --ai-rail-fill: var(--ai-surface-container);
   background: var(--ai-surface-container);
   /* Slid out by a negative margin rather than collapsed by width: the rail
      keeps its own width the whole way, so its contents never reflow mid
@@ -1602,8 +1727,7 @@
 .ai-chat-wide .ai-msg,
 .ai-chat-wide .ai-chat-empty,
 .ai-chat-wide .ai-chat-setup,
-.ai-chat-wide .ai-chat-error,
-.ai-chat-wide .ai-chat-pending {
+.ai-chat-wide .ai-chat-error {
   box-sizing: border-box;
   width: 100%;
   max-width: 680px;
@@ -1767,6 +1891,7 @@
     max-height: 300px;
     padding: 12px;
     border-radius: 14px;
+    --ai-rail-fill: var(--ai-surface-card);
     background: var(--ai-surface-card);
     box-shadow: var(--ai-shadow-md);
     /* The desktop rail feathers its trailing edge while it leaves (above).
@@ -1829,7 +1954,9 @@
   }
 
   .ai-msg-actions,
-  .ai-chat-new {
+  .ai-chat-new,
+  .ai-rail-folder-btn,
+  .ai-chat-menu-chevron {
     transition: none;
   }
 
@@ -1951,12 +2078,13 @@
   z-index: 30;
   right: 0;
   bottom: calc(100% + 8px);
-  width: 290px;
-  max-width: min(290px, calc(100vw - 32px));
-  padding: 8px;
+  width: 288px;
+  max-width: min(288px, calc(100vw - 32px));
+  padding: 3px;
   box-sizing: border-box;
   border-radius: 18px;
   background: var(--ai-surface-container);
+  /* The fill and shadow separate the picker without outlining its edge. */
   box-shadow: var(--ai-shadow-md);
   /* Grows out of the chip it hangs from rather than appearing whole. The
      growth itself is the menus' own, declared once beside .oa-menu. */
@@ -1971,47 +2099,126 @@
 }
 
 .ai-pop-face {
+  /* Where a row's figures end, which is its right padding — there is no
+     tick: the chosen row's inverted tile and bold name say it. The
+     list's header and the sheet under it end there too, so every number in
+     the popover stands in one column; their left edge is the rows' tiles'. */
+  --ai-pop-figure-edge: 8px;
   display: flex;
   flex-direction: column;
   gap: 8px;
+  /* Room for a focus ring: the body above clips to animate its height, and a
+     ring drawn flush with its edge was cut off along the top. */
+  padding: 3px;
 }
 
-.ai-pop-model,
-.ai-pop-back {
+.ai-pop-model {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   width: 100%;
   box-sizing: border-box;
-  padding: 9px 10px;
+  padding: 8px 10px 8px 8px;
   border: none;
-  border-radius: 12px;
+  border-radius: 13px;
   background: var(--ai-surface-container-high);
   color: var(--ai-text);
   font: inherit;
-  font-size: 12.5px;
   text-align: left;
   cursor: pointer;
   transition: background 0.13s ease;
 }
 
-.ai-pop-model:hover,
-.ai-pop-back:hover {
+.ai-pop-model:hover {
   background: var(--ai-field-bg);
 }
 
-.ai-pop-model-mark {
+.ai-pop-model-go {
   flex-shrink: 0;
-  color: var(--ai-primary);
+  color: var(--ai-text-secondary);
+  transition: transform 0.2s var(--ai-ease-out);
+}
+
+.ai-pop-model:hover .ai-pop-model-go {
+  transform: translateX(2px);
 }
 
 .ai-pop-model-name {
-  flex: 1;
   min-width: 0;
   overflow: hidden;
+  font-size: 13px;
   font-weight: 600;
   display: flex;
   align-items: center;
+}
+
+/* A model's mark. Initials in the monospace the empty conversation's
+   characters are drawn in, so the picker and the field behind it read as one
+   instrument; the operator's own picture takes its place when there is one. */
+.ai-model-tile {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--ai-field-bg);
+  color: var(--ai-text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.ai-model-tile img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.ai-pop-model-row.current .ai-model-tile {
+  background: var(--ai-primary);
+  color: var(--ai-primary-text);
+}
+
+/* The search row is the list's header: back, then what to type. One field
+   with the back control inside it, so the face has a single top edge rather
+   than a button stacked over a box. */
+.ai-pop-search {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px 3px 3px;
+  border-radius: 12px;
+  background: var(--ai-field-bg);
+  transition: box-shadow 0.15s ease;
+}
+
+.ai-pop-search:focus-within {
+  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+}
+
+.ai-pop-back {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ai-text-secondary);
+  cursor: pointer;
+  transition: background 0.13s ease, color 0.13s ease;
+}
+
+.ai-pop-back:hover {
+  background: var(--ai-state-hover);
+  color: var(--ai-text);
 }
 
 /* The back arrow is the same chevron the chip uses, turned to point away. */
@@ -2019,11 +2226,33 @@
   transform: rotate(90deg);
 }
 
+.ai-pop-search-icon {
+  flex: none;
+  color: var(--ai-text-secondary);
+}
+
+.ai-pop-search-input {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  padding: 0 4px;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--ai-text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.ai-pop-search-input::placeholder {
+  color: var(--ai-text-secondary);
+}
+
 .ai-pop-effort-head {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  padding: 0 4px;
+  padding: 4px 6px 0;
 }
 
 .ai-pop-effort-title {
@@ -2033,47 +2262,124 @@
   color: var(--ai-text-secondary);
 }
 
+/* Old and new labels share a cell, so switching slides through the same
+   place without replacing the whole label or changing the heading's height. */
 .ai-pop-effort-label {
+  display: grid;
+  text-align: right;
   font-size: 12.5px;
   font-weight: 600;
   color: var(--ai-text);
 }
 
+.ai-pop-effort-label > span { grid-area: 1 / 1; }
+
+.ai-effort-up-enter-active,
+.ai-effort-up-leave-active,
+.ai-effort-down-enter-active,
+.ai-effort-down-leave-active {
+  transition: 0.3s var(--ai-ease-loop);
+}
+
+.ai-effort-up-enter-from,
+.ai-effort-down-leave-to {
+  opacity: 0;
+  filter: blur(10px);
+  transform: translateY(8px);
+}
+
+.ai-effort-down-enter-from,
+.ai-effort-up-leave-to {
+  opacity: 0;
+  filter: blur(10px);
+  transform: translateY(-8px);
+}
+
+/* The stops, named under the track. The ends sit on the track's ends and the
+   middle ones between, which is where the thumb lands for them. */
+.ai-effort-scale {
+  display: flex;
+  justify-content: space-between;
+  padding: 0 6px 2px;
+  font-size: 10.5px;
+  color: var(--ai-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.ai-effort-scale > span {
+  transition: color 0.15s ease;
+}
+
+.ai-effort-scale > .on {
+  color: var(--ai-text);
+  font-weight: 600;
+}
+
 .ai-pop-note {
   margin: 0;
-  padding: 2px 4px 4px;
+  padding: 4px 6px 6px;
   font-size: 11.5px;
   line-height: 1.5;
   color: var(--ai-text-secondary);
 }
 
-.ai-pop-models {
+.ai-pop-models-wrap {
+  position: relative;
+  display: flex;
+  min-height: 0;
+}
+
+.ai-pop-models-wrap .oa-overlay-track {
+  right: -2px;
+}
+
+.ai-pop-models-inner {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  max-height: 260px;
+  gap: 1px;
+}
+
+/* No system scrollbar, so nothing takes width from the rows; the overlay
+   track beside them is OaScrollArea's. */
+.ai-pop-models {
+  flex: 1;
+  min-width: 0;
+  scrollbar-width: none;
+  @include hidden-scrollbar;
+  /* Bounded by the room above the chip, which ModelControl measures as it
+     opens, less what the rest of the face takes (search, header, sheet,
+     keys): the popover grows upwards from the composer, and a list of many
+     models ran off the top of the window. */
+  max-height: clamp(84px, var(--ai-pop-room, 600px) - 226px, 264px);
   overflow-y: auto;
 }
 
 .ai-pop-model-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 9px;
   width: 100%;
   box-sizing: border-box;
-  padding: 8px 10px;
+  padding: 5px 8px 5px 6px;
   border: none;
-  border-radius: 11px;
+  border-radius: 12px;
   background: transparent;
   color: var(--ai-text);
   font: inherit;
   text-align: left;
   cursor: pointer;
-  transition: background 0.13s ease;
+  transition: background 0.1s ease;
 }
 
-.ai-pop-model-row:hover:not(:disabled) {
-  background: var(--ai-surface-container-high);
+/* One highlighted row, whichever moved last: the pointer sets it as it
+   passes, the arrow keys from the search field set it too, so there are never
+   two rows lit at once the way a :hover beside a keyboard cursor would give. */
+.ai-pop-model-row.highlight:not(:disabled) {
+  background: var(--ai-state-hover);
+}
+
+.ai-pop-model-row.current .ai-pop-model-title {
+  font-weight: 600;
 }
 
 /* The popover's rows had no focus rule, so a keyboard user got the browser's
@@ -2096,6 +2402,117 @@
   display: flex;
   flex-direction: column;
   gap: 1px;
+}
+
+/* The list's header and its sheet are set the way a catalogue card is: a
+   small label and a monospace figure, divided by dashed hairlines rather
+   than boxes, so the popover is one sheet with sections, not cards in a card. */
+.ai-pop-section {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 2px var(--ai-pop-figure-edge) 0 6px;
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ai-text-secondary);
+}
+
+.ai-pop-count,
+.ai-pop-model-ctx,
+.ai-pop-spec dd {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.ai-pop-count {
+  font-size: 10.5px;
+  letter-spacing: 0;
+}
+
+.ai-pop-model-ctx {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--ai-text-secondary);
+}
+
+.ai-pop-spec {
+  margin: 0;
+  padding: 2px var(--ai-pop-figure-edge) 0 6px;
+  border-top: 1px dashed var(--ai-outline-variant);
+}
+
+.ai-pop-spec > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 0;
+  font-size: 11px;
+}
+
+.ai-pop-spec > div + div {
+  border-top: 1px dashed var(--ai-border);
+}
+
+.ai-pop-spec dt {
+  color: var(--ai-text-secondary);
+}
+
+.ai-pop-spec dd {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ai-text);
+  font-size: 11px;
+}
+
+.ai-pop-keys {
+  display: flex;
+  gap: 14px;
+  margin: 0 -6px -6px;
+  padding: 8px 12px;
+  border-top: 1px dashed var(--ai-outline-variant);
+  font-size: 11px;
+  color: var(--ai-text-secondary);
+}
+
+.ai-pop-keys > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.ai-pop-keys kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  box-sizing: border-box;
+  border-radius: 5px;
+  background: var(--ai-surface-container-high);
+  color: var(--ai-text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+}
+
+.ai-pop-keys kbd + kbd {
+  margin-left: -1px;
+}
+
+.ai-pop-keys kbd:last-of-type {
+  margin-right: 3px;
+}
+
+/* No keyboard, nothing to press. */
+@media (hover: none) {
+  .ai-pop-keys {
+    display: none;
+  }
 }
 
 /* Quiet, and above the box it is about. A model that is shaky is worth a
@@ -2147,189 +2564,75 @@
 
 .ai-effort {
   --effort-ratio: 0;
-  /* The thumb is deliberately taller than the track. Both the fill's width and
-     the thumb's position derive from this, so they cannot disagree about where
-     the value is — and because the thumb stands proud of the track, the fill it
-     is covering can never show as an edge around it. */
-  --effort-thumb: 28px;
-  --effort-glow: rgba(74, 108, 240, 0.5);
+  /* The handle's width. The meter's cells and the handle's position both
+     derive from the same ratio, so they cannot disagree about the value. */
+  --effort-thumb: 6px;
   position: relative;
-  height: 34px;
-  margin: 2px 2px 4px;
+  height: 32px;
+  margin: 2px 4px 2px;
 }
 
+/* Cells from the tokens only, so the meter takes the accent the whole
+   interface takes and needs nothing of its own in either scheme. It used to
+   be a blue-to-violet gradient with drifting motes, the one place in the
+   chat that hardcoded a hue. */
 .ai-effort-track {
   position: absolute;
-  inset: 5px 0;
-  border-radius: 999px;
+  inset: 6px 0;
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 2px;
+}
+
+.ai-effort-track > i {
+  flex: 1;
+  border-radius: 1.5px;
   background: var(--ai-field-bg);
+  transition: background 0.12s ease, opacity 0.12s ease, transform 0.2s var(--ai-ease-out);
 }
 
-/* Reaches the middle of the thumb, never past it and never short of it.
- *
- * Two backgrounds, not one: the colour along the bar, and a light falling on
- * it from above. The second is what stops it reading as a flat swatch — it is
- * the difference between a coloured rectangle and something with a surface.
- */
-.ai-effort-fill {
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: calc(var(--effort-thumb) / 2 + (100% - var(--effort-thumb)) * var(--effort-ratio));
-  overflow: hidden;
-  /* Rounded only where it starts. Its right end is always under the thumb, so
-     a radius there draws a curve inside a circle — two arcs meeting at
-     nothing, which is what makes the join look broken rather than seamless. */
-  border-radius: 999px 0 0 999px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.2) 0%, rgba(255, 255, 255, 0) 58%),
-    linear-gradient(90deg, #2b5fd9 0%, #4a6cf0 50%, #6f7ff5 100%);
-  /* Sized to the room it has, not to what looks best on its own. The
-     popover's body clips — it animates its own height — and the fill starts
-     10px from that edge, so a wider halo is a halo with a flat side. */
-  box-shadow: 0 0 9px -3px var(--effort-glow);
-  transition: width 0.18s var(--ai-ease-standard);
+.ai-effort-track > i.on {
+  background: var(--ai-text);
+  opacity: calc(0.35 + 0.65 * var(--cell));
 }
 
-/* The top of the range only. Nothing to fade between — a gradient cannot be
-   transitioned — and the step is the point: it should read as a different
-   setting, not as more of the same one. */
-.ai-effort.max {
-  --effort-glow: rgba(139, 92, 246, 0.55);
+/* At the top of the range the lit cells breathe in a wave, the dot matrix's
+   own motion: the most it will do should look like it is doing more. */
+.ai-effort.max .ai-effort-track > i.on {
+  animation: ai-dot-wave 1.6s var(--ai-ease-loop) calc(var(--cell) * 0.8s) infinite;
 }
 
-.ai-effort.max .ai-effort-fill {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.2) 0%, rgba(255, 255, 255, 0) 58%),
-    linear-gradient(90deg, #4338ca 0%, #6d4aef 50%, #a259f7 100%);
-}
-
-/* Off is an empty track with the thumb parked at its left end. The fill is
-   still half a thumb wide underneath — it has to be, for the geometry above to
-   hold at every other position — so it is hidden rather than resized. */
-.ai-effort.off .ai-effort-fill {
-  opacity: 0;
-}
-
-/* Motes drifting along the filled part, clipped by it.
- *
- * Two layers rather than one, at different tile widths and different speeds.
- * A single tiled layer reads as wallpaper: the eye finds the repeat in a
- * second and the bar stops looking like anything. Two coprime tiles moving at
- * different rates have a combined period far longer than the bar is wide, and
- * the speed difference reads as depth.
- *
- * Each mote is a soft falloff rather than a hard disc, so it blooms into the
- * colour underneath instead of sitting on top of it as a dot.
- */
-.ai-effort-sparks,
-.ai-effort-sparks::before {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  width: 200%;
-  background-repeat: repeat-x;
-}
-
-.ai-effort-sparks {
-  background-image:
-    radial-gradient(circle 1.4px at 8% 30%, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0.28) 45%, transparent 100%),
-    radial-gradient(circle 1px at 26% 68%, rgba(255, 255, 255, 0.6), transparent 100%),
-    radial-gradient(circle 1.6px at 47% 22%, rgba(255, 255, 255, 0.95), rgba(255, 255, 255, 0.3) 45%, transparent 100%),
-    radial-gradient(circle 1px at 63% 78%, rgba(255, 255, 255, 0.5), transparent 100%),
-    radial-gradient(circle 1.2px at 81% 44%, rgba(255, 255, 255, 0.75), transparent 100%);
-  background-size: 97px 100%;
-  animation: ai-effort-drift-far 6.5s linear infinite;
-}
-
-.ai-effort-sparks::before {
-  content: '';
-  background-image:
-    radial-gradient(circle 0.9px at 15% 58%, rgba(255, 255, 255, 0.55), transparent 100%),
-    radial-gradient(circle 1.3px at 38% 34%, rgba(255, 255, 255, 0.8), rgba(255, 255, 255, 0.2) 50%, transparent 100%),
-    radial-gradient(circle 0.8px at 58% 72%, rgba(255, 255, 255, 0.45), transparent 100%),
-    radial-gradient(circle 1.1px at 74% 26%, rgba(255, 255, 255, 0.7), transparent 100%),
-    radial-gradient(circle 0.9px at 92% 62%, rgba(255, 255, 255, 0.5), transparent 100%);
-  background-size: 61px 100%;
-  animation: ai-effort-drift-near 4s linear infinite;
-}
-
-.ai-effort.off .ai-effort-sparks {
-  display: none;
-}
-
-/* One slow pass of light, so the fill reads as active rather than painted. */
-.ai-effort-fill::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(
-    100deg,
-    transparent 35%,
-    rgba(255, 255, 255, 0.26) 50%,
-    transparent 65%
-  );
-  transform: translateX(-100%);
-  animation: ai-effort-sheen 3.6s ease-in-out infinite;
-}
-
-.ai-effort.off .ai-effort-fill::after {
-  animation: none;
-}
-
-/* Moved by exactly one tile, so the loop is seamless — and by transform, so
-   it runs on the compositor rather than repainting the fill every frame. */
-@keyframes ai-effort-drift-far {
-  from {
-    transform: translateX(0);
-  }
-  to {
-    transform: translateX(-97px);
-  }
-}
-
-@keyframes ai-effort-drift-near {
-  from {
-    transform: translateX(0);
-  }
-  to {
-    transform: translateX(-61px);
-  }
-}
-
-@keyframes ai-effort-sheen {
-  0%,
-  58% {
-    transform: translateX(-100%);
-  }
-  100% {
-    transform: translateX(100%);
-  }
-}
-
-/* Always white, whatever the scheme and whatever the fill is doing: it is the
-   one thing on the bar that has to be findable at a glance. */
+/* A slim bar standing proud of the cells, findable at a glance in either
+   scheme because it is the one solid thing on the meter. */
 .ai-effort-thumb {
   position: absolute;
   top: 50%;
   left: calc(var(--effort-thumb) / 2 + (100% - var(--effort-thumb)) * var(--effort-ratio));
   width: var(--effort-thumb);
-  height: var(--effort-thumb);
-  border-radius: 50%;
-  background: #ffffff;
-  box-shadow:
-    0 2px 5px rgba(0, 0, 0, 0.35),
-    0 0 0 1px rgba(0, 0, 0, 0.05);
+  height: 30px;
+  border-radius: 999px;
+  background: var(--ai-primary);
+  box-shadow: 0 0 0 3px var(--ai-surface-container), 0 2px 6px rgba(0, 0, 0, 0.25);
   transform: translate(-50%, -50%);
-  transition: left 0.18s var(--ai-ease-standard);
+  transition: left 0.18s var(--ai-ease-standard), height 0.18s var(--ai-ease-out);
   pointer-events: none;
+}
+
+.ai-effort.dragging .ai-effort-thumb {
+  height: 34px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-effort.max .ai-effort-track > i.on {
+    animation: none;
+  }
 }
 
 /* While a pointer is on it, the fill and the thumb follow it exactly. The
    easing that makes a keyboard step look deliberate is the same easing that
    makes a drag feel like it is lagging, because it is: each move starts a
    transition the next move interrupts. */
-.ai-effort.dragging .ai-effort-fill,
 .ai-effort.dragging .ai-effort-thumb {
   transition: none;
 }
@@ -2367,17 +2670,16 @@
 }
 
 .ai-effort:has(.ai-effort-range:focus-visible) .ai-effort-thumb {
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+  box-shadow: 0 0 0 3px var(--ai-surface-container), 0 0 0 6px var(--ai-focus-shadow);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ai-effort-sparks,
-  .ai-effort-sparks::before,
-  .ai-effort-fill::after {
-    animation: none;
-  }
+  .ai-effort-up-leave-active,
+  .ai-effort-down-leave-active { display: none; }
 
-  .ai-effort-fill,
+  .ai-pop-effort-label > span { transition: none; }
+
+  .ai-effort-track > i,
   .ai-effort-thumb,
   .ai-model-pop-body {
     transition: none;

@@ -29,6 +29,7 @@ vi.mock('@/api/projects', async (importOriginal) => ({
 }));
 
 const ProjectList = (await import('../src/chat/ProjectList.vue')).default;
+const { loadProjects, resetProjects } = await import('../src/stores/projects');
 const { conversations } = await import('../src/chat/useChat');
 
 let app: App | null = null;
@@ -48,6 +49,8 @@ describe('the project list after a turn', () => {
   });
 
   it('keeps an open project listed while it is read again', async () => {
+    resetProjects();
+    await loadProjects(); // The rail loads the folder list before mounting its content.
     app = createApp(ProjectList);
     app.mount(host);
     await settle();

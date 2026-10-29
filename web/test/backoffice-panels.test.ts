@@ -118,6 +118,7 @@ function openAccountCategory(): void {
 
 async function chooseFromAccountMenu(title: string): Promise<void> {
   host.querySelector<HTMLButtonElement>('.oa-account-btn')!.click();
+  await vi.waitFor(() => expect(host.querySelector('.oa-acct-head')).not.toBeNull());
   await settle();
   const item = [...document.querySelectorAll<HTMLButtonElement>('.oa-menu-item')]
     .find((node) => node.querySelector('.oa-menu-item-title')?.textContent?.trim() === title);

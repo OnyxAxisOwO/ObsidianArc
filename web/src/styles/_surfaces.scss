@@ -2190,16 +2190,6 @@
   font-size: 12.5px;
 }
 
-/* The rest of this switch is .oa-slide-tabs; the rail is narrower than the
-   image lab's panel, so its tabs are the smaller size. It stays in this file,
-   after .oa-slide-tab, while the rest of the rail's project rules live in
-   _chat.scss: .oa-slide-tab's `font: inherit` would otherwise win the tie
-   and reset the size. */
-.ai-sidebar-tab {
-  padding: 6px 10px;
-  font-size: 12px;
-}
-
 /* Tighten top padding for image lab panel so form starts right under the title. */
 .oa-panel-body.oa-image-lab-body {
   padding-top: 6px;
