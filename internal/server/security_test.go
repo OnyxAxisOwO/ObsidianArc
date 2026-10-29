@@ -155,6 +155,7 @@ func TestAdminRoutesRequireAnAdministrator(t *testing.T) {
 		body   any
 	}{
 		{http.MethodGet, "/api/admin/dashboard", nil},
+		{http.MethodPost, "/api/admin/assistant", map[string]any{}},
 		{http.MethodGet, "/api/admin/invites", nil},
 		{http.MethodPost, "/api/admin/invites", map[string]any{"count": 1}},
 		{http.MethodDelete, "/api/admin/invites/01ARZ3NDEKTSV4RRFFQ69G5FAV", nil},

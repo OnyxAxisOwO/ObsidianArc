@@ -1072,6 +1072,8 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// The commands of plugins installed as packages are added to it now, and
 	// as they arrive and leave.
 	plugins.AttachConsole(consoleEngine)
+	adminHandlers.AssistantChat = chatService
+	adminHandlers.AssistantConsole = consoleEngine
 
 	// Who may hold a console at all; see consoleAdmits for the rule.
 	consoleAllowed := func(ctx context.Context, account user.User) (bool, error) {

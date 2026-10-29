@@ -1,0 +1,78 @@
+/* The assistant borrows the chat's reading column and composer. Only its
+   management controls belong here, so ordinary chat pays for none of them. */
+.oa-assistant {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.oa-assistant-mark { color: var(--ai-primary); margin-bottom: 16px; }
+/* Rune uses the theme's accent for its circuit field; its reading mask and
+   entrance remain the same ones the main conversation already uses. */
+.oa-assistant .oa-rune-field { color: var(--ai-primary); }
+.oa-assistant-mode { display: inline-flex; align-items: center; gap: 6px; }
+.oa-assistant-modes { width: min(340px, calc(100vw - 32px)); }
+/* The heading describes the whole menu; its own quiet row keeps it from
+   reading as a cramped fourth option beside the selected mode. */
+.oa-assistant-modes-title {
+  padding: 8px 10px 10px;
+  margin-bottom: 4px;
+  color: var(--ai-text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.5;
+  letter-spacing: 0.04em;
+}
+/* A mode explains the authority it grants; clipping that sentence would
+   hide the difference between automatic queries and automatic changes. */
+.oa-assistant-modes .oa-menu-item-sub { white-space: normal; overflow: visible; text-overflow: clip; }
+.oa-assistant-history { max-height: 320px; overflow-y: auto; }
+.oa-assistant-session-hint {
+  margin: -10px 24px 14px;
+  font-size: 11px;
+  text-align: center;
+  color: var(--ai-text-secondary);
+}
+
+.oa-assistant-action {
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: var(--ai-surface-container-high);
+  font-size: 12px;
+}
+.oa-assistant-action-head { display: flex; align-items: center; gap: 8px; color: var(--ai-text-secondary); }
+.oa-assistant-command,
+.oa-assistant-output {
+  margin: 10px 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.oa-assistant-output { max-height: 240px; overflow-y: auto; }
+.oa-assistant-action-buttons { display: flex; gap: 8px; margin-top: 12px; }
+
+/* The result borrows reasoning's grid-height transition, with the interface's
+   line chevron instead of a font-dependent native disclosure marker. */
+.oa-assistant-result-toggle { gap: 8px; }
+.oa-assistant-result-toggle::before { display: none; }
+.oa-assistant-result-chevron {
+  flex-shrink: 0;
+  transform: rotate(-90deg);
+  transition: transform 0.34s var(--ai-ease-out);
+}
+.oa-assistant-result.open .oa-assistant-result-chevron { transform: rotate(0); }
+.oa-assistant-result-body { min-height: 0; overflow: hidden; }
+
+@media (prefers-reduced-motion: reduce) {
+  .oa-assistant-result .ai-thinking-content,
+  .oa-assistant-result-chevron { transition: none; }
+}
+
+/* The model picker and work mode still need room at phone widths. */
+@media (max-width: 600px) {
+  .oa-assistant .ai-chat-composer-row { flex-wrap: wrap; }
+  .oa-assistant .ai-chat-composer-tools { min-width: 0; }
+}

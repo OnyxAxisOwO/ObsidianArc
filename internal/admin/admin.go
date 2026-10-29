@@ -24,6 +24,8 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/audit"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/card"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/chat"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/console"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/feedback"
@@ -70,6 +72,10 @@ type Handlers struct {
 	feedback      *feedback.Store
 	apps          *idp.Store
 	invites       *invite.Store
+	// The assistant uses the same model accounting and command catalogue as
+	// the chat and terminal; it never owns a second privileged dispatcher.
+	AssistantChat    *chat.Service
+	AssistantConsole *console.Console
 	// Mail owns the database override and the live sender. Set by server
 	// wiring so environment fallbacks and administrator saves share one path.
 	Mail *mail.Manager
@@ -291,6 +297,7 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	h.routed = true
 
 	mux.Handle("GET /api/admin/dashboard", protected("dashboard", h.dashboard))
+	mux.Handle("POST /api/admin/assistant", protected("", h.assistant))
 	mux.Handle("GET /api/admin/resources", protected("resources", h.resources))
 	mux.Handle("GET /api/admin/health", protected("availability", h.modelHealth))
 	mux.Handle("POST /api/admin/health/probe", protected("availability", h.probeAllHealth))

@@ -881,10 +881,19 @@ describe('the screens the mounted application draws', () => {
       // Backup joins terminal, invites and leaderboard on the rail, and is
       // super-admin-only because it contains the whole instance; bonus and
       // check-in sit beside usage; the audit trail follows the request log; the
-      // plugins screen is the last of the core's pages.
-      expect(host.querySelectorAll('.oa-admin-nav')).toHaveLength(20);
+      // plugins screen is the last of the core's pages; Rune follows overview.
+      expect(host.querySelectorAll('.oa-admin-nav')).toHaveLength(21);
       expect(host.querySelector('a[href="/admin/administrators"]')).toBeNull();
       expect(document.activeElement).toBe(trigger);
+    });
+
+    it('opens Rune below overview for a delegated administrator without a dashboard grant', async () => {
+      adopt({ ...ACCOUNT, role: 'admin', admin_permissions: ['users'] });
+      await mountAt('/admin/assistant');
+      const links = [...host.querySelectorAll<HTMLAnchorElement>('.oa-admin-nav')];
+      expect(links.slice(0, 2).map((link) => link.getAttribute('href'))).toEqual(['/admin', '/admin/assistant']);
+      expect(host.querySelector('.oa-assistant')).not.toBeNull();
+      expect(host.querySelector('.oa-permission-empty')).toBeNull();
     });
 
     it('mounts the uptime panel when navigated to and toggles accordion cards', async () => {

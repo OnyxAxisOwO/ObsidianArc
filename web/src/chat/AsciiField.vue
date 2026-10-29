@@ -47,6 +47,8 @@ interface Ripple {
 let ctx: CanvasRenderingContext2D | null = null;
 let cols = 0;
 let rows = 0;
+let width = 0;
+let height = 0;
 let field = new Float32Array(0);
 let dust = new Float32Array(0);
 let wanderers: Wanderer[] = [];
@@ -78,7 +80,9 @@ function resize(): void {
   const node = canvas.value;
   if (!node || !ctx) return;
   const ratio = window.devicePixelRatio || 1;
-  const { width, height } = node.getBoundingClientRect();
+  // ResizeObserver owns geometry; decoration must not measure layout on
+  // every animation frame while the composer is accepting input.
+  ({ width, height } = node.getBoundingClientRect());
   node.width = Math.round(width * ratio);
   node.height = Math.round(height * ratio);
   ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
@@ -177,7 +181,6 @@ function draw(now: number): void {
     }
   }
 
-  const { width, height } = node.getBoundingClientRect();
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = colour;
   ctx.font = `11px ui-monospace, SFMono-Regular, Menlo, monospace`;

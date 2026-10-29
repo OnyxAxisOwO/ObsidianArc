@@ -47,6 +47,7 @@ import { BACKOFFICE_PANEL_PARAM, provideBackofficePanels } from '@/composables/u
 import { resolveSidePanel } from '@/views/panels';
 
 import AdminDashboard from './AdminDashboard.vue';
+import AdminAssistant from './AdminAssistant.vue';
 import AdminUsers from './AdminUsers.vue';
 import AdminGroups from './AdminGroups.vue';
 import AdminProviders from './AdminProviders.vue';
@@ -74,6 +75,7 @@ import { loadUpdateStatus } from '@/admin/update';
 // evaluated at import time — before the language is known.
 const PAGES: AdminPageSpec[] = [
   { slug: '', label: 'navDashboard', icon: IconHome, component: markRaw(AdminDashboard) },
+  { slug: 'assistant', label: 'navAssistant', icon: IconSpark, component: markRaw(AdminAssistant), permission: '', keywords: ['AI', '助手', 'assistant', 'agent'] },
   { slug: 'users', label: 'navUsers', icon: IconUsers, component: markRaw(AdminUsers) },
   { slug: 'groups', label: 'navGroups', icon: IconLayers, component: markRaw(AdminGroups) },
   { slug: 'providers', label: 'navProviders', icon: IconServer, component: markRaw(AdminProviders) },
@@ -232,6 +234,7 @@ function pageLink(page: AdminPageSpec, hash = ''): RouteLocationRaw {
 // the super admin.
 const allowed = computed(() => {
   const needs = current.value.permission ?? (current.value.slug || 'dashboard');
+  if (needs === '') return isAdmin.value;
   return needs === '*' ? isSuperAdmin.value : needs.split(',').some((grant) => canAdmin(grant.trim()));
 });
 
@@ -531,7 +534,13 @@ onMounted(() => {
         <span class="oa-admin-head-spacer" />
       </div>
 
+      <component
+        v-if="current.slug === 'assistant' && allowed && !gated && visit === 'open'"
+        :is="current.component"
+        :key="bodyKey"
+      />
       <OaScrollArea
+        v-else
         ref="bodyScroll"
         wrap-class="oa-admin-body-wrap"
         scroll-class="oa-admin-body"
