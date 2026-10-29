@@ -227,7 +227,7 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 28.12 MB (24.42 MB `-tags nosqlite`, Linux amd64, Go 1.27.3), 0.41 MB of it the frontend's brotli copies and 0.41 MB the embedded zone database; this repository ships no plugin |
+| Binary (SQLite + embedded SPA) | < 30 MB | 28.12 MB (24.41 MB `-tags nosqlite`, Linux amd64, Go 1.27.3), 0.41 MB of it the frontend's brotli copies and 0.41 MB the embedded zone database; this repository ships no plugin |
 | Frontend, on the wire | < 135 kB | 173.50 kB to open the chat with brotli (153.33 JS + 20.17 CSS); 206.67 kB with gzip (182.96 JS + 23.71 CSS), which the budget holds; the brotli is a copy compressed at build time, the gzip is Go's, made as it goes out |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
@@ -243,7 +243,7 @@ Backoffice frame styles travel with the backoffice. First paint is 206.67 kB wit
 (182.96 JS + 23.71 CSS), 173.50 kB with brotli (153.33 JS + 20.17 CSS).
 The backoffice adds 178.43 kB JS + 15.72 kB CSS with gzip; its Chinese adds
 38.24 kB. Linux amd64, Go 1.27.3, `-trimpath -ldflags '-s -w'` produces
-28,115,104 bytes (24,416,416 without SQLite); the brotli copies total
+28,115,104 bytes (24,412,320 without SQLite); the brotli copies total
 412,713 bytes. These are the figures used in the current tables.
 
 Rune uses a permission-filtered console catalogue and the existing command

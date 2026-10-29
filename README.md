@@ -171,7 +171,7 @@ Online documentation is hosted on Cloudflare Pages:
 
 | 指标 / Metric | 实测数据 / Measurement |
 | --- | --- |
-| 二进制体积 / Binary size | 28.12 MB（Linux amd64，本仓库不自带插件，其中插件运行时约 2.8 MB，构建时预压缩的 brotli 前端副本约 0.41 MB，内嵌的时区数据约 0.41 MB；使用 `-tags nosqlite` 为 24.42 MB） |
+| 二进制体积 / Binary size | 28.12 MB（Linux amd64，本仓库不自带插件，其中插件运行时约 2.8 MB，构建时预压缩的 brotli 前端副本约 0.41 MB，内嵌的时区数据约 0.41 MB；使用 `-tags nosqlite` 为 24.41 MB） |
 | 冷启动就绪时间 / Cold start | ~28 ms |
 | 空闲内存占用 / Idle RSS | ~16 MB |
 | 20 并发流式峰值 / Peak under 20 concurrency | ~54 MB 内存，11 个 OS 线程 |

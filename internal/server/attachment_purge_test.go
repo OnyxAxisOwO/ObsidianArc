@@ -52,7 +52,7 @@ func TestOnlyOneInstanceClaimsTheDailyPurge(t *testing.T) {
 			go func(s *Server) {
 				defer wg.Done()
 				<-start
-				claim, err := s.claimDailyPurge(ctx, "00:00", time.Now())
+				claim, err := s.claimDailyPurge(ctx, "00:00")
 				if err != nil {
 					t.Errorf("claim: %v", err)
 					return
@@ -84,7 +84,7 @@ func TestAStaleInstanceSkipsAPurgeAnotherHasRun(t *testing.T) {
 	ctx := context.Background()
 
 	first.sweepAttachments(ctx)
-	if claim, err := second.claimDailyPurge(ctx, "00:00", time.Now()); err != nil {
+	if claim, err := second.claimDailyPurge(ctx, "00:00"); err != nil {
 		t.Fatal(err)
 	} else if claim.decision != conversation.DecisionSkip {
 		t.Fatalf("second instance decided %v after the first ran today's purge, want skip", claim.decision)
@@ -97,7 +97,7 @@ func TestAReleasedPurgeClaimIsOwedAgain(t *testing.T) {
 	first, _ := twoInstancesOwingAPurge(t)
 	ctx := context.Background()
 
-	claim, err := first.claimDailyPurge(ctx, "00:00", time.Now())
+	claim, err := first.claimDailyPurge(ctx, "00:00")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestAReleasedPurgeClaimIsOwedAgain(t *testing.T) {
 	if got := first.settings.Get(settings.AttachmentPurgeLast); got != strconv.FormatInt(claim.previous, 10) {
 		t.Fatalf("cache holds %q after the release, want %d", got, claim.previous)
 	}
-	again, err := first.claimDailyPurge(ctx, "00:00", time.Now())
+	again, err := first.claimDailyPurge(ctx, "00:00")
 	if err != nil {
 		t.Fatal(err)
 	}

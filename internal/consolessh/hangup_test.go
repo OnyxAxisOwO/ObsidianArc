@@ -322,6 +322,13 @@ func TestSSHFinishedHandshakesGiveTheirAllowanceBack(t *testing.T) {
 	})
 	for i := 0; i < 3; i++ {
 		dialInsecure(t, srv, "admin", "s3cret-pass")
+		// The client can read auth success before NewServerConn returns on
+		// the server. Wait for that handshake to finish before starting another.
+		waitFor(t, "the authenticated handshake to release its slot", 3*time.Second, func() bool {
+			srv.mu.Lock()
+			defer srv.mu.Unlock()
+			return srv.preauth == 0
+		})
 	}
 }
 

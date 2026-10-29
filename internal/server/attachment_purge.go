@@ -37,7 +37,7 @@ type purgeClaim struct {
 // The purge itself runs after the commit. It is one UPDATE over every
 // attachment, and holding the instance lock across it would queue
 // registrations and demotions behind a cleanup.
-func (s *Server) claimDailyPurge(ctx context.Context, dailyAt string, now time.Time) (purgeClaim, error) {
+func (s *Server) claimDailyPurge(ctx context.Context, dailyAt string) (purgeClaim, error) {
 	// Nothing configured is decided without the lock, so an instance with no
 	// daily purge never takes the row on its ten-minute tick.
 	if _, _, ok := conversation.ParseDailyTime(dailyAt); !ok {
@@ -45,12 +45,16 @@ func (s *Server) claimDailyPurge(ctx context.Context, dailyAt string, now time.T
 	}
 
 	var claim purgeClaim
-	written := strconv.FormatInt(now.UnixMilli(), 10)
 	err := s.deps.DB.Tx(ctx, func(tx *database.Tx) error {
 		claim = purgeClaim{}
 		if err := settings.Lock(ctx, tx); err != nil {
 			return err
 		}
+		// Sample after the lock: a contender may have captured an earlier time
+		// but acquired the row after a newer claim. Its stale time would treat
+		// that claim as a clock correction and purge the same day again.
+		now := time.Now()
+		written := strconv.FormatInt(now.UnixMilli(), 10)
 		var stored string
 		err := tx.QueryRow(ctx, `SELECT value FROM settings WHERE key = ?`,
 			settings.AttachmentPurgeLast).Scan(&stored)

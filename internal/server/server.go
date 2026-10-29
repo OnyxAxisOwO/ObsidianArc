@@ -1655,7 +1655,7 @@ func (s *Server) sweepAttachments(ctx context.Context) {
 		DailyAt:   s.settings.Get(settings.AttachmentPurgeDaily),
 		OrphanTTL: time.Duration(s.settings.Int(settings.AttachmentOrphanMins, 60)) * time.Minute,
 	}
-	claim, err := s.claimDailyPurge(ctx, policy.DailyAt, time.Now())
+	claim, err := s.claimDailyPurge(ctx, policy.DailyAt)
 	if err != nil {
 		slog.ErrorContext(ctx, "could not record the attachment purge time", "error", err)
 	}

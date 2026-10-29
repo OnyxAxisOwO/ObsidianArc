@@ -1041,7 +1041,9 @@ func TestParallelResendsLeaveWithOneLink(t *testing.T) {
 	var deliveredErr error
 	select {
 	case deliveredErr = <-results:
-	case <-time.After(5 * time.Second):
+	// Failed delivery has its own five-second database cleanup deadline;
+	// an equal test deadline races that cleanup on a loaded runner.
+	case <-time.After(15 * time.Second):
 		t.Fatal("held mail request did not return after the connection closed")
 	}
 	wg.Wait()
