@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createApp, nextTick, type App } from 'vue';
 import ChatComposer from '../src/chat/ChatComposer.vue';
-import { draft, flash, resetChat } from '../src/chat/useChat';
+import { activeID, draft, flash, openingID, resetChat, webSearchOn } from '../src/chat/useChat';
 import { models, selectedID } from '../src/chat/useModels';
 import { t } from '../src/composables/useI18n';
+import type { SiteInfo } from '../src/api/auth';
+import { site } from '../src/stores/session';
 
 describe('ChatComposer layout and multiline behavior', () => {
   let app: App | null = null;
@@ -20,6 +22,8 @@ describe('ChatComposer layout and multiline behavior', () => {
     app = null;
     draft.value = '';
     resetChat();
+    models.value = [];
+    selectedID.value = '';
   });
 
   it('renders textarea above the actions row so multiline prompts use full width', () => {
@@ -50,6 +54,19 @@ describe('ChatComposer layout and multiline behavior', () => {
     expect(tools?.querySelector('.ai-chat-send')).not.toBeNull();
   });
 
+  it('does not offer to send while the next conversation is being read', () => {
+    models.value = [{ id: 'm', display_name: 'M' } as (typeof models.value)[number]];
+    selectedID.value = 'm';
+    activeID.value = 'B';
+    openingID.value = 'B';
+    app = createApp(ChatComposer);
+    app.mount(host);
+
+    const send = host.querySelector<HTMLButtonElement>('.ai-chat-send');
+    expect(send).not.toBeNull();
+    expect(send!.disabled).toBe(true);
+  });
+
   it('resizes textarea when typing multiple lines without shifting buttons inline with text', async () => {
     app = createApp(ChatComposer);
     app.mount(host);
@@ -74,6 +91,48 @@ describe('ChatComposer layout and multiline behavior', () => {
     await nextTick();
 
     expect(textarea.style.height).toBe('28px');
+  });
+});
+
+// The switch is drawn from the instance's public setting, not from a local
+// preference: an operator who turns web search off takes the control away
+// from every composer on the next page load.
+describe('the web search switch', () => {
+  let app: App | null = null;
+  let host: HTMLElement;
+
+  beforeEach(() => {
+    document.body.textContent = '';
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    models.value = [{ id: 'm', display_name: 'M' } as (typeof models.value)[number]];
+    selectedID.value = 'm';
+  });
+
+  afterEach(() => {
+    app?.unmount();
+    app = null;
+    site.value = null;
+    resetChat();
+  });
+
+  it('is hidden while the instance does not offer it, and toggles when it does', async () => {
+    site.value = { web_search: false } as unknown as SiteInfo;
+    app = createApp(ChatComposer);
+    app.mount(host);
+    expect(host.querySelector('.ai-chat-websearch')).toBeNull();
+
+    site.value = { web_search: true } as unknown as SiteInfo;
+    await nextTick();
+    const button = host.querySelector<HTMLButtonElement>('.ai-chat-websearch');
+    expect(button).not.toBeNull();
+    expect(button?.getAttribute('aria-pressed')).toBe('false');
+
+    button?.click();
+    await nextTick();
+    expect(webSearchOn.value).toBe(true);
+    expect(button?.getAttribute('aria-pressed')).toBe('true');
+    expect(button?.classList.contains('on')).toBe(true);
   });
 });
 

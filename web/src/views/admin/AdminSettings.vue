@@ -77,7 +77,8 @@ const SEARCH_GROUPS = {
   ],
   secChat: [
     'secChat', 'instanceSystemPrompt', 'instanceSystemPromptHint', 'turnsResent', 'turnsResentHint',
-    'chatAllowArchive', 'chatAllowArchiveHint',
+    'chatAllowArchive', 'chatAllowArchiveHint', 'webSearch', 'webSearchHint', 'webSearchEndpoint',
+    'webSearchEndpointHint', 'webSearchResults', 'webSearchResultsHint',
   ],
   secLimits: [
     'secLimits', 'adminsIgnoreLimits', 'adminsIgnoreLimitsHint', 'maxConcurrentPerUser', 'maxConcurrentPerUserHint',
@@ -204,6 +205,9 @@ const form = ref({
   systemPrompt: '',
   maxTurns: MAX_TURNS_DEFAULT as number | null,
   allowArchive: true,
+  webSearch: false,
+  webSearchEndpoint: 'https://www.bing.com/search',
+  webSearchResults: 5 as number | null,
   adminBypass: false,
   maxConcurrent: MAX_CONCURRENT_DEFAULT as number | null,
   usageDisplay: 'absolute',
@@ -296,6 +300,9 @@ function collect(): Record<string, string> {
     'chat.default_system_prompt': form.value.systemPrompt.trim(),
     'chat.max_turns': String(form.value.maxTurns ?? MAX_TURNS_DEFAULT),
     'chat.allow_archive': String(form.value.allowArchive),
+    'chat.web_search': String(form.value.webSearch),
+    'chat.web_search_endpoint': form.value.webSearchEndpoint.trim(),
+    'chat.web_search_results': String(form.value.webSearchResults ?? 5),
     'api.enabled': String(form.value.apiEnabled),
     'attachments.max_mb': String(form.value.attachmentMaxMB ?? 6),
     'attachments.retain': String(form.value.attachmentRetain),
@@ -583,6 +590,9 @@ async function load(): Promise<void> {
       systemPrompt: values['chat.default_system_prompt'] ?? '',
       maxTurns: Number(values['chat.max_turns'] ?? MAX_TURNS_DEFAULT),
       allowArchive: values['chat.allow_archive'] !== 'false',
+      webSearch: values['chat.web_search'] === 'true',
+      webSearchEndpoint: values['chat.web_search_endpoint'] ?? 'https://www.bing.com/search',
+      webSearchResults: Number(values['chat.web_search_results'] ?? 5),
       adminBypass: values['quota.admins_bypass'] === 'true',
       maxConcurrent: values['quota.max_concurrent'] !== undefined ? Number(values['quota.max_concurrent']) : MAX_CONCURRENT_DEFAULT,
       usageDisplay: values['quota.usage_display'] ?? 'absolute',
@@ -863,6 +873,26 @@ onMounted(load);
           v-model="form.allowArchive"
           :label="t('chatAllowArchive')"
           :hint="t('chatAllowArchiveHint')"
+        />
+        <OaSwitchField
+          v-model="form.webSearch"
+          :label="t('webSearch')"
+          :hint="t('webSearchHint')"
+        />
+        <OaTextField
+          v-if="form.webSearch"
+          v-model="form.webSearchEndpoint"
+          :label="t('webSearchEndpoint')"
+          :hint="t('webSearchEndpointHint')"
+          monospace
+        />
+        <OaNumberField
+          v-if="form.webSearch"
+          v-model="form.webSearchResults"
+          :label="t('webSearchResults')"
+          :min="1"
+          :max="10"
+          :hint="t('webSearchResultsHint', { max: 10 })"
         />
       </AdminControlCard>
       <AdminControlCard id="secAttachments" v-show="visible('secAttachments')" :title="t('secAttachments')" :icon="IconFile" :hint="t('attachmentsHint')">

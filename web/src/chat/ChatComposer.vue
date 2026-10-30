@@ -2,12 +2,13 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import OaIconButton from '@/components/OaIconButton.vue';
 import { t } from '@/composables/useI18n';
-import { IconClose, IconSend, IconStop } from '@/icons';
+import { IconClose, IconGlobe, IconSend, IconStop } from '@/icons';
 import ComposerMenu from './ComposerMenu.vue';
 import ModelControl from './ModelControl.vue';
 import {
   MAX_MESSAGE_CHARS, TEXT_FILE_ACCEPT, addImages, addTextFiles, attachments, busy,
-  draft, messages, removeAttachment, setFlash, status, stoppable, submit, stop,
+  draft, messages, opening, removeAttachment, setFlash, status, stoppable, submit, stop,
+  webSearchAvailable, webSearchOn,
 } from './useChat';
 import { captureComposerRect } from './useSendAnimation';
 
@@ -59,6 +60,10 @@ function onSend(event: MouseEvent): void {
     stop();
     return;
   }
+  // The rows on screen still belong to the previous conversation while the
+  // next one is read; submit would refuse, so the button is disabled and a
+  // keyboard submit has nothing to send either.
+  if (opening.value) return;
   captureComposerRect(input.value);
   void submit();
 }
@@ -80,6 +85,10 @@ function takeFiles(): void {
   const files = Array.from(node?.files ?? []);
   if (node) node.value = '';
   void addTextFiles(files);
+}
+
+function toggleWebSearch(): void {
+  webSearchOn.value = !webSearchOn.value;
 }
 
 defineExpose({
@@ -138,13 +147,26 @@ defineExpose({
       />
 
       <div class="ai-chat-composer-tools">
+        <!-- A per-message choice rather than a stored preference: the switch
+             is on the message that needs a search, and off again after it. -->
+        <OaIconButton
+          v-if="webSearchAvailable"
+          class="ai-chat-websearch"
+          :class="{ on: webSearchOn }"
+          :label="t(webSearchOn ? 'webSearchOn' : 'webSearchOff')"
+          :aria-pressed="webSearchOn"
+          :disabled="busy || !status.configured"
+          @click="toggleWebSearch"
+        >
+          <IconGlobe :size="16" />
+        </OaIconButton>
         <!-- What answers and how hard it thinks, beside the button that sends
              it — the decision and the act in the same place. -->
         <ModelControl />
         <OaIconButton
           class="ai-chat-send"
           :class="{ stop: stoppable }"
-          :disabled="busy ? !stoppable : !status.configured"
+          :disabled="busy ? !stoppable : opening || !status.configured"
           :label="t(stoppable ? 'stop' : 'send')"
           @click="onSend"
         >

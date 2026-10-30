@@ -102,6 +102,8 @@ export interface SiteInfo {
    *  Absent on an older server, which never drew one. */
   ascii_field?: boolean;
   allow_archive_conversations?: boolean;
+  /** Whether the operator offers the per-message web search switch. */
+  web_search?: boolean;
   // True while the instance has no accounts at all: the first person to
   // register becomes the administrator.
   setup_required: boolean;

@@ -62,6 +62,9 @@
 | `chat.default_system_prompt` | 空 | 默认系统提示词 |
 | `chat.max_turns` | `40` | 发送给上游的历史范围上限 |
 | `chat.allow_archive` | `true` | 是否允许用户归档会话 |
+| `chat.web_search` | `false` | 是否在输入框旁提供联网搜索开关 |
+| `chat.web_search_endpoint` | `https://www.bing.com/search` | 搜索地址；返回 JSON 的 SearXNG 兼容服务也可 |
+| `chat.web_search_results` | `5` | 每次交给模型的结果数，1–10 |
 
 访客试用只在 `landing.mode=chat` 时提供。`site` 是程序自带的官网首页，内容由程序提供，不读取 `landing.intro`；介绍页支持受控 HTML，首页通知则是纯文本，三者格式不同。详见[访客试用](../features/trial)。
 

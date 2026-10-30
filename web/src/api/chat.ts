@@ -140,6 +140,8 @@ interface TurnRequest {
   attachment_ids?: string[];
   reasoning?: { enabled: boolean; effort: string };
   truncate_from_message_id?: string;
+  /** Search the public web for this turn before asking the model. */
+  web_search?: boolean;
   turnstile?: string;
   /**
    * Which project a NEW conversation opens in. The server reads it only
@@ -156,6 +158,8 @@ export interface TurnHandlers {
     model_id: string;
     model_name: string;
   }): void;
+  /** The search happened before the first token; the answer has not started. */
+  onSearch?(payload: { results: number; failed?: boolean; searching?: boolean }): void;
   onDelta?(text: string): void;
   onReasoning?(text: string): void;
   onUsage?(usage: { input_tokens: number; output_tokens: number; reasoning_tokens: number }): void;
@@ -215,6 +219,9 @@ function dispatch({ event, data }: SSEEvent, handlers: TurnHandlers): void {
     case 'start':
       handlers.onStart?.(frame.payload);
       break;
+    case 'search':
+      handlers.onSearch?.(frame.payload);
+      break;
     // A text frame with no string in it would be joined into the answer as the
     // literal "undefined", so it is dropped rather than passed on.
     case 'delta': {
@@ -244,6 +251,7 @@ type HandlerPayload<K extends keyof TurnHandlers> = Parameters<NonNullable<TurnH
 // Each event the turn stream sends, with the payload that event carries.
 type TurnFrame =
   | { event: 'start'; payload: HandlerPayload<'onStart'> }
+  | { event: 'search'; payload: HandlerPayload<'onSearch'> }
   | { event: 'delta'; payload: { text?: unknown } }
   | { event: 'reasoning'; payload: { text?: unknown } }
   | { event: 'usage'; payload: HandlerPayload<'onUsage'> }

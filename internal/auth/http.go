@@ -244,6 +244,9 @@ func (h *Handlers) site(w http.ResponseWriter, r *http.Request) error {
 		"leaderboard_show_users":      h.settings.Bool(settings.LeaderboardShowUsers),
 		"ascii_field":                 h.settings.Bool(settings.ThemeAsciiField),
 		"allow_archive_conversations": allowArchive,
+		// Whether the composer should offer the per-message search switch.
+		// The endpoint and its address stay in the backoffice.
+		"web_search": h.settings.Bool(settings.WebSearch),
 		// So the sign-up form can mark the field required and say which
 		// addresses will be accepted, instead of finding out on submit.
 		// Neither applies to the first account.

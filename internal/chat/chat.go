@@ -89,7 +89,11 @@ type TurnRequest struct {
 	//	edit & resend — the user message, with the rewritten content
 	//	retry a failure — the failed assistant message, no content
 	TruncateFromMessageID string
-	Stream                bool
+	// Search the public web for this turn and hand the results to the model
+	// as reference material. Only honoured while the operator has the switch
+	// on; the handler refuses the turn otherwise.
+	WebSearch bool
+	Stream    bool
 	// Where a new conversation belongs, read only when one is created: the
 	// project of an existing thread is its own, and a later turn cannot
 	// move it.
@@ -132,6 +136,7 @@ const (
 // the client's reader and this file cannot drift.
 const (
 	EventStart     = "start"
+	EventSearch    = "search"
 	EventDelta     = "delta"
 	EventReasoning = "reasoning"
 	EventUsage     = "usage"
@@ -149,6 +154,16 @@ type StartPayload struct {
 
 type TextPayload struct {
 	Text string `json:"text"`
+}
+
+// SearchPayload is how the reader learns that the wait before the first token
+// included a search, without putting the query or the results themselves into
+// the stream. The first frame says the search has started; the second says how
+// it ended.
+type SearchPayload struct {
+	Searching bool `json:"searching,omitempty"`
+	Results   int  `json:"results"`
+	Failed    bool `json:"failed,omitempty"`
 }
 
 type UsagePayload struct {
@@ -286,7 +301,7 @@ func (s *Service) Run(ctx context.Context, req TurnRequest, resolved model.Resol
 		return abandon(err)
 	}
 
-	chatRequest, err := s.buildRequest(ctx, req, resolved, prepared)
+	chatRequest, err := s.buildRequest(ctx, req, resolved, prepared, emit)
 	if err != nil {
 		return abandon(err)
 	}
@@ -469,7 +484,7 @@ func (s *Service) systemPrompt(ctx context.Context, req TurnRequest, resolved mo
 }
 
 // buildRequest turns the stored transcript into what an adapter takes.
-func (s *Service) buildRequest(ctx context.Context, req TurnRequest, resolved model.Resolved, state prepared) (adapter.ChatRequest, error) {
+func (s *Service) buildRequest(ctx context.Context, req TurnRequest, resolved model.Resolved, state prepared, emit Emit) (adapter.ChatRequest, error) {
 	// A cap on how much history is re-sent, and therefore re-billed, on every
 	// turn, applied in the query along with leaving failed turns out — see
 	// conversation.Store.ForRequest for why neither is done here any more.
@@ -477,6 +492,44 @@ func (s *Service) buildRequest(ctx context.Context, req TurnRequest, resolved mo
 		s.settings.Int(settings.ConversationMaxTurns, 40))
 	if err != nil {
 		return adapter.ChatRequest{}, err
+	}
+
+	// Search before the provider call, so the model gets the results in the
+	// same request rather than spending a tool round on them. A failure is
+	// reported and then ignored: an answer without search is still worth
+	// having, and a search engine being down must not fail the whole turn.
+	system := s.systemPrompt(ctx, req, resolved, state)
+	if req.WebSearch {
+		// Results are reference material for the system prompt. A model whose
+		// adapter cannot carry one would pay for a search and never see it.
+		if !resolved.Upstream.SupportsSystemPrompt {
+			if emit != nil {
+				_ = emit(EventSearch, SearchPayload{Failed: true})
+			}
+		} else if query := searchQuery(req, usable); query != "" {
+			if emit != nil {
+				_ = emit(EventSearch, SearchPayload{Searching: true})
+			}
+			results, searchErr := s.webSearch(ctx, query)
+			if searchErr != nil {
+				slog.WarnContext(ctx, "web search failed", "error", searchErr)
+				if emit != nil {
+					_ = emit(EventSearch, SearchPayload{Failed: true})
+				}
+			} else {
+				if emit != nil {
+					_ = emit(EventSearch, SearchPayload{Results: len(results)})
+				}
+				if len(results) > 0 {
+					notes := webSearchContext(results)
+					if system == "" {
+						system = notes
+					} else {
+						system += "\n\n" + notes
+					}
+				}
+			}
+		}
 	}
 
 	// Collected after the trim, not before. Gathered first, this asked the
@@ -559,7 +612,7 @@ func (s *Service) buildRequest(ctx context.Context, req TurnRequest, resolved mo
 	// taken from the model they picked.
 	return adapter.ChatRequest{
 		Model:     resolved.Upstream.Spec(),
-		System:    s.systemPrompt(ctx, req, resolved, state),
+		System:    system,
 		Messages:  out,
 		MaxTokens: maxTokens,
 		Reasoning: reasoning,
