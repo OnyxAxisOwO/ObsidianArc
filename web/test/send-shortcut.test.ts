@@ -9,7 +9,7 @@ import * as auth from '../src/api/auth';
 import { adopt, currentPreferences, forget } from '../src/stores/session';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { sectionMatches } from '../src/views/settings/search';
-import { adminShell, button, mountComponent, settle } from './helpers';
+import { adminShell, mountComponent, settle } from './helpers';
 import { makeAccount } from './fixtures/account';
 
 vi.mock('../src/chat/useChat', async (original) => ({
@@ -86,14 +86,10 @@ describe.each([
 
 it('saves the shortcut to account preferences, restores it, and makes it searchable', async () => {
   unmount = await mountComponent(ChatSection);
-  expect(document.body.textContent).toContain(t('sendWithShiftEnter'));
+  const toggle = () => document.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+  expect(toggle().checked).toBe(false);
   expect(sectionMatches(t('sendShortcut'), 'chat')).toBe(true);
-
-  button(document, t('sendWithShiftEnter')).click();
-  await settle();
-  const enter = [...document.querySelectorAll<HTMLElement>('[role="option"]')]
-    .find((option) => option.textContent?.trim() === t('sendWithEnter'))!;
-  enter.click();
+  toggle().click();
   await settle();
   expect(auth.savePreferences).toHaveBeenLastCalledWith({ send_on_enter: true });
   expect(currentPreferences.value['send_on_enter']).toBe(true);
@@ -101,12 +97,8 @@ it('saves the shortcut to account preferences, restores it, and makes it searcha
   unmount();
   adopt(makeAccount(), { send_on_enter: true });
   unmount = await mountComponent(ChatSection);
-  expect(button(document, t('sendWithEnter'))).toBeDefined();
-  button(document, t('sendWithEnter')).click();
-  await settle();
-  const shiftEnter = [...document.querySelectorAll<HTMLElement>('[role="option"]')]
-    .find((option) => option.textContent?.trim() === t('sendWithShiftEnter'))!;
-  shiftEnter.click();
+  expect(toggle().checked).toBe(true);
+  toggle().click();
   await settle();
   expect(auth.savePreferences).toHaveBeenLastCalledWith({ send_on_enter: false });
   expect(currentPreferences.value['send_on_enter']).toBe(false);

@@ -3,7 +3,6 @@
 
 import { computed, onMounted, ref } from 'vue';
 import { api } from '@/api/client';
-import { sendOnEnter } from '@/chat/send-shortcut';
 import OaField from '@/components/OaField.vue';
 import OaGroup from '@/components/OaGroup.vue';
 import OaRow from '@/components/OaRow.vue';
@@ -42,13 +41,9 @@ const effortChoices = computed(() => [
 ]);
 const stats = ref(currentPreferences.value['show_stats'] === true);
 const sendShortcut = computed({
-  get: () => sendOnEnter.value ? 'enter' : 'shift-enter',
-  set: (value: string) => syncPreferences({ send_on_enter: value === 'enter' }),
+  get: () => currentPreferences.value['send_on_enter'] === true,
+  set: (value: boolean) => syncPreferences({ send_on_enter: value }),
 });
-const sendChoices = computed(() => [
-  { value: 'shift-enter', label: t('sendWithShiftEnter') },
-  { value: 'enter', label: t('sendWithEnter') },
-]);
 
 // Only offered where the group allows it. Hiding it is not the enforcement —
 // the chat checks the same permission before drawing the line — it is so
@@ -79,12 +74,9 @@ onMounted(() => {
 <template>
   <OaGroup :title="t('secChatDefaults')" :hint="t('chatDefaultsHint')">
     <OaRow stacked>
-      <OaSelectField
+      <OaSwitchField
         v-model="sendShortcut"
         :label="t('sendShortcut')"
-        :hint="t('sendShortcutHint')"
-        :options="sendChoices"
-        :searchable="false"
       />
     </OaRow>
 

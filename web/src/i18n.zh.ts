@@ -436,10 +436,7 @@ export const zh: Record<CoreKey, string> = {
   blur: '模糊',
 
   secChatDefaults: '对话',
-  sendShortcut: '发送快捷键',
-  sendShortcutHint: '适用于首页对话和 Rune。另一组按键用于换行。',
-  sendWithShiftEnter: 'Shift+Enter 发送',
-  sendWithEnter: 'Enter 发送',
+  sendShortcut: 'Enter 发送（关闭时用 Shift+Enter）',
   chatDefaultsHint: '新对话的默认设置。',
   defaultModel: '默认模型',
   firstAvailableModel: '第一个可用的模型',

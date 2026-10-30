@@ -14,7 +14,7 @@ const TERMS = {
   chat: [
     'secChatDefaults', 'chatDefaultsHint', 'defaultModel', 'defaultEffort', 'defaultEffortHint', 'effortLow',
     'effortMedium', 'effortHigh', 'showStats', 'showStatsHint',
-    'sendShortcut', 'sendShortcutHint', 'sendWithShiftEnter', 'sendWithEnter',
+    'sendShortcut',
   ],
   profile: [
     'secProfile', 'nickname', 'nicknameHint', 'email', 'bio', 'avatar',
