@@ -10,6 +10,7 @@ import {
   draft, messages, removeAttachment, setFlash, status, stoppable, submit, stop,
 } from './useChat';
 import { captureComposerRect } from './useSendAnimation';
+import { isSendKey } from './send-shortcut';
 
 const input = ref<HTMLTextAreaElement | null>(null);
 const imagePicker = ref<HTMLInputElement | null>(null);
@@ -28,7 +29,7 @@ watch(draft, () => void nextTick(resize));
 onMounted(resize);
 
 function onKeyDown(event: KeyboardEvent): void {
-  if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+  if (!isSendKey(event)) return;
   event.preventDefault();
   captureComposerRect(input.value);
   void submit();

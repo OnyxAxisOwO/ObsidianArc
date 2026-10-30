@@ -8,6 +8,7 @@ import { copyToClipboard } from '@/chat/markdown';
 import ModelControl from '@/chat/ModelControl.vue';
 import { currentModel, loadModels, reasoning, restorePreferences } from '@/chat/useModels';
 import { asciiFieldWanted } from '@/chat/useChat';
+import { isSendKey } from '@/chat/send-shortcut';
 import OaConfirmButton from '@/components/OaConfirmButton.vue';
 import OaIconButton from '@/components/OaIconButton.vue';
 import OaMenu from '@/components/OaMenu.vue';
@@ -64,7 +65,7 @@ function submit(): void {
 }
 function suggest(key: StringKey): void { draft.value = t(key); submit(); }
 function onKey(event: KeyboardEvent): void {
-  if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+  if (!isSendKey(event)) return;
   event.preventDefault();
   submit();
 }

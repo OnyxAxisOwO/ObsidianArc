@@ -353,7 +353,7 @@ describe('Telegram-style message send flight animation', () => {
     // Type a message and send
     input.value = 'Test hello';
     input.dispatchEvent(new Event('input'));
-    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true }));
 
     await nextTick();
     await nextTick();

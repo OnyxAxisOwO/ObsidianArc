@@ -440,6 +440,10 @@ const en = {
   blur: 'Blur',
 
   secChatDefaults: 'Chat',
+  sendShortcut: 'Send shortcut',
+  sendShortcutHint: 'Applies to chat and Rune. The other shortcut inserts a new line.',
+  sendWithShiftEnter: 'Shift+Enter to send',
+  sendWithEnter: 'Enter to send',
   chatDefaultsHint: 'What a new conversation starts with.',
   defaultModel: 'Default model',
   firstAvailableModel: 'The first available model',
