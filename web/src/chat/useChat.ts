@@ -75,11 +75,23 @@ const SUGGESTION_KEYS = [
 ] as const;
 
 /** A message being streamed, before it becomes a row. */
+/**
+ * What the server last said about this turn's search. Kept on the pending
+ * block rather than as a flash because it describes the wait the reader is
+ * in, and it goes away with the block when the first token arrives.
+ */
+export interface SearchState {
+  state: 'searching' | 'found' | 'empty' | 'failed';
+  count: number;
+}
+
 export interface Pending {
   answer: string;
   reasoning: string;
   /** When the turn was sent, so the timer under it counts from the send. */
   startedAt: number;
+  /** Null when this turn did not search. */
+  search: SearchState | null;
 }
 
 interface ComposerAttachment {
@@ -91,6 +103,23 @@ interface ComposerAttachment {
 
 export const conversations = ref<Conversation[]>([]);
 export const activeID = ref('');
+/**
+ * The conversation being read while the previous one's rows are still on
+ * screen. Nothing may be sent or saved against those rows meanwhile: they
+ * belong to the conversation the reader just left, not to `activeID`.
+ */
+export const openingID = ref('');
+/**
+ * Which open is the newest. A reader can leave a conversation and come back
+ * while the first read is still out; both reads then finish with the same
+ * `activeID`, so the id alone cannot tell the older one it has been replaced.
+ */
+let openRead = 0;
+/**
+ * Read against the open conversation, so a new chat started while an earlier
+ * read is still out is not held by it.
+ */
+export const opening = computed(() => openingID.value !== '' && openingID.value === activeID.value);
 /**
  * How long a switch's rise stays on, for the transcript and the rail's row.
  * A little over the 0.34s the rise animations in _chat.scss run, so their last
@@ -241,6 +270,16 @@ export const asciiFieldWanted = computed(
 );
 export const canDelete = computed(() => currentUser.value?.allow_delete_conversations !== false);
 export const canArchive = computed(() => currentUser.value?.allow_archive_conversations !== false);
+
+/**
+ * The per-message web search switch. Off on every sign-in: a search sends the
+ * question to the operator's search engine, so it is chosen for the message
+ * that needs it rather than remembered as a preference.
+ */
+export const webSearchOn = ref(false);
+export const webSearchAvailable = computed(
+  () => siteInfo.value.web_search === true && currentModel.value?.supports_system_prompt !== false,
+);
 
 /** What the composer and the transcript need to know about the chosen model. */
 export const status = computed(() => {
@@ -450,10 +489,17 @@ export const chatChallengeError = ref('');
  * was saved and the optimistic row is about to be replaced by the server copy.
  */
 export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done' | 'challenge' | 'unsent'> {
-  if (busy.value || !status.value.configured) return 'done';
+  if (busy.value || opening.value || !status.value.configured) return 'done';
   recentReasoningID.value = '';
   const account = generation;
   const conversationID = turn.conversationID ?? activeID.value;
+  // Read once: the switch can be flipped while the stream is open, and the
+  // request and the block under it must agree about what was sent.
+  const searchThisTurn = webSearchOn.value && webSearchAvailable.value;
+  // The choice belongs to this message. Clearing it now means the next turn
+  // starts from off even while this one is still streaming, which is what
+  // makes the switch a per-message choice rather than a hidden preference.
+  webSearchOn.value = false;
 
   // Optimistic local rewind, so the transcript reacts before the server
   // answers. The server does the same thing to the rows.
@@ -477,7 +523,14 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
 
   busy.value = true;
   editingID.value = '';
-  pending.value = { answer: '', reasoning: '', startedAt: Date.now() };
+  pending.value = {
+    answer: '',
+    reasoning: '',
+    startedAt: Date.now(),
+    // The server says when a search starts; until then this is an ordinary
+    // wait, and a turn with nothing to search for never claims otherwise.
+    search: null,
+  };
   // The turn belongs to the screen it was sent from, and to the conversation
   // that screen is showing — which may still be unnamed for one more moment.
   pendingView.value = switchTick.value;
@@ -512,6 +565,7 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
         ...(turn.content ? { content: turn.content } : {}),
         ...(turn.attachmentIDs?.length ? { attachment_ids: turn.attachmentIDs } : {}),
         ...(turn.truncateFrom ? { truncate_from_message_id: turn.truncateFrom } : {}),
+        ...(searchThisTurn ? { web_search: true } : {}),
         // Only on the turn that opens the conversation. On a later one the
         // server ignores it anyway, and sending a stale one would read as an
         // attempt to move a thread after the fact.
@@ -532,6 +586,22 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
           // sent it. Having wandered off, being pulled back is not a fix.
           if (!activeID.value && watching()) activeID.value = turnID;
           upsertConversationStub(payload.conversation_id, payload.title, openingProject);
+        },
+        onSearch: (payload) => {
+          // Only the turn's own screen should say what it is waiting on.
+          if (!watching() || !pending.value) return;
+          if (payload.searching) {
+            pending.value = { ...pending.value, search: { state: 'searching', count: 0 } };
+            return;
+          }
+          const count = Number(payload.results) || 0;
+          pending.value = {
+            ...pending.value,
+            search: {
+              state: payload.failed ? 'failed' : count > 0 ? 'found' : 'empty',
+              count,
+            },
+          };
         },
         onDelta: (text) => bufferDelta(text),
         onReasoning: (text) => bufferDelta('', text),
@@ -631,7 +701,9 @@ function releaseAttachments(ids: string[]): void {
 }
 
 export async function submit(): Promise<void> {
-  if (busy.value || !status.value.configured) return;
+  // Refused before the draft is taken: runTurn would refuse it too, and the
+  // text and pictures would go with nothing sent.
+  if (busy.value || opening.value || !status.value.configured) return;
 
   const text = draft.value.trim();
   const staged = attachments.value.map((entry) => entry.ref);
@@ -743,32 +815,45 @@ export async function refreshList(): Promise<void> {
   }
 }
 
-async function reloadActive(): Promise<void> {
+/**
+ * Returns false when the read failed, so a caller that left the previous rows
+ * up while it waited knows they are not this conversation's.
+ *
+ * A token is passed only by `openConversation`, where two reads of the same
+ * conversation can overlap. `runTurn`'s reloads have no token because there is
+ * never more than one of them for the turn that is finishing.
+ */
+async function reloadActive(token?: number): Promise<boolean> {
   const id = activeID.value;
+  const mine = (): boolean =>
+    activeID.value === id && (token === undefined || token === openRead);
   if (!id) {
     messages.value = [];
-    return;
+    return true;
   }
   try {
     const { messages: list, conversation } = await getConversation(id);
     // Switching no longer waits for a turn, so a reload can land after the
     // reader has moved on. Rows belong to the conversation they were read
     // from, never to whatever happens to be on screen when they arrive.
-    if (activeID.value !== id) return;
+    if (!mine()) return true;
     messages.value = list;
     // Mirrored so the project rail marks the project the open thread lives
     // in. It cannot move the thread: runTurn sends it only on the turn that
     // opens a conversation, and leaving this screen for a new chat resets it.
     if (conversation) pendingProjectID.value = conversation.project_id || '';
+    return true;
   } catch (error) {
+    if (!mine()) return false;
     if (error instanceof ApiError && error.status === 404) {
-      if (activeID.value === id) dropActive();
-      return;
+      dropActive();
+      return false;
     }
     // The transcript is empty after a failure, which reads as a conversation
     // with nothing in it. Said only while the reader is still on it: a failure
     // for a conversation they have left is not theirs to see.
-    if (activeID.value === id) setFlash(failureText(error));
+    setFlash(failureText(error));
+    return false;
   }
 }
 
@@ -798,25 +883,55 @@ export async function openConversation(id: string): Promise<void> {
   // Selecting the conversation already on screen changes nothing. Clearing the
   // transcript here blanked it for a reload, and a double-click on a row (which
   // is how a rename starts) selects it twice. An empty transcript is still
-  // loaded, so a failed read can be tried again by selecting it.
-  if (id && id === activeID.value && messages.value.length > 0) {
+  // loaded, so a failed read can be tried again by selecting it — unless it is
+  // already being read, in which case a second click has nothing to add.
+  if (id && id === activeID.value && (messages.value.length > 0 || openingID.value === id)) {
     historyOpen.value = false;
     return;
   }
+  const read = ++openRead;
+  // A different conversation starts with the search switch off; the choice
+  // made in the previous thread does not carry into the next one.
+  webSearchOn.value = false;
   activeID.value = id;
+  openingID.value = id;
   editingID.value = '';
   justSentID.value = '';
   recentReasoningID.value = '';
   historyOpen.value = false;
-  messages.value = [];
   resetFlightState();
-  // A short rise says "a different conversation" instead of leaving the
-  // transcript to flicker into something else within one frame.
+  // The streamed block belongs to the conversation that sent it, so leaving
+  // that conversation detaches it at once — the rows stay, but the answer
+  // being written into somewhere the reader has left does not.
+  if (id !== pendingID.value) pendingView.value = -1;
+  // The previous rows stay up while the next conversation is read. Clearing
+  // them here emptied the column to the greeting and moved the composer to the
+  // middle of it, so opening a conversation from the rail flashed the empty
+  // page (and its layout move) before the transcript arrived.
+  let loaded: boolean;
+  try {
+    loaded = await reloadActive(read);
+  } finally {
+    // Whatever ended the read — its answer, a later switch, a new chat, the
+    // conversation going — this one no longer holds the composer. Only the
+    // newest read may release it: an older one can finish after the reader has
+    // left and come back, and clearing it then would open the composer over a
+    // transcript that is still being replaced.
+    if (openingID.value === id && read === openRead) openingID.value = '';
+  }
+  // The reader moved on while this conversation was being read, or a newer
+  // read of this same conversation owns it now: the later switch owns the
+  // rise, the scroll and the streamed block.
+  if (activeID.value !== id || read !== openRead) return;
+  // A read that failed must not leave the previous thread's rows under this
+  // conversation's name; the flash says what happened instead.
+  if (!loaded) messages.value = [];
+  // The rise belongs to the conversation it introduces, so it starts when the
+  // rows are on screen rather than while the read is still out.
   switchTick.value += 1;
   // Coming back to the conversation that is still writing re-attaches the
   // streamed block: it is the same turn, on screen again.
   if (id && id === pendingID.value) pendingView.value = switchTick.value;
-  await reloadActive();
   scrollToEnd();
 }
 
@@ -1150,12 +1265,14 @@ export function resetChat(): void {
   looseFull = false;
   messages.value = [];
   activeID.value = '';
+  openingID.value = '';
   pendingProjectID.value = '';
   editingID.value = '';
   justSentID.value = '';
   recentReasoningID.value = '';
   historyOpen.value = false;
   draft.value = '';
+  webSearchOn.value = false;
   flash.value = '';
   chatChallenge.value = null;
   chatChallengeError.value = '';

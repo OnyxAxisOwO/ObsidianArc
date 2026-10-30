@@ -269,9 +269,15 @@ const (
 	DefaultSystemPrompt  = "chat.default_system_prompt"
 	ConversationMaxTurns = "chat.max_turns"
 	AllowArchive         = "chat.allow_archive"
-	APIEnabled           = "api.enabled"
-	AttachmentMaxMB      = "attachments.max_mb"
-	AttachmentRetain     = "attachments.retain"
+	// The per-message web search switch. Off by default: a search sends the
+	// reader's question to a third party, so it is a deliberate choice both
+	// for the operator and for the person typing.
+	WebSearch         = "chat.web_search"
+	WebSearchEndpoint = "chat.web_search_endpoint"
+	WebSearchResults  = "chat.web_search_results"
+	APIEnabled        = "api.enabled"
+	AttachmentMaxMB   = "attachments.max_mb"
+	AttachmentRetain  = "attachments.retain"
 	// Whether the generation lab keeps what it makes. Off, a picture is shown
 	// once in the answer and never stored: no attachment, no history row.
 	ImageHistory         = "images.history"
@@ -872,6 +878,9 @@ var Defaults = map[string]string{
 	DefaultSystemPrompt:     "",
 	ConversationMaxTurns:    "40",
 	AllowArchive:            "true",
+	WebSearch:               "false",
+	WebSearchEndpoint:       "https://www.bing.com/search",
+	WebSearchResults:        "5",
 	// On: asking a model nobody has used costs one token and answers the
 	// question the liveness column exists for. Off, a quiet model reads as
 	// "no data" forever, which is the state this feature was built to end.

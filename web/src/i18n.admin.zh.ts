@@ -824,6 +824,12 @@ export const zhAdmin: Record<AdminKey, string> = {
   turnsResentHint: '每次向服务商回传多少历史。数值越大记得越多，每一轮也越贵。',
   chatAllowArchive: '允许普通用户归档对话',
   chatAllowArchiveHint: '关闭后，普通用户无法再归档对话。已归档的对话保持归档，仍可取消归档。',
+  webSearch: '联网搜索',
+  webSearchHint: '在输入框旁显示开关。用户开启后，本服务器会先搜索网页，再把前几条结果交给模型。关闭后，问题不会经过搜索引擎。',
+  webSearchEndpoint: '搜索地址',
+  webSearchEndpointHint: '一个 http 或 https 搜索地址。默认读取 Bing 的 HTML 结果；返回 JSON 的 SearXNG 兼容服务也可以。查询会以 ?q=... 加上。',
+  webSearchResults: '每次搜索的结果数',
+  webSearchResultsHint: '交给模型的结果条数，最多 {max} 条。不是越多越好：每一条都会成为用户付费的提示词。',
 
   // --- about
   aboutHeading: '关于页标题',

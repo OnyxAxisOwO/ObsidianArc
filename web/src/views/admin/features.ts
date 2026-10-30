@@ -632,8 +632,8 @@ export const ADMIN_FEATURES: AdminFeatureItem[] = [
     id: 'secChat',
     pageSlug: 'settings',
     titleKey: 'secChat',
-    searchKeys: ['instanceSystemPrompt', 'turnsResent'],
-    keywords: ['对话策略', '全局系统提示词', '实例系统提示词', '历史上下文轮数', 'system prompt', 'turns resent', 'chat policy'],
+    searchKeys: ['instanceSystemPrompt', 'turnsResent', 'webSearch', 'webSearchEndpoint', 'webSearchResults'],
+    keywords: ['对话策略', '全局系统提示词', '实例系统提示词', '历史上下文轮数', '联网搜索', '网页搜索', '搜索地址', '搜索结果数', 'system prompt', 'turns resent', 'chat policy', 'web search', 'search endpoint'],
   },
   {
     id: 'secLimits',

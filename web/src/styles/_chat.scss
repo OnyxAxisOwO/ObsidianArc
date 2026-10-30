@@ -972,6 +972,7 @@
 /* Chat controls that had no focus rule of their own and fell back to the
    browser's outline. Same ring as the rest of the interface. */
 .ai-chat-plus:focus-visible,
+.ai-chat-websearch:focus-visible,
 .ai-chat-send:focus-visible,
 .ai-chat-list-more:focus-visible,
 .ai-chat-mini-btn:focus-visible,
@@ -1569,6 +1570,44 @@
 }
 
 .ai-chat-plus:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* The web search switch: the same footprint as the plus, but its on state is
+   the accent fill, so an enabled search is visible before sending rather than
+   only in the result. */
+.ai-chat-websearch {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ai-text-secondary);
+  cursor: pointer;
+}
+
+.ai-chat-websearch:hover:not(:disabled) {
+  background: var(--ai-state-hover);
+  color: var(--ai-text);
+}
+
+.ai-chat-websearch.on {
+  background: var(--ai-primary);
+  color: var(--ai-primary-text);
+}
+
+.ai-chat-websearch.on:hover:not(:disabled) {
+  background: var(--ai-primary-hover);
+  color: var(--ai-primary-text);
+}
+
+.ai-chat-websearch:disabled {
   opacity: 0.5;
   cursor: default;
 }
