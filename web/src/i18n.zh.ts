@@ -333,7 +333,7 @@ export const zh: Record<CoreKey, string> = {
   email: '邮箱',
   bio: '简介',
   avatar: '头像',
-  avatarHint: '同源路径或内联图片。',
+  avatarHint: '同源路径、内联图片或 Gravatar / WeAvatar 头像链接。留空使用站点默认头像来源。',
   registrationUserAgent: '注册时的 User-Agent',
   role: '角色',
   status: '状态',

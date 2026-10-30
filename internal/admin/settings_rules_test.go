@@ -20,15 +20,17 @@ import (
 // A value each rule in valueRules refuses. A rule added without one fails the
 // first test below, so a new rule is held to both paths from the start.
 var refusedByRule = map[string]string{
-	settings.LandingMode:          "nowhere",
-	settings.SiteAuthCardPosition: "nowhere",
-	settings.PWAThemeColor:        "red",
-	settings.PWABackgroundColor:   "#12345",
-	settings.PWAIconURL:           "//elsewhere.example/icon.png",
-	settings.AttachmentPurgeDaily: "25:99",
-	settings.UsageDisplay:         "nowhere",
-	settings.HomeNoticeTone:       "nowhere",
-	settings.LeaderboardIdentity:  "nowhere",
+	settings.LandingMode:                "nowhere",
+	settings.ProfileShowSignupUserAgent: "invalid",
+	settings.AvatarProvider:             "invalid",
+	settings.SiteAuthCardPosition:       "nowhere",
+	settings.PWAThemeColor:              "red",
+	settings.PWABackgroundColor:         "#12345",
+	settings.PWAIconURL:                 "//elsewhere.example/icon.png",
+	settings.AttachmentPurgeDaily:       "25:99",
+	settings.UsageDisplay:               "nowhere",
+	settings.HomeNoticeTone:             "nowhere",
+	settings.LeaderboardIdentity:        "nowhere",
 }
 
 type settingsFixture struct {

@@ -20,6 +20,14 @@
 import { addEnglish, wantBackofficeLanguage } from './i18n';
 
 export const enAdmin = {
+  showSignupUserAgent: 'Show registration user agent to users',
+  showSignupUserAgentHint: 'When off, users cannot see their registration user agent. Administrators can still view it in user management.',
+  avatarProvider: 'Avatar service priority',
+  avatarGravatarFirst: 'Gravatar → WeAvatar',
+  avatarWeavatarFirst: 'WeAvatar → Gravatar',
+  avatarProviderHint: 'Used for accounts with an email and no custom avatar. Tries the services in order using an email hash; if neither has an avatar or loads successfully, shows initials.',
+  avatarProviderNone: 'Off',
+
   navAssistant: 'Rune',
   assistantWelcome: 'Rune, at your command.',
   assistantWelcomeHint: 'Inspect your instance, manage accounts and models, or change settings together.',

@@ -15,6 +15,14 @@
 import type { AdminKey } from './i18n.admin';
 
 export const zhAdmin: Record<AdminKey, string> = {
+  showSignupUserAgent: '向用户显示注册 UA',
+  showSignupUserAgentHint: '关闭后，用户无法查看注册时的 User-Agent；管理员仍可在用户管理中查看。',
+  avatarProvider: '头像服务优先顺序',
+  avatarGravatarFirst: 'Gravatar → WeAvatar',
+  avatarWeavatarFirst: 'WeAvatar → Gravatar',
+  avatarProviderHint: '有邮箱且未设置自定义头像时，按所选顺序使用邮箱哈希依次尝试两家服务。首选没有头像或加载失败时使用备用，两家都不可用时显示姓名缩写。',
+  avatarProviderNone: '关闭',
+
   navAssistant: 'Rune',
   assistantWelcome: '我是 Rune，有什么交给我？',
   assistantWelcomeHint: '了解站点运行情况，管理用户与模型，或一起调整系统设置。',

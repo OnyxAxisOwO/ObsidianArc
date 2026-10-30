@@ -28,8 +28,14 @@ import { t } from '@/composables/useI18n';
 import { usePanelExit } from '@/composables/usePanelExit';
 import { usePanelFullscreen } from '@/composables/usePanelFullscreen';
 import { IconTrophy } from '@/icons';
-import { initials, safeAvatar } from '@/lib/account';
+import { avatarSources, initials } from '@/lib/account';
 import { compactNumber } from '@/lib/format';
+
+const failedAvatars = ref(new Set<string>());
+
+function avatarSource(entry: LeaderboardEntry): string | undefined {
+  return avatarSources(entry.avatar ?? '').find((source) => !failedAvatars.value.has(source));
+}
 
 const panels = usePanelExit();
 
@@ -234,8 +240,11 @@ onBeforeUnmount(() => {
           <span class="oa-board-rank" :data-rank="entry.rank">{{ entry.rank }}</span>
           <span class="oa-avatar oa-board-avatar" aria-hidden="true">
             <img
-              v-if="entry.avatar && safeAvatar(entry.avatar)"
-              :src="safeAvatar(entry.avatar) ?? ''"
+              v-if="avatarSource(entry)"
+              :key="avatarSource(entry)"
+              :src="avatarSource(entry)"
+              referrerpolicy="no-referrer"
+              @error="failedAvatars.add(avatarSource(entry)!)"
               alt=""
               :draggable="false"
             >

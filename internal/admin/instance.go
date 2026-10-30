@@ -214,6 +214,8 @@ func (h *Handlers) listSettings(w http.ResponseWriter, r *http.Request) error {
 var writableSettings = map[string]bool{
 	settings.SiteName:                   true,
 	settings.SiteDescription:            true,
+	settings.ProfileShowSignupUserAgent: true,
+	settings.AvatarProvider:             true,
 	settings.SiteAuthCardPosition:       true,
 	settings.ThemeMode:                  true,
 	settings.ThemeAccent:                true,
@@ -412,6 +414,18 @@ type valueRule struct {
 }
 
 var valueRules = []valueRule{
+	{[]string{settings.ProfileShowSignupUserAgent}, func(_, value string) error {
+		if value != "true" && value != "false" {
+			return httpx.BadRequestCode("setting_boolean_invalid", "Expected true or false.")
+		}
+		return nil
+	}},
+	{[]string{settings.AvatarProvider}, func(_, value string) error {
+		if !settings.ValidAvatarProvider(value) {
+			return httpx.BadRequestCode("avatar_provider_unknown", "Unknown avatar provider.")
+		}
+		return nil
+	}},
 	{[]string{settings.LandingMode}, func(_, value string) error {
 		if !settings.ValidLandingMode(value) {
 			return httpx.BadRequestCode("landing_mode_unknown", "Unknown landing mode %q.", value).

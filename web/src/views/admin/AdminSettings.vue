@@ -45,7 +45,7 @@ view.setTitle(() => t('adminSettingsTitle'), () => t('controlSettingsSubtitle'))
 const SEARCH_GROUPS = {
   secIdentity: [
     'secIdentity', 'siteName', 'siteNameHint', 'signInNote', 'signInNoteHint', 'browserTitle', 'browserTitleHint',
-    'siteLogo', 'siteLogoHint',
+    'siteLogo', 'siteLogoHint', 'showSignupUserAgent', 'showSignupUserAgentHint', 'avatarProvider', 'avatarProviderHint',
   ],
   secLoginBg: [
     'secLoginBg', 'loginBgHint', 'authCardPosition', 'authCardPositionHint', 'authCardPositionCenter',
@@ -178,6 +178,8 @@ const MAX_CONCURRENT_DEFAULT = 4;
 
 const form = ref({
   siteName: '',
+  showSignupUserAgent: true,
+  avatarProvider: 'none',
   description: '',
   browserTitle: '',
   authCardPosition: 'center',
@@ -230,6 +232,11 @@ const enabledModels = computed(() => models.value.filter((entry) => entry.enable
 
 // The selects' choices, computed so a render does not hand each select a new
 // array, and so the labels follow a change of language.
+const avatarProviderChoices = computed(() => [
+  { value: 'none', label: t('avatarProviderNone') },
+  { value: 'gravatar', label: t('avatarGravatarFirst') },
+  { value: 'weavatar', label: t('avatarWeavatarFirst') },
+]);
 const landingModeChoices = computed(() => [
   { value: 'login', label: t('landingLogin') },
   { value: 'site', label: t('landingSite') },
@@ -267,6 +274,8 @@ const heldLabel = computed(() => (held.value.held
 function collect(): Record<string, string> {
   return {
     'site.name': form.value.siteName.trim(),
+    'profile.show_signup_user_agent': String(form.value.showSignupUserAgent),
+    'profile.avatar_provider': form.value.avatarProvider,
     'site.description': form.value.description.trim(),
     'site.browser_title': form.value.browserTitle.trim(),
     'site.auth_card_position': form.value.authCardPosition,
@@ -557,6 +566,8 @@ async function load(): Promise<void> {
 
     form.value = {
       siteName: values['site.name'] ?? '',
+      showSignupUserAgent: values['profile.show_signup_user_agent'] !== 'false',
+      avatarProvider: values['profile.avatar_provider'] ?? 'none',
       description: values['site.description'] ?? '',
       browserTitle: values['site.browser_title'] ?? '',
       authCardPosition: (values['site.auth_card_position'] || 'center') as 'center' | 'left' | 'right',
@@ -638,6 +649,8 @@ onMounted(load);
   <AdminWorkbench v-else page="settings" :groups="categories" :terms="SEARCH_GROUPS" :columns="columns">
     <template #left="{ visible }">
       <AdminControlCard id="secIdentity" v-show="visible('secIdentity')" :title="t('secIdentity')" :icon="IconHome" :hint="t('controlIdentityHint')">
+        <OaSwitchField v-model="form.showSignupUserAgent" :label="t('showSignupUserAgent')" :hint="t('showSignupUserAgentHint')" />
+        <OaSelectField v-model="form.avatarProvider" :label="t('avatarProvider')" :hint="t('avatarProviderHint')" :options="avatarProviderChoices" />
         <OaTextField v-model="form.siteName" :label="t('siteName')" :hint="t('siteNameHint')" :max-length="60" />
         <OaTextField v-model="form.browserTitle" :label="t('browserTitle')" :hint="t('browserTitleHint')" :max-length="60" />
         <OaTextArea v-model="form.description" :label="t('signInNote')" :rows="2" :hint="t('signInNoteHint')" />

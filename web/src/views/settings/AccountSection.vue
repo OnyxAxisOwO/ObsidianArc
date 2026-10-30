@@ -490,8 +490,8 @@ function importData(): void {
         :hint="t('avatarHint')"
       />
     </OaRow>
-    <OaRow :title="t('registrationUserAgent')">
-      <template #text><span class="oa-group-row-meta mono">{{ account.signup_user_agent || '—' }}</span></template>
+    <OaRow v-if="currentUser?.show_signup_user_agent !== false" :title="t('registrationUserAgent')">
+      <template #text><span class="oa-group-row-meta mono">{{ currentUser?.signup_user_agent || '—' }}</span></template>
     </OaRow>
     <p v-if="profileFlash" class="oa-group-flash" role="alert">{{ profileFlash }}</p>
     <OaRow>

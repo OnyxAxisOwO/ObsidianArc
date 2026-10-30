@@ -129,6 +129,8 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 
 type accountPayload struct {
 	user.User
+	ShowSignupUserAgent bool   `json:"show_signup_user_agent"`
+	DefaultAvatar       string `json:"default_avatar,omitempty"`
 	// Flattened onto the account so the interface can label a user's group
 	// without a second request.
 	GroupName        string `json:"group_name"`
@@ -182,6 +184,13 @@ func (h *Handlers) account(r *http.Request, account user.User) accountPayload {
 		AllowArchiveConversations: account.IsAdmin() || (h.settings != nil && h.settings.Bool(settings.AllowArchive)),
 		AllowTerminal:             account.IsAdmin(),
 		GroupShowExpiry:           true,
+	}
+	payload.ShowSignupUserAgent = account.IsAdmin() || h.settings == nil || h.settings.Bool(settings.ProfileShowSignupUserAgent)
+	if !payload.ShowSignupUserAgent {
+		payload.User.SignupUserAgent = ""
+	}
+	if h.settings != nil {
+		payload.DefaultAvatar = h.settings.DefaultAvatarURL(account.Email)
 	}
 	if h.service != nil {
 		payload.TwoFactorEnrol = h.service.MustEnrolTwoFactor(account)

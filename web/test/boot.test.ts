@@ -562,7 +562,7 @@ describe('the screens the mounted application draws', () => {
     it('saves drafts across categories and keeps edits made during an in-flight save', async () => {
       adopt({ ...ACCOUNT, role: 'super_admin' });
       await mountAt('/admin/settings');
-      await search('#secIdentity input', 'First draft');
+      await search('#secIdentity input[type="text"]', 'First draft');
       const category = Array.from(host.querySelectorAll<HTMLButtonElement>('.oa-workbench-tab'))
         .find((button) => button.textContent?.includes(t('controlFiles')))!;
       category.click();
@@ -697,14 +697,14 @@ describe('the screens the mounted application draws', () => {
       expect(host.querySelector('.oa-admin-nav')?.getAttribute('href')).toBe('/admin/providers');
       expect(router.currentRoute.value.path).toBe('/admin/settings');
       await search('.oa-admin-body .oa-search input', t('siteName'));
-      const siteName = shown('.oa-admin-body section')[0]!.querySelector<HTMLInputElement>('input')!;
+      const siteName = shown('.oa-admin-body section')[0]!.querySelector<HTMLInputElement>('input[type="text"]')!;
       siteName.value = 'Unsaved site';
       siteName.dispatchEvent(new Event('input', { bubbles: true }));
       await search('.oa-admin-body .oa-search input', t('attachmentPurgeDaily'));
       expect(shown('.oa-admin-body section')).toHaveLength(1);
       expect(shown('.oa-admin-body section')[0]!.textContent).toContain(t('attachmentPurgeDaily'));
       await search('.oa-admin-body .oa-search input', t('siteName'));
-      expect(shown('.oa-admin-body section')[0]!.querySelector<HTMLInputElement>('input')).toBe(siteName);
+      expect(shown('.oa-admin-body section')[0]!.querySelector<HTMLInputElement>('input[type="text"]')).toBe(siteName);
       expect(siteName.value).toBe('Unsaved site');
       await search('.oa-admin-body .oa-search input', 'nothing-matches-this');
       expect(shown('.oa-admin-body section')).toHaveLength(0);

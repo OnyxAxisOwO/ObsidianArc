@@ -199,6 +199,8 @@ func Logger() Middleware {
 // draws its frame from, and reports to.
 const challengeOrigin = "https://challenges.cloudflare.com"
 
+const avatarImageSources = "https://gravatar.com/avatar/ https://www.gravatar.com/avatar/ https://0.gravatar.com/avatar/ https://1.gravatar.com/avatar/ https://2.gravatar.com/avatar/ https://weavatar.com/avatar/"
+
 // cspPolicy is the one place the policy exists. Every directive is fixed except
 // the origins the script, connection and image lists carry and whether a frame
 // list exists at all, so whatever combination of challenges an operator runs,
@@ -232,6 +234,9 @@ func cspPolicy(dev bool, hashList string, challenge bool, extra string) string {
 		connect += " " + extra
 		img += " " + extra
 	}
+	// Only avatar image paths are granted; these hosts never join script-src
+	// or connect-src. The client separately validates hashes and parameters.
+	img += " " + avatarImageSources
 	parts := []string{
 		"default-src 'self'",
 		script,

@@ -34,8 +34,10 @@ const MaxValueBytes = 8 << 10
 // Known keys. Anything not listed here is still storable — the admin UI only
 // offers these, and a future module can add its own without a migration.
 const (
-	SiteName        = "site.name"
-	SiteDescription = "site.description"
+	SiteName                   = "site.name"
+	SiteDescription            = "site.description"
+	ProfileShowSignupUserAgent = "profile.show_signup_user_agent"
+	AvatarProvider             = "profile.avatar_provider"
 	// Layout position of the sign-in / registration card on the auth page:
 	// "center" by default, or "left" / "right" when docked beside wallpaper.
 	SiteAuthCardPosition = "site.auth_card_position"
@@ -715,15 +717,17 @@ const DefaultHealthWindowMins = 30
 // Defaults are what a fresh instance behaves like, and what a deleted row
 // falls back to. Nothing reads a setting without one.
 var Defaults = map[string]string{
-	SiteName:             "Obsidian Arc",
-	SiteDescription:      "",
-	SiteAuthCardPosition: AuthCardPositionCenter,
-	ThemeMode:            "auto",
-	ThemeAccent:          "",
-	ThemeCustomAccent:    "",
-	ThemeBackgroundTint:  "",
-	ThemeWallpaperDim:    "0",
-	ThemeWallpaperBlur:   "0",
+	SiteName:                   "Obsidian Arc",
+	SiteDescription:            "",
+	ProfileShowSignupUserAgent: "true",
+	AvatarProvider:             "none",
+	SiteAuthCardPosition:       AuthCardPositionCenter,
+	ThemeMode:                  "auto",
+	ThemeAccent:                "",
+	ThemeCustomAccent:          "",
+	ThemeBackgroundTint:        "",
+	ThemeWallpaperDim:          "0",
+	ThemeWallpaperBlur:         "0",
 	// Seen through, a little, so a signed-in background an operator uploads
 	// shows behind the panels and not only around them. Nothing is painted
 	// until there is one, so an instance without it is unchanged.

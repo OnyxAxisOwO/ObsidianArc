@@ -160,7 +160,7 @@ func TestOnlyOriginsWidenThePolicy(t *testing.T) {
 	for _, directive := range []string{
 		"script-src 'self' " + strings.Join(good, " ") + ";",
 		"connect-src 'self' " + strings.Join(good, " ") + ";",
-		"img-src 'self' data: blob: " + strings.Join(good, " ") + ";",
+		"img-src 'self' data: blob: " + strings.Join(good, " ") + " " + avatarImageSources + ";",
 	} {
 		if !strings.Contains(policy, directive) {
 			t.Errorf("the policy does not carry exactly the good origins; want %q in\n%s", directive, policy)

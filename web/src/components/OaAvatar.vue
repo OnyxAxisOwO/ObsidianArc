@@ -1,19 +1,22 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref, watch } from 'vue';
 import type { Account } from '@/api/auth';
-import { displayName, initials, safeAvatar } from '@/lib/account';
+import { avatarSources, displayName, initials, safeAvatar } from '@/lib/account';
 
 const props = defineProps<{
   account: Account;
   large?: boolean;
 }>();
 
-const source = computed(() => safeAvatar(props.account.avatar));
+const attempt = ref(0);
+const sources = computed(() => avatarSources(safeAvatar(props.account.avatar) ?? props.account.default_avatar ?? ''));
+const source = computed(() => sources.value[attempt.value]);
+watch(sources, () => { attempt.value = 0; });
 </script>
 
 <template>
   <span class="oa-avatar" :class="{ 'oa-avatar-lg': props.large }">
-    <img v-if="source" :src="source" alt="" :draggable="false">
+    <img v-if="source" :key="source" :src="source" alt="" :draggable="false" referrerpolicy="no-referrer" @error="attempt += 1">
     <template v-else>{{ initials(displayName(props.account)) }}</template>
   </span>
 </template>

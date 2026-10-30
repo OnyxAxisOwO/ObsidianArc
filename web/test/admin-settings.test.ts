@@ -371,3 +371,20 @@ describe('importing a settings file', () => {
     expect(importer).not.toHaveBeenCalled();
   });
 });
+
+
+describe('profile policies', () => {
+  it('saves only registration UA visibility when its switch changes', async () => {
+    vi.spyOn(adminApi, 'settings').mockResolvedValue({ settings: { ...settingsFixture } });
+    const save = vi.spyOn(adminApi, 'saveSettings').mockResolvedValue({ settings: { ...settingsFixture, 'profile.show_signup_user_agent': 'false' } });
+    await mountSettings();
+    const label = [...host.querySelectorAll('label')].find((node) => node.textContent?.includes(t('showSignupUserAgent')));
+    const input = label?.querySelector<HTMLInputElement>('input[type="checkbox"]');
+    expect(input?.checked).toBe(true);
+    input!.click();
+    await nextTick();
+    button(actions, t('save')).click();
+    await settle();
+    expect(save).toHaveBeenCalledWith({ 'profile.show_signup_user_agent': 'false' });
+  });
+});

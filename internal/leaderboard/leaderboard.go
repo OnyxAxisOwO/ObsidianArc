@@ -430,6 +430,9 @@ func (h *Handlers) projectAccounts(b *cachedBoard, self, metric string, size int
 					entry.Name = person.Username
 				}
 				entry.Avatar = person.Avatar
+				if entry.Avatar == "" && h.settings != nil {
+					entry.Avatar = h.settings.DefaultAvatarURL(person.Email)
+				}
 				if identity == settings.LeaderboardHandle || (entry.Self && person.Nickname != "") {
 					entry.Handle = person.Username
 				}

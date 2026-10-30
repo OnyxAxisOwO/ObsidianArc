@@ -411,3 +411,23 @@ describe('the leaderboard entry in the account menu', () => {
       .toContain(t('leaderboardTitle'));
   });
 });
+
+
+describe('leaderboard avatar fallback', () => {
+  it('tries the backup service once and then displays initials', async () => {
+    const data = board();
+    const primary = `https://gravatar.com/avatar/${'a'.repeat(64)}?s=160&d=404&r=g`;
+    data.accounts[0]!.avatar = primary;
+    vi.spyOn(api, 'get').mockResolvedValue(data);
+    await mountPanel();
+    const avatar = panelHost.querySelector('.oa-board-avatar')!;
+    expect(avatar.querySelector('img')?.getAttribute('src')).toBe(primary);
+    avatar.querySelector('img')!.dispatchEvent(new Event('error'));
+    await nextTick();
+    expect(avatar.querySelector('img')?.getAttribute('src')).toBe(primary.replace('gravatar.com', 'weavatar.com'));
+    avatar.querySelector('img')!.dispatchEvent(new Event('error'));
+    await nextTick();
+    expect(avatar.querySelector('img')).toBeNull();
+    expect(avatar.textContent).toBe('O');
+  });
+});

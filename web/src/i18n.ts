@@ -340,7 +340,7 @@ const en = {
   email: 'Email',
   bio: 'Bio',
   avatar: 'Avatar',
-  avatarHint: 'A same-origin path or an inline image.',
+  avatarHint: 'A same-origin path, inline image, or Gravatar / WeAvatar avatar URL. Leave empty to use the site default.',
   registrationUserAgent: 'Registration user agent',
   role: 'Role',
   status: 'Status',

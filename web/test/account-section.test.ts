@@ -298,3 +298,18 @@ describe('the data section', () => {
     expect(save.mock.calls[0]![1]).toBe(JSON.stringify(backup));
   });
 });
+
+
+describe('registration user agent visibility', () => {
+  it('hides the row when the server disables it and follows refreshed account state', async () => {
+    vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({ connections: [], providers: [], has_password: true });
+    adopt({ ...ACCOUNT, signup_user_agent: 'Browser/1.0', show_signup_user_agent: false });
+    await mount(AccountSection);
+    expect(host.textContent).not.toContain(t('registrationUserAgent'));
+    expect(host.textContent).not.toContain('Browser/1.0');
+    adopt({ ...ACCOUNT, signup_user_agent: 'Browser/1.0', show_signup_user_agent: true });
+    await nextTick();
+    expect(host.textContent).toContain(t('registrationUserAgent'));
+    expect(host.textContent).toContain('Browser/1.0');
+  });
+});

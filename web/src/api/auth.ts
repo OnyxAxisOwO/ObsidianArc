@@ -15,6 +15,8 @@ export interface Account {
   fields?: Record<string, string>;
   nickname: string;
   avatar: string;
+  default_avatar?: string;
+  show_signup_user_agent?: boolean;
   bio: string;
   role: Role;
   admin_permissions?: string[];

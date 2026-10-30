@@ -10,7 +10,8 @@ export function displayName(account: Account): string {
 /**
  * An avatar is stored as free text, so it is checked before it becomes an
  * `img` src: a same-origin path or an inline image, nothing that would turn
- * every page view into a request to somewhere else.
+ * every page view into a request to somewhere else. The two supported avatar
+ * services are the only external exceptions, with bounded image parameters.
  */
 export function safeAvatar(value: string): string | null {
   const trimmed = value.trim();
@@ -21,7 +22,29 @@ export function safeAvatar(value: string): string | null {
   const path = safeNext(trimmed);
   if (path) return path;
   if (/^data:image\/(?:png|jpeg|webp|gif|avif);base64,[A-Za-z0-9+/]+=*$/.test(trimmed)) return trimmed;
+  if (/^https:\/\/(?:gravatar\.com|www\.gravatar\.com|[012]\.gravatar\.com|weavatar\.com)\/avatar\/(?:[a-f0-9]{32}|[a-f0-9]{64})(?:\.(?:png|jpg|jpeg|webp|gif|avif))?(?:\?[^#]*)?$/i.test(trimmed)) {
+    const url = new URL(trimmed);
+    for (const [key, value] of url.searchParams) {
+      if ((key === 's' || key === 'size') && /^\d{1,4}$/.test(value) && Number(value) >= 1 && Number(value) <= 2000) continue;
+      if ((key === 'd' || key === 'default') && /^(?:404|mp|identicon|monsterid|wavatar|retro|robohash|blank)$/.test(value)) continue;
+      if ((key === 'r' || key === 'rating') && /^(?:g|pg|r|x)$/.test(value)) continue;
+      if ((key === 'f' || key === 'forcedefault') && value === 'y') continue;
+      return null;
+    }
+    return trimmed;
+  }
   return null;
+}
+
+// Both services understand the same email hash. Keep the backup lazy: only an
+// image error advances to it, so a successful first choice costs one request.
+export function avatarSources(value: string): string[] {
+  const source = safeAvatar(value);
+  if (!source) return [];
+  if (!source.startsWith('https://')) return [source];
+  const backup = new URL(source);
+  backup.hostname = backup.hostname === 'weavatar.com' ? 'gravatar.com' : 'weavatar.com';
+  return [source, backup.href];
 }
 
 export function initials(name: string): string {

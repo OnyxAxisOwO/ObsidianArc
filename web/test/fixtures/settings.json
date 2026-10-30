@@ -1,4 +1,6 @@
 {
+  "profile.show_signup_user_agent": "true",
+  "profile.avatar_provider": "none",
   "site.name": "Obsidian Arc",
   "site.description": "",
   "site.browser_title": "",
