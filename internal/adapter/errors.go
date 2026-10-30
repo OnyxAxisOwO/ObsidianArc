@@ -39,9 +39,8 @@ type Error struct {
 	Kind ErrorKind
 	// The upstream HTTP status, when there was one.
 	Status int
-	// Safe to show a user: it is either our own sentence or the provider's
-	// own error message, which is written for a developer rather than
-	// containing our credentials.
+	// Diagnostic text for operators. Upstream messages can echo credentials
+	// in forms exact redaction cannot recognise; responses use PublicMessage.
 	Message string
 	// From a 429's Retry-After, when the provider sent one.
 	RetryAfter time.Duration
@@ -56,6 +55,30 @@ func (e *Error) Error() string {
 }
 
 func (e *Error) Unwrap() error { return e.cause }
+
+// PublicMessage never trusts provider diagnostics with a credential boundary.
+// Encoding or splitting an echoed key defeats literal replacement, so only
+// locally authored sentences may leave through a response or transcript.
+func (e *Error) PublicMessage() string {
+	switch e.Kind {
+	case ErrorAuth:
+		return "This model is not configured correctly. Ask an administrator to check its provider."
+	case ErrorRateLimit:
+		return "The provider is rate limiting this server. Try again shortly."
+	case ErrorImagesUnsupported:
+		return "This model does not accept images."
+	case ErrorRefusal:
+		return "The model declined to answer this request."
+	case ErrorNetwork:
+		return "Could not reach the provider."
+	case ErrorCancelled:
+		return "The request was cancelled."
+	case ErrorUpstream:
+		return "The provider could not complete this request. Try again shortly."
+	default:
+		return "The provider would not accept this request."
+	}
+}
 
 // Retryable reports whether trying the same request again could plausibly
 // work. Nothing retries automatically today — a chat turn is expensive and

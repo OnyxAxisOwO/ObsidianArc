@@ -2,9 +2,11 @@ package admin
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -12,10 +14,83 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/health"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/provider"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
 )
+
+func TestEncodedCredentialEchoDoesNotReachDetectionOrHealth(t *testing.T) {
+	const key = "sk-provider-regression-secret"
+	encoded := base64.StdEncoding.EncodeToString([]byte(key))
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		credential := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprintf(w, `{"error":{"message":"diagnostic credential %s"}}`, base64.StdEncoding.EncodeToString([]byte(credential)))
+	}))
+	t.Cleanup(upstream.Close)
+	f := newImportFixture(t)
+	f.h.registry = adapter.NewRegistry(config.Upstream{})
+	f.h.health = health.NewStore(f.h.db)
+	f.h.probeBudget = unlimitedBudget()
+	p, err := f.providers.Create(f.ctx, provider.CreateInput{
+		Name: "Echo", Kind: adapter.KindOpenAI, BaseURL: upstream.URL, APIKey: key, Enabled: true,
+	}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := f.models.Create(f.ctx, model.CreateInput{
+		ProviderID: p.ID, ModelID: "echo", DisplayName: "Echo", Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	detect := httptest.NewRequest(http.MethodPost, "/api/admin/providers/"+p.ID+"/models/detect", nil)
+	detect.SetPathValue("id", p.ID)
+	var refused *httpx.Error
+	if err := f.h.detectModels(httptest.NewRecorder(), detect); !errors.As(err, &refused) {
+		t.Fatalf("expected detection to fail, got %v", err)
+	}
+	if strings.Contains(refused.Message, encoded) {
+		t.Error("model detection exposed the encoded credential")
+	}
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/admin/models/health/probe", nil)
+	if err := f.h.probeAllHealth(response, request); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(response.Body.String(), encoded) {
+		t.Error("manual health probe exposed the encoded credential")
+	}
+	var message string
+	if err := f.h.db.QueryRow(f.ctx, `SELECT message FROM model_probes WHERE model_id = ?`, record.ID).Scan(&message); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(message, encoded) {
+		t.Error("health history stored the encoded credential")
+	}
+}
+
+func TestProviderDiagnosticsDoNotReachAdminResponses(t *testing.T) {
+	for _, kind := range []adapter.ErrorKind{
+		adapter.ErrorAuth, adapter.ErrorRateLimit, adapter.ErrorInvalidRequest,
+		adapter.ErrorImagesUnsupported, adapter.ErrorRefusal, adapter.ErrorUpstream, adapter.ErrorNetwork,
+	} {
+		var response *httpx.Error
+		err := translateAdapterError(&adapter.Error{Kind: kind, Message: "private diagnostic"})
+		if !errors.As(err, &response) {
+			t.Fatalf("%s: expected an HTTP error, got %v", kind, err)
+		}
+		if strings.Contains(response.Message, "private diagnostic") {
+			t.Errorf("%s exposed provider diagnostic text", kind)
+		}
+		if err := translateProviderError(&adapter.Error{Kind: kind, Message: "private diagnostic"}); !errors.As(err, &response) || strings.Contains(response.Message, "private diagnostic") {
+			t.Errorf("%s exposed provider diagnostic text through a store error", kind)
+		}
+	}
+}
 
 // Only a failure the provider store marks as a base-URL refusal is shown to
 // the person as a 400. A server fault whose text happens to contain one of

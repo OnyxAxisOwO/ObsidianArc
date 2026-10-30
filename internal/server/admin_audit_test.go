@@ -59,6 +59,50 @@ func (in *instance) auditEntry(as *session, entryID string) auditRow {
 	return payload.Entry
 }
 
+// Audit access is not permission to read the credentials stored in arbitrary
+// provider headers. The header's name need not contain "key" or "token".
+func TestAuditReadersCannotReadProviderHeaderCredentials(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	reader := in.register("reader", "a-good-password")
+	delegate(t, in, founder, reader, "audit")
+	const credential = "sk-header-credential-never-in-audit"
+	response := in.do(http.MethodPost, "/api/admin/providers", map[string]any{
+		"name": "Header Auth", "kind": "openai", "base_url": "https://api.example.com/v1",
+		"api_key": "sk-primary", "headers": map[string]string{"X-Auth": credential},
+	}, founder)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create provider: %d %s", response.Code, response.Body.String())
+	}
+	entries := in.auditEntries(reader, url.Values{"action": {"POST /api/admin/providers"}}.Encode())
+	if len(entries) != 1 {
+		t.Fatalf("expected one provider creation, got %d", len(entries))
+	}
+	if strings.Contains(in.auditEntry(reader, entries[0].ID).Request, credential) {
+		t.Fatal("an audit-only administrator recovered a provider header credential")
+	}
+	var stored string
+	if err := in.db.QueryRow(context.Background(), `SELECT request FROM admin_audit WHERE id = ?`, entries[0].ID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(stored, credential) {
+		t.Fatal("the audit trail persisted a provider header credential")
+	}
+	legacy := `{"headers":{"X-Auth":"` + credential + `"},"name":"Header Auth"}`
+	if _, err := in.db.Exec(context.Background(), `UPDATE admin_audit SET request = ? WHERE id = ?`, legacy, entries[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(in.auditEntry(reader, entries[0].ID).Request, credential) {
+		t.Fatal("an audit-only administrator recovered a credential from an older entry")
+	}
+	if err := in.db.QueryRow(context.Background(), `SELECT request FROM admin_audit WHERE id = ?`, entries[0].ID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != legacy {
+		t.Fatal("reading an old entry rewrote the audit evidence")
+	}
+}
+
 // The trail is complete by construction: it is written by the wrapper every
 // route is mounted behind. This holds that construction to every write the
 // route table has, so a route mounted some other way shows up here.

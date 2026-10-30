@@ -10,6 +10,25 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
 )
 
+// Message is persisted and returned to administrators with health access,
+// which does not grant access to provider credentials or raw diagnostics.
+func Message(err error) string {
+	if err == nil {
+		return ""
+	}
+	var upstream *adapter.Error
+	if errors.As(err, &upstream) {
+		return upstream.PublicMessage()
+	}
+	if errors.Is(err, context.Canceled) {
+		return "The request was cancelled."
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "The provider did not respond in time."
+	}
+	return "The provider could not be checked."
+}
+
 // Code turns an upstream failure into the short token the page groups by.
 //
 // Deliberately coarse. An operator scanning a list wants "the key is wrong"

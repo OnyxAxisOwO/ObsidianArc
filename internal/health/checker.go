@@ -157,11 +157,11 @@ func (c *Checker) probe(ctx context.Context, record model.Model) (Sample, bool) 
 		// A failed write is logged, as the probe's own write is below: the sample
 		// returned here is the evidence this round acts on, so the store and the
 		// log should not silently disagree with it.
-		if writeErr := c.Store.Record(ctx, record.ID, false, "provider_unavailable", err.Error(), 0); writeErr != nil {
+		if writeErr := c.Store.Record(ctx, record.ID, false, "provider_unavailable", Message(err), 0); writeErr != nil {
 			slog.ErrorContext(ctx, "health: record probe", "model", record.ID, "error", writeErr)
 		}
 		return Sample{At: time.Now().UnixMilli(), Code: "provider_unavailable",
-			Message: err.Error(), Source: "system"}, true
+			Message: Message(err), Source: "system"}, true
 	}
 
 	probeCtx, cancel := context.WithTimeout(ctx, c.Timeout)
@@ -170,7 +170,7 @@ func (c *Checker) probe(ctx context.Context, record model.Model) (Sample, bool) 
 	latency, err := Probe(probeCtx, c.Registry, upstream, record.Spec())
 	code, message := "", ""
 	if err != nil {
-		code, message = Code(err), err.Error()
+		code, message = Code(err), Message(err)
 	}
 	if writeErr := c.Store.Record(ctx, record.ID, err == nil, code, message, latency); writeErr != nil {
 		slog.ErrorContext(ctx, "health: record probe", "model", record.ID, "error", writeErr)

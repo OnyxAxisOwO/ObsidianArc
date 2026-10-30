@@ -259,6 +259,11 @@ func (s *Store) Get(ctx context.Context, entryID string) (Entry, error) {
 			return Entry{}, fmt.Errorf("audit: decode changes: %w", err)
 		}
 	}
+	// Older entries may predate a redaction rule. Apply current rules when
+	// serving them without rewriting the evidence kept in the database.
+	if json.Valid([]byte(e.Request)) {
+		e.Request = Redact([]byte(e.Request), nil)
+	}
 	return e, nil
 }
 

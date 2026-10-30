@@ -156,7 +156,7 @@ func (h *Handlers) probeAllHealth(w http.ResponseWriter, r *http.Request) error 
 				owner, ownerErr := h.providers.ByID(ctx, record.ProviderID)
 				if ownerErr != nil {
 					result.code = "provider_unavailable"
-					result.message = ownerErr.Error()
+					result.message = health.Message(ownerErr)
 					results <- result
 					continue
 				}
@@ -168,7 +168,7 @@ func (h *Handlers) probeAllHealth(w http.ResponseWriter, r *http.Request) error 
 				upstream, resolveErr := h.providers.Resolve(ctx, record.ProviderID)
 				if resolveErr != nil {
 					result.code = "provider_unavailable"
-					result.message = resolveErr.Error()
+					result.message = health.Message(resolveErr)
 					results <- result
 					continue
 				}
@@ -180,7 +180,7 @@ func (h *Handlers) probeAllHealth(w http.ResponseWriter, r *http.Request) error 
 				result.ok = probeErr == nil
 				if probeErr != nil {
 					result.code = health.Code(probeErr)
-					result.message = probeErr.Error()
+					result.message = health.Message(probeErr)
 				}
 				results <- result
 			}

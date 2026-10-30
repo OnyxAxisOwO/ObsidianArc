@@ -21,7 +21,7 @@ func TestRedactMasksCredentialsWhereverTheyAreNested(t *testing.T) {
 		"cleared_token": ""
 	}`)
 	got := Redact(body, map[string]bool{"plugin.webhook": true})
-	for _, leaked := range []string{"sk-live-123", "sk-a", "sk-b", "ts-secret", "hunter2", "123456", "Bearer y", "cs", "declared-secret"} {
+	for _, leaked := range []string{"sk-live-123", "sk-a", "sk-b", "ts-secret", "hunter2", "123456", "Bearer x", "Bearer y", "cs", "declared-secret"} {
 		if strings.Contains(got, leaked) {
 			t.Errorf("redacted body still holds %q:\n%s", leaked, got)
 		}

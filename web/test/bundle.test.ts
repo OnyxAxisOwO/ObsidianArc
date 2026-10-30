@@ -444,21 +444,18 @@ describe('code splitting invariants in production bundle', () => {
     }
   });
 
-  // What a first paint downloads: the entry script and its stylesheet, gzipped
-  // by zlib at its default level. That is the build's own estimate, and it is
-  // not what a server sends:
-  // the server compresses at a different level, and internal/web/wire_test.go
-  // holds the budget on the bytes it sends. This check still matters, because
-  // Vite's chunk-size limit only warns, so it is what fails a build which grew
-  // the core. The budget only ever ratchets down toward the 135 kB target in
-  // AGENTS.md: raising it to let a change pass is the change being refused,
-  // not the budget being wrong.
+  // What a first paint downloads: the entry script and stylesheet, gzipped
+  // at the server's BestCompression level. Node's bytes still vary by CPU;
+  // internal/web/wire_test.go enforces the same budget on Go's actual output.
+  // Vite's chunk-size limit only warns, so this remains a build gate too.
+  // The budget only ratchets down toward the 135 kB target in AGENTS.md;
+  // raising it to accept a change would defeat the constraint.
   function firstPaintGzipBytes(): number {
     const files = builtAssets();
     const firstPaint = files.filter((f) => /^index-[^.]+\.(js|css)$/.test(f));
     expect(firstPaint).toHaveLength(2);
     return firstPaint.reduce(
-      (sum, f) => sum + zlib.gzipSync(fs.readFileSync(path.join(assetsDir, f))).length,
+      (sum, f) => sum + zlib.gzipSync(fs.readFileSync(path.join(assetsDir, f)), { level: zlib.constants.Z_BEST_COMPRESSION }).length,
       0,
     );
   }

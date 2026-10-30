@@ -547,11 +547,11 @@ func translateProviderError(err error) error {
 	case errors.Is(err, provider.ErrInvalidBaseURL):
 		return httpx.BadRequest("%s", trimPackagePrefix(err.Error(), "provider: "))
 	default:
-		// A base-URL rejection is a validation message written for a person,
-		// so it is passed through rather than swallowed into a 500.
+		// Adapter diagnostics may contain credentials even when their kind
+		// describes bad input; only the classification crosses this boundary.
 		var adapterErr *adapter.Error
 		if errors.As(err, &adapterErr) {
-			return httpx.BadRequest("%s", adapterErr.Message)
+			return httpx.BadRequest("%s", adapterErr.PublicMessage())
 		}
 		return httpx.Internal(err)
 	}

@@ -23,7 +23,7 @@ import (
 // for. The brotli figure is what most browsers actually receive, and the docs
 // quote both so neither is mistaken for the other.
 func TestFirstPaintFitsItsBudgetOnTheWire(t *testing.T) {
-	const budget = 250_000
+	const budget = 208_000
 	handler := httpx.Compress()(builtHandler(t))
 
 	index := httptest.NewRecorder()

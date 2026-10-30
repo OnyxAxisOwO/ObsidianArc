@@ -102,6 +102,9 @@ var sensitiveWords = map[string]bool{
 // sensitiveNames are whole names that do not give themselves away by a word.
 var sensitiveNames = map[string]bool{
 	"two_factor_code": true, "code_verifier": true,
+	// Provider authentication can use an arbitrary header name. Guessing
+	// credentials from names such as X-Auth misses exactly those values.
+	"headers": true,
 }
 
 // SensitiveField reports whether a field of that name is masked in the trail.

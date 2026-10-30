@@ -781,35 +781,29 @@ func Cancelled(err error) bool {
 // parses a provider's error text.
 //
 // Exported because the API surface answers for the same provider failures and
-// must say the same things about them — in particular it must keep saying
-// nothing about the endpoint or the key behind an auth error.
+// must say the same things about them. No upstream diagnostic text may cross
+// this boundary, regardless of the error's status or kind.
 func Describe(err error) (code, message string) {
 	var upstream *adapter.Error
 	if !errors.As(err, &upstream) {
 		return "internal", "Something went wrong on our side."
 	}
-	// images_unsupported, refusal and provider_rejected keep the upstream
-	// sentence rather than a reader's translation of the code: it names what the
-	// provider or model said, which a shared sentence would erase on every
-	// screen, English included. The frontend has no reader's sentence for them
-	// on purpose, so it shows this text.
+	message = upstream.PublicMessage()
 	switch upstream.Kind {
 	case adapter.ErrorAuth:
-		// The user cannot fix a misconfigured key, and the detail names an
-		// endpoint they have no business seeing.
-		return "provider_auth", "This model is not configured correctly. Ask an administrator to check its provider."
+		return "provider_auth", message
 	case adapter.ErrorRateLimit:
-		return "provider_rate_limited", "The provider is rate limiting this server. Try again shortly."
+		return "provider_rate_limited", message
 	case adapter.ErrorImagesUnsupported:
-		return "images_unsupported", upstream.Message
+		return "images_unsupported", message
 	case adapter.ErrorRefusal:
-		return "refusal", upstream.Message
+		return "refusal", message
 	case adapter.ErrorNetwork:
-		return "provider_unreachable", "Could not reach the provider."
+		return "provider_unreachable", message
 	case adapter.ErrorUpstream:
-		return "provider_error", upstream.Message
+		return "provider_error", message
 	default:
-		return "provider_rejected", upstream.Message
+		return "provider_rejected", message
 	}
 }
 

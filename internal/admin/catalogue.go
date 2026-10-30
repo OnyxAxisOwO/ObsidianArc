@@ -540,16 +540,16 @@ func translateAdapterError(err error) error {
 
 	switch upstream.Kind {
 	case adapter.ErrorAuth:
-		return httpx.BadRequest("%s", upstream.Message)
+		return httpx.BadRequest("%s", upstream.PublicMessage())
 	case adapter.ErrorRateLimit:
-		return httpx.TooManyRequests("provider_rate_limited", upstream.Message)
+		return httpx.TooManyRequests("provider_rate_limited", upstream.PublicMessage())
 	case adapter.ErrorNetwork:
-		return httpx.Unavailable(upstream.Message).WithCause(err)
+		return httpx.Unavailable(upstream.PublicMessage()).WithCause(err)
 	case adapter.ErrorUpstream:
-		return httpx.Unavailable(upstream.Message).WithCause(err)
+		return httpx.Unavailable(upstream.PublicMessage()).WithCause(err)
 	case adapter.ErrorCancelled:
 		return httpx.UnavailableCode("request_cancelled", "The request was cancelled.")
 	default:
-		return httpx.BadRequest("%s", upstream.Message)
+		return httpx.BadRequest("%s", upstream.PublicMessage())
 	}
 }
