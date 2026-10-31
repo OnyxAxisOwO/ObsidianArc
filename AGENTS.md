@@ -438,8 +438,8 @@ They drifted to nearly double once because nobody re-ran the build.
 
 Current: 28.13 MB binary (this repository ships no plugin; 2.8 MB of it is
 the plugin runtime, 0.41 MB the brotli copies of the frontend the
-build writes for the server to send, and 0.41 MB the embedded zone database); to open the chat, 174.42 kB on the wire
-to a browser that takes brotli and 207.64 kB to one that takes only gzip, which
+build writes for the server to send, and 0.41 MB the embedded zone database); to open the chat, 174.37 kB on the wire
+to a browser that takes brotli and 207.67 kB to one that takes only gzip, which
 is the figure the budget holds (the build's own gzip column is not quoted:
 Node's zlib gives a few hundred bytes more or less on another CPU),
 against a target of 135. The target used to be 80 and

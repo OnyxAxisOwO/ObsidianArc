@@ -128,6 +128,16 @@
   animation: none;
 }
 
+/* Named card snapshots paint above the root snapshot. The floating controls
+   need their own layers so a full-height panel cannot hide them mid-switch. */
+::view-transition-group(auth-tools) {
+  z-index: 10;
+}
+
+::view-transition-group(auth-notice) {
+  z-index: 30;
+}
+
 @media (prefers-reduced-motion: reduce) {
   ::view-transition-group(*) {
     animation-duration: 0s !important;
@@ -452,6 +462,7 @@
 }
 
 .oa-auth-corner {
+  view-transition-name: auth-tools;
   position: fixed;
   top: 12px;
   right: 12px;
@@ -1239,6 +1250,7 @@ button.oa-home-notice-main:focus-visible {
    is fixed to the top of the window; the page makes room for it so a card that
    is nearly as tall as the window is not drawn under it. */
 .oa-home-notice.floating {
+  view-transition-name: auth-notice;
   position: fixed;
   top: 12px;
   left: 50%;
