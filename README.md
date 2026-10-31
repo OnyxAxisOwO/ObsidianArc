@@ -171,11 +171,11 @@ Online documentation is hosted on Cloudflare Pages:
 
 | 指标 / Metric | 实测数据 / Measurement |
 | --- | --- |
-| 二进制体积 / Binary size | 28.13 MB（Linux amd64，本仓库不自带插件，其中插件运行时约 2.8 MB，构建时预压缩的 brotli 前端副本约 0.41 MB，内嵌的时区数据约 0.41 MB；使用 `-tags nosqlite` 为 24.42 MB） |
+| 二进制体积 / Binary size | 28.13 MB（Linux amd64，本仓库不自带插件，其中插件运行时约 2.8 MB，构建时预压缩的 brotli 前端副本约 0.41 MB，内嵌的时区数据约 0.41 MB；使用 `-tags nosqlite` 为 24.43 MB） |
 | 冷启动就绪时间 / Cold start | ~28 ms |
 | 空闲内存占用 / Idle RSS | ~16 MB |
 | 20 并发流式峰值 / Peak under 20 concurrency | ~54 MB 内存，11 个 OS 线程 |
-| 首次加载传输体积 / Wire payload | 打开对话界面：支持 brotli 的浏览器传输 173.94 kB（153.76 kB JS + 20.18 kB CSS），只支持 gzip 时传输 207.32 kB（183.59 kB JS + 23.73 kB CSS）——brotli 是构建时以最高质量预压缩、嵌入二进制的副本，gzip 由服务器用 Go 的压缩器以最高级别在发送时生成（Node 的 gzip 在不同 CPU 上压出的字节不同，Go 的处处一致）；首屏预算按 gzip 计。以下按 gzip 计：中文语言包 (20.83 kB；后台独用的中文词条另成一包 38.45 kB，只在中文界面进入后台时加载)、管理后台 (178.88 kB JS + 15.72 kB CSS，后台独用的英文词条和样式随它加载)、终端 (8.06 kB JS + 1.67 kB CSS)、公式渲染器 (3.76 kB)、访客官网首页 (4.17 kB JS + 3.89 kB CSS)、访客落地页 (3.12 kB JS + 0.62 kB CSS)，以及每个编进二进制的插件各一个小分包，按需加载；以插件包安装的插件，其浏览器端模块只在启用后才取；账户菜单内容（1.72 kB JS + 0.81 kB CSS，首次打开时加载）、文件夹管理（2.67 kB JS + 1.08 kB CSS，有文件夹或新建时加载）、模型厂商标志（6.27 kB，首次绘制图标时加载）另成按需分包 |
+| 首次加载传输体积 / Wire payload | 打开对话界面：支持 brotli 的浏览器传输 174.00 kB（153.77 kB JS + 20.23 kB CSS），只支持 gzip 时传输 207.37 kB（183.59 kB JS + 23.78 kB CSS）——brotli 是构建时以最高质量预压缩、嵌入二进制的副本，gzip 由服务器用 Go 的压缩器以最高级别在发送时生成（Node 的 gzip 在不同 CPU 上压出的字节不同，Go 的处处一致）；首屏预算按 gzip 计。以下按 gzip 计：中文语言包 (20.83 kB；后台独用的中文词条另成一包 38.48 kB，只在中文界面进入后台时加载)、管理后台 (178.95 kB JS + 15.78 kB CSS，后台独用的英文词条和样式随它加载)、终端 (8.06 kB JS + 1.67 kB CSS)、公式渲染器 (3.76 kB)、访客官网首页 (4.17 kB JS + 3.89 kB CSS)、访客落地页 (3.12 kB JS + 0.62 kB CSS)，以及每个编进二进制的插件各一个小分包，按需加载；以插件包安装的插件，其浏览器端模块只在启用后才取；账户菜单内容（1.72 kB JS + 0.81 kB CSS，首次打开时加载）、文件夹管理（2.67 kB JS + 1.08 kB CSS，有文件夹或新建时加载）、模型厂商标志（6.27 kB，首次绘制图标时加载）另成按需分包 |
 | 后台常驻协程 / Background goroutines | 3 个（请求日志写入、10 分钟清理、备份调度） |
 | Go 直接依赖 / Direct Go dependencies | 4 个（SQLite 驱动、pgx、x/crypto、wazero——插件包的沙箱） |
 | 前端运行时依赖 / Frontend runtime dependencies | 4 个（`vue`、`vue-router`、`@vueuse/core`、`lucide-vue-next`） |

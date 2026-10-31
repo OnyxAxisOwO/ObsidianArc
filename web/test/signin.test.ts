@@ -1186,6 +1186,7 @@ describe('auth card layout position', () => {
     { position: 'center', expectedClass: 'position-center' },
     { position: 'left', expectedClass: 'position-left' },
     { position: 'right', expectedClass: 'position-right' },
+    { position: 'right-panel', expectedClass: 'position-right-panel' },
   ] as const)('applies $expectedClass to AuthView (login) when auth_card_position is $position', async ({ position, expectedClass }) => {
     site.value = { ...siteInfo.value };
     if (position === undefined) delete site.value.auth_card_position;
@@ -1199,6 +1200,7 @@ describe('auth card layout position', () => {
     { position: 'left', expectedClass: 'position-left' },
     { position: 'right', expectedClass: 'position-right' },
     { position: 'center', expectedClass: 'position-center' },
+    { position: 'right-panel', expectedClass: 'position-right-panel' },
   ] as const)('applies $expectedClass to AuthView (register) when auth_card_position is $position', async ({ position, expectedClass }) => {
     site.value = { ...siteInfo.value, auth_card_position: position };
     await mount(AuthView, { mode: 'register' });

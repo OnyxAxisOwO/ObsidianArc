@@ -10,6 +10,7 @@ import { adminApi, type AdminModel, type HeldAttachments } from '@/admin/api';
 import { imageProblem, imageType, LOGO_TYPES, MAX_LOGO_BYTES, pickImage, readAsBase64 } from '@/admin/upload';
 import { pickJSONFile, saveAsFile } from '@/api/backup';
 import { ApiError } from '@/api/client';
+import type { SiteInfo } from '@/api/auth';
 import OaConfirmButton from '@/components/OaConfirmButton.vue';
 import OaIconButton from '@/components/OaIconButton.vue';
 import OaOverlay from '@/components/OaOverlay.vue';
@@ -49,7 +50,7 @@ const SEARCH_GROUPS = {
   ],
   secLoginBg: [
     'secLoginBg', 'loginBgHint', 'authCardPosition', 'authCardPositionHint', 'authCardPositionCenter',
-    'authCardPositionLeft', 'authCardPositionRight', 'loginBgLandscape', 'loginBgPortrait',
+    'authCardPositionLeft', 'authCardPositionRight', 'authCardPositionRightPanel', 'loginBgLandscape', 'loginBgPortrait',
     'loginBgLandscapeLight', 'loginBgLandscapeDark', 'loginBgPortraitLight', 'loginBgPortraitDark',
     'loginBgFallbackNote', 'bgHtmlEdit', 'bgHtmlTitle',
   ],
@@ -122,6 +123,7 @@ const CARD_POSITIONS = [
   { value: 'center', label: 'authCardPositionCenter' },
   { value: 'left', label: 'authCardPositionLeft' },
   { value: 'right', label: 'authCardPositionRight' },
+  { value: 'right-panel', label: 'authCardPositionRightPanel' },
 ] as const;
 const THEME_MODES = [
   { value: 'auto', label: 'themeAuto' },
@@ -356,7 +358,7 @@ async function save(): Promise<void> {
         ...site.value,
         name,
         browser_title: form.value.browserTitle.trim() || name,
-        auth_card_position: form.value.authCardPosition as 'center' | 'left' | 'right',
+        auth_card_position: form.value.authCardPosition as NonNullable<SiteInfo['auth_card_position']>,
         about: {
           title: form.value.aboutHeading.trim(),
           body: form.value.aboutText.trim(),
@@ -570,7 +572,7 @@ async function load(): Promise<void> {
       avatarProvider: values['profile.avatar_provider'] ?? 'none',
       description: values['site.description'] ?? '',
       browserTitle: values['site.browser_title'] ?? '',
-      authCardPosition: (values['site.auth_card_position'] || 'center') as 'center' | 'left' | 'right',
+      authCardPosition: values['site.auth_card_position'] || 'center',
       pwaName: values['pwa.name'] ?? '',
       pwaShortName: values['pwa.short_name'] ?? '',
       pwaDescription: values['pwa.description'] ?? '',
@@ -700,8 +702,8 @@ onMounted(load);
         </div>
       </AdminControlCard>
       <AdminControlCard id="secLoginBg" v-show="visible('secLoginBg')" :title="t('secLoginBg')" :icon="IconImage" :hint="t('loginBgHint')">
-        <OaRow :title="t('authCardPosition')">
-          <div class="oa-segment" role="group" :aria-label="t('authCardPosition')">
+        <OaRow :title="t('authCardPosition')" :meta="t('authCardPositionHint')" stacked>
+          <div class="oa-segment oa-auth-positions" role="group" :aria-label="t('authCardPosition')">
             <button
               v-for="entry in CARD_POSITIONS"
               :key="entry.value"

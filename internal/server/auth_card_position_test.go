@@ -55,6 +55,15 @@ func TestAuthCardPositionSettingsAndSiteAPI(t *testing.T) {
 		t.Fatalf("auth_card_position = %q, want right", got)
 	}
 
+	res = in.do(http.MethodPut, "/api/admin/settings",
+		map[string]string{settings.SiteAuthCardPosition: settings.AuthCardPositionRightPanel}, admin)
+	if res.Code != http.StatusOK {
+		t.Fatalf("set auth card position to right-panel: %d %s", res.Code, res.Body.String())
+	}
+	if got := readPosition(); got != settings.AuthCardPositionRightPanel {
+		t.Fatalf("auth_card_position = %q, want right-panel", got)
+	}
+
 	// 4. Admin can set it back to "center".
 	res = in.do(http.MethodPut, "/api/admin/settings",
 		map[string]string{settings.SiteAuthCardPosition: "center"}, admin)
@@ -81,13 +90,13 @@ func TestAuthCardPositionSettingsAndSiteAPI(t *testing.T) {
 
 	// 7. Settings import keeps a valid auth card position.
 	importRes := in.do(http.MethodPost, "/api/admin/settings/import", map[string]string{
-		settings.SiteAuthCardPosition: "right",
+		settings.SiteAuthCardPosition: settings.AuthCardPositionRightPanel,
 	}, admin)
 	if importRes.Code != http.StatusOK {
 		t.Fatalf("import valid settings: %d %s", importRes.Code, importRes.Body.String())
 	}
-	if got := readPosition(); got != "right" {
-		t.Fatalf("auth_card_position after import = %q, want right", got)
+	if got := readPosition(); got != settings.AuthCardPositionRightPanel {
+		t.Fatalf("auth_card_position after import = %q, want right-panel", got)
 	}
 
 	// 8. Settings import drops an invalid auth card position and lists it in skipped.
@@ -107,8 +116,7 @@ func TestAuthCardPositionSettingsAndSiteAPI(t *testing.T) {
 	if len(importResult.Skipped) != 1 || importResult.Skipped[0] != settings.SiteAuthCardPosition {
 		t.Fatalf("expected skipped [%s], got %v", settings.SiteAuthCardPosition, importResult.Skipped)
 	}
-	// Position remains unchanged at "right".
-	if got := readPosition(); got != "right" {
-		t.Fatalf("auth_card_position after skipped import = %q, want right", got)
+	if got := readPosition(); got != settings.AuthCardPositionRightPanel {
+		t.Fatalf("auth_card_position after skipped import = %q, want right-panel", got)
 	}
 }

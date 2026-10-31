@@ -397,12 +397,13 @@ const (
 
 // Where the sign-in / registration card sits on the screen.
 const (
-	AuthCardPositionCenter = "center"
-	AuthCardPositionLeft   = "left"
-	AuthCardPositionRight  = "right"
+	AuthCardPositionCenter     = "center"
+	AuthCardPositionLeft       = "left"
+	AuthCardPositionRight      = "right"
+	AuthCardPositionRightPanel = "right-panel"
 )
 
-var AuthCardPositions = []string{AuthCardPositionCenter, AuthCardPositionLeft, AuthCardPositionRight}
+var AuthCardPositions = []string{AuthCardPositionCenter, AuthCardPositionLeft, AuthCardPositionRight, AuthCardPositionRightPanel}
 
 func ValidAuthCardPosition(value string) bool {
 	return slices.Contains(AuthCardPositions, value)

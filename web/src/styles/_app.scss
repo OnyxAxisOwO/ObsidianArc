@@ -12,7 +12,6 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 100%;
   height: 100%;
   overflow-y: auto;
   padding: 24px 16px;
@@ -24,19 +23,11 @@
   &.position-left {
     justify-content: flex-start;
     padding-left: clamp(24px, 8vw, 120px);
-    padding-right: 16px;
   }
 
   &.position-right {
     justify-content: flex-end;
-    padding-left: 16px;
     padding-right: clamp(24px, 8vw, 120px);
-  }
-
-  &.position-center {
-    justify-content: center;
-    padding-left: 16px;
-    padding-right: 16px;
   }
 
   @media (max-width: 640px) {
@@ -55,10 +46,9 @@
     isolation: isolate;
     background-size: cover;
     background-position: center;
-    background-repeat: no-repeat;
-    transition: background-image 0.25s ease;
+    transition: background-image 0.25s;
 
-    .oa-auth-card {
+    &:not(.position-right-panel) .oa-auth-card {
       background: color-mix(in srgb, var(--ai-surface-container) 90%, transparent);
       backdrop-filter: blur(20px);
       -webkit-backdrop-filter: blur(20px);
@@ -77,8 +67,34 @@
   // Auto vertical margins keep the card centered vertically when viewport
   // height permits, but allow it to start from the top when the card is
   // taller than the viewport so the header/title is never cut off.
-  margin-top: auto;
-  margin-bottom: auto;
+  margin-block: auto;
+}
+
+/* A separate choice keeps wallpaper docking and the original floating cards
+   intact. The panel owns its scrolling so tall registration forms cannot
+   scroll the background or lose their first fields above the viewport. */
+.oa-auth.position-right-panel {
+  justify-content: flex-end;
+  align-items: stretch;
+  padding: 0;
+
+  > .oa-auth-card {
+    // Safe centering starts at the top when a long form needs to scroll.
+    align-content: safe center;
+    width: 40%;
+    max-width: none;
+    margin: 0;
+    padding: 48px;
+    border-radius: 0;
+    overflow-y: auto;
+    animation: none;
+  }
+
+  @media (max-width: 900px) {
+    > .oa-auth-card {
+      width: 100%;
+    }
+  }
 }
 
 .oa-auth-brand {

@@ -157,28 +157,32 @@ describe('admin settings payload', () => {
     expectSaveState(false);
   });
 
-  it('updates auth card position setting', async () => {
+  it.each([
+    { position: 'left', label: 'authCardPositionLeft', preview: 'at-left' },
+    { position: 'right-panel', label: 'authCardPositionRightPanel', preview: 'at-right-panel' },
+  ] as const)('saves the $position layout and updates the background preview', async ({ position, label, preview }) => {
     vi.spyOn(adminApi, 'settings').mockResolvedValue({ settings: { ...settingsFixture } });
-    const save = vi.spyOn(adminApi, 'saveSettings').mockResolvedValue({ settings: { ...settingsFixture, 'site.auth_card_position': 'left' } });
+    const save = vi.spyOn(adminApi, 'saveSettings').mockResolvedValue({ settings: { ...settingsFixture, 'site.auth_card_position': position } });
     await mountSettings();
     expectSaveState(false);
 
     expect(host.querySelector<HTMLElement>('#secLoginBg')?.style.display).not.toBe('none');
-    // A segmented control now, not a select: three words fit on one line.
-    const choices = [...host.querySelectorAll<HTMLButtonElement>('#secLoginBg .oa-segment button')];
+    const choices = [...host.querySelectorAll<HTMLButtonElement>('#secLoginBg .oa-auth-positions button')];
+    expect(choices).toHaveLength(4);
     const center = choices.find((node) => node.textContent?.includes(t('authCardPositionCenter')));
     expect(center?.getAttribute('aria-pressed')).toBe('true');
-    const left = choices.find((node) => node.textContent?.includes(t('authCardPositionLeft')));
-    expect(left).toBeDefined();
-    left!.click();
+    const choice = choices.find((node) => node.textContent?.includes(t(label)));
+    expect(choice).toBeDefined();
+    choice!.click();
     await nextTick();
-    expect(left!.getAttribute('aria-pressed')).toBe('true');
+    expect(choice!.getAttribute('aria-pressed')).toBe('true');
+    expect(host.querySelector('.oa-bg-stage-ghost.login')?.classList.contains(preview)).toBe(true);
     expectSaveState(true);
 
     button(actions, t('save')).click();
     await settle();
     expect(save).toHaveBeenCalledTimes(1);
-    expect(save).toHaveBeenCalledWith({ 'site.auth_card_position': 'left' });
+    expect(save).toHaveBeenCalledWith({ 'site.auth_card_position': position });
     expectSaveState(false);
   });
 

@@ -9,7 +9,7 @@
 | `site.name` | `Obsidian Arc` | 站点名称 |
 | `site.description` | 空 | 站点说明 |
 | `site.browser_title` | 空 | 浏览器标签页标题；空值使用 `site.name` |
-| `site.auth_card_position` | `center` | 登录与注册卡片停靠位置；可选 `center`、`left` 或 `right` |
+| `site.auth_card_position` | `center` | 登录与注册布局；`center`、`left`、`right` 保留悬浮卡片，`right-panel` 使用约四成宽的右侧通高面板，左侧保留默认背景；窄屏时面板铺满宽度 |
 | `about.title` / `about.body` | 空 | 关于页面标题与 Markdown 详细介绍；空值使用内置内容 |
 | `home.notice` | 空 | 首页通知横条上的一行字（最多 300 字符），登录前也可见 |
 | `home.notice_body` | 空 | 点开横条后的 Markdown 正文（最多 4000 字符） |

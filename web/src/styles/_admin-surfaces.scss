@@ -2324,6 +2324,14 @@
   opacity: 0;
 }
 
+/* The extra layout choice must wrap on phones, including its longer English label. */
+.oa-auth-positions {
+  flex-wrap: wrap;
+  width: fit-content;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
 .oa-bg-stage-ghost.login {
   align-items: center;
   justify-content: center;
@@ -2364,6 +2372,27 @@
 
 .oa-bg-stage.screen-phone .oa-bg-stage-ghost.login .card {
   width: 78%;
+}
+
+/* Preview the panel's footprint rather than suggesting another floating card.
+   The phone preview follows the same single-column fallback as the page. */
+.oa-bg-stage-ghost.login.at-right-panel {
+  justify-content: flex-end;
+  align-items: stretch;
+  padding: 0;
+
+  .card {
+    justify-content: center;
+    width: 40%;
+    min-width: 0;
+    border-radius: 0;
+    background: var(--ai-surface-container);
+    box-shadow: none;
+  }
+}
+
+.oa-bg-stage.screen-phone .oa-bg-stage-ghost.login.at-right-panel .card {
+  width: 100%;
 }
 
 .oa-bg-stage-ghost.login .card i {

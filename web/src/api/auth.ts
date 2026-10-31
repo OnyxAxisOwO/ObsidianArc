@@ -178,8 +178,8 @@ export interface SiteInfo {
   theme?: SiteTheme;
   /** Custom site logo URL, or empty if the built-in mark/favicon is used. */
   logo_url?: string;
-  /** Layout position of the sign-in / registration card ('center' | 'left' | 'right'). */
-  auth_card_position?: 'center' | 'left' | 'right';
+  /** Absent on older servers, which keep the centered floating card. */
+  auth_card_position?: 'center' | 'left' | 'right' | 'right-panel';
   /** Whether new user registrations are forced to use third-party OAuth/OIDC. */
   oauth_only_signup?: boolean;
   /** Whether new user registrations are forced to use OIDC (compatibility alias). */
