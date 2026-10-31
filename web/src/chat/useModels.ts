@@ -35,6 +35,8 @@ export interface ReasoningTier {
 export interface AvailableModel extends ModelCapabilities {
   id: string;
   display_name: string;
+  /** The identifier advertised by the instance’s OpenAI-compatible API. */
+  api_name?: string;
   description: string;
   avatar: string;
   usable?: boolean;

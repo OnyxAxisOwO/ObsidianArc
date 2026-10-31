@@ -272,6 +272,7 @@ export const zh: Record<CoreKey, string> = {
   keyPick: '选择',
   keyClose: '关闭',
   modelListLabel: '模型',
+  apiNameLabel: 'API 名称',
   specContext: '上下文',
   specOutput: '最长输出',
   specCan: '能力',

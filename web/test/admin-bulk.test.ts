@@ -9,7 +9,7 @@ import AdminAnnouncements from '../src/views/admin/AdminAnnouncements.vue';
 import { pickJSONFile, saveAsFile } from '../src/api/backup';
 import AdminModels from '../src/views/admin/AdminModels.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
-import { adminShell, catchAllRouter, mountComponent, PAST_PANEL_ZOOM_MS, settle, wait } from './helpers';
+import { adminShell, catchAllRouter, mountComponent, PAST_PANEL_ZOOM_MS, settle, until, wait } from './helpers';
 
 // The import reads a file from the operator's disk; the test hands it a JSON
 // body directly. Everything else in the backup module stays real.
@@ -173,6 +173,7 @@ describe('AdminModels, several at once and in place', () => {
     expect(update).toHaveBeenCalledTimes(1);
     expect(update).toHaveBeenCalledWith('a', { enabled: false });
     expect(adminApi.models).toHaveBeenCalledTimes(2);
+    await until(() => !host.querySelector('.oa-bulk-bar'), 'bulk bar to finish leaving');
     expect(host.querySelector('.oa-bulk-bar')).toBeNull();
   });
 
@@ -238,6 +239,7 @@ describe('AdminModels, several at once and in place', () => {
     await settle();
     expect(remove.mock.calls.map(([id]) => id)).toEqual(['a', 'c']);
     expect(host.querySelectorAll('tbody tr')).toHaveLength(1);
+    await until(() => !host.querySelector('.oa-bulk-bar'), 'bulk bar to finish leaving');
     expect(host.querySelector('.oa-bulk-bar')).toBeNull();
   });
 

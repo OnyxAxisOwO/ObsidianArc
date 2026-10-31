@@ -3,6 +3,7 @@ import { createApp, nextTick, type App } from 'vue';
 import ModelControl from '../src/chat/ModelControl.vue';
 import { models, selectedID } from '../src/chat/useModels';
 import * as auth from '../src/api/auth';
+import { t } from '../src/composables/useI18n';
 
 // The model list is a palette: typing narrows it, the arrows move through
 // what is left without leaving the field, and Enter chooses.
@@ -100,5 +101,24 @@ it('keeps the sheet one height whichever row the pointer is on', async () => {
     await nextTick();
     heights.add(host.querySelectorAll('.ai-pop-spec > div').length);
   }
-  expect([...heights]).toEqual([3]);
+  expect([...heights]).toEqual([4]);
+});
+
+
+it('shows the highlighted model’s API name alongside its token limits', async () => {
+  models.value[0]!.api_name = 'gpt-6-sol';
+  models.value[1]!.api_name = 'gpt-6-luna';
+  const search = await openList();
+  const apiName = () => [...host.querySelectorAll('.ai-pop-spec > div')]
+    .find((row) => row.querySelector('dt')?.textContent === t('apiNameLabel'))!
+    .querySelector('dd')!;
+  expect(apiName().textContent).toBe('gpt-6-sol');
+
+  search.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+  await nextTick();
+  expect(apiName().textContent).toBe('gpt-6-luna');
+
+  host.querySelectorAll('.ai-pop-model-row')[2]!.dispatchEvent(new Event('pointermove'));
+  await nextTick();
+  expect(apiName().textContent).toBe('—');
 });

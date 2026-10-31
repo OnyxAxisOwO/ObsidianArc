@@ -1715,9 +1715,31 @@
   border-radius: 18px;
   background: var(--ai-surface-card);
   box-shadow: var(--ai-shadow-md);
-  /* No backdrop-filter: the fill is opaque, so a blur behind it is never
-     seen and only costs a compositing layer — and the bar has no fade during
-     which it could show through. */
+  /* The fill is opaque; fading the whole card needs no backdrop blur. */
+}
+
+/* Keep the sticky card in place while it fades, so selection does not snap
+   its controls into view or remove them before the exit finishes. */
+.oa-bulk-enter-active {
+  transition: opacity 0.24s var(--ai-ease-out), transform 0.24s var(--ai-ease-out);
+}
+
+.oa-bulk-leave-active {
+  transition: opacity 0.16s var(--ai-ease-standard), transform 0.16s var(--ai-ease-standard);
+  pointer-events: none;
+}
+
+.oa-bulk-enter-from,
+.oa-bulk-leave-to {
+  opacity: 0;
+  transform: translateY(10px) scale(0.98);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .oa-bulk-enter-active,
+  .oa-bulk-leave-active {
+    transition: none;
+  }
 }
 
 .oa-bulk-row {

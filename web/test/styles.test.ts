@@ -30,6 +30,27 @@ describe('stylesheet invariants', () => {
     return [...css.matchAll(/([^{}]+)\{([^}]*)\}/g)].map((m) => [m[1]!.trim(), m[2]!]);
   }
 
+  it('draws the checkbox tick as one joined stroke and keeps the partial-selection dash', () => {
+    const css = rules(builtCss());
+    const tick = css.find(([selector]) => selector.includes('.oa-table-check input[type=checkbox]:after')
+      && !selector.includes(':checked') && !selector.includes(':indeterminate'));
+    expect(tick?.[1]).toMatch(/mask:[^;]*stroke-linejoin/);
+    expect(tick?.[1]).not.toMatch(/border-(left|bottom):/);
+    const dash = css.find(([selector]) => selector.includes('.oa-table-check input[type=checkbox]:indeterminate:after'));
+    expect(dash?.[1]).toContain('mask:none');
+    expect(dash?.[1]).toContain('height:2px');
+  });
+
+  it('animates the bulk bar in both directions with a reduced-motion override', () => {
+    const css = rules(builtCss());
+    for (const phase of ['enter', 'leave']) {
+      const active = css.find(([selector]) => selector === `.oa-bulk-${phase}-active`);
+      expect(active?.[1]).toMatch(/transition:[^;]*opacity[^;]*transform/);
+    }
+    const source = fs.readFileSync(path.resolve(__dirname, '../src/styles/_admin-surfaces.scss'), 'utf8');
+    expect(source).toMatch(/@media \(prefers-reduced-motion: reduce\) \{\s*\.oa-bulk-enter-active,\s*\.oa-bulk-leave-active \{\s*transition: none;/);
+  });
+
   it('does not reset the transitions of everything in a row', () => {
     // `transition` is a shorthand, so a rule that sets it on
     // `.ai-chat > :not(.oa-panel)` to arrange one property's timing throws

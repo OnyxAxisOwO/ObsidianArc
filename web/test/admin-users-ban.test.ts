@@ -6,7 +6,7 @@ import { installPlugins } from '../src/plugins/registry';
 import { t } from '../src/composables/useI18n';
 import AdminUsers from '../src/views/admin/AdminUsers.vue';
 import example from './fixtures/example.plugin';
-import { adminShell, catchAllRouter, mountComponent, PAST_SEARCH_DEBOUNCE_MS, settle, wait } from './helpers';
+import { adminShell, catchAllRouter, mountComponent, PAST_SEARCH_DEBOUNCE_MS, settle, until, wait } from './helpers';
 import { makeAccount } from './fixtures/account';
 
 const deferred = <T,>() => {
@@ -184,6 +184,7 @@ describe('AdminUsers, banning with a reason', () => {
     ]);
     // Nothing is left ticked, so the bar is gone; the next selection starts with
     // the reason field empty rather than carrying this one forward.
+    await until(() => !host.querySelector('.oa-bulk-bar'), 'bulk bar to finish leaving');
     expect(host.querySelector('.oa-bulk-bar')).toBeNull();
     rowBox(0).click();
     await nextTick();

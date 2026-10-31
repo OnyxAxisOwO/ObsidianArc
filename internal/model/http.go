@@ -14,7 +14,7 @@ import (
 // Everything administrative — creating models, editing weights, granting them
 // to groups — lives in internal/admin. This file is only the read the chat
 // interface needs, and it deliberately returns a narrower shape than the
-// admin one: no upstream model id, no provider id, no weights.
+// admin one: only the API-facing name, no provider id or weights.
 type Handlers struct {
 	models *Store
 	// Set by the wiring when the operator has something to publish. Nil is
@@ -44,18 +44,18 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /api/models", auth.RequireUser(httpx.Wrap(h.list)))
 }
 
-// Public is what a regular user is told about a model. The upstream
-// identifier is left out on purpose: it is an implementation detail of how
-// this instance is wired, and nothing in the interface needs it — the client
-// selects by our row id.
+// Public carries the same API-facing identifier as /v1/models, so a reader
+// can configure another client. A configured API name keeps the upstream
+// identifier private; the chat itself still selects by our row id.
 //
-// So is the provider's name. It is not carried here: three screens printed it
+// The provider's name is not carried here: three screens printed it
 // beside the model, which told every reader which company actually serves the
 // answer, the one fact this indirection exists to keep. Keeping it out of the
 // struct, rather than hiding it at each call site, means a screen added later
 // cannot print what it never receives.
 type Public struct {
 	ID          string `json:"id"`
+	APIName     string `json:"api_name"`
 	DisplayName string `json:"display_name"`
 	Description string `json:"description"`
 	Avatar      string `json:"avatar"`
@@ -81,9 +81,10 @@ type PublicTier struct {
 	Name string `json:"name"`
 }
 
-func toPublic(record Model, live Liveness) Public {
+func toPublic(record Model, live Liveness, claims int) Public {
 	out := Public{
 		ID:           record.ID,
+		APIName:      APIRef(record.ID, record.ModelID, record.APIName, claims),
 		DisplayName:  record.DisplayName,
 		Description:  record.Description,
 		Avatar:       record.Avatar,
@@ -113,9 +114,17 @@ func (h *Handlers) list(w http.ResponseWriter, r *http.Request) error {
 		live = h.Liveness(r.Context())
 	}
 
+	// View-only rows do not claim a name in /v1/models, so they must not
+	// qualify a usable model's name in the picker either.
+	claims := make(map[string]int, len(records))
+	for _, record := range records {
+		if record.Usable {
+			claims[PublicName(record.APIName, record.ModelID)]++
+		}
+	}
 	models := make([]Public, 0, len(records))
 	for _, record := range records {
-		models = append(models, toPublic(record, live[record.ID]))
+		models = append(models, toPublic(record, live[record.ID], claims[PublicName(record.APIName, record.ModelID)]))
 	}
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"models": models})
 }

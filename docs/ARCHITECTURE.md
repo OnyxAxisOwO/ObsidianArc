@@ -227,10 +227,28 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 28.13 MB (24.43 MB `-tags nosqlite`, Linux amd64, Go 1.27.3), 0.41 MB of it the frontend's brotli copies and 0.41 MB the embedded zone database; this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 174.46 kB to open the chat with brotli (154.09 JS + 20.37 CSS); 207.77 kB with gzip (183.82 JS + 23.95 CSS), which the budget holds; the brotli is a copy compressed at build time, the gzip is Go's, made as it goes out |
+| Binary (SQLite + embedded SPA) | < 30 MB | 28.14 MB (24.43 MB `-tags nosqlite`, Linux amd64, Go 1.27.3), 0.41 MB of it the frontend's brotli copies and 0.41 MB the embedded zone database; this repository ships no plugin |
+| Frontend, on the wire | < 135 kB | 174.72 kB to open the chat with brotli (154.20 JS + 20.52 CSS); 207.94 kB with gzip (183.85 JS + 24.09 CSS), which the budget holds; the brotli is a copy compressed at build time, the gzip is Go's, made as it goes out |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-10-31, after the model picker's detail sheet gained the
+API-facing model name. Its label shares the core dictionary with the model
+editor; the public catalogue uses the same naming rules as the compatible
+API. First paint is 207.94 kB with Go's gzip (183.85 JS + 24.09 CSS),
+174.72 kB with brotli (154.20 JS + 20.52 CSS), within the unchanged 208 kB
+budget and 18 core assets. The backoffice adds 179.00 kB JS + 15.87 kB CSS
+with gzip; Chinese adds 20.84 kB plus 38.49 kB for the backoffice. Built as
+below, the Linux amd64 binary is 28,135,584 bytes (24,432,800 without
+SQLite), and the brotli copies total 414,707 bytes.
+
+Remeasured on 2026-10-31, after checkbox ticks changed to a single joined
+stroke and the bulk-action bar gained entry and exit transitions. First paint
+is 207.91 kB with Go's gzip (183.81 JS + 24.09 CSS), 174.55 kB with brotli
+(154.03 JS + 20.52 CSS), within the unchanged 208 kB budget. The backoffice
+adds 179.01 kB JS + 15.87 kB CSS with gzip. All 18 core assets remain; the
+Linux amd64 binary, built as below, is still 28,131,488 bytes (24,428,704
+without SQLite), and the brotli copies total 414,505 bytes.
 
 Remeasured on 2026-10-29, after Rune was added below the backoffice overview.
 Its conversation, work-mode controls and geometric ASCII field stay in the
@@ -250,7 +268,7 @@ expansion animation were added. The original floating-card layouts remain
 available; the animation and background previews add no chunks. Both build
 gates measure the server's own gzip response, with the same 208 kB limit:
 Node's codec can vary across versions and CPUs and is not the response sent
-to a browser. These are the figures used in the current tables.
+to a browser. These figures describe the preceding build.
 
 The current figures were refreshed on 2026-10-30 after registration UA
 visibility controls and Gravatar / WeAvatar support were added. Custom avatars
@@ -987,11 +1005,11 @@ What each reader actually downloads, as the server sends it (2026-10-31):
 
 | | gzip | brotli |
 | --- | --- | --- |
-| English, not an administrator | 207.77 kB | 174.46 kB |
-| Chinese, not an administrator | 228.60 kB | 191.78 kB |
-| …and a conversation containing a formula | 232.37 kB | 195.03 kB |
-| Chinese administrator, backoffice open | 461.89 kB | 381.04 kB |
-| Anybody, once they open the terminal | +9.73 kB | +8.73 kB |
+| English, not an administrator | 207.94 kB | 174.72 kB |
+| Chinese, not an administrator | 228.78 kB | 192.06 kB |
+| …and a conversation containing a formula | 232.55 kB | 195.31 kB |
+| Chinese administrator, backoffice open | 462.14 kB | 381.30 kB |
+| Anybody, once they open the terminal | +9.73 kB | +8.75 kB |
 | A visitor to an instance whose front door is the front page | +8.06 kB | +7.08 kB |
 | A signed-out visitor to an instance whose front door is the intro or trial | +3.74 kB | +3.25 kB |
 

@@ -277,6 +277,7 @@ const en = {
   keyPick: 'Choose',
   keyClose: 'Close',
   modelListLabel: 'Models',
+  apiNameLabel: 'API name',
   specContext: 'Context',
   specOutput: 'Max output',
   specCan: 'Can',

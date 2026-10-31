@@ -619,7 +619,6 @@ export const enAdmin = {
   canNoStream: 'no stream',
   modelIDLabel: 'Model id',
   modelIDHint: 'Exactly what the provider calls it. Sent upstream, never shown to a reader.',
-  apiNameLabel: 'API name',
   apiNameHint: 'What the API offers and accepts for this model. Leave it empty to use the model id.',
   displayNameHint: 'What users see in the picker.',
   modelDescriptionPlaceholder: 'Best for long, careful answers.',

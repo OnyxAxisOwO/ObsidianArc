@@ -612,7 +612,6 @@ export const zhAdmin: Record<AdminKey, string> = {
   canNoStream: '不支持流式',
   modelIDLabel: '模型 ID',
   modelIDHint: '服务商那边的准确名称。发给上游用，不会展示给用户。',
-  apiNameLabel: 'API 名称',
   apiNameHint: '对外提供服务时使用的名称，调用方填的就是它。留空则沿用模型 ID。',
   displayNameHint: '用户在模型菜单里看到的名字。',
   modelDescriptionPlaceholder: '适合需要长篇、仔细回答的场景。',

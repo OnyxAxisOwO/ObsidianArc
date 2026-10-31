@@ -29,32 +29,34 @@ const emit = defineEmits<{
 </script>
 
 <template>
-  <div v-if="props.count" class="oa-bulk-bar" role="toolbar" :aria-busy="props.busy">
-    <div class="oa-bulk-row">
-      <span class="oa-bulk-count">{{ t('bulkSelected', { count: props.count }) }}</span>
-      <button
-        v-if="props.count < props.total"
-        type="button"
-        class="oa-btn small"
-        :disabled="props.busy"
-        @click="emit('all')"
-      >{{ t('bulkSelectAll', { count: props.total }) }}</button>
-      <slot />
-      <OaConfirmButton
-        v-if="props.deletable"
-        class="oa-btn small oa-btn-danger"
-        :label="t('bulkDelete')"
-        :armed-title="props.deleteQuestion ?? t('bulkDeleteConfirm', { count: props.count })"
-        :disabled="props.busy"
-        @confirm="emit('delete')"
-      />
-      <button
-        type="button"
-        class="oa-btn small oa-bulk-clear"
-        :disabled="props.busy"
-        @click="emit('clear')"
-      >{{ t('bulkClear') }}</button>
+  <Transition name="oa-bulk">
+    <div v-if="props.count" class="oa-bulk-bar" role="toolbar" :aria-busy="props.busy">
+      <div class="oa-bulk-row">
+        <span class="oa-bulk-count">{{ t('bulkSelected', { count: props.count }) }}</span>
+        <button
+          v-if="props.count < props.total"
+          type="button"
+          class="oa-btn small"
+          :disabled="props.busy"
+          @click="emit('all')"
+        >{{ t('bulkSelectAll', { count: props.total }) }}</button>
+        <slot />
+        <OaConfirmButton
+          v-if="props.deletable"
+          class="oa-btn small oa-btn-danger"
+          :label="t('bulkDelete')"
+          :armed-title="props.deleteQuestion ?? t('bulkDeleteConfirm', { count: props.count })"
+          :disabled="props.busy"
+          @confirm="emit('delete')"
+        />
+        <button
+          type="button"
+          class="oa-btn small oa-bulk-clear"
+          :disabled="props.busy"
+          @click="emit('clear')"
+        >{{ t('bulkClear') }}</button>
+      </div>
+      <p v-if="props.error" class="oa-bulk-error" role="alert">{{ props.error }}</p>
     </div>
-    <p v-if="props.error" class="oa-bulk-error" role="alert">{{ props.error }}</p>
-  </div>
+  </Transition>
 </template>

@@ -251,7 +251,7 @@ function tokens(count: number): string {
 
 /**
  * The highlighted model's sheet, under the list: what it can hold, how much it
- * can say, what it can do. Always the same three rows, a dash where the
+ * can say, how the API names it, what it can do. Always the same four rows, a dash where the
  * operator left one blank: the sheet changes as the pointer moves down the
  * list, and a sheet that changed height with it moved the list under the
  * pointer — the popover hangs from its bottom edge — so the next row was
@@ -269,6 +269,7 @@ const specs = computed(() => {
   return [
     { label: t('specContext'), value: model.context_window > 0 ? tokens(model.context_window) : '—' },
     { label: t('specOutput'), value: model.max_output_tokens > 0 ? tokens(model.max_output_tokens) : '—' },
+    { label: t('apiNameLabel'), value: model.api_name || '—' },
     { label: t('specCan'), value: can.length ? can.join(' · ') : '—' },
   ];
 });
@@ -504,7 +505,7 @@ onBeforeUnmount(() => {
           <dl v-if="specs.length" class="ai-pop-spec">
             <div v-for="row in specs" :key="row.label">
               <dt>{{ row.label }}</dt>
-              <dd>{{ row.value }}</dd>
+              <dd :title="row.value">{{ row.value }}</dd>
             </div>
           </dl>
           <!-- What the keys do, said once at the foot rather than learnt by

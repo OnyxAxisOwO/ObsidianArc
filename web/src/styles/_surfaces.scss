@@ -1476,13 +1476,14 @@
 .oa-table-check input[type="checkbox"]::after {
   content: "";
   position: absolute;
-  top: 4px;
-  left: 3px;
-  width: 9px;
-  height: 5px;
-  border-left: 2px solid var(--ai-primary-text);
-  border-bottom: 2px solid var(--ai-primary-text);
-  transform: rotate(-45deg) scale(0.6);
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  /* A single joined stroke avoids seams where rotated borders meet. */
+  background: var(--ai-primary-text);
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='m2 6 3 3 5-6' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  transform: scale(0.6);
   opacity: 0;
   transition: opacity 0.12s ease, transform 0.12s ease;
 }
@@ -1495,7 +1496,7 @@
 .oa-check-row input[type="checkbox"]:checked::after,
 .oa-table-check input[type="checkbox"]:checked::after {
   opacity: 1;
-  transform: rotate(-45deg) scale(1);
+  transform: scale(1);
 }
 
 .oa-check-row input[type="checkbox"]:focus-visible,
@@ -1517,9 +1518,8 @@
   top: 7px;
   left: 3px;
   width: 10px;
-  height: 0;
-  border-left: 0;
-  border-bottom: 2px solid var(--ai-primary-text);
+  height: 2px;
+  mask: none;
   transform: none;
   opacity: 1;
 }
