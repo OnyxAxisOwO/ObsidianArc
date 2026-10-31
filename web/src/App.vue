@@ -5,9 +5,11 @@
 
 import { computed, onBeforeUnmount, ref, watchEffect } from 'vue';
 import { useRouter } from 'vue-router';
+import { useMediaQuery } from '@vueuse/core';
 import { siteInfo } from './stores/session';
 import { useTheme } from './composables/useTheme';
 import OaBackdrop from './components/OaBackdrop.vue';
+import OaRoutePage from './components/OaRoutePage.vue';
 import { computePageTransition, getPageKey, type PageTransitionName } from './lib/pageTransitions';
 
 // /api/site already resolves browser_title against the site's own name
@@ -44,6 +46,10 @@ const backdrop = computed(() => {
 });
 
 const transitionName = ref<PageTransitionName>('page-slide-left');
+const reducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)');
+// Vue only detects transitions on the outer element; workspace slides run
+// on its body instead. The shared duration keeps that body alive to the end.
+const transitionDuration = computed(() => reducedMotion.value ? 80 : transitionName.value === 'page-fade' ? 220 : 380);
 
 // This guard is the only place the direction is worked out. It runs before the
 // new page is committed, so the leave transition already has the right name;
@@ -63,12 +69,12 @@ onBeforeUnmount(() => stopTransitionGuard());
 
 <template>
   <OaBackdrop v-if="backdrop" :key="backdrop" class="is-wallpaper" :url="backdrop" />
-  <div class="oa-app-viewport">
+  <div class="oa-app-viewport" :style="{ '--oa-page-duration': `${transitionDuration}ms` }">
     <RouterView v-slot="{ Component, route: currentRoute }">
-      <Transition :name="transitionName">
-        <div :key="getPageKey(currentRoute?.path || '/')" class="oa-app-page">
+      <Transition :name="transitionName" :duration="transitionDuration">
+        <OaRoutePage :key="getPageKey(currentRoute.path)" :route="currentRoute">
           <component :is="Component" v-if="Component" />
-        </div>
+        </OaRoutePage>
       </Transition>
     </RouterView>
   </div>

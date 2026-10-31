@@ -4304,7 +4304,10 @@
 .page-slide-right-enter-to:has(.oa-workspace),
 .page-slide-right-leave-from:has(.oa-workspace),
 .page-slide-right-leave-to:has(.oa-workspace) {
-  /* Prevent full-page root from sliding horizontally so chrome remains fixed */
+  /* Only the body moves: promoting the stationary wrapper as well creates
+     nested compositing layers around frosted surfaces and can flicker. */
+  will-change: auto;
+  transition: none !important;
   transform: none !important;
   opacity: 1 !important;
   background: transparent !important;
@@ -4335,7 +4338,6 @@
     will-change: transform, opacity !important;
     backface-visibility: hidden !important;
     -webkit-backface-visibility: hidden !important;
-    transform-style: preserve-3d !important;
   }
 }
 
@@ -4348,12 +4350,12 @@
 /* Header Cross-fade: keeps header fixed in place while smoothly cross-fading */
 .page-slide-left-enter-active .oa-header,
 .page-slide-right-enter-active .oa-header {
-  transition: opacity 0.24s ease !important;
+  transition: opacity app.$oa-slide-duration var(--ai-ease-out) !important;
 }
 
 .page-slide-left-leave-active .oa-header,
 .page-slide-right-leave-active .oa-header {
-  transition: opacity 0.18s ease !important;
+  transition: opacity app.$oa-slide-duration var(--ai-ease-out) !important;
 }
 
 .page-slide-left-enter-from .oa-header,
@@ -4376,11 +4378,13 @@
   opacity: 0 !important;
 }
 
+/* Keep both bodies opaque: fading a whole page exposes the other page
+   through its cards and repaints frosted surfaces while they move. */
 /* Forward Slide (page-slide-left): new container enters from right, old container leaves to left */
 .page-slide-left-enter-active .oa-workspace > .oa-chat-root {
   z-index: 2;
   transition: transform app.$oa-slide-duration var(--ai-ease-out),
-              opacity (app.$oa-slide-duration * 0.75) ease !important;
+              opacity app.$oa-slide-duration ease !important;
 }
 
 .page-slide-left-leave-active .oa-workspace > .oa-chat-root {
@@ -4391,7 +4395,7 @@
 
 .page-slide-left-enter-from .oa-workspace > .oa-chat-root {
   transform: translate3d(100%, 0, 0) !important;
-  opacity: 0.95 !important;
+  opacity: 1 !important;
 }
 
 .page-slide-left-enter-to .oa-workspace > .oa-chat-root {
@@ -4406,7 +4410,7 @@
 
 .page-slide-left-leave-to .oa-workspace > .oa-chat-root {
   transform: translate3d(-26%, 0, 0) !important;
-  opacity: 0.85 !important;
+  opacity: 1 !important;
 }
 
 /* Backward Slide (page-slide-right): old container leaves to right, new container enters from left */
@@ -4419,12 +4423,12 @@
 .page-slide-right-leave-active .oa-workspace > .oa-chat-root {
   z-index: 2;
   transition: transform app.$oa-slide-duration var(--ai-ease-out),
-              opacity (app.$oa-slide-duration * 0.8) ease !important;
+              opacity app.$oa-slide-duration ease !important;
 }
 
 .page-slide-right-enter-from .oa-workspace > .oa-chat-root {
   transform: translate3d(-26%, 0, 0) !important;
-  opacity: 0.85 !important;
+  opacity: 1 !important;
 }
 
 .page-slide-right-enter-to .oa-workspace > .oa-chat-root {
@@ -4439,7 +4443,7 @@
 
 .page-slide-right-leave-to .oa-workspace > .oa-chat-root {
   transform: translate3d(100%, 0, 0) !important;
-  opacity: 0.95 !important;
+  opacity: 1 !important;
 }
 
 /* Hardware-accelerated depth shadow on inner workspace container's left edge */

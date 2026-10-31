@@ -1428,17 +1428,16 @@ body.has-auth-page .oa-app-page,
   will-change: transform, opacity;
   backface-visibility: hidden;
   -webkit-backface-visibility: hidden;
-  transform-style: preserve-3d;
   pointer-events: none;
 }
 
-$oa-slide-duration: 0.38s;
+$oa-slide-duration: var(--oa-page-duration, 380ms);
 
 /* Forward Slide (page-slide-left): new page enters from right, old page leaves to left */
 .page-slide-left-enter-active {
   z-index: 2;
   transition: transform $oa-slide-duration var(--ai-ease-out),
-              opacity ($oa-slide-duration * 0.75) ease;
+              opacity $oa-slide-duration ease;
 }
 
 .page-slide-left-leave-active {
@@ -1477,7 +1476,7 @@ $oa-slide-duration: 0.38s;
 .page-slide-right-leave-active {
   z-index: 2;
   transition: transform $oa-slide-duration var(--ai-ease-out),
-              opacity ($oa-slide-duration * 0.8) ease;
+              opacity $oa-slide-duration ease;
 }
 
 .page-slide-right-enter-from {

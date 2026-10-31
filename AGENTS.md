@@ -6,18 +6,23 @@
 Arc is the AI chat application. Never treat their services, containers,
 ports, data, or deployment directories as interchangeable.
 
-When the user asks to deploy **Arc**, deploy to the Arc Docker Compose project
-(`/data/obsidian-arc` on the production host) and operate only the
-`obsidian-arc-server` container and its PostgreSQL companion. Build it on the
-local machine with `make deploy DEPLOY_HOST=…`, not on the server: the
+When the user asks to deploy **Arc**, first identify the instance and verify
+its current hosting against that instance repository's `AGENTS.md`, latest
+deployment record and live version. Do not assume every instance uses Docker.
+For a Docker deployment, use the Arc Compose project (`/data/obsidian-arc`
+on that host) and operate only the `obsidian-arc-server` container and its
+PostgreSQL companion. Build it on the local machine with
+`make deploy DEPLOY_HOST=…`, not on the server: the
 server's own `docker compose up --build` compiles the frontend and the binary
 there, which is minutes on that host and seconds here. `make deploy` ships a
 cross-compiled binary and replaces the server container alone.
 
 **Axis AI's production instance runs plugins that are not in this
 repository.** They live in `../AxisAI` (`/Users/onyxaxis/Documents/GitHub/AxisAI`),
-which lays them over this tree and calls this Makefile, so production is
-deployed with `make deploy DEPLOY_HOST=…` *there*. Deploying from here ships
+which lays them over this tree and calls this Makefile. Build and deploy from
+that instance repository using its current deployment procedure; its native
+deployment must not be replaced by this repository's Docker deploy target.
+For Docker instances, run `make deploy DEPLOY_HOST=…` *there*. Deploying from here ships
 the core alone, which switches those features off under the people using
 them; `scripts/deploy.sh` refuses when the running server carries a plugin
 the build does not, and `DROP_PLUGINS=1` is for the day one is meant to go.
@@ -438,8 +443,8 @@ They drifted to nearly double once because nobody re-ran the build.
 
 Current: 28.13 MB binary (this repository ships no plugin; 2.8 MB of it is
 the plugin runtime, 0.41 MB the brotli copies of the frontend the
-build writes for the server to send, and 0.41 MB the embedded zone database); to open the chat, 174.37 kB on the wire
-to a browser that takes brotli and 207.67 kB to one that takes only gzip, which
+build writes for the server to send, and 0.41 MB the embedded zone database); to open the chat, 174.46 kB on the wire
+to a browser that takes brotli and 207.77 kB to one that takes only gzip, which
 is the figure the budget holds (the build's own gzip column is not quoted:
 Node's zlib gives a few hundred bytes more or less on another CPU),
 against a target of 135. The target used to be 80 and

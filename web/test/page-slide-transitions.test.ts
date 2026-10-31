@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createApp, h, nextTick, ref, type App as VueApp } from 'vue';
-import { createMemoryHistory, createRouter } from 'vue-router';
+import { createMemoryHistory, createRouter, RouterView, useRoute } from 'vue-router';
 import App from '../src/App.vue';
 import OaPanel from '../src/components/OaPanel.vue';
 import {
@@ -88,6 +88,68 @@ describe('App.vue transition wrapper', () => {
     app?.unmount();
     app = null;
     host.remove();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('keeps the outgoing route and nested panel intact until the body slide finishes', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => setTimeout(() => callback(0), 16));
+    const root = {
+      setup() {
+        const route = useRoute();
+        return () => h('div', { class: 'test-root' }, [route.path, h(RouterView)]);
+      },
+    };
+    const admin = {
+      setup() {
+        const route = useRoute();
+        return () => h('div', { class: 'test-admin' }, route.path);
+      },
+    };
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: '/', component: root, children: [
+          { path: 'settings', component: { render: () => h('span', { class: 'test-panel' }, 'Settings') } },
+        ] },
+        { path: '/admin/:section?', component: admin },
+      ],
+    });
+    await router.push('/settings');
+    app = createApp(App);
+    app.use(router);
+    await router.isReady();
+    app.mount(host);
+
+    const outgoing = host.querySelector('.oa-app-page');
+    await router.push('/admin/users');
+    await nextTick();
+    await vi.advanceTimersByTimeAsync(50);
+    expect(outgoing?.isConnected).toBe(true);
+    expect(outgoing?.querySelector('.test-root')?.textContent).toBe('/settingsSettings');
+    expect(outgoing?.classList.contains('page-slide-left-leave-active')).toBe(true);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(outgoing?.isConnected).toBe(true);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(outgoing?.isConnected).toBe(false);
+    expect(host.querySelectorAll('.oa-app-page')).toHaveLength(1);
+
+    // A section change updates the mounted page, but leaving the realm must
+    // not reset that page to the dashboard during its reverse slide.
+    const adminPage = host.querySelector('.oa-app-page');
+    await router.push('/admin/models');
+    await nextTick();
+    expect(host.querySelector('.oa-app-page')).toBe(adminPage);
+    expect(adminPage?.textContent).toBe('/admin/models');
+    await router.push('/');
+    await nextTick();
+    await vi.advanceTimersByTimeAsync(50);
+    expect(adminPage?.textContent).toBe('/admin/models');
+    expect(adminPage?.classList.contains('page-slide-right-leave-active')).toBe(true);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(adminPage?.isConnected).toBe(false);
+    expect(host.querySelectorAll('.oa-app-page')).toHaveLength(1);
   });
 
   it('renders .oa-app-viewport and .oa-app-page containers', async () => {
@@ -111,6 +173,37 @@ describe('App.vue transition wrapper', () => {
     const page = host.querySelector('.oa-app-page');
     expect(page).not.toBeNull();
     expect(page?.textContent).toContain('Chat');
+  });
+
+  it.each([false, true])('settles a rapid reversal without leftover pages (reduced motion: %s)', async (reduced) => {
+    vi.useFakeTimers();
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => setTimeout(() => callback(0), 16));
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: reduced && query === '(prefers-reduced-motion: reduce)', media: query,
+      addEventListener() {}, removeEventListener() {},
+    }));
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: '/', component: { render: () => h('div', 'Chat') } },
+        { path: '/admin', component: { render: () => h('div', 'Admin') } },
+      ],
+    });
+    app = createApp(App);
+    app.use(router);
+    await router.isReady();
+    app.mount(host);
+    await nextTick();
+    expect(host.querySelector<HTMLElement>('.oa-app-viewport')?.style.getPropertyValue('--oa-page-duration'))
+      .toBe(reduced ? '80ms' : '380ms');
+
+    await router.push('/admin');
+    await vi.advanceTimersByTimeAsync(50);
+    await router.push('/');
+    await vi.advanceTimersByTimeAsync(reduced ? 120 : 420);
+    expect(host.querySelectorAll('.oa-app-page')).toHaveLength(1);
+    expect(host.querySelector('.oa-app-page')?.textContent).toBe('Chat');
+    expect(host.querySelector('.page-slide-left-enter-active, .page-slide-right-leave-active')).toBeNull();
   });
 
   it('transitions page container when navigating from / to /admin and back', async () => {
@@ -274,7 +367,7 @@ describe('page slide stylesheet specifications', () => {
     // Hardware accelerated 3D transforms
     expect(appScss).toContain('translate3d(100%, 0, 0)');
     expect(appScss).toContain('translate3d(-26%, 0, 0)');
-    expect(appScss).toContain('transform-style: preserve-3d');
+    expect(appScss).not.toContain('transform-style: preserve-3d');
     expect(appScss).toContain('backface-visibility: hidden');
 
     // Pseudo-element shadow overlay to avoid costly per-frame box-shadow rasterization
@@ -314,15 +407,14 @@ describe('page slide stylesheet specifications', () => {
     expect(surfacesScss).toContain('transform: none !important');
     expect(surfacesScss).toContain('animation: none !important');
     expect(surfacesScss).toContain('.page-slide-left-enter-active .oa-header');
-    expect(surfacesScss).toContain('transition: opacity 0.24s ease !important');
+    expect(surfacesScss).toContain('transition: opacity app.$oa-slide-duration var(--ai-ease-out) !important');
     expect(surfacesScss).toContain('.page-slide-left-leave-active .oa-header');
-    expect(surfacesScss).toContain('transition: opacity 0.18s ease !important');
 
     // Inner workspace content container slides with hardware acceleration
     expect(surfacesScss).toContain('.oa-workspace > .oa-chat-root');
     expect(surfacesScss).toContain('translate3d(100%, 0, 0)');
     expect(surfacesScss).toContain('translate3d(-26%, 0, 0)');
-    expect(surfacesScss).toContain('transform-style: preserve-3d');
+    expect(surfacesScss).not.toContain('transform-style: preserve-3d');
     expect(surfacesScss).toContain('backface-visibility: hidden');
 
     // Pseudo-element shadow attached to inner container
