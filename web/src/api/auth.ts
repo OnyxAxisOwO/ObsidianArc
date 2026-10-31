@@ -179,7 +179,7 @@ export interface SiteInfo {
   /** Custom site logo URL, or empty if the built-in mark/favicon is used. */
   logo_url?: string;
   /** Absent on older servers, which keep the centered floating card. */
-  auth_card_position?: 'center' | 'left' | 'right' | 'right-panel';
+  auth_card_position?: 'center' | 'left' | 'right' | 'left-panel' | 'right-panel';
   /** Whether new user registrations are forced to use third-party OAuth/OIDC. */
   oauth_only_signup?: boolean;
   /** Whether new user registrations are forced to use OIDC (compatibility alias). */

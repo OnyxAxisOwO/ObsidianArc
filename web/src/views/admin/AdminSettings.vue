@@ -50,7 +50,7 @@ const SEARCH_GROUPS = {
   ],
   secLoginBg: [
     'secLoginBg', 'loginBgHint', 'authCardPosition', 'authCardPositionHint', 'authCardPositionCenter',
-    'authCardPositionLeft', 'authCardPositionRight', 'authCardPositionRightPanel', 'loginBgLandscape', 'loginBgPortrait',
+    'authCardPositionLeft', 'authCardPositionRight', 'authCardPositionLeftPanel', 'authCardPositionRightPanel', 'loginBgLandscape', 'loginBgPortrait',
     'loginBgLandscapeLight', 'loginBgLandscapeDark', 'loginBgPortraitLight', 'loginBgPortraitDark',
     'loginBgFallbackNote', 'bgHtmlEdit', 'bgHtmlTitle',
   ],
@@ -123,6 +123,7 @@ const CARD_POSITIONS = [
   { value: 'center', label: 'authCardPositionCenter' },
   { value: 'left', label: 'authCardPositionLeft' },
   { value: 'right', label: 'authCardPositionRight' },
+  { value: 'left-panel', label: 'authCardPositionLeftPanel' },
   { value: 'right-panel', label: 'authCardPositionRightPanel' },
 ] as const;
 const THEME_MODES = [

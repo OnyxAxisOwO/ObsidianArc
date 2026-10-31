@@ -228,7 +228,7 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
 | Binary (SQLite + embedded SPA) | < 30 MB | 28.13 MB (24.43 MB `-tags nosqlite`, Linux amd64, Go 1.27.3), 0.41 MB of it the frontend's brotli copies and 0.41 MB the embedded zone database; this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 174.06 kB to open the chat with brotli (153.85 JS + 20.21 CSS); 207.37 kB with gzip (183.59 JS + 23.78 CSS), which the budget holds; the brotli is a copy compressed at build time, the gzip is Go's, made as it goes out |
+| Frontend, on the wire | < 135 kB | 174.42 kB to open the chat with brotli (154.07 JS + 20.36 CSS); 207.64 kB with gzip (183.72 JS + 23.93 CSS), which the budget holds; the brotli is a copy compressed at build time, the gzip is Go's, made as it goes out |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
 
@@ -239,15 +239,18 @@ remain unchanged. The ordinary chat field now reads its geometry on resize
 instead of on every animation frame. Menu containment and select following
 use small native listeners and frame handles; the proof-of-work search is
 serialized once for both execution paths, so the bundler minifies both.
-Backoffice frame styles travel with the backoffice. First paint is 207.37 kB with Go's gzip
-(183.59 JS + 23.78 CSS), 174.06 kB with brotli (153.85 JS + 20.21 CSS).
-The backoffice adds 178.95 kB JS + 15.78 kB CSS with gzip; its Chinese adds
-38.48 kB. Linux amd64, Go 1.27.3, `-trimpath -ldflags '-s -w'` produces
+Backoffice frame styles travel with the backoffice. First paint is 207.64 kB with Go's gzip
+(183.72 JS + 23.93 CSS), 174.42 kB with brotli (154.07 JS + 20.36 CSS).
+The backoffice adds 178.99 kB JS + 15.79 kB CSS with gzip; its Chinese adds
+38.50 kB. Linux amd64, Go 1.27.3, `-trimpath -ldflags '-s -w'` produces
 28,131,488 bytes (24,428,704 without SQLite); the brotli copies total
-414,000 bytes. The wire figures, binaries and brotli total were remeasured on
-2026-10-30 after the optional full-height right sign-in panel was added.
-The original floating-card layouts remain available; the panel and its
-background preview add no chunks. These are the figures used in the current tables.
+414,383 bytes. The wire figures, binaries and brotli total were remeasured on
+2026-10-30 after left and right sign-in panels and the login/registration
+expansion animation were added. The original floating-card layouts remain
+available; the animation and background previews add no chunks. Both build
+gates measure the server's own gzip response, with the same 208 kB limit:
+Node's codec can vary across versions and CPUs and is not the response sent
+to a browser. These are the figures used in the current tables.
 
 The current figures were refreshed on 2026-10-30 after registration UA
 visibility controls and Gravatar / WeAvatar support were added. Custom avatars
@@ -273,7 +276,7 @@ content and styles load only for an account with folders or when starting
 one. The triggers, loose rows and shared rename form remain on the entry.
 The two deliberate splits keep the existing 208 kB build budget: the entry
 is 207.60 kB with Go's gzip (183.84 JS + 23.76 CSS), 174.17 kB with brotli
-(153.96 JS + 20.21 CSS). An account with folders also fetches 3.75 / 3.30 kB
+(153.96 JS + 20.36 CSS). An account with folders also fetches 3.75 / 3.30 kB
 (gzip / brotli); opening the account menu adds 2.52 / 2.15 kB. This is
 18 core assets, each optional component owning its script and stylesheet.
 The Linux amd64 binary, Go 1.27.3, `-trimpath -ldflags '-s -w'`, is
@@ -979,11 +982,11 @@ What each reader actually downloads, as the server sends it (2026-10-30):
 
 | | gzip | brotli |
 | --- | --- | --- |
-| English, not an administrator | 207.37 kB | 174.06 kB |
-| Chinese, not an administrator | 228.20 kB | 191.38 kB |
-| …and a conversation containing a formula | 231.96 kB | 194.64 kB |
-| Chinese administrator, backoffice open | 461.41 kB | 380.60 kB |
-| Anybody, once they open the terminal | +9.73 kB | +8.74 kB |
+| English, not an administrator | 207.64 kB | 174.42 kB |
+| Chinese, not an administrator | 228.48 kB | 191.74 kB |
+| …and a conversation containing a formula | 232.24 kB | 195.00 kB |
+| Chinese administrator, backoffice open | 461.76 kB | 381.00 kB |
+| Anybody, once they open the terminal | +9.73 kB | +8.73 kB |
 | A visitor to an instance whose front door is the front page | +8.06 kB | +7.08 kB |
 | A signed-out visitor to an instance whose front door is the intro or trial | +3.74 kB | +3.25 kB |
 

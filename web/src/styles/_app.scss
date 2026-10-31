@@ -48,7 +48,7 @@
     background-position: center;
     transition: background-image 0.25s;
 
-    &:not(.position-right-panel) .oa-auth-card {
+    &:not(.position-left-panel, .position-right-panel) .oa-auth-card {
       background: color-mix(in srgb, var(--ai-surface-container) 90%, transparent);
       backdrop-filter: blur(20px);
       -webkit-backdrop-filter: blur(20px);
@@ -73,7 +73,7 @@
 /* A separate choice keeps wallpaper docking and the original floating cards
    intact. The panel owns its scrolling so tall registration forms cannot
    scroll the background or lose their first fields above the viewport. */
-.oa-auth.position-right-panel {
+.oa-auth:is(.position-left-panel, .position-right-panel) {
   justify-content: flex-end;
   padding: 0;
 
@@ -93,6 +93,44 @@
     > .oa-auth-card {
       width: 40%;
     }
+  }
+}
+
+.oa-auth.position-left-panel {
+  justify-content: flex-start;
+}
+
+/* Separate snapshots let the floating card grow while a docked panel keeps
+   its full height and only the contents expand. The background stays still. */
+.oa-auth > .oa-auth-card {
+  view-transition-name: auth-card;
+}
+
+.oa-auth-content {
+  display: flow-root;
+  view-transition-name: auth-content;
+}
+
+::view-transition-group(auth-card),
+::view-transition-group(auth-content) {
+  overflow: clip;
+  animation-duration: 0.28s;
+  animation-timing-function: var(--ai-ease-standard);
+}
+
+::view-transition-old(root),
+::view-transition-old(auth-content) {
+  display: none;
+}
+
+::view-transition-new(root),
+::view-transition-new(auth-content) {
+  animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*) {
+    animation-duration: 0s !important;
   }
 }
 

@@ -159,6 +159,7 @@ describe('admin settings payload', () => {
 
   it.each([
     { position: 'left', label: 'authCardPositionLeft', preview: 'at-left' },
+    { position: 'left-panel', label: 'authCardPositionLeftPanel', preview: 'at-left-panel' },
     { position: 'right-panel', label: 'authCardPositionRightPanel', preview: 'at-right-panel' },
   ] as const)('saves the $position layout and updates the background preview', async ({ position, label, preview }) => {
     vi.spyOn(adminApi, 'settings').mockResolvedValue({ settings: { ...settingsFixture } });
@@ -168,7 +169,7 @@ describe('admin settings payload', () => {
 
     expect(host.querySelector<HTMLElement>('#secLoginBg')?.style.display).not.toBe('none');
     const choices = [...host.querySelectorAll<HTMLButtonElement>('#secLoginBg .oa-auth-positions button')];
-    expect(choices).toHaveLength(4);
+    expect(choices).toHaveLength(5);
     const center = choices.find((node) => node.textContent?.includes(t('authCardPositionCenter')));
     expect(center?.getAttribute('aria-pressed')).toBe('true');
     const choice = choices.find((node) => node.textContent?.includes(t(label)));

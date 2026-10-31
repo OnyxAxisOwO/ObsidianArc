@@ -2376,7 +2376,7 @@
 
 /* Preview the panel's footprint rather than suggesting another floating card.
    The phone preview follows the same single-column fallback as the page. */
-.oa-bg-stage-ghost.login.at-right-panel {
+.oa-bg-stage-ghost.login:is(.at-left-panel, .at-right-panel) {
   justify-content: flex-end;
   align-items: stretch;
   padding: 0;
@@ -2391,7 +2391,11 @@
   }
 }
 
-.oa-bg-stage.screen-phone .oa-bg-stage-ghost.login.at-right-panel .card {
+.oa-bg-stage-ghost.login.at-left-panel {
+  justify-content: flex-start;
+}
+
+.oa-bg-stage.screen-phone .oa-bg-stage-ghost.login:is(.at-left-panel, .at-right-panel) .card {
   width: 100%;
 }
 

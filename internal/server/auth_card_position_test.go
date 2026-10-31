@@ -55,13 +55,15 @@ func TestAuthCardPositionSettingsAndSiteAPI(t *testing.T) {
 		t.Fatalf("auth_card_position = %q, want right", got)
 	}
 
-	res = in.do(http.MethodPut, "/api/admin/settings",
-		map[string]string{settings.SiteAuthCardPosition: settings.AuthCardPositionRightPanel}, admin)
-	if res.Code != http.StatusOK {
-		t.Fatalf("set auth card position to right-panel: %d %s", res.Code, res.Body.String())
-	}
-	if got := readPosition(); got != settings.AuthCardPositionRightPanel {
-		t.Fatalf("auth_card_position = %q, want right-panel", got)
+	for _, position := range []string{settings.AuthCardPositionLeftPanel, settings.AuthCardPositionRightPanel} {
+		res = in.do(http.MethodPut, "/api/admin/settings",
+			map[string]string{settings.SiteAuthCardPosition: position}, admin)
+		if res.Code != http.StatusOK {
+			t.Fatalf("set auth card position to %s: %d %s", position, res.Code, res.Body.String())
+		}
+		if got := readPosition(); got != position {
+			t.Fatalf("auth_card_position = %q, want %s", got, position)
+		}
 	}
 
 	// 4. Admin can set it back to "center".

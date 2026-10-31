@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { enAdmin } from '../src/i18n.admin';
 import { zhAdmin } from '../src/i18n.admin.zh';
 
@@ -444,20 +445,21 @@ describe('code splitting invariants in production bundle', () => {
     }
   });
 
-  // What a first paint downloads: the entry script and stylesheet, gzipped
-  // at the server's BestCompression level. Node's bytes still vary by CPU;
-  // internal/web/wire_test.go enforces the same budget on Go's actual output.
-  // Vite's chunk-size limit only warns, so this remains a build gate too.
+  // Node's codec varies by version and CPU, even at the same compression
+  // level. Measure the actual server response so both gates constrain what
+  // the browser receives; the independent budget below remains unchanged.
   // The budget only ratchets down toward the 135 kB target in AGENTS.md;
   // raising it to accept a change would defeat the constraint.
   function firstPaintGzipBytes(): number {
     const files = builtAssets();
     const firstPaint = files.filter((f) => /^index-[^.]+\.(js|css)$/.test(f));
     expect(firstPaint).toHaveLength(2);
-    return firstPaint.reduce(
-      (sum, f) => sum + zlib.gzipSync(fs.readFileSync(path.join(assetsDir, f)), { level: zlib.constants.Z_BEST_COMPRESSION }).length,
-      0,
-    );
+    const output = execFileSync('go', [
+      'test', './internal/web', '-run', '^TestFirstPaintFitsItsBudgetOnTheWire$', '-count=1', '-v',
+    ], { cwd: path.resolve(__dirname, '../..'), encoding: 'utf8', timeout: 60_000 });
+    const measured = /first paint is (\d+) bytes on the wire with gzip/.exec(output);
+    if (!measured) throw new Error(`No server wire measurement was produced: ${output}`);
+    return Number(measured[1]);
   }
 
   it('keeps the first paint within its gzip budget', () => {
@@ -479,14 +481,5 @@ describe('code splitting invariants in production bundle', () => {
     expect(gzipped, `first paint is ${gzipped} bytes gzipped, budget ${FIRST_PAINT_GZIP_BUDGET}`).toBeLessThanOrEqual(
       FIRST_PAINT_GZIP_BUDGET,
     );
-  });
-
-  // This figure is not quoted in the docs, and no test holds them to it. Node's
-  // zlib picks its matching code by CPU, so the same entry gzips to sizes a few
-  // hundred bytes apart on an ARM laptop and on CI's x86 runner (248.63 against
-  // 249.16 kB once), and a quote taken on either machine failed on the other.
-  // The figure the docs do quote is the one the server sends, held by
-  // internal/web/wire_test.go: Go's gzip and the build's brotli copies give the
-  // same bytes on every machine. The budget above is set with room for the
-  // difference.
+  }, 65_000);
 });

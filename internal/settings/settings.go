@@ -400,10 +400,11 @@ const (
 	AuthCardPositionCenter     = "center"
 	AuthCardPositionLeft       = "left"
 	AuthCardPositionRight      = "right"
+	AuthCardPositionLeftPanel  = "left-panel"
 	AuthCardPositionRightPanel = "right-panel"
 )
 
-var AuthCardPositions = []string{AuthCardPositionCenter, AuthCardPositionLeft, AuthCardPositionRight, AuthCardPositionRightPanel}
+var AuthCardPositions = []string{AuthCardPositionCenter, AuthCardPositionLeft, AuthCardPositionRight, AuthCardPositionLeftPanel, AuthCardPositionRightPanel}
 
 func ValidAuthCardPosition(value string) bool {
 	return slices.Contains(AuthCardPositions, value)

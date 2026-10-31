@@ -47,6 +47,21 @@ const { loginBg, loginBgUrl, loginBgFrame } = useLoginBackground();
 const setup = computed(() => site.value.setup_required);
 const registering = computed(() => props.mode === 'register' || setup.value);
 
+function switchMode(path: string): Promise<void> {
+  const update = async (): Promise<void> => {
+    await router.push({ path, query: route.query });
+    // The new fields must be painted before the browser captures their size.
+    await nextTick();
+    identifierField.value?.focus({ preventScroll: true });
+  };
+  if (!document.startViewTransition || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return update();
+  const transition = document.startViewTransition(update);
+  // Rapid navigation can skip a snapshot; the route must still finish.
+  void transition.ready.catch(() => {});
+  void transition.finished.catch(() => {});
+  return transition.updateCallbackDone;
+}
+
 const domains = computed(() => site.value.email_domains ?? []);
 const emailRequired = computed(() => !setup.value && (site.value.require_email ?? false));
 // The account fields a plugin added, where sign-up asks for them. None for
@@ -608,209 +623,211 @@ async function onSubmit(): Promise<void> {
          either: this is the first page most of them see. -->
     <HomeNotice floating />
     <form ref="formEl" class="oa-auth-card" novalidate @submit.prevent="stage === 'code' ? onCode() : onSubmit()">
-      <div class="oa-auth-brand">
-        <img v-if="site.logo_url" :src="site.logo_url" class="oa-auth-brand-logo" alt="">
-        <span v-else class="oa-auth-mark"><IconSpark :size="15" /></span>
-        <span>{{ site.name }}</span>
-      </div>
-
-      <template v-if="stage === 'code'">
-        <h1 class="oa-auth-title">{{ t('twoFactorSignInTitle') }}</h1>
-        <p class="oa-auth-sub">
-          {{ recoveryMode ? t('twoFactorSignInRecoveryBody') : t('twoFactorSignInBody') }}
-        </p>
-        <div class="oa-auth-form">
-          <OaField :label="recoveryMode ? t('twoFactorRecoveryLabel') : t('twoFactorCodeLabel')">
-            <input
-              ref="codeField"
-              class="oa-2fa-code"
-              :value="code"
-              type="text"
-              :inputmode="recoveryMode ? 'text' : 'numeric'"
-              :autocomplete="recoveryMode ? 'off' : 'one-time-code'"
-              spellcheck="false"
-              :maxlength="recoveryMode ? 16 : TWO_FACTOR_DIGITS + 1"
-              :placeholder="recoveryMode ? 'xxxxx-xxxxx' : '000000'"
-              @input="onCodeInput"
-            >
-          </OaField>
-          <label v-if="rememberDays > 0" class="oa-checkbox-field">
-            <input v-model="remember" type="checkbox">
-            <span>{{ t('twoFactorRemember', { days: rememberDays }) }}</span>
-          </label>
-          <p class="oa-auth-error" role="alert" :hidden="!error">{{ error }}</p>
-          <button
-            type="submit"
-            class="oa-btn primary oa-btn-block"
-            :disabled="busy || !code.trim()"
-            :data-busy="busy ? 'true' : undefined"
-          >
-            {{ busy ? t('twoFactorVerifying') : t('twoFactorVerify') }}
-          </button>
-        </div>
-        <p class="oa-auth-switch">
-          <button type="button" @click="toggleRecovery">
-            {{ recoveryMode ? t('twoFactorUseApp') : t('twoFactorUseRecovery') }}
-          </button>
-          <span> · </span>
-          <button type="button" @click="startOver">{{ t('twoFactorOtherAccount') }}</button>
-        </p>
-        <p v-if="recoveryMode" class="oa-auth-note">{{ t('twoFactorLostHelp') }}</p>
-      </template>
-
-      <template v-else>
-        <h1 class="oa-auth-title">
-          {{ setup ? t('firstAccountTitle') : registering ? t('createAccountTitle') : t('welcomeBack') }}
-        </h1>
-        <p class="oa-auth-sub">
-          {{
-            setup
-              ? t('firstAccountBody')
-              : registering && thirdPartyOnlySignup
-                ? t('oauthThirdPartyOnlyNotice')
-                : registering
-                  ? t('createAccountBody')
-                  : t('welcomeBackBody')
-          }}
-        </p>
-
-        <div v-if="registering && thirdPartyOnlySignup" class="oa-auth-form">
-          <OaTurnstile
-            v-if="guarded"
-            ref="turnstile"
-            :site-key="site.turnstile_site_key ?? ''"
-            @solved="onTurnstileSolved"
-          />
-          <p class="oa-auth-error" role="alert" :hidden="!error">{{ error }}</p>
-          <div class="oa-auth-providers">
-            <a
-              v-for="provider in providers"
-              :key="provider.id"
-              class="oa-btn primary oa-btn-block oa-auth-provider"
-              :href="signInURL(provider.id, { next: safeNext(route.query['next']), register: true })"
-              @click="onProviderClick($event, provider.id)"
-            >
-              <component :is="providerMark(provider.id)" :size="15" />
-              <span>{{ t('continueWith', { provider: provider.name }) }}</span>
-            </a>
-          </div>
+      <div class="oa-auth-content">
+        <div class="oa-auth-brand">
+          <img v-if="site.logo_url" :src="site.logo_url" class="oa-auth-brand-logo" alt="">
+          <span v-else class="oa-auth-mark"><IconSpark :size="15" /></span>
+          <span>{{ site.name }}</span>
         </div>
 
-        <div v-else class="oa-auth-form">
-          <OaField :label="identityLabel">
-            <input
-              ref="identifierField"
-              v-model="identifier"
-              type="text"
-              spellcheck="false"
-              :placeholder="identityLabel"
-              autocomplete="username"
-              maxlength="254"
-            >
-          </OaField>
-
-          <!-- The label carries whether it is optional; the hint carries which
-               addresses will be taken. Both are things you want before typing,
-               not after submitting. -->
-          <OaField
-            v-if="registering"
-            :label="emailRequired ? t('email') : t('emailOptional')"
-            :hint="emailHint"
-          >
-            <input
-              v-model="email"
-              type="email"
-              spellcheck="false"
-              :placeholder="domains.length ? `you@${domains[0]}` : 'you@example.com'"
-              autocomplete="email"
-              maxlength="254"
-              :required="emailRequired"
-            >
-          </OaField>
-
-          <OaAccountFields v-if="registering" v-model="fields" :plan="fieldPlan" />
-
-          <!-- Required in invite-only mode; otherwise a collapsed link, so a
-               field almost nobody fills in does not sit open on every visit. -->
-          <p v-if="registering && inviteMode === 'open' && !inviteOpen" class="oa-auth-switch">
-            <button type="button" @click="inviteOpen = true">{{ t('haveInviteCode') }}</button>
+        <template v-if="stage === 'code'">
+          <h1 class="oa-auth-title">{{ t('twoFactorSignInTitle') }}</h1>
+          <p class="oa-auth-sub">
+            {{ recoveryMode ? t('twoFactorSignInRecoveryBody') : t('twoFactorSignInBody') }}
           </p>
-          <OaField v-if="inviteVisible" :label="inviteMode === 'invite' ? t('inviteCodeLabel') : t('inviteCodeOptionalLabel')">
-            <input
-              v-model="inviteCode"
-              type="text"
-              spellcheck="false"
-              :placeholder="t('inviteCodePlaceholder')"
-              autocomplete="off"
-              maxlength="32"
-              :required="inviteMode === 'invite'"
+          <div class="oa-auth-form">
+            <OaField :label="recoveryMode ? t('twoFactorRecoveryLabel') : t('twoFactorCodeLabel')">
+              <input
+                ref="codeField"
+                class="oa-2fa-code"
+                :value="code"
+                type="text"
+                :inputmode="recoveryMode ? 'text' : 'numeric'"
+                :autocomplete="recoveryMode ? 'off' : 'one-time-code'"
+                spellcheck="false"
+                :maxlength="recoveryMode ? 16 : TWO_FACTOR_DIGITS + 1"
+                :placeholder="recoveryMode ? 'xxxxx-xxxxx' : '000000'"
+                @input="onCodeInput"
+              >
+            </OaField>
+            <label v-if="rememberDays > 0" class="oa-checkbox-field">
+              <input v-model="remember" type="checkbox">
+              <span>{{ t('twoFactorRemember', { days: rememberDays }) }}</span>
+            </label>
+            <p class="oa-auth-error" role="alert" :hidden="!error">{{ error }}</p>
+            <button
+              type="submit"
+              class="oa-btn primary oa-btn-block"
+              :disabled="busy || !code.trim()"
+              :data-busy="busy ? 'true' : undefined"
             >
-          </OaField>
+              {{ busy ? t('twoFactorVerifying') : t('twoFactorVerify') }}
+            </button>
+          </div>
+          <p class="oa-auth-switch">
+            <button type="button" @click="toggleRecovery">
+              {{ recoveryMode ? t('twoFactorUseApp') : t('twoFactorUseRecovery') }}
+            </button>
+            <span> · </span>
+            <button type="button" @click="startOver">{{ t('twoFactorOtherAccount') }}</button>
+          </p>
+          <p v-if="recoveryMode" class="oa-auth-note">{{ t('twoFactorLostHelp') }}</p>
+        </template>
 
-          <OaField :label="t('password')">
-            <input
-              ref="passwordField"
-              v-model="password"
-              type="password"
-              spellcheck="false"
-              :placeholder="registering ? t('passwordHint') : t('password')"
-              :autocomplete="registering ? 'new-password' : 'current-password'"
-              maxlength="256"
-            >
-          </OaField>
+        <template v-else>
+          <h1 class="oa-auth-title">
+            {{ setup ? t('firstAccountTitle') : registering ? t('createAccountTitle') : t('welcomeBack') }}
+          </h1>
+          <p class="oa-auth-sub">
+            {{
+              setup
+                ? t('firstAccountBody')
+                : registering && thirdPartyOnlySignup
+                  ? t('oauthThirdPartyOnlyNotice')
+                  : registering
+                    ? t('createAccountBody')
+                    : t('welcomeBackBody')
+            }}
+          </p>
 
-          <OaTurnstile
-            v-if="guarded"
-            ref="turnstile"
-            :site-key="site.turnstile_site_key ?? ''"
-            @solved="onTurnstileSolved"
-          />
-
-          <p class="oa-auth-error" role="alert" :hidden="!error">{{ error }}</p>
-
-          <button
-            type="submit"
-            class="oa-btn primary oa-btn-block"
-            :disabled="busy"
-            :data-busy="busy ? 'true' : undefined"
-          >
-            {{ buttonLabel || (registering ? t('createAccount') : t('signIn')) }}
-          </button>
-
-          <!-- Links rather than buttons, because each one is a navigation to
-               somebody else's site: the server answers with a redirect, which a
-               fetch could not follow anywhere useful. -->
-          <template v-if="providers.length">
-            <p class="oa-auth-or"><span>{{ t('orContinueWith') }}</span></p>
+          <div v-if="registering && thirdPartyOnlySignup" class="oa-auth-form">
+            <OaTurnstile
+              v-if="guarded"
+              ref="turnstile"
+              :site-key="site.turnstile_site_key ?? ''"
+              @solved="onTurnstileSolved"
+            />
+            <p class="oa-auth-error" role="alert" :hidden="!error">{{ error }}</p>
             <div class="oa-auth-providers">
               <a
                 v-for="provider in providers"
                 :key="provider.id"
-                class="oa-btn oa-btn-block oa-auth-provider"
-                :href="signInURL(provider.id, { next: safeNext(route.query['next']), register: registering })"
+                class="oa-btn primary oa-btn-block oa-auth-provider"
+                :href="signInURL(provider.id, { next: safeNext(route.query['next']), register: true })"
                 @click="onProviderClick($event, provider.id)"
               >
                 <component :is="providerMark(provider.id)" :size="15" />
                 <span>{{ t('continueWith', { provider: provider.name }) }}</span>
               </a>
             </div>
-          </template>
-        </div>
+          </div>
 
-        <p v-if="!setup" class="oa-auth-switch">
-          <template v-if="registering">
-            <span>{{ t('haveAccount') }}</span>
-            <button type="button" @click="router.push('/login')">{{ t('signIn') }}</button>
-          </template>
-          <template v-else-if="site.registration_enabled || thirdPartyOnlySignup">
-            <span>{{ t('noAccount') }}</span>
-            <button type="button" @click="router.push('/register')">{{ t('createOne') }}</button>
-          </template>
-          <template v-else>{{ t('registrationClosed') }}</template>
-        </p>
+          <div v-else class="oa-auth-form">
+            <OaField :label="identityLabel">
+              <input
+                ref="identifierField"
+                v-model="identifier"
+                type="text"
+                spellcheck="false"
+                :placeholder="identityLabel"
+                autocomplete="username"
+                maxlength="254"
+              >
+            </OaField>
 
-        <p v-if="site.description" class="oa-auth-note">{{ site.description }}</p>
-      </template>
+            <!-- The label carries whether it is optional; the hint carries which
+                 addresses will be taken. Both are things you want before typing,
+                 not after submitting. -->
+            <OaField
+              v-if="registering"
+              :label="emailRequired ? t('email') : t('emailOptional')"
+              :hint="emailHint"
+            >
+              <input
+                v-model="email"
+                type="email"
+                spellcheck="false"
+                :placeholder="domains.length ? `you@${domains[0]}` : 'you@example.com'"
+                autocomplete="email"
+                maxlength="254"
+                :required="emailRequired"
+              >
+            </OaField>
+
+            <OaAccountFields v-if="registering" v-model="fields" :plan="fieldPlan" />
+
+            <!-- Required in invite-only mode; otherwise a collapsed link, so a
+                 field almost nobody fills in does not sit open on every visit. -->
+            <p v-if="registering && inviteMode === 'open' && !inviteOpen" class="oa-auth-switch">
+              <button type="button" @click="inviteOpen = true">{{ t('haveInviteCode') }}</button>
+            </p>
+            <OaField v-if="inviteVisible" :label="inviteMode === 'invite' ? t('inviteCodeLabel') : t('inviteCodeOptionalLabel')">
+              <input
+                v-model="inviteCode"
+                type="text"
+                spellcheck="false"
+                :placeholder="t('inviteCodePlaceholder')"
+                autocomplete="off"
+                maxlength="32"
+                :required="inviteMode === 'invite'"
+              >
+            </OaField>
+
+            <OaField :label="t('password')">
+              <input
+                ref="passwordField"
+                v-model="password"
+                type="password"
+                spellcheck="false"
+                :placeholder="registering ? t('passwordHint') : t('password')"
+                :autocomplete="registering ? 'new-password' : 'current-password'"
+                maxlength="256"
+              >
+            </OaField>
+
+            <OaTurnstile
+              v-if="guarded"
+              ref="turnstile"
+              :site-key="site.turnstile_site_key ?? ''"
+              @solved="onTurnstileSolved"
+            />
+
+            <p class="oa-auth-error" role="alert" :hidden="!error">{{ error }}</p>
+
+            <button
+              type="submit"
+              class="oa-btn primary oa-btn-block"
+              :disabled="busy"
+              :data-busy="busy ? 'true' : undefined"
+            >
+              {{ buttonLabel || (registering ? t('createAccount') : t('signIn')) }}
+            </button>
+
+            <!-- Links rather than buttons, because each one is a navigation to
+                 somebody else's site: the server answers with a redirect, which a
+                 fetch could not follow anywhere useful. -->
+            <template v-if="providers.length">
+              <p class="oa-auth-or"><span>{{ t('orContinueWith') }}</span></p>
+              <div class="oa-auth-providers">
+                <a
+                  v-for="provider in providers"
+                  :key="provider.id"
+                  class="oa-btn oa-btn-block oa-auth-provider"
+                  :href="signInURL(provider.id, { next: safeNext(route.query['next']), register: registering })"
+                  @click="onProviderClick($event, provider.id)"
+                >
+                  <component :is="providerMark(provider.id)" :size="15" />
+                  <span>{{ t('continueWith', { provider: provider.name }) }}</span>
+                </a>
+              </div>
+            </template>
+          </div>
+
+          <p v-if="!setup" class="oa-auth-switch">
+            <template v-if="registering">
+              <span>{{ t('haveAccount') }}</span>
+              <button type="button" @click="switchMode('/login')">{{ t('signIn') }}</button>
+            </template>
+            <template v-else-if="site.registration_enabled || thirdPartyOnlySignup">
+              <span>{{ t('noAccount') }}</span>
+              <button type="button" @click="switchMode('/register')">{{ t('createOne') }}</button>
+            </template>
+            <template v-else>{{ t('registrationClosed') }}</template>
+          </p>
+
+          <p v-if="site.description" class="oa-auth-note">{{ site.description }}</p>
+        </template>
+      </div>
     </form>
   </div>
 
