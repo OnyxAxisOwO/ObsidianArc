@@ -538,8 +538,9 @@ whether an upgrade is safe:
 - **Patch** — a fix that changes no contract.
 
 Until 1.0.0 the first of those is not promised: a minor release may break any
-of it, and says so in `CHANGELOG.md`. A patch release still changes no
-contract. `v0.9.0` is the first version, tagged over a history of more than
+of it, and says so in `CHANGELOG.md`. Before 1.0.0, minor releases group substantial milestones; patches may
+include small backward-compatible UI additions and refinements, as well as
+fixes. A patch release still changes no existing contract. `v0.9.0` is the first version, tagged over a history of more than
 two hundred builds that carried only the moment they were compiled
 (`v2026.09.29.15.44.24`) and never a tag, which is why it is not `v0.1.0`:
 the number says where the project is, not that it started today.
