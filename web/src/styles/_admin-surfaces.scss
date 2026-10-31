@@ -426,13 +426,11 @@
   gap: 12px;
 }
 
+/* Reuse the chat's bubble and prose rules so the audit panel follows the
+   same reading rhythm without acquiring chat editing or retry actions. */
 .oa-transcript-turn {
-  padding: 10px 12px;
-  border-radius: 12px;
-  background: var(--ai-surface-container-low);
-  font-size: 12.5px;
-  line-height: 1.55;
-  white-space: pre-wrap;
+  min-width: 0;
+  margin-bottom: 0;
   overflow-wrap: anywhere;
 }
 

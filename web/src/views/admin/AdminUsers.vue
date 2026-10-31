@@ -25,6 +25,7 @@ import OaConfirmButton from '@/components/OaConfirmButton.vue';
 import OaRow from '@/components/OaRow.vue';
 import OaNumberField from '@/components/OaNumberField.vue';
 import OaPanel from '@/components/OaPanel.vue';
+import OaMarkdown from '@/components/OaMarkdown.vue';
 import OaSelect from '@/components/OaSelect.vue';
 import OaSelectField from '@/components/OaSelectField.vue';
 import OaStatGrid from '@/components/OaStatGrid.vue';
@@ -1624,11 +1625,18 @@ const state = { q: '', role: '', status: '', group: '' };
     <template v-else-if="mode === 'transcript'">
       <p v-if="transcript === null && !panelError" class="oa-field-hint">{{ t('loading') }}</p>
       <div v-else-if="transcript" class="oa-transcript">
-        <div v-for="message in transcript" :key="message.id" class="oa-transcript-turn">
+        <div
+          v-for="message in transcript"
+          :key="message.id"
+          class="oa-transcript-turn ai-msg"
+          :class="message.role === 'user' ? 'ai-msg-user' : 'ai-msg-assistant'"
+        >
           <span class="oa-transcript-role">{{ turnLabel(message) }}</span>
-          <!-- Plain text, not markdown: this is an audit view of what was
-               stored, and a renderer would be interpreting it. -->
-          {{ message.error || message.content || t('emptyMessage') }}
+          <div v-if="message.error" class="ai-chat-error">{{ message.error }}</div>
+          <div v-else-if="message.role === 'user'" class="ai-bubble">
+            {{ message.content || t('emptyMessage') }}
+          </div>
+          <OaMarkdown v-else class="ai-answer" :text="message.content || t('emptyMessage')" />
         </div>
       </div>
     </template>

@@ -1,5 +1,16 @@
 # Working on Obsidian Arc
 
+## Keep implementation and deployment direct
+
+The owner prefers the smallest direct solution. Do not add speculative
+fallbacks, automatic backups, rollback frameworks, repeated validation,
+extra safety tests or defensive branches without a concrete observed need
+or an explicit request. Fix actual failures at their cause. Routine UI
+deployments reuse the checks already completed for that source and do not
+run unrelated core, plugin, race or safety suites. Do not expand the work
+into reliability infrastructure or a general cleanup.
+
+
 ## Deployment identity
 
 **Chat and Arc are separate systems.** Chat is the independent chat software;
@@ -443,7 +454,7 @@ They drifted to nearly double once because nobody re-ran the build.
 
 Current: 28.14 MB binary (this repository ships no plugin; 2.8 MB of it is
 the plugin runtime, 0.41 MB the brotli copies of the frontend the
-build writes for the server to send, and 0.41 MB the embedded zone database); to open the chat, 174.72 kB on the wire
+build writes for the server to send, and 0.41 MB the embedded zone database); to open the chat, 174.64 kB on the wire
 to a browser that takes brotli and 207.94 kB to one that takes only gzip, which
 is the figure the budget holds (the build's own gzip column is not quoted:
 Node's zlib gives a few hundred bytes more or less on another CPU),

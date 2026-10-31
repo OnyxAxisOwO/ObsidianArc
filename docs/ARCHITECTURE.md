@@ -228,7 +228,7 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
 | Binary (SQLite + embedded SPA) | < 30 MB | 28.14 MB (24.43 MB `-tags nosqlite`, Linux amd64, Go 1.27.3), 0.41 MB of it the frontend's brotli copies and 0.41 MB the embedded zone database; this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 174.72 kB to open the chat with brotli (154.20 JS + 20.52 CSS); 207.94 kB with gzip (183.85 JS + 24.09 CSS), which the budget holds; the brotli is a copy compressed at build time, the gzip is Go's, made as it goes out |
+| Frontend, on the wire | < 135 kB | 174.64 kB to open the chat with brotli (154.12 JS + 20.52 CSS); 207.94 kB with gzip (183.85 JS + 24.09 CSS), which the budget holds; the brotli is a copy compressed at build time, the gzip is Go's, made as it goes out |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
 
@@ -236,7 +236,7 @@ Remeasured on 2026-10-31, after the model picker's detail sheet gained the
 API-facing model name. Its label shares the core dictionary with the model
 editor; the public catalogue uses the same naming rules as the compatible
 API. First paint is 207.94 kB with Go's gzip (183.85 JS + 24.09 CSS),
-174.72 kB with brotli (154.20 JS + 20.52 CSS), within the unchanged 208 kB
+174.64 kB with brotli (154.12 JS + 20.52 CSS), within the unchanged 208 kB
 budget and 18 core assets. The backoffice adds 179.00 kB JS + 15.87 kB CSS
 with gzip; Chinese adds 20.84 kB plus 38.49 kB for the backoffice. Built as
 below, the Linux amd64 binary is 28,135,584 bytes (24,432,800 without
@@ -1005,7 +1005,7 @@ What each reader actually downloads, as the server sends it (2026-10-31):
 
 | | gzip | brotli |
 | --- | --- | --- |
-| English, not an administrator | 207.94 kB | 174.72 kB |
+| English, not an administrator | 207.94 kB | 174.64 kB |
 | Chinese, not an administrator | 228.78 kB | 192.06 kB |
 | …and a conversation containing a formula | 232.55 kB | 195.31 kB |
 | Chinese administrator, backoffice open | 462.14 kB | 381.30 kB |
