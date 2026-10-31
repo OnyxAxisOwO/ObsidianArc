@@ -228,7 +228,7 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
 | Binary (SQLite + embedded SPA) | < 30 MB | 28.13 MB (24.43 MB `-tags nosqlite`, Linux amd64, Go 1.27.3), 0.41 MB of it the frontend's brotli copies and 0.41 MB the embedded zone database; this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 174.00 kB to open the chat with brotli (153.77 JS + 20.23 CSS); 207.37 kB with gzip (183.59 JS + 23.78 CSS), which the budget holds; the brotli is a copy compressed at build time, the gzip is Go's, made as it goes out |
+| Frontend, on the wire | < 135 kB | 174.06 kB to open the chat with brotli (153.85 JS + 20.21 CSS); 207.37 kB with gzip (183.59 JS + 23.78 CSS), which the budget holds; the brotli is a copy compressed at build time, the gzip is Go's, made as it goes out |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
 
@@ -240,11 +240,11 @@ instead of on every animation frame. Menu containment and select following
 use small native listeners and frame handles; the proof-of-work search is
 serialized once for both execution paths, so the bundler minifies both.
 Backoffice frame styles travel with the backoffice. First paint is 207.37 kB with Go's gzip
-(183.59 JS + 23.78 CSS), 174.00 kB with brotli (153.77 JS + 20.23 CSS).
+(183.59 JS + 23.78 CSS), 174.06 kB with brotli (153.85 JS + 20.21 CSS).
 The backoffice adds 178.95 kB JS + 15.78 kB CSS with gzip; its Chinese adds
 38.48 kB. Linux amd64, Go 1.27.3, `-trimpath -ldflags '-s -w'` produces
 28,131,488 bytes (24,428,704 without SQLite); the brotli copies total
-413,903 bytes. The wire figures, binaries and brotli total were remeasured on
+414,000 bytes. The wire figures, binaries and brotli total were remeasured on
 2026-10-30 after the optional full-height right sign-in panel was added.
 The original floating-card layouts remain available; the panel and its
 background preview add no chunks. These are the figures used in the current tables.
@@ -979,10 +979,10 @@ What each reader actually downloads, as the server sends it (2026-10-30):
 
 | | gzip | brotli |
 | --- | --- | --- |
-| English, not an administrator | 207.37 kB | 174.00 kB |
-| Chinese, not an administrator | 228.20 kB | 191.32 kB |
-| …and a conversation containing a formula | 231.96 kB | 194.57 kB |
-| Chinese administrator, backoffice open | 461.41 kB | 380.50 kB |
+| English, not an administrator | 207.37 kB | 174.06 kB |
+| Chinese, not an administrator | 228.20 kB | 191.38 kB |
+| …and a conversation containing a formula | 231.96 kB | 194.64 kB |
+| Chinese administrator, backoffice open | 461.41 kB | 380.60 kB |
 | Anybody, once they open the terminal | +9.73 kB | +8.74 kB |
 | A visitor to an instance whose front door is the front page | +8.06 kB | +7.08 kB |
 | A signed-out visitor to an instance whose front door is the intro or trial | +3.74 kB | +3.25 kB |

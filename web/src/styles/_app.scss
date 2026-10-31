@@ -75,24 +75,23 @@
    scroll the background or lose their first fields above the viewport. */
 .oa-auth.position-right-panel {
   justify-content: flex-end;
-  align-items: stretch;
   padding: 0;
 
   > .oa-auth-card {
     // Safe centering starts at the top when a long form needs to scroll.
     align-content: safe center;
-    width: 40%;
+    height: 100%;
     max-width: none;
     margin: 0;
-    padding: 48px;
+    padding: 64px 4vw;
     border-radius: 0;
     overflow-y: auto;
     animation: none;
   }
 
-  @media (max-width: 900px) {
+  @media (min-width: 901px) {
     > .oa-auth-card {
-      width: 100%;
+      width: 40%;
     }
   }
 }
@@ -194,15 +193,9 @@
 /* A link that has to read as a button: the sign-in is a navigation to the
    provider, which an <a> makes and a <button> in a form would not. */
 .oa-auth-provider {
-  /* A link, unlike a button, is content-box by default: without this the
-     padding is added to the 100% and both of these hang over the edge of the
-     card the submit button above them fits inside. */
-  box-sizing: border-box;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  /* .oa-btn supplies the link's button treatment; provider marks need a
+     little more room beside their label than ordinary action icons. */
   gap: 8px;
-  text-decoration: none;
 }
 
 /* Whose sign-in the completion form is finishing. The connection row from the
@@ -1225,7 +1218,9 @@ button.oa-home-notice-main:focus-visible {
   background: color-mix(in srgb, var(--ai-danger) 12%, color-mix(in srgb, var(--ai-surface-container) 92%, transparent));
 }
 
-.oa-auth:has(.oa-home-notice.floating) {
+/* Notice clearance is a default; a full-height panel keeps its surface at the
+   window edge and reserves space for the notice inside its own padding. */
+.oa-auth:where(:has(.oa-home-notice.floating)) {
   padding-top: 64px;
 }
 
