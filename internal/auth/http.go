@@ -247,6 +247,7 @@ func (h *Handlers) site(w http.ResponseWriter, r *http.Request) error {
 		"auth_card_position": h.settings.AuthCardPosition(),
 		// An empty instance always accepts the first account, whatever the
 		// setting says; that account becomes the administrator.
+		"legal_documents":             h.settings.LegalDocuments(),
 		"registration_enabled":        !populated || h.settings.Bool(settings.RegistrationEnabled),
 		"setup_required":              !populated,
 		"health_show_users":           h.settings.Bool(settings.HealthShowUsers),
@@ -629,7 +630,8 @@ type registerRequest struct {
 	// Empty unless this instance's registration mode asks for one, or the
 	// visitor arrived through a partner link and typed or carried one along
 	// anyway. See Service.Register.
-	InviteCode string `json:"invite_code"`
+	InviteCode    string          `json:"invite_code"`
+	LegalAccepted map[string]bool `json:"legal_accepted"`
 }
 
 func (h *Handlers) register(w http.ResponseWriter, r *http.Request) error {
@@ -641,17 +643,18 @@ func (h *Handlers) register(w http.ResponseWriter, r *http.Request) error {
 	ip := httpx.ClientIP(r, h.trust)
 	ua := r.UserAgent()
 	account, token, err := h.service.Register(r.Context(), RegisterInput{
-		Turnstile:  body.Turnstile,
-		Guards:     body.Guards,
-		PoW:        body.PoW,
-		Username:   body.Username,
-		Email:      body.Email,
-		Fields:     body.Fields,
-		Password:   body.Password,
-		Nickname:   body.Nickname,
-		IP:         ip,
-		UA:         ua,
-		InviteCode: body.InviteCode,
+		Turnstile:     body.Turnstile,
+		Guards:        body.Guards,
+		PoW:           body.PoW,
+		Username:      body.Username,
+		Email:         body.Email,
+		Fields:        body.Fields,
+		Password:      body.Password,
+		Nickname:      body.Nickname,
+		IP:            ip,
+		UA:            ua,
+		InviteCode:    body.InviteCode,
+		LegalAccepted: body.LegalAccepted,
 	})
 	if err != nil {
 		// Only the handler has the response, so the header is set here; the body
@@ -1087,6 +1090,8 @@ func (h *Handlers) registrationError(err error) error {
 		return httpx.Forbidden("Registration is closed on this server.")
 	case errors.Is(err, ErrThirdPartyOnlyRegistration):
 		return httpx.ForbiddenCode("third_party_only_registration", "Registration is only permitted via third-party providers.")
+	case errors.Is(err, ErrLegalAcceptanceRequired):
+		return httpx.BadRequestCode("legal_acceptance_required", "Agree to the required user agreement and privacy policy before registering.")
 	case errors.Is(err, ErrInviteRequired):
 		return httpx.BadRequestCode("invite_required", "An invite code is required to register here.")
 	case errors.Is(err, ErrInviteInvalid):

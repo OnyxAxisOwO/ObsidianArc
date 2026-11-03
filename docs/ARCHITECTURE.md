@@ -227,10 +227,20 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 28.14 MB (24.43 MB `-tags nosqlite`, Linux amd64, Go 1.27.3), 0.41 MB of it the frontend's brotli copies and 0.41 MB the embedded zone database; this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 174.64 kB to open the chat with brotli (154.12 JS + 20.52 CSS); 207.94 kB with gzip (183.85 JS + 24.09 CSS), which the budget holds; the brotli is a copy compressed at build time, the gzip is Go's, made as it goes out |
+| Binary (SQLite + embedded SPA) | < 30 MB | 28.15 MB (24.45 MB `-tags nosqlite`, Linux amd64, Go 1.27.3), 0.41 MB of it the frontend's brotli copies and 0.41 MB the embedded zone database; this repository ships no plugin |
+| Frontend, on the wire | < 135 kB | 174.18 kB to open the chat with brotli (153.63 JS + 20.54 CSS); 207.41 kB with gzip (183.26 JS + 24.15 CSS), which the budget holds; the brotli is a copy compressed at build time, the gzip is Go's, made as it goes out |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-11-04 after registration gained user agreement and privacy
+policy controls. The provider sign-up completion form is now fetched only when
+needed, keeping the unchanged 208 kB first-paint budget: 207.41 kB with Go's
+gzip (183.26 JS + 24.15 CSS), 174.18 kB with brotli (153.63 JS + 20.54 CSS).
+There are 19 core assets. The completion form adds 2.49 kB gzip / 2.20 kB
+brotli when opened. The backoffice adds 179.58 kB JS + 15.86 kB CSS gzip;
+Chinese adds 20.95 kB and the backoffice dictionary 38.65 kB. Linux amd64,
+Go 1.27.3, `-trimpath -ldflags="-s -w"`: 28,147,872 bytes (24,445,088
+with `-tags nosqlite`); brotli copies total 417,045 bytes.
 
 Remeasured on 2026-10-31, after the model picker's detail sheet gained the
 API-facing model name. Its label shares the core dictionary with the model
@@ -1001,17 +1011,19 @@ page, and the landing page (the intro or trial a signed-out visitor sees on an
 instance that chose one), each of those last two with its stylesheet. The vendors' model marks, the
 account menu's content and stylesheet, and the folder list's content and
 stylesheet are optional chunks too.
-What each reader actually downloads, as the server sends it (2026-10-31):
+What each reader actually downloads, as the server sends it (2026-11-04):
 
 | | gzip | brotli |
 | --- | --- | --- |
-| English, not an administrator | 207.94 kB | 174.64 kB |
-| Chinese, not an administrator | 228.78 kB | 192.06 kB |
-| …and a conversation containing a formula | 232.55 kB | 195.31 kB |
-| Chinese administrator, backoffice open | 462.14 kB | 381.30 kB |
-| Anybody, once they open the terminal | +9.73 kB | +8.75 kB |
+| English, not an administrator | 207.41 kB | 174.18 kB |
+| Chinese, not an administrator | 228.37 kB | 191.58 kB |
+| …and a conversation containing a formula | 232.13 kB | 194.84 kB |
+| Chinese administrator, backoffice open | 462.45 kB | 381.42 kB |
+| Anybody, once they open the terminal | +9.74 kB | +8.76 kB |
 | A visitor to an instance whose front door is the front page | +8.06 kB | +7.08 kB |
 | A signed-out visitor to an instance whose front door is the intro or trial | +3.74 kB | +3.25 kB |
+
+Provider sign-up completion adds 2.49 kB gzip / 2.20 kB brotli only when opened.
 
 The baseline excludes the optional account menu, folder list and model marks.
 Accounts with folders fetch the folder chunk after the list is read, and the

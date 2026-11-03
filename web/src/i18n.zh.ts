@@ -20,6 +20,11 @@
 import type { CoreKey } from './i18n';
 
 export const zh: Record<CoreKey, string> = {
+  userAgreement: '用户协议',
+  privacyPolicy: '隐私政策',
+  legalAgree: '我已阅读并同意《{title}》。',
+  legalAcceptanceRequired: '请阅读并勾选同意必需的协议后再注册。',
+
   reset: '重置',
   wallpaperTooLarge: '请选择不超过 10 MiB 的图片。',
   pagination: '分页',

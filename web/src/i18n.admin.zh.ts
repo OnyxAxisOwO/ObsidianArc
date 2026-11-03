@@ -15,6 +15,12 @@
 import type { AdminKey } from './i18n.admin';
 
 export const zhAdmin: Record<AdminKey, string> = {
+  legalSettingsHint: '支持安全渲染 Markdown。禁用或正文为空时不展示、不要求同意；标题留空使用默认名称。第三方注册在完善资料页确认同意。',
+  legalEnabled: '启用文档',
+  legalTitle: '文档标题',
+  legalBody: '内容（Markdown）',
+  legalRequireAgreement: '注册前必须勾选同意',
+
   showSignupUserAgent: '向用户显示注册 UA',
   showSignupUserAgentHint: '关闭后，用户无法查看注册时的 User-Agent；管理员仍可在用户管理中查看。',
   avatarProvider: '头像服务优先顺序',

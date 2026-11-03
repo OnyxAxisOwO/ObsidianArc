@@ -332,7 +332,8 @@ type RegisterInput struct {
 	// Empty unless this instance's registration mode asks for one — see
 	// consumeInvite. Optional even where it is not required: a code applied
 	// in open mode still seats the account in its group.
-	InviteCode string
+	InviteCode    string
+	LegalAccepted map[string]bool
 }
 
 type SignupDecision string
@@ -402,6 +403,9 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 	// hash below only run while the place is held; see ReserveInviteGuess.
 	var guess *Attempt
 	if total > 0 {
+		if err := s.CheckLegalAcceptance(in.LegalAccepted); err != nil {
+			return user.User{}, "", err
+		}
 		if !s.settings.Bool(settings.RegistrationEnabled) {
 			return user.User{}, "", ErrRegistrationClosed
 		}
@@ -584,6 +588,9 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 			// administered one, and locking someone out of that would leave
 			// a deployment with no way in at all.
 			if !first {
+				if err := s.CheckLegalAcceptance(in.LegalAccepted); err != nil {
+					return err
+				}
 				if err := checkEmail(s.settings, in.Email); err != nil {
 					return err
 				}

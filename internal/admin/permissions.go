@@ -125,7 +125,7 @@ func corePermission(key string) string {
 		return "security,invites"
 	case strings.HasPrefix(key, "registration."), strings.HasPrefix(key, "turnstile."),
 		strings.HasPrefix(key, "security."), strings.HasPrefix(key, "oauth."),
-		strings.HasPrefix(key, "pow."):
+		strings.HasPrefix(key, "pow."), strings.HasPrefix(key, "legal."):
 		return "security"
 	case strings.HasPrefix(key, "invites."):
 		return "invites"

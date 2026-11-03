@@ -20,6 +20,10 @@ import (
 // A value each rule in valueRules refuses. A rule added without one fails the
 // first test below, so a new rule is held to both paths from the start.
 var refusedByRule = map[string]string{
+	settings.TermsEnabled:               "yes",
+	settings.TermsRequired:              "yes",
+	settings.PrivacyEnabled:             "yes",
+	settings.PrivacyRequired:            "yes",
 	settings.LandingMode:                "nowhere",
 	settings.ProfileShowSignupUserAgent: "invalid",
 	settings.AvatarProvider:             "invalid",

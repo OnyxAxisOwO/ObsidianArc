@@ -20,6 +20,12 @@
 import { addEnglish, wantBackofficeLanguage } from './i18n';
 
 export const enAdmin = {
+  legalSettingsHint: 'Markdown is rendered safely. Disabled documents and blank content are hidden and do not require agreement. A blank title uses the default name. Third-party sign-ups confirm agreement on the completion form.',
+  legalEnabled: 'Enable document',
+  legalTitle: 'Document title',
+  legalBody: 'Content (Markdown)',
+  legalRequireAgreement: 'Require agreement before registration',
+
   showSignupUserAgent: 'Show registration user agent to users',
   showSignupUserAgentHint: 'When off, users cannot see their registration user agent. Administrators can still view it in user management.',
   avatarProvider: 'Avatar service priority',

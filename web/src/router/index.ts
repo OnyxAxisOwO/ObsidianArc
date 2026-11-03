@@ -13,7 +13,7 @@
 // check at the top of each screen. The server enforces the same rules on
 // every endpoint regardless — this only decides what to draw.
 //
-// Only the backoffice and the terminal are loaded lazily, and everything else
+// The backoffice, terminal and provider sign-up completion load lazily; everything else
 // is imported statically on purpose. Route-level splitting sounds free and is
 // not: the panels below are columns over a chat that is already on screen, so
 // a chunk per panel buys a round trip in the middle of a click and saves bytes
@@ -21,7 +21,9 @@
 // it is a quarter of the application's code and most accounts can never
 // reach it — and so is the terminal: every account may open it, but few ever
 // will, and its emulator, history and ANSI decoder would otherwise be on the
-// first paint of everyone who only came to chat.
+// first paint of everyone who only came to chat. Provider completion is also
+// needed only by new provider accounts; its registration policy form stays
+// off the chat entry so legal controls preserve the existing wire budget.
 
 import {
   createRouter, createWebHistory, type RouteLocationNormalized, type RouteLocationRaw, type RouteRecordRaw,
@@ -35,7 +37,6 @@ import AboutPanel from '@/views/AboutPanel.vue';
 import ArchivePanel from '@/views/ArchivePanel.vue';
 import AuthView from '@/views/AuthView.vue';
 import BindOIDCView from '@/views/BindOIDCView.vue';
-import CompleteSignupView from '@/views/CompleteSignupView.vue';
 import ConsentView from '@/views/ConsentView.vue';
 import FeedbackPanel from '@/views/FeedbackPanel.vue';
 import ImageLabPanel from '@/views/ImageLabPanel.vue';
@@ -65,7 +66,7 @@ const routes: RouteRecordRaw[] = [
   // provider could not supply. Public by necessity: the person filling it in
   // has no account yet, which is the whole point of the form. What stands in
   // for a session is the signed cookie the callback left behind.
-  { path: '/oauth/complete', component: CompleteSignupView },
+  { path: '/oauth/complete', component: () => import('@/views/CompleteSignupView.vue') },
   // Where the two-step policy holds an account until it enrols. A page for
   // the reason the consent screen is one: nothing behind it would work.
   { path: '/two-factor', component: TwoFactorEnrolView, meta: { auth: true } },

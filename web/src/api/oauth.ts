@@ -1,4 +1,4 @@
-import type { PoWSolution } from './auth';
+import type { LegalDocument, PoWSolution } from './auth';
 import { api } from './client';
 
 // Signing in with an account somebody already holds at GitHub or Google.
@@ -135,6 +135,7 @@ export function connectProvider(
  * is held in a signed cookie, and the account is opened by completeSignup.
  */
 export interface PendingSignup {
+  legal_documents?: LegalDocument[];
   provider: string;
   provider_name: string;
   /** What the provider calls them, so the form can say whose sign-in this is. */
@@ -164,9 +165,10 @@ export function fetchPendingSignup(): Promise<PendingSignup> {
 
 /** Opens the account, and answers with where to go next. */
 export function completeSignup(
-  details: { username?: string; password?: string; fields?: Record<string, string>; email?: string; inviteCode?: string },
+  details: { legalAccepted?: Record<string, boolean>; username?: string; password?: string; fields?: Record<string, string>; email?: string; inviteCode?: string },
 ): Promise<{ redirect: string }> {
   return api.post<{ redirect: string }>('/api/auth/oauth/signup', {
+    legal_accepted: details.legalAccepted ?? {},
     username: details.username ?? '',
     password: details.password ?? '',
     ...(details.fields && Object.keys(details.fields).length ? { fields: details.fields } : {}),

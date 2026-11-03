@@ -100,7 +100,7 @@ func TestSettingsGrantsAreScopedBySection(t *testing.T) {
 		if res.Code != http.StatusOK {
 			t.Fatal(res.Body.String())
 		}
-		for key, section := range map[string]string{"site.name": "settings", "registration.enabled": "security", "health.probe": "availability"} {
+		for key, section := range map[string]string{"site.name": "settings", "registration.enabled": "security", "health.probe": "availability", "legal.terms_enabled": "security", "legal.privacy_required": "security"} {
 			value := "false"
 			if key == "site.name" {
 				value = "Arc"
@@ -129,7 +129,7 @@ func TestSettingsGrantsAreScopedBySection(t *testing.T) {
 			// the thing it checks.
 			if strings.HasPrefix(key, "registration.") || strings.HasPrefix(key, "turnstile.") ||
 				strings.HasPrefix(key, "security.") || strings.HasPrefix(key, "oauth.") ||
-				strings.HasPrefix(key, "pow.") || strings.HasPrefix(key, "bot.") {
+				strings.HasPrefix(key, "pow.") || strings.HasPrefix(key, "bot.") || strings.HasPrefix(key, "legal.") {
 				section = "security"
 			}
 			if section != grant {

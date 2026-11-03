@@ -68,7 +68,8 @@ type ProvisionInput struct {
 	IP       string
 	UA       string
 	// Empty unless the person was asked and answered — see Missing.Invite.
-	InviteCode string
+	InviteCode    string
+	LegalAccepted map[string]bool
 	// The place in the invite guessing budget the caller reserved for this
 	// request when it carries a code (see ReserveInviteGuess). Nil reserves one
 	// inside Provision instead, so a caller that reserved none is still counted.
@@ -85,9 +86,10 @@ type Missing struct {
 	Fields []string
 	Email  bool
 	Invite bool
+	Legal  bool
 }
 
-func (m Missing) Any() bool { return len(m.Fields) > 0 || m.Email || m.Invite }
+func (m Missing) Any() bool { return len(m.Fields) > 0 || m.Email || m.Invite || m.Legal }
 
 // MissingFor reports what has to be asked of somebody arriving with this
 // identity before an account can be opened for them.
@@ -107,6 +109,7 @@ func (s *Service) MissingFor(ctx context.Context, q database.Queryer, email stri
 		Fields: s.requiredFields(),
 		Email:  strings.TrimSpace(email) == "" && (s.settings.Bool(settings.RequireEmail) || s.VerificationRequired()),
 		Invite: s.settings.Bool(settings.InvitesRequired),
+		Legal:  len(s.settings.LegalDocuments()) > 0,
 	}, nil
 }
 
@@ -137,6 +140,9 @@ func (s *Service) Provision(ctx context.Context, tx *database.Tx, in ProvisionIn
 	// reason Register gives: it is the one that turns an empty instance into
 	// an administered one.
 	if !first {
+		if err := s.CheckLegalAcceptance(in.LegalAccepted); err != nil {
+			return user.User{}, err
+		}
 		if !s.settings.Bool(settings.RegistrationEnabled) {
 			return user.User{}, ErrRegistrationClosed
 		}

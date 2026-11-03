@@ -586,7 +586,7 @@ describe('finishing a sign-up with an invite code', () => {
     button(host, t('signupCompleteSubmit')).click();
     await settle();
 
-    expect(complete).toHaveBeenCalledWith({ username: 'octocat', fields: {}, email: '', inviteCode: 'PARTNERX' });
+    expect(complete).toHaveBeenCalledWith({ legalAccepted: {}, username: 'octocat', fields: {}, email: '', inviteCode: 'PARTNERX' });
   });
 });
 
@@ -969,7 +969,7 @@ describe('finishing a sign-up the provider could not', () => {
     button(host, t('signupCompleteSubmit')).click();
     await settle();
 
-    expect(complete).toHaveBeenCalledWith({ username: 'octocat', fields: { ref: '87654321' }, email: '', inviteCode: '' });
+    expect(complete).toHaveBeenCalledWith({ legalAccepted: {}, username: 'octocat', fields: { ref: '87654321' }, email: '', inviteCode: '' });
     // A whole navigation, not a route change: the session cookie has just been
     // set and the application reads the account once, at boot.
     expect(window.location.href).toBe('/oauth/consent?request=abc');
@@ -1050,7 +1050,7 @@ describe('finishing a sign-up the provider could not', () => {
     type(fieldInput(t('username')), 'my_custom_name');
     button(host, t('signupCompleteSubmit')).click();
     await settle();
-    expect(complete).toHaveBeenCalledWith({
+    expect(complete).toHaveBeenCalledWith({ legalAccepted: {},
       username: 'my_custom_name',
       fields: { ref: '87654321' },
       email: '',
@@ -1079,7 +1079,7 @@ describe('finishing a sign-up the provider could not', () => {
     type(pwdInput, 'securepassword123');
     button(host, t('signupCompleteSubmit')).click();
     await settle();
-    expect(complete).toHaveBeenCalledWith({
+    expect(complete).toHaveBeenCalledWith({ legalAccepted: {},
       username: 'octocat',
       password: 'securepassword123',
       fields: { ref: '87654321' },

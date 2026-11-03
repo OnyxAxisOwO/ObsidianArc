@@ -590,6 +590,7 @@ func (h *Handlers) pendingSignup(w http.ResponseWriter, r *http.Request) error {
 		"suggested_username": suggestedUsername(held.Login, held.Name),
 		"fields":             suggested,
 		"email":              held.Email,
+		"legal_documents":    h.service.settings.LegalDocuments(),
 		"needs":              map[string]any{"fields": nonNil(missing.Fields), "email": missing.Email, "invite": missing.Invite},
 		"needs_password":     needsPassword,
 		"password_required":  passwordRequired,
@@ -611,11 +612,12 @@ func (h *Handlers) completeSignup(w http.ResponseWriter, r *http.Request) error 
 	}
 
 	var body struct {
-		Username string            `json:"username"`
-		Password string            `json:"password"`
-		Fields   map[string]string `json:"fields"`
-		Email    string            `json:"email"`
-		Invite   string            `json:"invite_code"`
+		Username      string            `json:"username"`
+		Password      string            `json:"password"`
+		Fields        map[string]string `json:"fields"`
+		Email         string            `json:"email"`
+		Invite        string            `json:"invite_code"`
+		LegalAccepted map[string]bool   `json:"legal_accepted"`
 	}
 	if err := httpx.DecodeJSON(w, r, &body, 8*1024); err != nil {
 		return err
@@ -638,11 +640,12 @@ func (h *Handlers) completeSignup(w http.ResponseWriter, r *http.Request) error 
 		Name:     held.Name,
 		Email:    held.Email,
 	}, Details{
-		Username: body.Username,
-		Password: body.Password,
-		Fields:   body.Fields,
-		Email:    body.Email,
-		Invite:   body.Invite,
+		Username:      body.Username,
+		Password:      body.Password,
+		Fields:        body.Fields,
+		Email:         body.Email,
+		Invite:        body.Invite,
+		LegalAccepted: body.LegalAccepted,
 	}, h.admission(held.SignUp), h.address(r), r.UserAgent())
 	if err != nil {
 		// Set here for the same reason as on the sign-up form: the header belongs
@@ -883,6 +886,8 @@ func completionError(err error) error {
 		return httpx.ForbiddenCode("registration_closed", "Registration is closed on this server.")
 	case errors.Is(err, auth.ErrThirdPartyOnlyRegistration):
 		return httpx.ForbiddenCode("third_party_only_registration", "Registration is only permitted via third-party providers.")
+	case errors.Is(err, auth.ErrLegalAcceptanceRequired):
+		return httpx.BadRequestCode("legal_acceptance_required", "Agree to the required user agreement and privacy policy before registering.")
 	case errors.Is(err, auth.ErrInviteRequired):
 		return httpx.BadRequestCode("invite_required", "An invite code is required to register here.")
 	case errors.Is(err, auth.ErrInviteInvalid):

@@ -67,6 +67,8 @@ export function refusalText(failure: unknown, domains: string[] = []): string {
       return t('emailRequiredHere');
     case 'email_domain':
       return t('emailDomainRejected', { domains: allowed(failure, domains).join(', ') });
+    case 'legal_acceptance_required':
+      return t('legalAcceptanceRequired');
     case 'invite_required':
       return t('inviteRequiredHere');
     case 'invite_invalid':

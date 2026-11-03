@@ -524,7 +524,7 @@ export const ADMIN_FEATURES: AdminFeatureItem[] = [
     id: 'secAccounts',
     pageSlug: 'security',
     titleKey: 'secAccounts',
-    searchKeys: ['anyoneCanRegister', 'newAccountsJoin', 'theDefaultGroup'],
+    searchKeys: ['anyoneCanRegister', 'newAccountsJoin', 'theDefaultGroup', 'userAgreement', 'privacyPolicy', 'legalSettingsHint'],
     keywords: ['账户准入', '开放注册', '注册开关', '默认用户组', '新账号归属', 'account access', 'default group'],
   },
   {

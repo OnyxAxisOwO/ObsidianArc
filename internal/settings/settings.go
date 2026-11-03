@@ -82,6 +82,14 @@ const (
 	HomeNoticeBody = "home.notice_body"
 	// How loudly the strip says it: HomeNoticeTones.
 	HomeNoticeTone      = "home.notice_tone"
+	TermsTitle          = "legal.terms_title"
+	TermsBody           = "legal.terms_body"
+	TermsEnabled        = "legal.terms_enabled"
+	TermsRequired       = "legal.terms_required"
+	PrivacyTitle        = "legal.privacy_title"
+	PrivacyBody         = "legal.privacy_body"
+	PrivacyEnabled      = "legal.privacy_enabled"
+	PrivacyRequired     = "legal.privacy_required"
 	RegistrationEnabled = "registration.enabled"
 	RegistrationGroup   = "registration.default_group"
 	RequireEmail        = "registration.require_email"
@@ -750,6 +758,14 @@ var Defaults = map[string]string{
 	HomeNoticeDismissible: "true",
 	HomeNoticeBody:        "",
 	HomeNoticeTone:        HomeNoticeToneInfo,
+	TermsTitle:            "",
+	TermsBody:             "",
+	TermsEnabled:          "false",
+	TermsRequired:         "false",
+	PrivacyTitle:          "",
+	PrivacyBody:           "",
+	PrivacyEnabled:        "false",
+	PrivacyRequired:       "false",
 	RegistrationEnabled:   "true",
 	RegistrationGroup:     "",
 	RequireEmail:          "false",

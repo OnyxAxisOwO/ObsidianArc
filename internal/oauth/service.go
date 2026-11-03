@@ -88,7 +88,8 @@ type Details struct {
 	Email  string
 	// Empty unless MissingFor asked for one (an invite-only instance) and
 	// the completion form was shown it.
-	Invite string
+	Invite        string
+	LegalAccepted map[string]bool
 }
 
 // credentials names the three settings each provider is configured with.
@@ -661,6 +662,7 @@ func (s *Service) resolve(
 				IP:               ip,
 				UA:               ua,
 				InviteCode:       strings.TrimSpace(details.Invite),
+				LegalAccepted:    details.LegalAccepted,
 				InviteGuess:      guess,
 			})
 			if err != nil {

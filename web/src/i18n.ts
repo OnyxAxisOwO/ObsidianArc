@@ -21,6 +21,11 @@ const LANGUAGE_KEY = 'obsidian-arc-language';
 export type Language = 'en' | 'zh';
 
 const en = {
+  userAgreement: 'User agreement',
+  privacyPolicy: 'Privacy policy',
+  legalAgree: 'I have read and agree to {title}.',
+  legalAcceptanceRequired: 'Read and agree to the required documents before registering.',
+
   reset: 'Reset',
   wallpaperTooLarge: 'Choose an image no larger than 10 MiB.',
   pagination: 'Pagination',

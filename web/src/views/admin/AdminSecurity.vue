@@ -82,6 +82,11 @@ const flash = ref('');
 const saveLabel = ref('');
 const busy = ref(false);
 
+const legal = ref([
+  { id: 'terms', title: '', body: '', enabled: false, required: false },
+  { id: 'privacy', title: '', body: '', enabled: false, required: false },
+]);
+
 const form = ref({
   registration: false,
   defaultGroup: '',
@@ -290,6 +295,12 @@ const pluginSettings = usePluginSettings('security');
  */
 function collect(): Record<string, string> {
   return {
+    ...Object.fromEntries(legal.value.flatMap((document) => [
+      [`legal.${document.id}_title`, document.title],
+      [`legal.${document.id}_body`, document.body],
+      [`legal.${document.id}_enabled`, String(document.enabled)],
+      [`legal.${document.id}_required`, String(document.required)],
+    ])),
     'registration.enabled': String(form.value.registration),
     'registration.default_group': form.value.defaultGroup,
     'registration.require_email': String(form.value.requireEmail),
@@ -548,6 +559,12 @@ async function load(): Promise<void> {
     models.value = modelsResult.models;
 
 
+    for (const document of legal.value) {
+      document.title = values[`legal.${document.id}_title`] ?? '';
+      document.body = values[`legal.${document.id}_body`] ?? '';
+      document.enabled = values[`legal.${document.id}_enabled`] === 'true';
+      document.required = values[`legal.${document.id}_required`] === 'true';
+    }
     form.value = {
       registration: values['registration.enabled'] === 'true',
       defaultGroup: values['registration.default_group'] ?? '',
@@ -688,6 +705,12 @@ onMounted(load);
           :label="t('newAccountsJoin')"
           :options="defaultGroupChoices"
         />
+      </AdminControlCard>
+      <AdminControlCard v-for="document in legal" :id="`legal-${document.id}`" :key="document.id" v-show="visible('secAccounts')" :title="t(document.id === 'terms' ? 'userAgreement' : 'privacyPolicy')" :icon="IconFile" :hint="t('legalSettingsHint')">
+        <OaSwitchField v-model="document.enabled" :label="t('legalEnabled')" />
+        <OaTextField v-model="document.title" :label="t('legalTitle')" />
+        <OaTextArea v-model="document.body" :label="t('legalBody')" :rows="8" :max-bytes="SETTING_MAX_BYTES" />
+        <OaSwitchField v-model="document.required" :label="t('legalRequireAgreement')" />
       </AdminControlCard>
       <AdminControlCard id="secRegistrationLimits" v-show="visible('secRegistrationLimits')" :title="t('controlRegistrationLimits')" :icon="IconSliders" :hint="t('controlRegistrationLimitsHint')">
         <OaNumberField v-model="form.perMinute" :label="t('signupsPerMinute')" :min="0" :max="1000" />

@@ -229,6 +229,15 @@ var writableSettings = map[string]bool{
 	settings.ThemeAsciiField:            true,
 	settings.AboutTitle:                 true,
 	settings.AboutBody:                  true,
+	settings.TermsTitle:                 true,
+	settings.TermsBody:                  true,
+	settings.TermsEnabled:               true,
+	settings.TermsRequired:              true,
+	settings.PrivacyTitle:               true,
+	settings.PrivacyBody:                true,
+	settings.PrivacyEnabled:             true,
+	settings.PrivacyRequired:            true,
+
 	settings.AboutShowSoftwareInfo:      true,
 	settings.UpdateCheck:                true,
 	settings.AuditRetentionDays:         true,
@@ -414,7 +423,7 @@ type valueRule struct {
 }
 
 var valueRules = []valueRule{
-	{[]string{settings.ProfileShowSignupUserAgent}, func(_, value string) error {
+	{[]string{settings.ProfileShowSignupUserAgent, settings.TermsEnabled, settings.TermsRequired, settings.PrivacyEnabled, settings.PrivacyRequired}, func(_, value string) error {
 		if value != "true" && value != "false" {
 			return httpx.BadRequestCode("setting_boolean_invalid", "Expected true or false.")
 		}

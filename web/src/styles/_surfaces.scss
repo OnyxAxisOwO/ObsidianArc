@@ -4842,3 +4842,9 @@
 .oa-group-row > .oa-group-row-control:only-child {
   margin-left: auto;
 }
+
+// Keep long operator documents inside the auth card on small screens.
+.oa-legal-documents { display: grid; gap: 12px; }
+.oa-legal-document summary { cursor: pointer; font-weight: 500; }
+.oa-legal-document .oa-checkbox-field { margin-top: 10px; }
+.oa-legal-body { max-height: 240px; overflow: auto; overflow-wrap: anywhere; }

@@ -24,6 +24,8 @@ import { refusalText } from '@/lib/refusal';
 import { siteInfo } from '@/stores/session';
 import { useLoginBackground } from '@/composables/useLoginBackground';
 import OaBackdrop from '@/components/OaBackdrop.vue';
+import { legalAcceptanceMissing } from '@/lib/legal';
+import OaLegalDocuments from '@/components/OaLegalDocuments.vue';
 
 const router = useRouter();
 const route = useRoute();
@@ -46,6 +48,8 @@ const username = ref('');
 const password = ref('');
 const fields = ref<Record<string, string>>({});
 const email = ref('');
+const legalAccepted = ref<Record<string, boolean>>({});
+const legalDocuments = computed(() => pending.value?.legal_documents ?? []);
 
 // The required fields are asked for; a value the provider already answered
 // (a subject a plugin binds to a field) rides along whether or not it is.
@@ -110,6 +114,10 @@ onMounted(() => {
 async function submit(): Promise<void> {
   if (busy.value || !pending.value) return;
 
+  if (legalAcceptanceMissing(legalDocuments.value, legalAccepted.value)) {
+    error.value = t('legalAcceptanceRequired');
+    return;
+  }
   const chosenUsername = username.value.trim();
   if (!chosenUsername) {
     error.value = t('usernameRequired');
@@ -152,8 +160,9 @@ async function submit(): Promise<void> {
   error.value = '';
   try {
     const details: {
-      username: string; password?: string; fields: Record<string, string>; email: string; inviteCode: string;
+      legalAccepted: Record<string, boolean>; username: string; password?: string; fields: Record<string, string>; email: string; inviteCode: string;
     } = {
+      legalAccepted: legalAccepted.value,
       username: chosenUsername,
       fields: { ...fields.value, ...fieldValues(fields.value, fieldPlan.value) },
       email: address,
@@ -250,6 +259,8 @@ async function submit(): Promise<void> {
               :required="passwordRequired"
             >
           </OaField>
+
+          <OaLegalDocuments v-if="legalDocuments.length" v-model="legalAccepted" :documents="legalDocuments" />
 
           <OaAccountFields v-model="fields" :plan="fieldPlan" />
 

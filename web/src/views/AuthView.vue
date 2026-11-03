@@ -33,6 +33,8 @@ import { IconSpark } from '@/icons';
 import { adopt, forget, pendingSecondFactor, siteInfo } from '@/stores/session';
 import { useLoginBackground } from '@/composables/useLoginBackground';
 import OaBackdrop from '@/components/OaBackdrop.vue';
+import { legalAcceptanceMissing } from '@/lib/legal';
+import OaLegalDocuments from '@/components/OaLegalDocuments.vue';
 
 const props = defineProps<{ mode: 'login' | 'register' }>();
 
@@ -94,6 +96,9 @@ const identifier = ref('');
 const email = ref('');
 const fields = ref<Record<string, string>>({});
 const password = ref('');
+const legalAccepted = ref<Record<string, boolean>>({});
+const legalDocuments = computed(() => setup.value ? [] : site.value.legal_documents ?? []);
+
 const error = ref('');
 const busy = ref(false);
 const buttonLabel = ref('');
@@ -468,6 +473,7 @@ const REVIEW_NOTE_DELAY_MS = 900;
 // makes the same ones and is the one that decides; these only say the reason in
 // words straight away. Returns the sentence to show, or '' when the form may go.
 function formProblem(identity: string, secret: string): string {
+  if (registering.value && legalAcceptanceMissing(legalDocuments.value, legalAccepted.value)) return t('legalAcceptanceRequired');
   if (!identity || !secret) return t('fillBothFields');
   if (registering.value && emailRequired.value && !email.value.trim()) return t('emailRequiredHere');
   const fieldError = registering.value ? fieldProblem(fields.value, fieldPlan.value) : null;
@@ -564,6 +570,7 @@ async function onSubmit(): Promise<void> {
   try {
     const result: LoginResult = registering.value
       ? await register({
+          legalAccepted: legalAccepted.value,
           username: identity,
           password: secret,
           email: email.value.trim(),
@@ -690,6 +697,8 @@ async function onSubmit(): Promise<void> {
             }}
           </p>
 
+          <OaLegalDocuments v-if="registering && thirdPartyOnlySignup && legalDocuments.length" v-model="legalAccepted" :documents="legalDocuments" readonly />
+
           <div v-if="registering && thirdPartyOnlySignup" class="oa-auth-form">
             <OaTurnstile
               v-if="guarded"
@@ -762,6 +771,8 @@ async function onSubmit(): Promise<void> {
                 :required="inviteMode === 'invite'"
               >
             </OaField>
+
+            <OaLegalDocuments v-if="registering && legalDocuments.length" v-model="legalAccepted" :documents="legalDocuments" />
 
             <OaField :label="t('password')">
               <input

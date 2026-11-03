@@ -90,7 +90,15 @@ interface Landing {
   trial_turns: number;
 }
 
+export interface LegalDocument {
+  id: string;
+  title: string;
+  body: string;
+  required: boolean;
+}
+
 export interface SiteInfo {
+  legal_documents?: LegalDocument[];
   name: string;
   description: string;
   /** Already resolved against `name` server-side (settings.Service.BrowserTitle):
@@ -262,6 +270,7 @@ export function fetchPoWChallenge(): Promise<PoWChallenge> {
 }
 
 interface RegisterInput {
+  legalAccepted?: Record<string, boolean>;
   username: string;
   password: string;
   email?: string;
@@ -283,6 +292,7 @@ export function register(input: RegisterInput): Promise<{ user: Account }> {
     nickname: input.nickname ?? '',
     turnstile: input.turnstile ?? '',
     ...(input.guards && Object.keys(input.guards).length ? { guards: input.guards } : {}),
+    legal_accepted: input.legalAccepted ?? {},
     invite_code: input.inviteCode ?? '',
     ...(input.pow ? { pow: input.pow } : {}),
   });
