@@ -40,6 +40,7 @@ import {
 import { apiErrorText } from '@/lib/api-error';
 import { GUARD_DEADLINE_MS, GuardTimeout, withDeadline } from '@/lib/deadline';
 import { relativeTime } from '@/lib/format';
+import { pushToast } from '@/stores/notifications';
 import { solvePoW } from '@/lib/pow';
 import { challengeText } from '@/lib/refusal';
 import { guards } from '@/plugins/registry';
@@ -48,6 +49,13 @@ import { siteInfo } from '@/stores/session';
 const panels = usePanelExit();
 const panel = ref<InstanceType<typeof OaPanel> | null>(null);
 const { fullscreen, toggle: toggleFullscreen } = usePanelFullscreen(() => panel.value);
+
+// Tracks whether this component instance is still mounted. A generation that
+// finishes after the reader navigated away cannot update history.value or
+// error.value (the refs are gone), so it pushes a toast instead. The flag is
+// set in onMounted/onUnmounted rather than derived from a lifecycle hook so
+// the generate() closure can read it synchronously after an await.
+let componentMounted = false;
 
 const activeTab = ref<'generate' | 'history'>('generate');
 const gallery = ref<ImageGenerationRecord[]>([]);
@@ -259,6 +267,7 @@ function onPaste(event: ClipboardEvent): void {
 // A blob: URL is held by the document until it is released, so leaving the
 // panel with pictures in it would leak the whole downscaled images.
 onUnmounted(() => {
+  componentMounted = false;
   unmounted = true;
   clearReferences();
 });
@@ -334,6 +343,7 @@ const sizeOptions = computed(() => SIZES.map((size) => ({
 })));
 
 onMounted(async () => {
+  componentMounted = true;
   if (!models.value.length) {
     try {
       await loadModels();
@@ -428,6 +438,17 @@ async function generate(): Promise<void> {
   // sending the first picture under both uploads it twice.
   const images = references.value.map((r) => r.data);
 
+  // Inject an explicit aspect-ratio directive into the prompt so the model
+  // honours the tile the reader picked even when the prompt text mentions a
+  // different ratio. Without this, several image models silently fall back to
+  // their default canvas and centre-crop the content, which is what produced
+  // the "4:3 output with 3:4 content and side blanks" report.
+  let finalPrompt = text;
+  const sizeEntry = SIZES.find((entry) => entry.value === size);
+  if (sizeEntry && sizeEntry.ratio) {
+    finalPrompt += `\n\n[System: Output aspect ratio: ${sizeEntry.ratio} (${sizeEntry.w}×${sizeEntry.h}). Do not add padding or letterboxing.]`;
+  }
+
   busy.value = true;
   try {
     // Cheapest first, as the server asks them: the arithmetic, then the
@@ -454,7 +475,7 @@ async function generate(): Promise<void> {
 
     const res = await generateImages({
       model_id: modelID,
-      prompt: text,
+      prompt: finalPrompt,
       style,
       size,
       n: 1,
@@ -465,25 +486,51 @@ async function generate(): Promise<void> {
     });
 
     if (res.images && res.images.length) {
-      const arrived = Date.now();
-      // The gallery URL is the copy the screen reads; a data URI stands in only
-      // when the server gave no URL.
-      const fresh = res.images.map((img, n): LabResult => {
-        const { b64_json: bytes, ...rest } = img;
-        return {
-          ...rest,
-          src: imageSource(img.url, bytes, img.mime),
-          download: `image-${arrived}-${n}.${imageExtension(img.mime)}`,
-        };
-      });
-      history.value = [...fresh, ...history.value];
-      void loadGallery();
+      if (componentMounted) {
+        const arrived = Date.now();
+        // The gallery URL is the copy the screen reads; a data URI stands in only
+        // when the server gave no URL.
+        const fresh = res.images.map((img, n): LabResult => {
+          const { b64_json: bytes, ...rest } = img;
+          return {
+            ...rest,
+            src: imageSource(img.url, bytes, img.mime),
+            download: `image-${arrived}-${n}.${imageExtension(img.mime)}`,
+          };
+        });
+        history.value = [...fresh, ...history.value];
+        void loadGallery();
+      } else {
+        // The reader navigated away while the generation was in flight. The
+        // image is already persisted server-side; surface it via a toast so
+        // they know to check the gallery rather than thinking the request
+        // vanished.
+        pushToast({
+          id: `image-gen-${Date.now()}`,
+          kind: 'image_generation_complete',
+          params: { count: res.images.length },
+          link: '/',
+          created_at: Date.now(),
+        });
+      }
     }
   } catch (err) {
-    error.value = challengeText(err) ?? (err instanceof ApiError ? apiErrorText(err) : t('failed'));
+    if (componentMounted) {
+      error.value = challengeText(err) ?? (err instanceof ApiError ? apiErrorText(err) : t('failed'));
+    } else {
+      pushToast({
+        id: `image-gen-fail-${Date.now()}`,
+        kind: 'image_generation_failed',
+        params: { message: err instanceof Error ? err.message : String(err) },
+        link: '',
+        created_at: Date.now(),
+      });
+    }
   } finally {
     statusText.value = '';
-    busy.value = false;
+    if (componentMounted) {
+      busy.value = false;
+    }
     // Spent whether or not it passed.
     turnstile.value?.reset();
   }

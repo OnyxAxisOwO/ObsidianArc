@@ -146,14 +146,25 @@ function markEveryAnnouncementRead(): void {
 }
 
 /**
- * The feed is fetched once when the header is built. A tab left open since
- * before an announcement was written would otherwise say there are none for
- * as long as it stays open — which is exactly when somebody opens the bell to
- * check. Opening it is the moment the answer is wanted, so that is when it is
- * asked for.
+ * Opening the bell is the moment the reader says "I'm looking now", so that
+ * is when both feeds are marked read — the badge clears immediately rather
+ * than waiting for a separate button click. The announcements marked are
+ * the ones this bell rendered, as with the section's own button: one
+ * published after the list was fetched was never shown, so it stays unread.
+ * Failures are swallowed: the next poll's unread count is the source of
+ * truth either way, and a menu that refuses to open because a mark-read
+ * call hiccuped is worse than a stale badge for one tick.
  */
 function onTrigger(wasOpen: boolean): void {
-  if (!wasOpen) void refresh({ popup: false });
+  if (wasOpen) return;
+  // The badge repaint is this refresh, so it waits for both marks to settle:
+  // letting it race them would let a stale "unread: 3" land after the marks
+  // and put the dot straight back — the very bug this clears. allSettled
+  // rather than all, so a mark that fails still refreshes; the server's own
+  // count is the truth either way, exactly as the failure case wants.
+  const ids = feed.value.announcements.map((record) => record.id);
+  void Promise.allSettled([markAllRead(ids), markAllNotificationsRead()])
+    .then(() => refresh({ popup: false }));
 }
 
 onMounted(() => void refresh());

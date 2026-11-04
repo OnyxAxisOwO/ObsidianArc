@@ -1195,6 +1195,10 @@ const en = {
   notifyBodyBonusGranted: '{name}: {amount} credits',
   notifyTitleBonusExpiring: 'Bonus about to expire',
   notifyBodyBonusExpiring: '{amount} credits in {name} expire {when}',
+  notifyTitleImageGenComplete: 'Image generated',
+  notifyBodyImageGenComplete: '{count} image(s) ready in the gallery.',
+  notifyTitleImageGenFailed: 'Image generation failed',
+  notifyBodyImageGenFailed: 'The image could not be generated.',
   bonusKindShared: 'Shared pool',
   // The account menu's section labels. Its first section is headed by the
   // existing `account`, so only these three are new.
