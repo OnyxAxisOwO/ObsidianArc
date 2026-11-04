@@ -32,7 +32,7 @@ export interface AdminPageSpec {
   permission?: string;
 }
 
-export interface AdminFeatureItem {
+interface AdminFeatureItem {
   /** The anchor ID matching the element ID on the page. */
   id: string;
   /** The admin page slug, empty for the dashboard. */
@@ -45,7 +45,7 @@ export interface AdminFeatureItem {
   keywords?: string[];
 }
 
-export interface SearchGroup {
+interface SearchGroup {
   page: AdminPageSpec;
   matchedSelf: boolean;
   items: AdminFeatureItem[];
@@ -70,6 +70,13 @@ export const ADMIN_FEATURES: AdminFeatureItem[] = [
     searchKeys: ['aboutHeading', 'aboutHeadingHint', 'aboutText', 'aboutTextHint', 'aboutShowSoftwareInfo', 'aboutShowSoftwareInfoHint'],
     keywords: ['版本号', '已运行时间', '贡献者', '隐藏版本', '隐藏运行时间', '支持 Obsidian Arc', '致谢', 'version', 'uptime', 'contributors', 'credits'],
   },
+  {
+    id: 'secUpdates',
+    pageSlug: 'settings',
+    titleKey: 'controlUpdates',
+    searchKeys: ['updateCheck', 'updateCheckHint'],
+    keywords: ['版本更新', '新版本', '发布', '检查更新', 'update', 'release', 'new version', 'upgrade'],
+  },
   { id: 'secHomeNotice', pageSlug: 'settings', titleKey: 'homeNotice', searchKeys: ['homeNoticeHint', 'homeNoticeLine', 'homeNoticeBody', 'homeNoticeBodyHint', 'homeNoticeTone', 'homeNoticeDismissible', 'homeNoticeDismissibleHint'] },
   {
     id: 'secFeedback',
@@ -79,7 +86,7 @@ export const ADMIN_FEATURES: AdminFeatureItem[] = [
     keywords: ['反馈署名', '显示管理员名字', '匿名回复', '回复署名', 'staff name', 'sign replies', 'anonymous'],
   },
   { id: 'secRegistrationLimits', pageSlug: 'security', titleKey: 'controlRegistrationLimits', searchKeys: ['signupsPerMinute', 'signupsPerHour', 'signupsPerIP', 'signupsIPWindow'] },
-  { id: 'secVerificationScenes', pageSlug: 'security', titleKey: 'controlVerificationScenes', searchKeys: ['captchaMode', 'turnstileOnLogin', 'turnstileOnSignup', 'turnstileOnAPIKey', 'turnstileOnRedeem', 'turnstileOnFeedback'] },
+  { id: 'secVerificationScenes', pageSlug: 'security', titleKey: 'controlVerificationScenes', searchKeys: ['captchaMode', 'turnstileOnLogin', 'turnstileOnSignup', 'turnstileOnAPIKey', 'turnstileOnRedeem', 'turnstileOnFeedback', 'turnstileOnImages', 'powOnImages'] },
   { id: 'secMail', pageSlug: 'security', titleKey: 'mailSettings', searchKeys: ['mailSettingsHint', 'mailHost', 'mailPort', 'mailUsername', 'mailFrom', 'mailPublicURL', 'mailTestSend'], keywords: ['邮件服务器', '验证邮件', '邮箱配置', 'SMTP', 'mail', 'email verification'] },
   { id: 'secUserCheck', pageSlug: 'security', titleKey: 'userCheckSettings', searchKeys: ['userCheckSettingsHint', 'userCheckEnabled', 'userCheckAPIKey', 'userCheckExemptDomains', 'userCheckFailureMode', 'userCheckTest'], keywords: ['临时邮箱', '一次性邮箱', '临时邮件', 'UserCheck', 'disposable email', 'disposable address'] },
   { id: 'secChatChallenge', pageSlug: 'security', titleKey: 'controlChatChallenge', searchKeys: ['chatChallengeRequests', 'chatChallengeWindow', 'chatChallengeClearance'] },
@@ -123,11 +130,18 @@ export const ADMIN_FEATURES: AdminFeatureItem[] = [
     keywords: ['个人资料', '修改密码', '重置密码', '昵称', '邮箱', '头像', 'password', 'avatar'],
   },
   {
+    id: 'secBanStatus',
+    pageSlug: 'users',
+    titleKey: 'secBanStatus',
+    searchKeys: ['statusActive', 'statusDisabled', 'banAccount', 'unbanAccount', 'banReason', 'bulkBan'],
+    keywords: ['封禁账号', '封禁', '解除封禁', '解封', '封禁理由', '禁用账号', 'ban account', 'ban', 'unban', 'banned'],
+  },
+  {
     id: 'secAccess',
     pageSlug: 'users',
     titleKey: 'secAccess',
-    searchKeys: ['role', 'roleAdmin', 'roleUser', 'manageAdministrators', 'adminPermissions', 'statusActive', 'statusDisabled', 'apiRestricted'],
-    keywords: ['角色与权限', '管理员角色', '封禁账号', '用户组分配', 'API限制', 'role', 'admin', 'permissions'],
+    searchKeys: ['role', 'roleAdmin', 'roleUser', 'manageAdministrators', 'adminPermissions', 'apiRestricted'],
+    keywords: ['角色与权限', '管理员角色', '用户组分配', 'API限制', 'role', 'admin', 'permissions'],
   },
   {
     id: 'secAllowanceOverride',
@@ -203,25 +217,11 @@ export const ADMIN_FEATURES: AdminFeatureItem[] = [
     keywords: ['添加供应商', '新建供应商', '添加渠道', 'new provider', 'add provider'],
   },
   {
-    id: 'providerProtocol',
-    pageSlug: 'providers',
-    titleKey: 'protocol',
-    searchKeys: ['protocolHint', 'protocolAnthropic', 'protocolOpenAI', 'baseURL', 'apiKey'],
-    keywords: ['接口协议', 'OpenAI', 'Anthropic', 'Base URL', 'API Key', '密钥', '端点', 'endpoint'],
-  },
-  {
     id: 'secBehaviour',
     pageSlug: 'providers',
     titleKey: 'secBehaviour',
     searchKeys: ['reasoningStyle', 'timeoutSeconds', 'allowInsecure'],
     keywords: ['供应商行为', '超时时间', '思考推理格式', '代理', 'reasoning style', 'timeout', 'proxy'],
-  },
-  {
-    id: 'providerDetect',
-    pageSlug: 'providers',
-    titleKey: 'detect',
-    searchKeys: ['detecting', 'nModelsFound'],
-    keywords: ['检测模型', '自动拉取模型', '探测端点', 'detect models', 'fetch models'],
   },
 
   // --- Models
@@ -378,16 +378,10 @@ export const ADMIN_FEATURES: AdminFeatureItem[] = [
     keywords: ['用量排行', '消耗排行', 'ranking', 'top users', 'top models', 'usage ranking'],
   },
   {
-    id: 'secByModel',
+    id: 'secPopularModels',
     pageSlug: 'usage',
     titleKey: 'secByModel',
     keywords: ['按模型用量', '模型消耗明细', 'usage by model'],
-  },
-  {
-    id: 'secByProvider',
-    pageSlug: 'usage',
-    titleKey: 'secByProvider',
-    keywords: ['按供应商用量', '供应商消耗明细', 'usage by provider'],
   },
   {
     id: 'resetQuota',
@@ -512,7 +506,17 @@ export const ADMIN_FEATURES: AdminFeatureItem[] = [
     pageSlug: 'logs',
     titleKey: 'navLogs',
     searchKeys: ['logHolding', 'logWhen', 'logDuration', 'logIP'],
-    keywords: ['系统审计日志', '实时请求日志', '客户端IP', '响应耗时', 'audit logs', 'live stream'],
+    keywords: ['实时请求日志', '客户端IP', '响应耗时', 'request log', 'live stream'],
+  },
+  {
+    id: 'auditTrail',
+    pageSlug: 'audit',
+    titleKey: 'navAudit',
+    searchKeys: ['auditSubtitle'],
+    keywords: [
+      '审计日志', '管理员操作记录', '操作历史', '改动记录', '谁改的', '操作人', '保留天数', '网页终端', 'SSH',
+      'audit log', 'admin history', 'change history', 'who did it', 'retention',
+    ],
   },
 
   // --- Security
@@ -628,7 +632,7 @@ export const ADMIN_FEATURES: AdminFeatureItem[] = [
     id: 'secChat',
     pageSlug: 'settings',
     titleKey: 'secChat',
-    searchKeys: ['instanceSystemPrompt', 'turnsResent', 'agentMaxRounds'],
+    searchKeys: ['instanceSystemPrompt', 'turnsResent'],
     keywords: ['对话策略', '全局系统提示词', '实例系统提示词', '历史上下文轮数', 'system prompt', 'turns resent', 'chat policy'],
   },
   {
@@ -642,7 +646,7 @@ export const ADMIN_FEATURES: AdminFeatureItem[] = [
     id: 'secAttachments',
     pageSlug: 'settings',
     titleKey: 'secAttachments',
-    searchKeys: ['attachmentMaxMB', 'attachmentRetain', 'attachmentsHint'],
+    searchKeys: ['attachmentMaxMB', 'attachmentRetain', 'imageHistory', 'attachmentsHint'],
     keywords: ['附件上传设置', '单文件大小上限', '保留源文件', 'attachment max size', 'retain attachments'],
   },
   {

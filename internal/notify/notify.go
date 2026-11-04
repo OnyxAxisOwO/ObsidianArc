@@ -150,7 +150,12 @@ func (s *Store) Retract(ctx context.Context, q database.Queryer, kind, ref strin
 	if ref == "" {
 		return 0, nil
 	}
-	result, err := s.pick(q).Exec(ctx, `DELETE FROM notifications WHERE kind = ? AND ref = ?`, kind, ref)
+	// The index on (kind, ref) is partial, WHERE ref <> ''. The planner uses a
+	// partial index only when the query states that predicate itself: a bound
+	// ref = ? does not imply it, so without this line every retraction scanned
+	// the notifications table. The blank-ref return above makes it a no-op.
+	result, err := s.pick(q).Exec(ctx,
+		`DELETE FROM notifications WHERE kind = ? AND ref = ? AND ref <> ''`, kind, ref)
 	if err != nil {
 		return 0, fmt.Errorf("notify: retract: %w", err)
 	}
@@ -159,6 +164,29 @@ func (s *Store) Retract(ctx context.Context, q database.Queryer, kind, ref strin
 		return 0, fmt.Errorf("notify: retract rows affected: %w", err)
 	}
 	return affected, nil
+}
+
+// HasAdminNoticeSince reports whether a notice of kind, aimed at the
+// administrators holding permission, was pushed at or after since (epoch
+// milliseconds). A caller uses it to hold back a repeat of a notice that is
+// already waiting, so a burst of one event shows as one entry. It takes no lock
+// of its own, so the check is only safe inside a transaction that holds
+// settings.Lock and passes that transaction as q, with the Push that follows
+// in the same transaction: two callers checking at once can otherwise both see
+// false and both push.
+func (s *Store) HasAdminNoticeSince(ctx context.Context, q database.Queryer, kind, permission string, since int64) (bool, error) {
+	var one int
+	err := s.pick(q).QueryRow(ctx,
+		`SELECT 1 FROM notifications
+		 WHERE audience = 'admins' AND permission = ? AND kind = ? AND created_at >= ?
+		 LIMIT 1`, permission, kind, since).Scan(&one)
+	if database.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("notify: admin notice since: %w", err)
+	}
+	return true, nil
 }
 
 // visibility builds the WHERE fragment (without the leading "WHERE") and its

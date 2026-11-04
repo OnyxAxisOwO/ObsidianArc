@@ -13,10 +13,11 @@ import { computed, nextTick, onMounted, ref } from 'vue';
 import {
   adminApi, emptyPolicy,
   type AdminModel, type Group, type QuotaLimits, type QuotaPolicy, type QuotaWindowKind,
+  type AdminGroupInput,
 } from '@/admin/api';
-import { ApiError } from '@/api/client';
 import OaBadge from '@/components/OaBadge.vue';
 import OaBadgeRow from '@/components/OaBadgeRow.vue';
+import OaBulkBar from '@/components/OaBulkBar.vue';
 import OaCellStack from '@/components/OaCellStack.vue';
 import OaFormSection from '@/components/OaFormSection.vue';
 import OaNumberField from '@/components/OaNumberField.vue';
@@ -29,16 +30,19 @@ import OaTierList from '@/components/OaTierList.vue';
 import type { ListItem } from '@/components/list-items';
 import type { Column } from '@/components/table-types';
 import { t, tn } from '@/composables/useI18n';
+import { useBulk } from '@/composables/useBulk';
+import { usePanelSlot } from '@/composables/usePanelSlot';
 import { maskProvider } from '@/admin/safeMode';
+import { QUOTA_WINDOWS as WINDOWS, windowFigure } from '@/admin/quota';
 import AdminFailure from './AdminFailure.vue';
 import CreditsField from './CreditsField.vue';
 import GroupMembers from './GroupMembers.vue';
 import { useAdminView } from './adminView';
+import { failureText, runLoad, runRemove } from './shared';
 
-const WINDOWS: QuotaWindowKind[] = ['5h', '1w', '1m'];
 
 const view = useAdminView();
-view.setTitle(t('groupsTitle'), t('groupsSubtitle'));
+view.setTitle(() => t('groupsTitle'), () => t('groupsSubtitle'));
 
 const groups = ref<Group[]>([]);
 const policies = ref<QuotaPolicy[]>([]);
@@ -46,7 +50,7 @@ const models = ref<Pick<AdminModel, 'id' | 'display_name' | 'model_id' | 'enable
 const error = ref('');
 const loaded = ref(false);
 
-const panelOpen = ref(false);
+const { open: panelOpen, panel, key: panelKey, show: showPanel, hide: hidePanel, closed: panelClosed } = usePanelSlot();
 const existing = ref<Group | null>(null);
 const busy = ref(false);
 const panelError = ref('');
@@ -105,10 +109,16 @@ function limitBadges(policy: QuotaPolicy): string[] {
   const parts: string[] = [];
   if (policy.rpm) parts.push(t('perMinute', { count: policy.rpm }));
   for (const kind of WINDOWS) {
-    const window = policy.windows[kind];
-    if (!window?.enabled) continue;
-    const figure = window.credits ?? window.tokens ?? window.requests;
-    parts.push(figure === null || figure === undefined ? kind : `${kind}: ${figure}`);
+    const limits = policy.windows[kind];
+    if (!limits?.enabled) continue;
+    // A window can carry requests and tokens at once, and each figure the
+    // operator set is its own badge; one badge would hide the rest.
+    const figures: string[] = [];
+    if (limits.requests !== null && limits.requests !== undefined) figures.push(t('boardRequests', { count: limits.requests }));
+    if (limits.tokens !== null && limits.tokens !== undefined) figures.push(t('boardTokens', { count: limits.tokens }));
+    if (limits.credits !== null && limits.credits !== undefined) figures.push(String(limits.credits));
+    if (!figures.length) parts.push(kind);
+    for (const figure of figures) parts.push(`${kind}: ${figure}`);
   }
   if (!parts.length) parts.push(t('inherits'));
   return parts;
@@ -164,13 +174,57 @@ function open(row: Group | null): void {
     windows,
   };
 
-  panelOpen.value = true;
+  showPanel();
   void nextTick(() => nameField.value?.focus({ preventScroll: true }));
 }
 
+/**
+ * The panel slides away and the table is refetched where it stands, rather
+ * than the page being mounted again — which put the reader back at the top.
+ */
+function finish(): void {
+  hidePanel();
+  void load();
+}
+
+// --- several at once ----------------------------------------------------------------
+
+const bulk = useBulk(() => groups.value, (row) => row.id);
+
+// The default group is not exempted here: the server refuses it with its own
+// reason, which the bar then shows, and the rule stays in one place.
+function bulkRemove(): Promise<void> {
+  return bulk.run((row) => adminApi.deleteGroup(row.id), load);
+}
+
 async function save(): Promise<void> {
+  // rpm, tpm, requests and tokens reach the server as int64s, and a fraction or
+  // a negative figure is refused only after the group exists, which leaves a
+  // group with no policy and a retry that cannot finish it, so both are checked
+  // before anything is sent. Credits are a float64, so they take fractions and
+  // are checked only for sign.
+  const counts: Array<number | null> = [form.value.rpm, form.value.tpm];
+  const credits: Array<number | null> = [];
+  for (const kind of WINDOWS) {
+    const window = form.value.windows[kind];
+    counts.push(window.requests, window.tokens);
+    credits.push(window.credits);
+  }
+  if (!counts.every((figure) => figure === null || Number.isSafeInteger(figure))) {
+    panelError.value = t('groupQuotaNotWhole');
+    return;
+  }
+  if (
+    !counts.every((figure) => figure === null || figure >= 0)
+    || !credits.every((figure) => figure === null || (Number.isFinite(figure) && figure >= 0))
+  ) {
+    panelError.value = t('groupQuotaNegative');
+    return;
+  }
+
   busy.value = true;
   panelError.value = '';
+  const wasCreating = creating.value;
   try {
     const modelGrants = form.value.allowAll
       ? []
@@ -179,7 +233,7 @@ async function save(): Promise<void> {
       ? []
       : Object.entries(form.value.grants).filter(([, access]) => access === 'use').map(([id]) => id);
 
-    const payload: Record<string, unknown> = {
+    const payload: AdminGroupInput = {
       name: form.value.name.trim(),
       description: form.value.description.trim(),
       is_default: form.value.isDefault,
@@ -194,9 +248,13 @@ async function save(): Promise<void> {
       model_grants: modelGrants,
     };
 
-    const saved = creating.value
+    const saved = wasCreating
       ? (await adminApi.createGroup(payload)).group
       : (await adminApi.updateGroup(existing.value!.id, payload)).group;
+    // Once created, a retry must update this group. Creating it again would
+    // be refused by the unique name index, and the group would be left with
+    // no quota policy and no way back to it from this panel.
+    if (wasCreating) existing.value = saved;
 
     await adminApi.savePolicy({
       scope: 'group',
@@ -205,47 +263,36 @@ async function save(): Promise<void> {
       tpm: form.value.tpm,
       windows: Object.fromEntries(WINDOWS.map((kind) => [kind, {
         enabled: form.value.windows[kind].enabled ? true : null,
-        requests: form.value.windows[kind].requests,
-        tokens: form.value.windows[kind].tokens,
-        credits: form.value.windows[kind].credits,
+        requests: windowFigure(form.value.windows[kind].requests),
+        tokens: windowFigure(form.value.windows[kind].tokens),
+        credits: windowFigure(form.value.windows[kind].credits),
       }])),
     });
 
-    panelOpen.value = false;
-    view.reload();
+    finish();
   } catch (failure) {
     busy.value = false;
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    panelError.value = failureText(failure);
+    // A group created before the policy failed is in the table now, and the
+    // list should show it rather than wait for the panel to close.
+    if (wasCreating && existing.value) void load();
   }
 }
 
 async function remove(): Promise<void> {
   const row = existing.value;
   if (!row) return;
-  busy.value = true;
-  try {
-    await adminApi.deleteGroup(row.id);
-    panelOpen.value = false;
-    view.reload();
-  } catch (failure) {
-    busy.value = false;
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
-  }
+  await runRemove(() => adminApi.deleteGroup(row.id), { busy, error: panelError }, finish);
 }
 
 async function load(): Promise<void> {
-  error.value = '';
-  try {
+  await runLoad(async () => {
     const [groupsResult, modelsResult] = await Promise.all([adminApi.groups(), adminApi.modelOptions()]);
     groups.value = groupsResult.groups;
     if (existing.value) existing.value = groupsResult.groups.find((entry) => entry.id === existing.value!.id) ?? existing.value;
     policies.value = groupsResult.policies;
     models.value = modelsResult.models;
-  } catch (failure) {
-    error.value = failure instanceof Error ? failure.message : String(failure);
-  } finally {
-    loaded.value = true;
-  }
+  }, { error, loaded });
 }
 
 onMounted(load);
@@ -266,6 +313,9 @@ onMounted(load);
       :rows="groups"
       :empty="t('noGroups')"
       selectable
+      multi
+      v-model:selected="bulk.selected.value"
+      :row-key="(row) => row.id"
       @select="open($event)"
     >
       <!-- The default mark beside the name it qualifies, rather than alone in a
@@ -289,12 +339,24 @@ onMounted(load);
         </OaBadgeRow>
       </template>
     </OaTable>
+    <OaBulkBar
+      :count="bulk.selected.value.length"
+      :total="groups.length"
+      :busy="bulk.busy.value"
+      :error="bulk.error.value"
+      deletable
+      @all="bulk.selectAll"
+      @clear="bulk.clear"
+      @delete="bulkRemove"
+    />
 
     <p class="oa-field-hint">{{ t('groupsFooterHint') }}</p>
   </template>
 
   <OaPanel
     v-if="panelOpen"
+    ref="panel"
+    :key="panelKey"
     :title="creating ? t('addGroup') : existing!.name"
     :confirm-label="creating ? t('add') : t('save')"
     :destructive-label="existing && !existing.is_default ? t('deleteLabel') : undefined"
@@ -304,7 +366,7 @@ onMounted(load);
     :width="460"
     :busy="busy"
     :error="panelError"
-    @close="panelOpen = false"
+    @close="panelClosed"
     @confirm="save"
     @destructive="remove"
   >
@@ -330,7 +392,7 @@ onMounted(load);
     <OaSwitchField v-model="form.isDefault" :label="t('isDefault')" :hint="t('isDefaultHint')" />
     <OaNumberField v-model="form.sortOrder" :label="t('sortOrder')" />
 
-    <OaFormSection :title="t('secModelAccess')" />
+    <OaFormSection id="secModelAccess" :title="t('secModelAccess')" />
     <OaSwitchField
       v-model="form.allowAll"
       :label="t('allowAllModels')"
@@ -352,7 +414,7 @@ onMounted(load);
       :hint="t('groupApiAccessHint')"
     />
 
-    <OaFormSection :title="t('secGroupAbilities')" />
+    <OaFormSection id="secGroupAbilities" :title="t('secGroupAbilities')" />
     <OaSwitchField
       v-model="form.allowStats"
       :label="t('groupAllowStats')"
@@ -374,7 +436,7 @@ onMounted(load);
       :hint="t('groupShowExpiryHint')"
     />
 
-    <OaFormSection :title="t('secAllowance')" :hint="t('allowanceHint')" />
+    <OaFormSection id="secAllowance" :title="t('secAllowance')" :hint="t('allowanceHint')" />
     <OaNumberField
       v-model="form.rpm"
       :label="t('requestsPerMinute')"

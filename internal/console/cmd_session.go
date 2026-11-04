@@ -2,6 +2,7 @@ package console
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -56,16 +57,13 @@ func init() {
 
 			joined := strings.Join(args, " ")
 			if cmd, ok := rt.console.reg.lookup(joined); ok && hasPermission(rt.Session.Actor, cmd.Permission) {
-				renderCommandHelp(rt.Out, rt.Session, cmd, rt.console.reg)
+				renderCommandHelp(rt.Out, rt.Session, cmd)
 				return nil
 			}
 			if renderNounHelp(rt.Out, rt.Session, args[0], rt.console.reg) {
 				return nil
 			}
-			if rt.Session.Lang == "zh" {
-				return rt.Errorf("没有名为 %q 的命令或主题。", joined)
-			}
-			return rt.Errorf("no command or topic named %q", joined)
+			return rt.Fail(Text{EN: fmt.Sprintf("no command or topic named %q", joined), ZH: fmt.Sprintf("没有名为 %q 的命令或主题。", joined)})
 		},
 	})
 
@@ -127,11 +125,7 @@ func init() {
 			perms := "—"
 			switch {
 			case actor.IsSuperAdmin():
-				if lang == "zh" {
-					perms = "全部（超级管理员）"
-				} else {
-					perms = "all (super admin)"
-				}
+				perms = Text{EN: "all (super admin)", ZH: "全部（超级管理员）"}.For(lang)
 			case len(actor.AdminPermissions) > 0:
 				perms = strings.Join(actor.AdminPermissions, ", ")
 			}
@@ -155,9 +149,17 @@ func init() {
 			"version",
 		},
 		Run: func(_ context.Context, rt *Runtime) error {
-			v := rt.console.opts.Version
+			v, shown := rt.console.visibleVersion(rt.Session.Actor)
+			if !shown {
+				return rt.Fail(Text{EN: "this instance does not show its build version to members", ZH: "本实例不向普通成员显示构建版本"})
+			}
 			if v == "" {
 				v = "dev"
+			}
+			// A script that asks for --json is parsing the answer, so it gets the
+			// same object shape as the other commands rather than the bare line.
+			if rt.effectiveJSON() {
+				return rt.Fields([][2]string{{"version", v}})
 			}
 			rt.Printf("%s\n", v)
 			return nil
@@ -178,11 +180,10 @@ func init() {
 		Examples: []string{"history"},
 		SeeAlso:  []string{"help keys"},
 		Run: func(_ context.Context, rt *Runtime) error {
-			if rt.Session.Lang == "zh" {
-				rt.Printf("历史记录保存在你的终端里：网页终端用 ↑/↓ 翻阅；SSH 同样支持 ↑/↓，并可用 Ctrl-R 搜索。\n")
-				return nil
-			}
-			rt.Printf("History lives in your own terminal: ↑/↓ in the web terminal, or ↑/↓ and Ctrl-R to search over SSH.\n")
+			rt.Say(Text{
+				EN: "History lives in your own terminal: ↑/↓ in the web terminal, or ↑/↓ and Ctrl-R to search over SSH.\n",
+				ZH: "历史记录保存在你的终端里：网页终端用 ↑/↓ 翻阅；SSH 同样支持 ↑/↓，并可用 Ctrl-R 搜索。\n",
+			})
 			return nil
 		},
 	})
@@ -192,23 +193,35 @@ func init() {
 		Group:      "session",
 		Permission: Anyone,
 		Summary:    Text{EN: "Repeat a command until stopped", ZH: "反复执行某个命令，直到停止"},
-		Usage:      "watch [--interval DURATION] [--count N] <command...>",
+		Usage:      "watch [--interval DURATION] [--count N] [--for DURATION] <command...>",
 		Help: Text{
 			EN: "Re-runs the given command, clearing between runs, until the connection is cancelled " +
-				"(Ctrl-C / closing the tab) or --count is reached. A flag meant for the wrapped " +
+				"(Ctrl-C / closing the tab), --count is reached, --for runs out (default 1h, at most 24h), " +
+				"or the account can no longer use the console or the command it repeats. Every run after the first uses the account's " +
+				"current rights, not the ones it had when watch started. A command that sends any request " +
+				"other than GET, or is destructive, needs --count, e.g. watch --count 1 -- health probe. " +
+				"A flag meant for the wrapped " +
 				"command rather than for watch itself goes after a literal --, e.g. " +
 				"watch --interval 5s -- user list --q alice.",
-			ZH: "反复执行给定的命令，每次之间清屏，直到连接被取消（Ctrl-C / 关闭标签页）或达到 --count 次数。" +
+			ZH: "反复执行给定的命令，每次之间清屏，直到连接被取消（Ctrl-C / 关闭标签页）、达到 --count 次数、--for 用完" +
+				"（默认 1 小时，最长 24 小时），或此账户已无法使用控制台或所重复的命令。从第二次执行起，按账户当前的权限运行，" +
+				"而不是 watch 启动时的权限。凡是发送非 GET 请求或具有破坏性的命令，都必须用 --count 写明次数，" +
+				"例如 watch --count 1 -- health probe。" +
 				"若某个选项是给被包裹的命令而非 watch 本身的，请放在字面量 -- 之后，例如" +
 				" watch --interval 5s -- user list --q alice。",
 		},
 		Flags: []Flag{
 			{Name: "--interval", Hint: Text{EN: "how often to re-run, minimum 1s", ZH: "重复间隔，最短 1 秒"}, Value: "DURATION", Default: "2s"},
-			{Name: "--count", Hint: Text{EN: "stop after this many runs, 0 = forever", ZH: "达到该次数后停止，0 表示不限"}, Value: "N", Default: "0"},
+			{Name: "--count", Hint: Text{EN: "stop after this many runs, 0 = until --for", ZH: "达到该次数后停止，0 表示直到 --for 用完"}, Value: "N", Default: "0"},
+			{Name: "--for", Hint: Text{EN: "stop after this long, default 1h, at most 24h", ZH: "运行这么久后停止，默认 1 小时，最长 24 小时"}, Value: "DURATION", Default: "1h"},
 		},
 		Args: []Arg{
 			{Name: "command...", Hint: Text{EN: "the command to repeat", ZH: "要重复执行的命令"}, Required: true},
 		},
+		// The wrapped command is recorded on its own line by each run, with its
+		// own masking. This line must not repeat its arguments, or a password
+		// given to a repeated `user passwd` would be written twice.
+		SecretArgs: secretFrom(0),
 		Examples: []string{
 			"watch usage rpm",
 			"watch --interval 10s --count 6 health status",
@@ -221,6 +234,23 @@ func init() {
 			if sub[0] == "watch" {
 				return rt.Errorf("watch cannot watch itself")
 			}
+			// A negative count ran zero times and printed nothing, and a zero or
+			// negative --for used to mean the 24-hour maximum without a word. Both
+			// are refused by name, since the operator asked for something else.
+			if rt.IntOr("count", 0) < 0 {
+				return rt.Fail(Text{EN: "--count cannot be negative: 0 means until --for runs out", ZH: "--count 不能为负数；0 表示直到 --for 用完"})
+			}
+			if rt.Present("for") && rt.DurationOr("for", 0) <= 0 {
+				return rt.Fail(Text{EN: "--for must be a positive duration such as 30m, at most 24h", ZH: "--for 必须是正的时长，例如 30m，最长 24h"})
+			}
+
+			name, writes := rt.console.repeatsAWrite(sub)
+			if writes && rt.IntOr("count", 0) <= 0 {
+				// Without --count a write would repeat until --for ran out, one
+				// --yes covering every run. A stated count says how many changes
+				// the operator asked for.
+				return rt.Fail(Text{EN: fmt.Sprintf("watch repeats a command that writes only with a stated --count, e.g. watch --count 1 -- %s", name), ZH: fmt.Sprintf("watch 反复执行会写入数据的命令时必须用 --count 写明次数，例如 watch --count 1 -- %s", name)})
+			}
 
 			interval := rt.DurationOr("interval", 2*time.Second)
 			if interval < time.Second {
@@ -228,18 +258,78 @@ func init() {
 			}
 			count := rt.IntOr("count", 0)
 
+			// A watch nobody stops would hold its session for as long as the
+			// connection lived. The transport cancels ctx when the client goes
+			// away; this bounds the client that stays and forgets.
+			limit := rt.DurationOr("for", defaultWatchFor)
+			if limit > maxWatchFor {
+				limit = maxWatchFor
+			}
+			ctx, stop := context.WithTimeout(ctx, limit)
+			defer stop()
+
 			for i := 0; count == 0 || i < count; i++ {
+				// The account this watch started under was checked when it
+				// started, and it can run for a day. Every run after the first
+				// asks again, so a sign-out, a disabled account or a grant taken
+				// away reaches a watch already in progress.
+				if i > 0 && rt.Session.Reauthorize != nil {
+					account, err := rt.Session.Reauthorize(ctx)
+					// A clock or a closed connection is the same quiet stop the
+					// wait below makes, not a revocation to report.
+					if ctx.Err() != nil {
+						watchStopped(rt, ctx, limit)
+						return nil
+					}
+					if err != nil {
+						return rt.Fail(Text{EN: "watch stopped: the sign-in has ended, or this account may no longer use the console.", ZH: "watch 已停止：此次登录已结束，或此账户已无法使用控制台。"})
+					}
+					rt.Session.Actor = account
+				}
+
+				// The command this watch repeats can change while the watch runs: a
+				// plugin may be installed, switched or removed. Every later run looks
+				// the command up again, so one that has become a write meets the same
+				// --count rule the first run did.
+				if i > 0 {
+					_, writes = rt.console.repeatsAWrite(sub)
+					if writes && count <= 0 {
+						return rt.Fail(Text{
+							EN: "watch stopped: the command now writes, and no --count was given.",
+							ZH: "watch 已停止：该命令已改为会写入数据，而未用 --count 写明次数。",
+						})
+					}
+				}
+
 				if rt.Session.Colour {
 					fmt.Fprint(rt.Out, "\x1b[H\x1b[2J")
 				} else if i > 0 {
 					fmt.Fprintln(rt.Out, "────────")
 				}
 
+				// Under --json the header would precede the one JSON document the
+				// command prints, and a parser reading stdout would fail on it.
+				if writes && !rt.effectiveJSON() && !wantsJSON(sub) {
+					rt.Say(Text{
+						EN: fmt.Sprintf("run %d of %d\n", i+1, count),
+						ZH: fmt.Sprintf("第 %d 次，共 %d 次\n", i+1, count),
+					})
+				}
+
+				rt.flushOut()
 				result := rt.console.runTokens(ctx, rt.Session, rt.Out, sub, time.Now())
+				rt.flushOut()
 				if result.Exit {
 					return errExit
 				}
+				// The grant this command needs has been taken away. Each later run
+				// would be refused the same way and written to the audit trail
+				// again, so the watch ends here and says why.
+				if result.Code == "permission_denied" {
+					return rt.Fail(Text{EN: "watch stopped: this account no longer has the permission the command needs.", ZH: "watch 已停止：此账户已无权执行该命令。"})
+				}
 				if ctx.Err() != nil {
+					watchStopped(rt, ctx, limit)
 					return nil
 				}
 				if count != 0 && i == count-1 {
@@ -248,6 +338,7 @@ func init() {
 
 				select {
 				case <-ctx.Done():
+					watchStopped(rt, ctx, limit)
 					return nil
 				case <-time.After(interval):
 				}
@@ -323,5 +414,34 @@ func init() {
 			rt.Printf("%s\n", strings.Join(rt.Args(), " "))
 			return nil
 		},
+	})
+}
+
+// What `watch` runs for when --for is not given, and the longest it may be
+// told to.
+const (
+	defaultWatchFor = time.Hour
+	maxWatchFor     = 24 * time.Hour
+)
+
+// repeatsAWrite reports whether the command watch would repeat changes
+// anything, and the name it resolved to. Each run is checked on its own, and
+// the --yes that confirmed the first is not typed again, so the destructive
+// gate in runTokens would pass on every tick: a bonus grant would be made each
+// time.
+func (c *Console) repeatsAWrite(tokens []string) (string, bool) {
+	cmd, name, _, found := c.resolve(tokens)
+	return name, found && cmd.writes()
+}
+
+// watchStopped says why a watch ended, but only when it was the clock: a
+// cancelled connection has nobody left to tell.
+func watchStopped(rt *Runtime, ctx context.Context, limit time.Duration) {
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return
+	}
+	rt.Say(Text{
+		EN: fmt.Sprintf("\nwatch stopped after %s.\n", limit),
+		ZH: fmt.Sprintf("\nwatch 已运行 %s，到时间停止。\n", limit),
 	})
 }

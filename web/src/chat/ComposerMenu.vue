@@ -25,19 +25,23 @@ const emit = defineEmits<{
   (event: 'pick-files'): void;
 }>();
 
-// Usage is fetched when the menu opens rather than on a timer: it is only
-// ever read while the panel is on screen, and polling it would be a request
-// per user per interval for a number nobody is looking at.
+// Usage is fetched each time the menu opens rather than on a timer: it is
+// only ever read while the panel is on screen, and polling it would be a
+// request per user per interval for a number nobody is looking at. Opening
+// it again is the moment the figure is wanted, so a reading from page load
+// would be the stale one.
 const usage = ref<UsageSummary | null>(null);
-const loaded = ref(false);
+const loading = ref(false);
 
 function onToggle(wasOpen: boolean): void {
-  if (wasOpen || loaded.value) return;
-  loaded.value = true;
+  if (wasOpen) return;
+  loading.value = true;
   void fetchUsage()
     .then((summary) => { usage.value = summary; })
-    // Usage is a courtesy; a failure just leaves the row out.
-    .catch(() => { usage.value = null; });
+    // Usage is a courtesy. A failure keeps the last reading, if there is one,
+    // and the next open asks again.
+    .catch(() => {})
+    .finally(() => { loading.value = false; });
 }
 </script>
 
@@ -66,8 +70,8 @@ function onToggle(wasOpen: boolean): void {
 
       <!-- A build that reports no usage gets no frame at all: an empty one
            would be worse than showing nothing. -->
-      <div v-if="!loaded || usage" class="oa-menu-quota">
-        <span v-if="!loaded" class="oa-menu-quota-reset">{{ t('loading') }}</span>
+      <div v-if="loading || usage" class="oa-menu-quota">
+        <span v-if="!usage" class="oa-menu-quota-reset">{{ t('loading') }}</span>
         <span
           v-else-if="usage!.unlimited || !usage!.windows.some((entry) => entry.enforced)"
           class="oa-menu-quota-reset"

@@ -25,7 +25,6 @@ import {
   adminApi,
   type Feedback, type FeedbackStatus, type FeedbackSummary, type FeedbackThread,
 } from '@/admin/api';
-import { ApiError } from '@/api/client';
 import OaBadge from '@/components/OaBadge.vue';
 import OaConfirmButton from '@/components/OaConfirmButton.vue';
 import OaIconButton from '@/components/OaIconButton.vue';
@@ -39,19 +38,23 @@ import OaTextArea from '@/components/OaTextArea.vue';
 import type { Stat } from '@/components/stat';
 import type { PageState } from '@/components/table-types';
 import { t } from '@/composables/useI18n';
+import { useLatestRequest } from '@/composables/useLatestRequest';
 import { IconRefresh } from '@/icons';
+import { kindKey, priorityKey, priorityTone, statusKey, statusTone } from '@/lib/feedback';
 import { absoluteTime, relativeTime } from '@/lib/format';
+import { rememberedPageSize } from '@/lib/page-size';
 import { maskUser } from '@/admin/safeMode';
 import AdminFailure from './AdminFailure.vue';
 import { useAdminView } from './adminView';
+import { failureText } from './shared';
 
 const view = useAdminView();
-view.setTitle(t('navFeedback'), t('feedbackSubtitle'));
+view.setTitle(() => t('navFeedback'), () => t('feedbackSubtitle'));
 
 const rows = ref<Feedback[]>([]);
 const summary = ref<FeedbackSummary | null>(null);
 const total = ref(0);
-const pageSize = ref(20);
+const pageSize = ref(rememberedPageSize());
 const offset = ref(0);
 const loading = ref(true);
 const error = ref('');
@@ -67,18 +70,37 @@ const opened = ref<Feedback | null>(null);
 const thread = ref<FeedbackThread | null>(null);
 const answer = ref('');
 const busy = ref(false);
+// The thread's own load. It is kept apart from busy so that a reply or a
+// status change still in flight for another report cannot clear it, and so
+// that busy means only the four actions below.
+const threadLoading = ref(false);
 const panelError = ref('');
+/**
+ * A report that failed to open before any panel existed, which is what a bare
+ * id from a notification link does: the panel only draws once a thread has
+ * arrived, so its error has to be said on the page.
+ */
+const openError = ref('');
 
 /** Newest request wins, so a slow page cannot land on top of a fast one. */
-let ticket = 0;
+const pageRequest = useLatestRequest();
+/**
+ * The same rule for the panel. A thread can arrive after the operator has
+ * picked another report or closed the panel, and must not put the old one
+ * back on screen.
+ */
+const openTicket = useLatestRequest();
 
 // Typing is the one filter that changes on every keystroke, so it waits for
 // the typist to stop rather than asking the server about every letter. The
 // three selects below are a click each and go straight through.
+// The pause after the last keystroke before a search goes out. The users and
+// invites search boxes wait the same, so the three feel the same to type in.
+const SEARCH_WAIT_MS = 250;
 let searchTimer = 0;
 watch(search, () => {
   window.clearTimeout(searchTimer);
-  searchTimer = window.setTimeout(narrow, 250);
+  searchTimer = window.setTimeout(narrow, SEARCH_WAIT_MS);
 });
 onBeforeUnmount(() => window.clearTimeout(searchTimer));
 
@@ -97,7 +119,7 @@ const stats = computed<Stat[]>(() => {
   ];
 });
 
-function query(): string {
+function query(): URLSearchParams {
   const params = new URLSearchParams();
   if (kind.value) params.set('kind', kind.value);
   if (priority.value) params.set('priority', priority.value);
@@ -105,16 +127,23 @@ function query(): string {
   if (search.value.trim()) params.set('q', search.value.trim());
   params.set('limit', String(pageSize.value));
   params.set('offset', String(offset.value));
-  return `?${params.toString()}`;
+  return params;
 }
 
 async function load(): Promise<void> {
-  const mine = ++ticket;
+  const mine = pageRequest.begin();
   loading.value = true;
   listError.value = '';
   try {
     const data = await adminApi.feedback(query());
-    if (mine !== ticket) return;
+    if (!pageRequest.isCurrent(mine)) return;
+    // A page past the end, because the list shrank under it (a row deleted,
+    // a sliding window moving on), is asked again for its last page rather
+    // than left empty: with one page left the pager shows no way back.
+    if (data.total > 0 && offset.value >= data.total) {
+      offset.value = Math.floor((data.total - 1) / pageSize.value) * pageSize.value;
+      await load(); return;
+    }
     rows.value = data.feedback;
     total.value = data.total;
     summary.value = data.summary;
@@ -129,14 +158,14 @@ async function load(): Promise<void> {
       opened.value = data.feedback.find((row) => row.id === current.id) ?? current;
     }
   } catch (failure) {
-    if (mine !== ticket) return;
-    const message = failure instanceof ApiError ? failure.message : String(failure);
+    if (!pageRequest.isCurrent(mine)) return;
+    const message = failureText(failure);
     // The first load has nothing to keep on screen, so it is the whole page
     // that failed; a later one still has a list worth leaving up.
     if (!summary.value) error.value = message;
     else listError.value = message;
   } finally {
-    if (mine === ticket) loading.value = false;
+    if (pageRequest.isCurrent(mine)) loading.value = false;
   }
 }
 
@@ -167,22 +196,54 @@ function page(next: PageState): void {
  */
 async function open(target: Feedback | string): Promise<void> {
   const feedbackID = typeof target === 'string' ? target : target.id;
+  const mine = openTicket.begin();
+  // A bare id can arrive while another report's panel is still up. Its title
+  // and any error must not stay on screen under the new id, and clearing the
+  // panel is what sends a failure to the list's error line instead.
   if (typeof target !== 'string') opened.value = target;
+  else if (opened.value?.id !== feedbackID) opened.value = null;
   thread.value = null;
   answer.value = '';
   panelError.value = '';
-  busy.value = true;
+  openError.value = '';
+  threadLoading.value = true;
   try {
-    thread.value = await adminApi.feedbackThread(feedbackID);
-    opened.value = thread.value.feedback;
+    const fetched = await adminApi.feedbackThread(feedbackID);
+    // The server cleared the unread mark by serving the thread, so the row and
+    // the count follow it even when this response is no longer the one shown.
     const row = rows.value.find((candidate) => candidate.id === feedbackID);
-    if (row) row.operator_unread = false;
-    if (summary.value && summary.value.awaiting > 0) summary.value.awaiting -= 1;
+    if (row) {
+      // Only the first open of a waiting thread lowers the count; opening an
+      // answered one, or the same one twice, must not.
+      if (row.operator_unread && summary.value && summary.value.awaiting > 0) summary.value.awaiting -= 1;
+      row.operator_unread = false;
+    } else {
+      // A notification link can name a report that is not on this page, so the
+      // list cannot say whether it was waiting. The server's counts can.
+      void load();
+    }
+    if (!openTicket.isCurrent(mine)) return;
+    thread.value = fetched;
+    opened.value = fetched.feedback;
   } catch (failure) {
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    if (!openTicket.isCurrent(mine)) return;
+    const message = failureText(failure);
+    if (opened.value) panelError.value = message;
+    else openError.value = message;
   } finally {
-    busy.value = false;
+    if (openTicket.isCurrent(mine)) threadLoading.value = false;
   }
+}
+
+/**
+ * Closing also invalidates a thread still in flight, and clears the loading
+ * flag that the in-flight open would otherwise have cleared.
+ */
+function closeReport(): void {
+  openTicket.invalidate();
+  opened.value = null;
+  thread.value = null;
+  threadLoading.value = false;
 }
 
 // Reached from a notification link (/admin/feedback/<id>): AdminPage keeps
@@ -202,17 +263,23 @@ async function reply(): Promise<void> {
   const current = thread.value;
   const text = answer.value.trim();
   if (!current || !text || busy.value) return;
+  // The operator may open another report while this is in flight. The draft
+  // and any error belong to the report the reply was written on, so both are
+  // checked against it before they are touched.
+  const id = current.feedback.id;
   busy.value = true;
   panelError.value = '';
   try {
-    const record = await adminApi.replyToFeedback(current.feedback.id, text);
+    const record = await adminApi.replyToFeedback(id, text);
     current.replies.push(record);
-    answer.value = '';
+    if (thread.value?.feedback.id === id) answer.value = '';
     // The list carries the reply count and the badge that says who spoke
     // last, so it is worth the round trip.
     await load();
   } catch (failure) {
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    if (thread.value?.feedback.id === id) {
+      panelError.value = failureText(failure);
+    }
   } finally {
     busy.value = false;
   }
@@ -221,14 +288,17 @@ async function reply(): Promise<void> {
 async function removeReply(replyID: string): Promise<void> {
   const current = thread.value;
   if (!current || busy.value) return;
+  const id = current.feedback.id;
   busy.value = true;
   panelError.value = '';
   try {
-    await adminApi.deleteFeedbackReply(current.feedback.id, replyID);
+    await adminApi.deleteFeedbackReply(id, replyID);
     current.replies = current.replies.filter((turn) => turn.id !== replyID);
     await load();
   } catch (failure) {
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    if (thread.value?.feedback.id === id) {
+      panelError.value = failureText(failure);
+    }
   } finally {
     busy.value = false;
   }
@@ -237,13 +307,19 @@ async function removeReply(replyID: string): Promise<void> {
 async function setStatus(next: FeedbackStatus): Promise<void> {
   const record = opened.value;
   if (!record) return;
+  const id = record.id;
   busy.value = true;
   panelError.value = '';
   try {
-    opened.value = await adminApi.setFeedbackStatus(record.id, next);
+    const updated = await adminApi.setFeedbackStatus(id, next);
+    // The operator may have picked another report, or closed this one, while
+    // the request was in flight; the answer is for the record it was sent for.
+    if (opened.value?.id === id) opened.value = updated;
     await load();
   } catch (failure) {
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    if (opened.value?.id === id) {
+      panelError.value = failureText(failure);
+    }
   } finally {
     busy.value = false;
   }
@@ -252,45 +328,65 @@ async function setStatus(next: FeedbackStatus): Promise<void> {
 async function remove(): Promise<void> {
   const record = opened.value;
   if (!record) return;
+  const id = record.id;
   busy.value = true;
   panelError.value = '';
   try {
-    await adminApi.deleteFeedback(record.id);
-    opened.value = null;
-    thread.value = null;
+    await adminApi.deleteFeedback(id);
+    // Only the report that was deleted closes; one opened since then is still
+    // wanted, and its thread must not be dropped with it.
+    if (opened.value?.id === id) {
+      opened.value = null;
+      thread.value = null;
+    }
     await load();
   } catch (failure) {
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    if (opened.value?.id === id) {
+      panelError.value = failureText(failure);
+    }
   } finally {
     busy.value = false;
   }
 }
 
 function kindLabel(row: Feedback): string {
-  return t(row.kind === 'bug' ? 'feedbackKindBug' : 'feedbackKindIdea');
+  return t(kindKey(row.kind));
 }
 
 function priorityLabel(row: Feedback): string {
-  switch (row.priority) {
-    case 'high': return t('feedbackPriorityHigh');
-    case 'low': return t('feedbackPriorityLow');
-    default: return t('feedbackPriorityMedium');
-  }
-}
-
-/** High is the only priority worth colouring: the rest are the normal case. */
-function priorityTone(row: Feedback): 'muted' | 'warning' {
-  return row.priority === 'high' ? 'warning' : 'muted';
+  return t(priorityKey(row.priority));
 }
 
 function statusLabel(row: Feedback): string {
-  return t(row.status === 'resolved' ? 'feedbackStatusResolved' : 'feedbackStatusOpen');
+  return t(statusKey(row.status));
 }
+
+// The filters' choices, computed so a render does not hand each select a new
+// array, and so the labels follow a change of language.
+const statusChoices = computed(() => [
+  { value: '', label: t('feedbackAnyStatus') },
+  { value: 'open', label: t('feedbackStatusOpen') },
+  { value: 'resolved', label: t('feedbackStatusResolved') },
+]);
+const kindChoices = computed(() => [
+  { value: '', label: t('feedbackAnyKind') },
+  { value: 'bug', label: t('feedbackKindBug') },
+  { value: 'idea', label: t('feedbackKindIdea') },
+]);
+const priorityChoices = computed(() => [
+  { value: '', label: t('feedbackAnyPriority') },
+  { value: 'high', label: t('feedbackPriorityHigh') },
+  { value: 'medium', label: t('feedbackPriorityMedium') },
+  { value: 'low', label: t('feedbackPriorityLow') },
+]);
 
 /** The first line or so of the body, for the second line of a card. */
 function preview(body: string): string {
   const collapsed = body.replace(/\s+/g, ' ').trim();
-  return collapsed.length > 110 ? `${collapsed.slice(0, 110)}…` : collapsed;
+  // Cut by code point, as AdminAnnouncements does: a cut inside an emoji
+  // leaves a lone surrogate that renders as a replacement glyph.
+  const chars = Array.from(collapsed);
+  return chars.length > 110 ? `${chars.slice(0, 110).join('')}…` : collapsed;
 }
 
 function authorOf(row: Feedback): string {
@@ -318,34 +414,21 @@ onMounted(load);
           v-model="status"
           :label="t('colStatus')"
           :searchable="false"
-          :options="[
-            { value: '', label: t('feedbackAnyStatus') },
-            { value: 'open', label: t('feedbackStatusOpen') },
-            { value: 'resolved', label: t('feedbackStatusResolved') },
-          ]"
+          :options="statusChoices"
           @update:model-value="narrow"
         />
         <OaSelectField
           v-model="kind"
           :label="t('feedbackKind')"
           :searchable="false"
-          :options="[
-            { value: '', label: t('feedbackAnyKind') },
-            { value: 'bug', label: t('feedbackKindBug') },
-            { value: 'idea', label: t('feedbackKindIdea') },
-          ]"
+          :options="kindChoices"
           @update:model-value="narrow"
         />
         <OaSelectField
           v-model="priority"
           :label="t('feedbackPriority')"
           :searchable="false"
-          :options="[
-            { value: '', label: t('feedbackAnyPriority') },
-            { value: 'high', label: t('feedbackPriorityHigh') },
-            { value: 'medium', label: t('feedbackPriorityMedium') },
-            { value: 'low', label: t('feedbackPriorityLow') },
-          ]"
+          :options="priorityChoices"
           @update:model-value="narrow"
         />
         <OaSearchField v-model="search" :label="t('feedbackSearch')" />
@@ -353,6 +436,7 @@ onMounted(load);
     </div>
 
     <div id="feedbackList" class="oa-feedback-results">
+      <p v-if="openError" class="oa-table-empty" role="alert">{{ openError }}</p>
       <p v-if="loading" class="oa-table-empty">{{ t('loading') }}</p>
       <p v-else-if="listError" class="oa-table-empty">{{ listError }}</p>
       <p v-else-if="!rows.length" class="oa-table-empty">{{ t('feedbackEmpty') }}</p>
@@ -374,14 +458,14 @@ onMounted(load);
               <!-- The reader spoke last. The one thing on this screen an
                    operator is supposed to act on, so it is said in words. -->
               <OaBadge v-if="row.operator_unread" tone="danger">{{ t('feedbackAwaiting') }}</OaBadge>
-              <OaBadge :tone="row.status === 'resolved' ? 'muted' : 'default'">
+              <OaBadge :tone="statusTone(row.status)">
                 {{ statusLabel(row) }}
               </OaBadge>
             </span>
             <span class="oa-feedback-card-body">{{ preview(row.body) }}</span>
             <span class="oa-feedback-card-meta">
               <OaBadge tone="muted">{{ kindLabel(row) }}</OaBadge>
-              <OaBadge :tone="priorityTone(row)">{{ priorityLabel(row) }}</OaBadge>
+              <OaBadge :tone="priorityTone(row.priority)">{{ priorityLabel(row) }}</OaBadge>
               <span>{{ t('feedbackFrom', { name: authorOf(row) }) }}</span>
               <span v-if="row.replies">{{ t('feedbackReplyCount', { count: row.replies }) }}</span>
               <span>{{ relativeTime(row.created_at) }}</span>
@@ -408,16 +492,16 @@ onMounted(load);
     :destructive-label="t('deleteLabel')"
     :destructive-confirm="t('feedbackDeleteConfirm')"
     :width="520"
-    :busy="busy"
+    :busy="busy || threadLoading"
     :error="panelError"
-    @close="opened = null; thread = null"
+    @close="closeReport"
     @confirm="setStatus(opened.status === 'resolved' ? 'open' : 'resolved')"
     @destructive="remove"
   >
     <div class="oa-feedback-detail-badges">
       <OaBadge tone="muted">{{ kindLabel(opened) }}</OaBadge>
-      <OaBadge :tone="priorityTone(opened)">{{ priorityLabel(opened) }}</OaBadge>
-      <OaBadge :tone="opened.status === 'resolved' ? 'muted' : 'default'">{{ statusLabel(opened) }}</OaBadge>
+      <OaBadge :tone="priorityTone(opened.priority)">{{ priorityLabel(opened) }}</OaBadge>
+      <OaBadge :tone="statusTone(opened.status)">{{ statusLabel(opened) }}</OaBadge>
     </div>
 
     <dl class="oa-log-facts">
@@ -429,9 +513,11 @@ onMounted(load);
       <dd>{{ relativeTime(opened.updated_at) }}</dd>
     </dl>
 
-    <p v-if="!thread" class="oa-menu-empty">{{ t('loading') }}</p>
+    <!-- The spinner follows the load itself: a failed fetch clears it and the
+         error the panel already draws is what is left to show. -->
+    <p v-if="threadLoading" class="oa-menu-empty">{{ t('loading') }}</p>
 
-    <template v-else>
+    <template v-else-if="thread">
       <div class="oa-thread">
         <!-- The report is the first thing that was said, so it is the first
              turn rather than a header above the conversation. -->

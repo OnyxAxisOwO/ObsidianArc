@@ -98,6 +98,26 @@ func (s *Service) replaceVerification(ctx context.Context, q database.Queryer, u
 	return s.insertVerification(ctx, q, userID, email, token, issuedAt)
 }
 
+// SettleAddressChange writes what a change of address means for the account's
+// confirmation, and drops every link issued for the address being left. Written
+// through the caller's queryer so it commits with the address itself.
+//
+// The owner's profile form, when the new address needs no proof, and an
+// administrator's edit settle a move this way. The links live in a table this
+// package owns, and the administrator's copy of the pair used to be written
+// from outside it.
+func (s *Service) SettleAddressChange(ctx context.Context, q database.Queryer, userID string, confirmed bool) error {
+	if _, err := q.Exec(ctx,
+		`UPDATE users SET email_verified = ?, updated_at = ? WHERE id = ?`,
+		confirmed, time.Now().UnixMilli(), userID); err != nil {
+		return fmt.Errorf("auth: settle confirmation: %w", err)
+	}
+	if _, err := q.Exec(ctx, `DELETE FROM email_verifications WHERE user_id = ?`, userID); err != nil {
+		return fmt.Errorf("auth: clear verifications: %w", err)
+	}
+	return nil
+}
+
 func (s *Service) insertVerification(ctx context.Context, q database.Queryer, userID, email, token string, issuedAt time.Time) error {
 	_, err := q.Exec(ctx,
 		`INSERT INTO email_verifications (id, user_id, email, expires_at, created_at, code_digest, code_expires_at, code_attempts)
@@ -202,10 +222,13 @@ func (s *Service) Verify(ctx context.Context, token string) (string, error) {
 		// uniqueness index work in, so it is the account's identity, and the
 		// display spelling is the owner's to change without unconfirming
 		// themselves.
+		// email_proven_at as well: following a link mailed to the address
+		// is the proof an OAuth sign-in may later link on.
+		now := time.Now().UnixMilli()
 		marked, err := tx.Exec(ctx,
-			`UPDATE users SET email_verified = ?, updated_at = ?
+			`UPDATE users SET email_verified = ?, email_proven_at = ?, updated_at = ?
 			 WHERE id = ? AND email_lower = ?`,
-			true, time.Now().UnixMilli(), userID, strings.ToLower(email))
+			true, now, now, userID, strings.ToLower(email))
 		if err != nil {
 			return fmt.Errorf("auth: mark verified: %w", err)
 		}
@@ -250,8 +273,13 @@ func (s *Service) Verify(ctx context.Context, token string) (string, error) {
 	// registered unverified through a personal code qualified for nothing
 	// at Register's own call, and this is the only other event this package
 	// tells that package about it again.
-	if s.RewardInvite != nil {
-		s.RewardInvite(ctx, userID, s.VerificationRequired())
+	// The verification has committed, so a browser that disconnects now must
+	// not cancel the reward. The bound keeps a stuck database from holding the
+	// response; a reward that still fails is picked up by RewardPending.
+	if s.Hooks.RewardInvite != nil {
+		rewardCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		s.Hooks.RewardInvite(rewardCtx, userID, s.VerificationRequired())
+		cancel()
 	}
 	return userID, nil
 }
@@ -331,7 +359,8 @@ func (s *Service) VerifyCode(ctx context.Context, userID, code string) error {
 			matched = hmac.Equal(provided, expected) || matched
 		}
 		if matched {
-			marked, err := tx.Exec(ctx, `UPDATE users SET email_verified = ?, updated_at = ? WHERE id = ? AND email_lower = ?`, true, time.Now().UnixMilli(), userID, strings.ToLower(account.Email))
+			now := time.Now().UnixMilli()
+			marked, err := tx.Exec(ctx, `UPDATE users SET email_verified = ?, email_proven_at = ?, updated_at = ? WHERE id = ? AND email_lower = ?`, true, now, now, userID, strings.ToLower(account.Email))
 			if err != nil {
 				return fmt.Errorf("auth: mark verified by code: %w", err)
 			}
@@ -390,8 +419,13 @@ func (s *Service) VerifyCode(ctx context.Context, userID, code string) error {
 	if outcome != nil {
 		return outcome
 	}
-	if s.RewardInvite != nil {
-		s.RewardInvite(ctx, userID, s.VerificationRequired())
+	// The verification has committed, so a browser that disconnects now must
+	// not cancel the reward. The bound keeps a stuck database from holding the
+	// response; a reward that still fails is picked up by RewardPending.
+	if s.Hooks.RewardInvite != nil {
+		rewardCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		s.Hooks.RewardInvite(rewardCtx, userID, s.VerificationRequired())
+		cancel()
 	}
 	return nil
 }

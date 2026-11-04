@@ -45,7 +45,8 @@ func (in *instance) enrol(as *session) (string, int64) {
 	}
 	step := totp.Step(time.Now())
 	code, _ := totp.Code(secret.Secret, step)
-	enable := in.do(http.MethodPost, "/api/profile/two-factor/enable", map[string]string{"code": code}, as)
+	enable := in.do(http.MethodPost, "/api/profile/two-factor/enable",
+		map[string]string{"code": code, "current_password": as.password}, as)
 	if enable.Code != http.StatusOK {
 		in.t.Fatalf("enable: %d %s", enable.Code, enable.Body.String())
 	}

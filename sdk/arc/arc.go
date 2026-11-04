@@ -29,6 +29,7 @@ package arc
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"runtime/debug"
@@ -60,7 +61,8 @@ type Ctx struct {
 
 // GuardRequest is what a guard judges.
 type GuardRequest struct {
-	// "register" or "login".
+	// "register", "login" or "images". Images is the generation lab, where
+	// Restrict means nothing, as at sign-in.
 	Action string `json:"action"`
 	// What the browser sent under this guard's name; empty when it sent none.
 	Token string `json:"token"`
@@ -110,6 +112,7 @@ var (
 	commands = map[string]func(*Ctx, *Console) error{}
 	describe func(*Ctx) (Description, error)
 	decorate func(*Ctx, string, []Invitee) ([]Invitee, error)
+	sweep    func(*Ctx) error
 )
 
 // Guard registers the handler for a guard the manifest lists, by its name.
@@ -127,6 +130,16 @@ func Command(name string, h func(*Ctx, *Console) error) { commands[name] = h }
 // and whenever one of its settings changes, not per request: compute from
 // settings, not from anything that moves.
 func OnDescribe(h func(*Ctx) (Description, error)) { describe = h }
+
+// OnSweep registers work done now and then with nobody waiting on it. The
+// manifest lists the "sweep" hook, and the server calls it from its own
+// periodic cleanup — every ten minutes, and once when it starts — while the
+// plugin is switched on. The call says only "now is a time you may do
+// something": a plugin that wants a day between runs keeps the day itself, in
+// its own table. A call has the usual deadline, so a long job does a batch
+// and leaves the rest for the next one. Every instance against one database
+// sweeps, so whatever a sweep takes on, it claims under a row lock first.
+func OnSweep(h func(*Ctx) error) { sweep = h }
 
 // Invitee is one row of an inviter's own invitee list. UserID is the join
 // key and never reaches the browser; Entry is the row as it will be sent.
@@ -180,6 +193,11 @@ func Serve(in []byte) (out []byte) {
 		result any
 		err    error
 	)
+	// A kind with no handler answers by what that kind can safely say without
+	// one. A description and a sweep have such an answer (nothing to say, nothing
+	// to do), so they succeed. A guard or an invitee decorator has none: a
+	// guard that answered success would let the sign-up through, so the missing
+	// handler is an error, which refuses it.
 	switch env.Kind {
 	case "guard":
 		result, err = serveGuard(c, env.Arg)
@@ -189,6 +207,10 @@ func Serve(in []byte) (out []byte) {
 		result, err = serveDescribe(c)
 	case "decorate_invitees":
 		result, err = serveDecorate(c, env.Arg)
+	case "sweep":
+		if sweep != nil {
+			err = sweep(c)
+		}
 	case "console":
 		result, err = serveConsole(c, env.Arg)
 	default:
@@ -210,8 +232,10 @@ func Serve(in []byte) (out []byte) {
 // fail is the error envelope. An *Error keeps its status, code and details;
 // anything else is a 500 the host logs and hides.
 func fail(err error) []byte {
-	e, ok := err.(*Error)
-	if !ok {
+	// errors.As, as serveGuard and IsDenied use: a handler that wraps an *Error
+	// with %w still answers with that error's status, not a hidden 500.
+	var e *Error
+	if !errors.As(err, &e) {
 		e = &Error{Status: 500, Code: "internal", Message: err.Error(), Internal: true}
 	}
 	body, _ := json.Marshal(struct {
@@ -234,7 +258,10 @@ func serveGuard(c *Ctx, raw json.RawMessage) (any, error) {
 		return nil, &Error{Status: 500, Code: "no_handler", Message: "no guard registered as " + req.Name, Internal: true}
 	}
 	res, err := h(c, req.GuardRequest)
-	if r, refused := err.(*Refusal); refused {
+	// errors.As, not a type assertion: a refusal the guard wrapped with %w is
+	// still the refusal it wrapped, and must not reach the client as a 500.
+	var r *Refusal
+	if errors.As(err, &r) {
 		return map[string]any{
 			"verdict": "refuse", "status": r.Status, "code": r.Code, "message": r.Message, "reason": r.Reason,
 		}, nil
@@ -294,8 +321,9 @@ func (e *HostError) Error() string {
 	return e.Code + ": " + e.Message
 }
 
-// IsDenied reports whether err is the server refusing for want of a permission.
+// IsDenied reports whether err is the server refusing for want of a permission,
+// wrapped or not.
 func IsDenied(err error) bool {
-	he, ok := err.(*HostError)
-	return ok && he.Code == "permission_denied"
+	var he *HostError
+	return errors.As(err, &he) && he.Code == "permission_denied"
 }

@@ -55,7 +55,7 @@ export interface FeedbackThread {
   replies: FeedbackReply[];
 }
 
-export interface FeedbackList {
+interface FeedbackList {
   feedback: Feedback[];
   /** How many more this account may send today. */
   remaining: number;

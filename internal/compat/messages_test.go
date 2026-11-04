@@ -5,6 +5,10 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/chat"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
 )
 
 // The Anthropic surface. Its own protocol end to end: blocks in, blocks out,
@@ -346,6 +350,43 @@ func TestMessagesRefusesAnUnknownContentBlock(t *testing.T) {
 	}
 }
 
+// A caller's thinking budget cannot lift the answer past the operator's
+// ceiling. The upstream raises max_tokens to fit the budget, so the budget
+// is clamped here, where the ceiling is known.
+func TestThinkingBudgetCannotOutrunTheOperatorCeiling(t *testing.T) {
+	f := newFixture(t)
+	build := func(ceiling int) adapter.ChatRequest {
+		t.Helper()
+		resolved := model.Resolved{
+			Model: model.Model{Capabilities: model.Capabilities{SupportsReasoning: true, MaxOutputTokens: ceiling}},
+			Upstream: model.Model{Capabilities: model.Capabilities{
+				SupportsReasoning: true, MaxOutputTokens: ceiling,
+			}},
+		}
+		var body messagesRequest
+		raw := `{"model":"x","max_tokens":1024,"thinking":{"type":"enabled","budget_tokens":200000},` +
+			`"messages":[{"role":"user","content":"hi"}]}`
+		if err := json.Unmarshal([]byte(raw), &body); err != nil {
+			t.Fatal(err)
+		}
+		req, err := f.handlers.buildMessagesRequest(body, resolved)
+		if err != nil {
+			t.Fatalf("build: %v", err)
+		}
+		return req
+	}
+
+	req := build(8192)
+	if !req.Reasoning.Enabled || req.Reasoning.Budget > 8192-1024 {
+		t.Errorf("reasoning = %+v, want a budget of at most %d under an 8192 ceiling", req.Reasoning, 8192-1024)
+	}
+
+	req = build(2000)
+	if req.Reasoning.Enabled {
+		t.Errorf("reasoning = %+v, want it off when the ceiling leaves no room for a budget", req.Reasoning)
+	}
+}
+
 // Replayed reasoning is dropped rather than forwarded: it arrives with a
 // signature this instance cannot have produced, and one that does not check
 // out fails the whole turn upstream.
@@ -411,5 +452,36 @@ func TestCountTokensDoesNotCallTheProvider(t *testing.T) {
 	}
 	if turns := f.turns(); len(turns) != 0 {
 		t.Errorf("counting recorded %d turns against the allowance", len(turns))
+	}
+}
+
+// A turn stopped at max_tokens can leave a call's arguments half-written. That
+// call is not delivered: its tool would run on arguments the model never
+// finished. The turn fails as a provider error, which the ledger records as
+// one. Before the arguments were checked, the 200 was committed before the
+// encode failed, and the turn was billed as delivered.
+func TestMessagesRefusesATruncatedToolCall(t *testing.T) {
+	f := newFixture(t)
+	f.upstream.reply(`{"choices":[{"message":{"content":null,"tool_calls":[` +
+		`{"id":"call_cut","type":"function",` +
+		`"function":{"name":"read_file","arguments":"{\"path\":\"ma"}}]},` +
+		`"finish_reason":"length"}],"usage":{"prompt_tokens":40,"completion_tokens":9}}`)
+
+	w := f.do(t, http.MethodPost, "/v1/messages", f.token, messagesBody(f.model.ID))
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502: %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), `"tool_use"`) {
+		t.Errorf("the cut-off call was delivered: %s", w.Body.String())
+	}
+	turns := f.turns()
+	if len(turns) == 0 || turns[len(turns)-1].Status == chat.StatusOK {
+		t.Errorf("a turn that delivered no answer was recorded as ok: %+v", turns)
+		return
+	}
+	// The provider billed the cut-off reply, so the ledger keeps its tokens even
+	// though nothing was delivered.
+	if usage := turns[len(turns)-1].Usage; usage.InputTokens != 40 || usage.OutputTokens != 9 {
+		t.Errorf("the billed tokens of a refused turn were not recorded: %+v", usage)
 	}
 }

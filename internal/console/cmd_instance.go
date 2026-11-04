@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -73,12 +72,11 @@ func init() {
 			settings := asMap(asMap(data)["settings"])
 			v, ok := settings[key]
 			if !ok {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("没有这个键，或你无权读取它。")
-				}
-				return rt.Errorf("no such key, or you do not have permission to read it.")
+				return rt.Fail(Text{EN: "no such key, or you do not have permission to read it.", ZH: "没有这个键，或你无权读取它。"})
 			}
-			return rt.Fields([][2]string{{key, asStr(v)}})
+			// The settings envelope is the last Call's body; under --json the
+			// picked key is the answer, not the whole map.
+			return rt.FieldsOf(map[string]any{key: v}, [][2]string{{key, asStr(v)}})
 		},
 	})
 
@@ -100,18 +98,27 @@ func init() {
 		},
 		Args: []Arg{
 			{Name: "key", Hint: Text{EN: "the setting key", ZH: "设置键"}, Required: true},
-			{Name: "value", Hint: Text{EN: "the new value, as a string", ZH: "新值，以字符串形式给出"}, Required: true},
+			{Name: "value", Hint: Text{EN: "the new value, as a string", ZH: "新值，以字符串形式给出"}, Required: true, Rest: true},
 		},
 		Examples:   []string{"setting set site.name 'Obsidian Arc'", "setting set attachments.max_mb 12"},
 		SeeAlso:    []string{"setting list", "setting import"},
 		Permission: "settings,security,availability,invites,leaderboard",
 		Endpoints:  []string{"PUT /api/admin/settings"},
+		// The value is masked only for a credential's key: for every other
+		// setting the audit trail is worth more with what it was changed to.
+		SecretArgs: func(c *Console, args []string) map[int]bool {
+			if len(args) < 2 || !c.secretSetting(args[0]) {
+				return nil
+			}
+			masked := map[int]bool{}
+			for i := 1; i < len(args); i++ {
+				masked[i] = true
+			}
+			return masked
+		},
 		Run: func(_ context.Context, rt *Runtime) error {
 			if rt.NArg() < 2 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("需要键和值")
-				}
-				return rt.Errorf("a key and a value are required")
+				return rt.Fail(Text{EN: "a key and a value are required", ZH: "需要键和值"})
 			}
 			key := rt.Arg(0)
 			value := strings.Join(rt.Args()[1:], " ")
@@ -140,17 +147,16 @@ func init() {
 				"列出，不会导致整个导入失败。与 setting set 不同，若文档中 turnstile.secret_key 的值恰好是" +
 				"打码占位符 '••••••••'，这里不会阻止它被原样写入覆盖已保存的密钥。",
 		},
-		Args:        []Arg{{Name: "json", Hint: Text{EN: "the import document", ZH: "导入文档"}, Required: true}},
+		// The whole document is masked: it is a settings export, and one
+		// that was pasted back carries the credentials in it.
+		Args:        []Arg{{Name: "json", Hint: Text{EN: "the import document", ZH: "导入文档"}, Required: true, Sensitive: true, Rest: true}},
 		Examples:    []string{`setting import '{"site.name":"Obsidian Arc"}' --yes`, "setting import '{...}' -y"},
 		Permission:  "settings",
 		Destructive: true,
 		Endpoints:   []string{"POST /api/admin/settings/import"},
 		Run: func(_ context.Context, rt *Runtime) error {
 			if rt.NArg() == 0 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("需要一份 JSON 文档")
-				}
-				return rt.Errorf("a JSON document is required")
+				return rt.Fail(Text{EN: "a JSON document is required", ZH: "需要一份 JSON 文档"})
 			}
 			body, err := parseJSONBody(rt, strings.Join(rt.Args(), " "))
 			if err != nil {
@@ -165,7 +171,7 @@ func init() {
 			for _, s := range asSlice(m["skipped"]) {
 				skipped = append(skipped, asStr(s))
 			}
-			return rt.Fields([][2]string{{"applied", fmt.Sprint(asNum(m["applied"]))}, {"skipped", strings.Join(skipped, "; ")}})
+			return rt.Fields([][2]string{{"applied", formatNumber(asNum(m["applied"]))}, {"skipped", strings.Join(skipped, "; ")}})
 		},
 	})
 
@@ -193,7 +199,7 @@ func init() {
 			m := asMap(data)
 			att := asMap(m["attachments"])
 			return rt.Fields([][2]string{
-				{"purged", fmt.Sprint(asNum(m["purged"]))}, {"held", fmt.Sprint(asNum(att["held"]))}, {"bytes", fmt.Sprint(asNum(att["bytes"]))},
+				{"purged", formatNumber(asNum(m["purged"]))}, {"held", formatNumber(asNum(att["held"]))}, {"bytes", formatNumber(asNum(att["bytes"]))},
 			})
 		},
 	})
@@ -243,10 +249,7 @@ func init() {
 		Endpoints:  []string{"POST /api/admin/announcements"},
 		Run: func(_ context.Context, rt *Runtime) error {
 			if !rt.Present("title") || rt.String("title") == "" {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("需要 --title")
-				}
-				return rt.Errorf("--title is required")
+				return rt.Fail(Text{EN: "--title is required", ZH: "需要 --title"})
 			}
 			body := bodyBuilder{"title": rt.String("title")}
 			body.str(rt, "body", "body")
@@ -305,10 +308,7 @@ func init() {
 				}
 			}
 			if cur == nil {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("没有这个公告。")
-				}
-				return rt.Errorf("no such announcement.")
+				return rt.Fail(Text{EN: "no such announcement.", ZH: "没有这个公告。"})
 			}
 			body := map[string]any{
 				"title": asStr(cur["title"]), "body": asStr(cur["body"]), "display_mode": asStr(cur["display_mode"]),
@@ -361,12 +361,10 @@ func init() {
 			if _, _, err := rt.Call(http.MethodDelete, "/api/admin/announcements/"+url.PathEscape(ref), nil); err != nil {
 				return err
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已删除。\n")
-			} else {
-				rt.Printf("deleted.\n")
+			if rt.effectiveJSON() {
+				return rt.Fields(nil)
 			}
-			return nil
+			return rt.confirm(Text{EN: "deleted.", ZH: "已删除。"})
 		},
 	})
 
@@ -449,10 +447,7 @@ func init() {
 		Endpoints:  []string{"POST /api/admin/security/review"},
 		Run: func(_ context.Context, rt *Runtime) error {
 			if !rt.Present("username") || rt.String("username") == "" {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("需要 --username")
-				}
-				return rt.Errorf("--username is required")
+				return rt.Fail(Text{EN: "--username is required", ZH: "需要 --username"})
 			}
 			body := bodyBuilder{"username": rt.String("username")}
 			body.str(rt, "email", "email")
@@ -602,50 +597,43 @@ func init() {
 		Name:    "login-bg set",
 		Group:   "instance",
 		Summary: Text{EN: "Set a login background image", ZH: "设置登录背景图"},
-		Usage:   "login-bg set <variant> <file-or-base64>",
+		Usage:   "login-bg set <variant> <base64-or-data-url>",
 		Help: Text{
-			EN: "Upload or set a login background image for landscape_light, landscape_dark, portrait_light, or portrait_dark.",
-			ZH: "为 landscape_light、landscape_dark、portrait_light 或 portrait_dark 设置或上传登录背景图。",
+			EN: "Set a background image for landscape_light, landscape_dark, portrait_light, portrait_dark, tablet_light, or tablet_dark. Prefix the variant with app_ for the signed-in background. The image is given as base64 or a data: URL; the server never reads a file named on the command line.",
+			ZH: "为 landscape_light、landscape_dark、portrait_light、portrait_dark、tablet_light 或 tablet_dark 设置背景图。变种前加 app_ 则是登录后的背景。图片以 base64 或 data: URL 给出；服务器不会读取命令行里指定的文件。",
 		},
+		// The image is masked in the audit line. Not because it is secret:
+		// megabytes of base64 do not belong in a table of decisions that
+		// people read.
 		Args: []Arg{
 			{Name: "variant", Hint: Text{EN: "landscape_light, landscape_dark, portrait_light, or portrait_dark", ZH: "landscape_light、landscape_dark、portrait_light 或 portrait_dark"}, Required: true},
-			{Name: "image", Hint: Text{EN: "image file path or base64 data", ZH: "图片文件路径或 base64 数据"}, Required: true},
+			{Name: "image", Hint: Text{EN: "base64 image data or a data: URL", ZH: "base64 图片数据或 data: URL"}, Required: true, Sensitive: true},
 		},
-		Examples:   []string{"login-bg set landscape_light /path/to/image.png", "login-bg set portrait_dark /path/to/image.jpg"},
+		Examples:   []string{"login-bg set landscape_light data:image/png;base64,iVBORw0KGgo…", "login-bg set portrait_dark /9j/4AAQSkZJRg…"},
 		Permission: "settings",
 		Endpoints:  []string{"PUT /api/admin/login-background/{variant}"},
 		Run: func(_ context.Context, rt *Runtime) error {
 			if rt.NArg() < 2 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("需要变种名称和图片路径或数据")
-				}
-				return rt.Errorf("variant and image are required")
+				return rt.Fail(Text{EN: "variant and image are required", ZH: "需要变种名称和图片路径或数据"})
 			}
 			variant := rt.Arg(0)
-			rawImage := rt.Arg(1)
-
-			var mime, data string
-			if fileBytes, err := os.ReadFile(rawImage); err == nil {
-				mime = http.DetectContentType(fileBytes)
-				data = base64.StdEncoding.EncodeToString(fileBytes)
-			} else {
-				mime = "image/jpeg"
-				data = rawImage
+			mime, data, err := imageArg(rt, rt.Arg(1))
+			if err != nil {
+				return err
 			}
 
-			respData, _, err := rt.Call(http.MethodPut, "/api/admin/login-background/"+variant, map[string]string{
+			respData, _, err := rt.Call(http.MethodPut, "/api/admin/login-background/"+url.PathEscape(variant), map[string]string{
 				"mime": mime,
 				"data": data,
 			})
 			if err != nil {
 				return err
 			}
-			urlStr := asStr(asMap(respData)["url"])
-			if rt.Session.Lang == "zh" {
-				rt.Printf("登录背景图已更新：%s\n", urlStr)
-			} else {
-				rt.Printf("Login background updated: %s\n", urlStr)
+			if rt.effectiveJSON() {
+				return rt.Fields(nil)
 			}
+			urlStr := asStr(asMap(respData)["url"])
+			rt.Say(Text{EN: fmt.Sprintf("Login background updated: %s\n", urlStr), ZH: fmt.Sprintf("登录背景图已更新：%s\n", urlStr)})
 			return nil
 		},
 	})
@@ -671,15 +659,14 @@ func init() {
 			if err != nil {
 				return err
 			}
-			_, _, err = rt.Call(http.MethodDelete, "/api/admin/login-background/"+variant, nil)
+			_, _, err = rt.Call(http.MethodDelete, "/api/admin/login-background/"+url.PathEscape(variant), nil)
 			if err != nil {
 				return err
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已清除变种 %s 的登录背景图。\n", variant)
-			} else {
-				rt.Printf("Cleared login background for %s.\n", variant)
+			if rt.effectiveJSON() {
+				return rt.Fields(nil)
 			}
+			rt.Say(Text{EN: fmt.Sprintf("Cleared login background for %s.\n", variant), ZH: fmt.Sprintf("已清除变种 %s 的登录背景图。\n", variant)})
 			return nil
 		},
 	})
@@ -688,33 +675,24 @@ func init() {
 		Name:    "logo set",
 		Group:   "instance",
 		Summary: Text{EN: "Set the site logo", ZH: "设置站点 Logo"},
-		Usage:   "logo set <file-or-base64>",
+		Usage:   "logo set <base64-or-data-url>",
 		Help: Text{
-			EN: "Upload or set a custom site logo (used for header brand, browser favicon, and PWA icon).",
-			ZH: "设置或上传自定义站点 Logo（用作顶部导航栏图标、浏览器 Favicon 及 PWA 应用图标）。",
+			EN: "Set a custom site logo (used for header brand, browser favicon, and PWA icon). The image is given as base64 or a data: URL; the server never reads a file named on the command line.",
+			ZH: "设置自定义站点 Logo（用作顶部导航栏图标、浏览器 Favicon 及 PWA 应用图标）。图片以 base64 或 data: URL 给出；服务器不会读取命令行里指定的文件。",
 		},
 		Args: []Arg{
-			{Name: "image", Hint: Text{EN: "image file path or base64 data", ZH: "图片文件路径或 base64 数据"}, Required: true},
+			{Name: "image", Hint: Text{EN: "base64 image data or a data: URL", ZH: "base64 图片数据或 data: URL"}, Required: true, Sensitive: true},
 		},
-		Examples:   []string{"logo set /path/to/logo.png", "logo set /path/to/logo.svg"},
+		Examples:   []string{"logo set data:image/png;base64,iVBORw0KGgo…", "logo set iVBORw0KGgo…"},
 		Permission: "settings",
 		Endpoints:  []string{"PUT /api/admin/logo"},
 		Run: func(_ context.Context, rt *Runtime) error {
 			if rt.NArg() < 1 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("需要图片路径或数据")
-				}
-				return rt.Errorf("image is required")
+				return rt.Fail(Text{EN: "image is required", ZH: "需要图片路径或数据"})
 			}
-			rawImage := rt.Arg(0)
-
-			var mime, data string
-			if fileBytes, err := os.ReadFile(rawImage); err == nil {
-				mime = http.DetectContentType(fileBytes)
-				data = base64.StdEncoding.EncodeToString(fileBytes)
-			} else {
-				mime = "image/png"
-				data = rawImage
+			mime, data, err := imageArg(rt, rt.Arg(0))
+			if err != nil {
+				return err
 			}
 
 			respData, _, err := rt.Call(http.MethodPut, "/api/admin/logo", map[string]string{
@@ -724,12 +702,11 @@ func init() {
 			if err != nil {
 				return err
 			}
-			urlStr := asStr(asMap(respData)["url"])
-			if rt.Session.Lang == "zh" {
-				rt.Printf("站点 Logo 已更新：%s\n", urlStr)
-			} else {
-				rt.Printf("Site logo updated: %s\n", urlStr)
+			if rt.effectiveJSON() {
+				return rt.Fields(nil)
 			}
+			urlStr := asStr(asMap(respData)["url"])
+			rt.Say(Text{EN: fmt.Sprintf("Site logo updated: %s\n", urlStr), ZH: fmt.Sprintf("站点 Logo 已更新：%s\n", urlStr)})
 			return nil
 		},
 	})
@@ -752,12 +729,39 @@ func init() {
 			if err != nil {
 				return err
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已清除站点 Logo，恢复为默认图标。\n")
-			} else {
-				rt.Printf("Cleared site logo, restored default icon.\n")
+			if rt.effectiveJSON() {
+				return rt.Fields(nil)
 			}
-			return nil
+			return rt.confirm(Text{EN: "Cleared site logo, restored default icon.", ZH: "已清除站点 Logo，恢复为默认图标。"})
 		},
 	})
+}
+
+// imageArg turns a command-line image into the mime and base64 the admin
+// endpoints take. It accepts base64 or a data: URL and nothing else, and in
+// particular it never opens a path: the process is the server's, so a path
+// given here would be read with the server's rights (on Windows a UNC path
+// even makes the host authenticate to wherever it points) and the file would
+// be the server's, not the administrator's.
+func imageArg(rt *Runtime, raw string) (mime, data string, err error) {
+	data = strings.TrimSpace(raw)
+	if rest, ok := strings.CutPrefix(data, "data:"); ok {
+		header, payload, found := strings.Cut(rest, ",")
+		if !found || !strings.HasSuffix(header, ";base64") {
+			return "", "", imageArgError(rt)
+		}
+		mime, data = strings.TrimSuffix(header, ";base64"), payload
+	}
+	decoded, decodeErr := base64.StdEncoding.DecodeString(strings.Join(strings.Fields(data), ""))
+	if decodeErr != nil || len(decoded) == 0 {
+		return "", "", imageArgError(rt)
+	}
+	if mime == "" {
+		mime = http.DetectContentType(decoded)
+	}
+	return mime, data, nil
+}
+
+func imageArgError(rt *Runtime) error {
+	return rt.Fail(Text{EN: "the image must be base64 or a data: URL; the server does not read file paths", ZH: "图片需要以 base64 或 data: URL 给出；服务器不会读取文件路径。"})
 }

@@ -5,13 +5,13 @@
 // names the accounts that redeemed it; the account panel answers the inverse
 // question, which cards one person still holds.
 
-import { computed, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { adminApi, type CodeRedemption, type RedemptionCode } from '@/admin/api';
-import { ApiError } from '@/api/client';
 import { saveAsFile } from '@/api/backup';
 import { copyToClipboard } from '@/chat/markdown';
 import OaBadge from '@/components/OaBadge.vue';
 import OaBadgeRow from '@/components/OaBadgeRow.vue';
+import OaBulkBar from '@/components/OaBulkBar.vue';
 import OaCellStack from '@/components/OaCellStack.vue';
 import OaCheckList from '@/components/OaCheckList.vue';
 import OaFormSection from '@/components/OaFormSection.vue';
@@ -22,13 +22,20 @@ import OaTable from '@/components/OaTable.vue';
 import OaTextField from '@/components/OaTextField.vue';
 import type { Column } from '@/components/table-types';
 import { t } from '@/composables/useI18n';
+import { formatCardScope, windowChoices } from '@/lib/card-scope';
+import { scopePresetChoices } from '@/admin/quota';
+import { useBulk } from '@/composables/useBulk';
+import { usePanelSlot } from '@/composables/usePanelSlot';
 import { relativeTime } from '@/lib/format';
+import { expiresAtFromDays } from '@/lib/time';
 import { maskCredential, maskUser } from '@/admin/safeMode';
 import AdminFailure from './AdminFailure.vue';
 import { useAdminView } from './adminView';
+import { failureText, runLoad, runRemove } from './shared';
+import { flashCopy } from '@/lib/flash';
 
 const view = useAdminView();
-view.setTitle(t('codesTitle'), t('codesSubtitle'));
+view.setTitle(() => t('codesTitle'), () => t('codesSubtitle'));
 
 const codes = ref<RedemptionCode[]>([]);
 const error = ref('');
@@ -64,7 +71,7 @@ function openExport(): void {
   exporting.value = true;
 }
 
-const panelOpen = ref(false);
+const { open: panelOpen, panel, key: panelKey, show: showPanel, hide: hidePanel, closed: panelClosed } = usePanelSlot();
 // An existing code is shown rather than edited. Changing how many cards a code
 // carries after people have redeemed it is a decision with no honest answer —
 // the ones already handed out do not come back — so the only action offered is
@@ -89,25 +96,9 @@ const form = ref({
   expiresDays: null as number | null,
 });
 
+// A code grants the same windows a card does, so it is worded the same way.
 function formatCodeScope(windows?: string[]): string {
-  const wins = windows ?? [];
-  if (wins.length === 0 || wins.includes('full')) {
-    return t('cardFullReset');
-  }
-  const order = ['5h', '1w', '1m'];
-  const sorted = [...wins].sort((a, b) => order.indexOf(a) - order.indexOf(b));
-  if (sorted.length === 1) {
-    if (sorted[0] === '5h') return t('cardScope5H');
-    if (sorted[0] === '1w') return t('cardScope1W');
-    if (sorted[0] === '1m') return t('cardScope1M');
-  }
-  const labels = sorted.map((w) => {
-    if (w === '5h') return t('cardScopeLabel5H');
-    if (w === '1w') return t('cardScopeLabel1W');
-    if (w === '1m') return t('cardScopeLabel1M');
-    return w;
-  });
-  return t('cardScopeCombined', { windows: labels.join(' + ') });
+  return formatCardScope({ windows: windows ?? [] });
 }
 
 function selectedWindows(): string[] {
@@ -158,7 +149,9 @@ function open(row: RedemptionCode | null): void {
     cardDays: 30,
     expiresDays: null,
   };
-  panelOpen.value = true;
+  // Deleting leaves this set while the panel slides out.
+  busy.value = false;
+  showPanel();
   if (row) void loadRedemptions(row.id);
 }
 
@@ -168,7 +161,7 @@ async function loadRedemptions(codeID: string): Promise<void> {
     if (existing.value?.id === codeID) redemptions.value = result.redemptions ?? [];
   } catch (failure) {
     if (existing.value?.id === codeID) {
-      redemptionsError.value = failure instanceof ApiError ? failure.message : String(failure);
+      redemptionsError.value = failureText(failure);
     }
   } finally {
     if (existing.value?.id === codeID) redemptionsLoading.value = false;
@@ -180,7 +173,16 @@ async function create(): Promise<void> {
     panelError.value = t('cardResetScopeRequired');
     return;
   }
-  const batch = form.value.count ?? 1;
+  // A blank box is not a value. A default written in its place would mint codes
+  // the panel does not show (one code, thirty days), and a minted code cannot
+  // be given different numbers afterwards, so the batch waits for numbers.
+  const batch = form.value.count;
+  const cards = form.value.cards;
+  const cardDays = form.value.cardDays;
+  if (batch === null || cards === null || cardDays === null) {
+    panelError.value = t('settingNumberRequired');
+    return;
+  }
   const days = form.value.expiresDays;
   busy.value = true;
   panelError.value = '';
@@ -190,52 +192,59 @@ async function create(): Promise<void> {
       name: form.value.name.trim(),
       windows: selectedWindows(),
       count: batch,
-      cards: form.value.cards ?? 1,
-      card_days: form.value.cardDays ?? 30,
+      cards,
+      card_days: cardDays,
       // Zero is "never", which is what an empty field means here.
-      expires_at: days && days > 0 ? Date.now() + days * 24 * 3600 * 1000 : 0,
+      expires_at: expiresAtFromDays(days),
     });
     // Generated codes exist nowhere else until they are copied off this
     // screen, so the panel turns into the list rather than closing over them.
     minted.value = created;
-    view.reload();
+    void load();
   } catch (failure) {
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    // Only a code the interface has a sentence for is translated; any other
+    // keeps the server's sentence, which an administrator may need verbatim.
+    panelError.value = failureText(failure);
   } finally {
     busy.value = false;
   }
+}
+
+// --- several at once ----------------------------------------------------------------
+
+const bulk = useBulk(() => codes.value, (row) => row.id);
+
+function bulkRemove(): Promise<void> {
+  return bulk.run((row) => adminApi.deleteCode(row.id), load);
 }
 
 async function remove(): Promise<void> {
   const row = existing.value;
   if (!row) return;
-  busy.value = true;
-  try {
-    await adminApi.deleteCode(row.id);
-    panelOpen.value = false;
-    view.reload();
-  } catch (failure) {
-    busy.value = false;
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
-  }
-}
-
-function copyAll(): void {
-  const lines = (minted.value ?? []).map((entry) => entry.code).join('\n');
-  void copyToClipboard(lines).then((ok) => {
-    if (ok) copyLabel.value = t('copied');
+  await runRemove(() => adminApi.deleteCode(row.id), { busy, error: panelError }, () => {
+    hidePanel();
+    void load();
   });
 }
 
+// The result is written onto the button and taken off again after a moment, so
+// the next copy starts from the usual label rather than the last result. The
+// timer is kept so a newer result is not cleared early, and cancelled on leave.
+let cancelCopyFlash = (): void => {};
+onBeforeUnmount(() => cancelCopyFlash());
+
+function copyAll(): void {
+  const lines = (minted.value ?? []).map((entry) => entry.code).join('\n');
+  // A refused copy says so: the codes are only on this screen until copied,
+  // and a button that stayed silent would read as having copied them.
+  cancelCopyFlash();
+  cancelCopyFlash = flashCopy(copyToClipboard(lines), (text) => { copyLabel.value = text; });
+}
+
 async function load(): Promise<void> {
-  error.value = '';
-  try {
+  await runLoad(async () => {
     ({ codes: codes.value } = await adminApi.codes());
-  } catch (failure) {
-    error.value = failure instanceof Error ? failure.message : String(failure);
-  } finally {
-    loaded.value = true;
-  }
+  }, { error, loaded });
 }
 
 onMounted(load);
@@ -250,19 +259,25 @@ onMounted(load);
   <AdminFailure v-if="error" :message="error" @retry="load" />
   <p v-else-if="!loaded" class="oa-table-empty">{{ t('loading') }}</p>
 
+  <template v-else>
   <OaTable
     id="codesTitle"
-    v-else
     :columns="columns"
     :rows="codes"
     :empty="t('noCodes')"
     :muted="(row) => row.claimed >= row.cards"
     selectable
+    multi
+    v-model:selected="bulk.selected.value"
+    :row-key="(row) => row.id"
     @select="open($event)"
   >
     <template #cell-code="{ row }">
+      <!-- The column's own text is masked too, but a slot replaces it, so the
+           mask has to be applied where the code is drawn. Copy and export stay
+           raw: they are what the operator asked for. -->
       <OaCellStack
-        :title="row.code"
+        :title="maskCredential(row.code)"
         :sub="Array.from(new Set([row.name || undefined, formatCodeScope(row.windows), row.note || undefined].filter(Boolean))).join(' · ')"
         monospace
       />
@@ -277,6 +292,17 @@ onMounted(load);
       </OaBadgeRow>
     </template>
   </OaTable>
+  <OaBulkBar
+    :count="bulk.selected.value.length"
+    :total="codes.length"
+    :busy="bulk.busy.value"
+    :error="bulk.error.value"
+    deletable
+    @all="bulk.selectAll"
+    @clear="bulk.clear"
+    @delete="bulkRemove"
+  />
+  </template>
 
   <OaPanel
     v-if="exporting"
@@ -295,6 +321,8 @@ onMounted(load);
 
   <OaPanel
     v-if="panelOpen"
+    ref="panel"
+    :key="panelKey"
     :title="minted ? t('codesMinted', { count: minted.length }) : creating ? t('addCode') : maskCredential(existing!.code)"
     :footer="creating && !minted"
     :confirm-label="t('add')"
@@ -302,7 +330,7 @@ onMounted(load);
     :destructive-confirm="existing ? t('confirmDeleteCode', { code: maskCredential(existing.code) }) : undefined"
     :busy="busy"
     :error="panelError"
-    @close="panelOpen = false"
+    @close="panelClosed"
     @confirm="create"
     @destructive="remove"
   >
@@ -374,24 +402,14 @@ onMounted(load);
         v-model="form.scopePreset"
         :label="t('cardResetScope')"
         :hint="t('cardResetScopeHint')"
-        :options="[
-          { value: 'full', label: t('cardResetFull') },
-          { value: '5h', label: t('cardReset5H') },
-          { value: '1w', label: t('cardReset1W') },
-          { value: '1m', label: t('cardReset1M') },
-          { value: 'custom', label: t('cardResetCustom') },
-        ]"
+        :options="scopePresetChoices()"
       />
       <OaCheckList
         v-if="form.scopePreset === 'custom'"
         v-model="form.customWindows"
         :label="t('cardResetScope')"
         :empty-text="t('nothingYet')"
-        :items="[
-          { value: '5h', label: t('cardScopeLabel5H') },
-          { value: '1w', label: t('cardScopeLabel1W') },
-          { value: '1m', label: t('cardScopeLabel1M') },
-        ]"
+        :items="windowChoices()"
       />
       <OaNumberField v-model="form.cards" :label="t('codeCards')" :min="1" :hint="t('codeCardsHint')" />
       <OaNumberField

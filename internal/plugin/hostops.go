@@ -12,12 +12,17 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/bonus"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/card"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/console"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
@@ -26,6 +31,8 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin/wasm"
 	securityevents "github.com/OnyxAxisOwO/ObsidianArc/internal/security"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
+	bounded "github.com/OnyxAxisOwO/ObsidianArc/internal/text"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/turnstile"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
@@ -42,11 +49,36 @@ import (
 type callState struct {
 	tx      *database.Tx
 	console *console.Runtime
-	// The console's own error from the last operation that failed, as it was
-	// before it became a message a backend could read: what the terminal draws
-	// (the endpoint's code beside its sentence, JSON when asked) is made from
-	// it, and a command that only passes the failure on should get exactly that.
-	consoleErr error
+	// The endpoints the running console command declares, as "METHOD /path"
+	// with {name} standing for one segment. console.call reaches these and no
+	// others: they are what help shows the operator the command calls.
+	// legacyCall is a package built before that was enforced (requires.api
+	// below arcx.DeclaredEndpointsAPI): it keeps the rule it was built for, a
+	// write needs a command that declares one, so an upgrade of the server
+	// does not refuse a call it made yesterday.
+	endpoints  []string
+	legacyCall bool
+	// What the invocation has written to the log, and how many rows it has
+	// put in the notification and security tables. Both are per invocation:
+	// a call may run for fifteen seconds, and nothing else bounds what it
+	// writes.
+	logCalls, logBytes int
+	auditWrites        int
+	// The console's own errors from the operations of this invocation that
+	// failed, as they were before each became a message a backend could read,
+	// keyed by that message. What the terminal draws (the endpoint's code beside
+	// its sentence, JSON when asked) is made from them: a command may make
+	// several refused calls and return one of them, and the terminal must draw
+	// the one returned, not whichever failed last.
+	consoleErrs map[string]error
+}
+
+// noteConsoleErr keeps a console failure under the message the backend is given.
+func (st *callState) noteConsoleErr(err error) {
+	if st.consoleErrs == nil {
+		st.consoleErrs = map[string]error{}
+	}
+	st.consoleErrs[err.Error()] = err
 }
 
 // finish ends whatever the invocation left open. A transaction the backend
@@ -71,7 +103,33 @@ const (
 	maxRows = 20000
 	// A single outgoing response, kept in memory and handed to the guest.
 	maxFetchBody = 4 << 20
+	// The log a single invocation may write. Its messages are bytes the
+	// server then keeps, and the host decodes each one into memory outside
+	// the guest's ceiling, so both the count and the total are held.
+	maxLogCalls = 200
+	maxLogBytes = 64 << 10
+	// Rows an invocation may put in the notification and security tables.
+	maxAuditWrites = 100
+	// Lengths a package may give a notification. kind is a name the inbox
+	// formats, link is a path, params is what the template fills in.
+	maxKindLen   = 64
+	maxLinkLen   = 512
+	maxParamsLen = 4 << 10
 )
+
+// forwardedHeaders are the request headers the server reads a client's
+// address or scheme from. A backend's outgoing request must not carry them:
+// the server would take them for a proxy's word when the request comes back
+// from a trusted address, which a plugin's own loopback service is.
+var forwardedHeaders = map[string]bool{
+	"X-Forwarded-For":   true,
+	"X-Forwarded-Proto": true,
+	"X-Forwarded-Host":  true,
+	"X-Real-Ip":         true,
+	"Cf-Connecting-Ip":  true,
+	"Cf-Visitor":        true,
+	"Forwarded":         true,
+}
 
 func denied(perm string) error {
 	return &wasm.HostError{Code: "permission_denied", Message: "the plugin's manifest does not declare the " + perm + " permission"}
@@ -79,6 +137,13 @@ func denied(perm string) error {
 
 func badArg(format string, args ...any) error {
 	return &wasm.HostError{Code: "bad_argument", Message: fmt.Sprintf(format, args...)}
+}
+
+// noHost refuses a call whose service this server does not run. A Manager with
+// no host is a test rig or a check that runs before the server is up; a call
+// that reaches one must say so, not dereference a nil service.
+func noHost(what string) error {
+	return &wasm.HostError{Code: "unavailable", Message: "this server has no " + what}
 }
 
 // hostFunc is the answer to every call l's backend makes.
@@ -103,6 +168,13 @@ func (m *Manager) hostFunc(l *loaded) wasm.HostFunc {
 		}
 		switch op {
 		case "log":
+			if st.logCalls >= maxLogCalls || st.logBytes+len(raw) > maxLogBytes {
+				// The SDK ignores a failed log call, so the guest carries on;
+				// what it wrote past the budget is simply not kept.
+				return nil, &wasm.HostError{Code: "log_limit", Message: "this call has written as much to the log as it may"}
+			}
+			st.logCalls++
+			st.logBytes += len(raw)
 			var a struct {
 				Level string         `json:"level"`
 				Msg   string         `json:"msg"`
@@ -124,7 +196,9 @@ func (m *Manager) hostFunc(l *loaded) wasm.HostFunc {
 			case "error":
 				level = slog.LevelError
 			}
-			slog.Log(c.Ctx, level, truncate(a.Msg, 1000), attrs...)
+			// Cut by character, not byte: a message cut mid-character is written as
+			// invalid UTF-8 in the log line.
+			slog.Log(c.Ctx, level, bounded.Truncate(a.Msg, 1000), attrs...)
 			return nil, nil
 
 		case "id.new":
@@ -167,81 +241,19 @@ func (m *Manager) hostFunc(l *loaded) wasm.HostFunc {
 			if err := need(arcx.PermSessions); err != nil {
 				return nil, err
 			}
-			var a struct {
-				UserID string `json:"user_id"`
-				TX     bool   `json:"tx"`
-			}
-			if err := json.Unmarshal(raw, &a); err != nil || a.UserID == "" {
-				return nil, badArg("sessions.revoke_user needs a user_id")
-			}
-			q, err := m.queryer(st, a.TX)
-			if err != nil {
-				return nil, err
-			}
-			return nil, m.host.Auth.Sessions().DeleteByUser(c.Ctx, q, a.UserID)
+			return m.revokeSessionsOp(c, st, raw)
 
 		case "notify.push":
 			if err := need(arcx.PermNotify); err != nil {
 				return nil, err
 			}
-			var a struct {
-				UserID string         `json:"user_id"`
-				All    bool           `json:"all"`
-				Kind   string         `json:"kind"`
-				Params map[string]any `json:"params"`
-				Link   string         `json:"link"`
-				TX     bool           `json:"tx"`
-			}
-			if err := json.Unmarshal(raw, &a); err != nil || a.Kind == "" || (a.UserID == "" && !a.All) {
-				return nil, badArg("notify.push needs a kind, and a user_id or all")
-			}
-			q, err := m.queryer(st, a.TX)
-			if err != nil {
-				return nil, err
-			}
-			audience := notify.AudienceUser
-			if a.All {
-				audience = notify.AudienceAll
-			}
-			return nil, m.host.Notify.Push(c.Ctx, q, notify.Notification{
-				Audience: audience, UserID: a.UserID, Kind: a.Kind, Params: a.Params, Link: a.Link,
-			})
+			return m.notifyOp(c, st, raw)
 
 		case "security.record":
 			if err := need(arcx.PermSecurityLog); err != nil {
 				return nil, err
 			}
-			var a struct {
-				Event         string `json:"event"`
-				Severity      string `json:"severity"`
-				UserID        string `json:"user_id"`
-				Username      string `json:"username"`
-				ActorID       string `json:"actor_id"`
-				ActorUsername string `json:"actor_username"`
-				IP            string `json:"ip"`
-				Source        string `json:"source"`
-				Decision      string `json:"decision"`
-				Reason        string `json:"reason"`
-				TX            bool   `json:"tx"`
-			}
-			if err := json.Unmarshal(raw, &a); err != nil || a.Event == "" {
-				return nil, badArg("security.record needs an event")
-			}
-			severity := securityevents.Severity(a.Severity)
-			switch severity {
-			case "", securityevents.SeverityInfo, securityevents.SeverityWarning, securityevents.SeverityDanger:
-			default:
-				return nil, badArg("security.record: severity must be info, warning or danger")
-			}
-			q, err := m.queryer(st, a.TX)
-			if err != nil {
-				return nil, err
-			}
-			return nil, m.host.Security.Record(c.Ctx, q, securityevents.Event{
-				Event: a.Event, Severity: severity, UserID: a.UserID, Username: a.Username,
-				ActorID: a.ActorID, ActorUsername: a.ActorUsername, IP: a.IP, Source: a.Source,
-				Decision: a.Decision, Reason: truncate(a.Reason, 500),
-			})
+			return m.securityOp(c, st, l.name, raw)
 
 		case "users.count_active_admins", "users.set_status", "users.delete":
 			if err := need(arcx.PermUsers); err != nil {
@@ -253,23 +265,27 @@ func (m *Manager) hostFunc(l *loaded) wasm.HostFunc {
 			if err := need(arcx.PermCards); err != nil {
 				return nil, err
 			}
-			var a struct {
-				UserID string `json:"user_id"`
-				Count  int    `json:"count"`
-				TX     bool   `json:"tx"`
-			}
-			if err := json.Unmarshal(raw, &a); err != nil || a.UserID == "" || a.Count < 0 {
-				return nil, badArg("cards.revoke_available needs a user_id and a count")
-			}
-			q, err := m.queryer(st, a.TX)
-			if err != nil {
+			return m.revokeCardsOp(c, st, raw)
+
+		case "rewards.bonus", "rewards.cards":
+			if err := need(arcx.PermRewards); err != nil {
 				return nil, err
 			}
-			revoked, err := m.host.Cards.RevokeAvailable(c.Ctx, q, a.UserID, a.Count)
-			if err != nil {
-				return nil, &wasm.HostError{Code: "cards", Message: err.Error()}
+			return m.rewardOp(c, st, l.name, op, raw)
+
+		case "challenge.describe", "challenge.verify":
+			if err := need(arcx.PermChallenge); err != nil {
+				return nil, err
 			}
-			return revoked, nil
+			// A check may ask a service elsewhere, and a transaction held open
+			// across that call keeps a pooled connection for as long as the
+			// service takes, which is what the refusal of http.fetch above guards
+			// against. The SDK refuses this before the call is made; the host
+			// refuses it too, for a backend that talks to the ABI directly.
+			if op == "challenge.verify" && st.tx != nil {
+				return nil, &wasm.HostError{Code: "tx_open", Message: "a challenge cannot be checked while a transaction is open"}
+			}
+			return m.challengeOp(c, op, raw)
 
 		case "console.call", "console.resolve_user":
 			if err := need(arcx.PermConsole); err != nil {
@@ -278,27 +294,207 @@ func (m *Manager) hostFunc(l *loaded) wasm.HostFunc {
 			if st.console == nil {
 				return nil, &wasm.HostError{Code: "no_console", Message: "this call is not running a console command"}
 			}
-			return m.consoleOp(st, op, raw)
+			return m.consoleOp(c, st, op, raw)
 		}
 		return nil, &wasm.HostError{Code: "unknown_op", Message: "the server has no host call named " + op}
 	}
 }
 
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
+// revokeSessionsOp signs an account out of every session it has, under the
+// grant of the request it answers for.
+func (m *Manager) revokeSessionsOp(c *wasm.Call, st *callState, raw json.RawMessage) (any, error) {
+	var a struct {
+		UserID string `json:"user_id"`
+		TX     bool   `json:"tx"`
 	}
-	return s[:n]
+	if err := json.Unmarshal(raw, &a); err != nil || a.UserID == "" {
+		return nil, badArg("sessions.revoke_user needs a user_id")
+	}
+	q, err := m.queryer(st, a.TX)
+	if err != nil {
+		return nil, err
+	}
+	return nil, m.granted(c.Ctx, q, c.Info.Actor, a.UserID, "users", func(q database.Queryer) error {
+		// Answering success without a session store would tell the package its
+		// account is signed out when it is not, so the call is refused instead.
+		// It is checked under the grant, so a caller without one is still told
+		// it may not, whatever this server runs.
+		if m.host == nil || m.host.Auth == nil {
+			return noHost("session store")
+		}
+		// Signing an administrator out is the same reach as suspending one,
+		// so it takes the super administrator rule changeAccount applies. The
+		// users grant alone would let a delegate end the owner's sessions. A
+		// sweep has no actor and is refused the same way.
+		target, err := m.users.ByID(c.Ctx, q, a.UserID)
+		switch {
+		case err == nil:
+			// An administrator signing themself out is self-service, which a
+			// suspension of oneself is not, so the exemption stays here.
+			self := c.Info.Actor != nil && c.Info.Actor.ID == a.UserID
+			if !self && m.adminOutOfReach(c.Ctx, q, c.Info.Actor, target) {
+				return &wasm.HostError{Code: "admin_account", Message: "a plugin cannot sign an administrator out of their sessions"}
+			}
+		case !errors.Is(err, user.ErrNotFound):
+			return &wasm.HostError{Code: "users", Message: err.Error()}
+		}
+		return m.host.Auth.Sessions().DeleteByUser(c.Ctx, q, a.UserID)
+	})
+}
+
+// notifyOp puts an entry in one account's inbox, or in everybody's.
+func (m *Manager) notifyOp(c *wasm.Call, st *callState, raw json.RawMessage) (any, error) {
+	var a struct {
+		UserID string         `json:"user_id"`
+		All    bool           `json:"all"`
+		Kind   string         `json:"kind"`
+		Params map[string]any `json:"params"`
+		Link   string         `json:"link"`
+		TX     bool           `json:"tx"`
+	}
+	if err := json.Unmarshal(raw, &a); err != nil || a.Kind == "" || (a.UserID == "" && !a.All) {
+		return nil, badArg("notify.push needs a kind, and a user_id or all")
+	}
+	if len(a.Kind) > maxKindLen || len(a.Link) > maxLinkLen {
+		return nil, badArg("notify.push: kind is at most %d bytes and link at most %d", maxKindLen, maxLinkLen)
+	}
+	if params, _ := json.Marshal(a.Params); len(params) > maxParamsLen {
+		return nil, badArg("notify.push: params are at most %d bytes", maxParamsLen)
+	}
+	// Everybody's inbox is an administrator's to fill. A public route or a
+	// guard is anybody's request, and one of those could otherwise reach
+	// every account with as many entries as its budget allows.
+	if a.All && !administrator(c.Info.Actor) {
+		return nil, &wasm.HostError{Code: "permission_denied", Message: "only an administrator's request may notify every account"}
+	}
+	if m.host == nil || m.host.Notify == nil {
+		return nil, noHost("notification store")
+	}
+	if err := st.countAudit(); err != nil {
+		return nil, err
+	}
+	q, err := m.queryer(st, a.TX)
+	if err != nil {
+		return nil, err
+	}
+	audience := notify.AudienceUser
+	if a.All {
+		audience = notify.AudienceAll
+	}
+	return nil, m.host.Notify.Push(c.Ctx, q, notify.Notification{
+		Audience: audience, UserID: a.UserID, Kind: a.Kind, Params: a.Params, Link: a.Link,
+	})
+}
+
+// securityOp files an event in the security log under the package's name.
+func (m *Manager) securityOp(c *wasm.Call, st *callState, plugin string, raw json.RawMessage) (any, error) {
+	var a struct {
+		Event         string `json:"event"`
+		Severity      string `json:"severity"`
+		UserID        string `json:"user_id"`
+		Username      string `json:"username"`
+		ActorID       string `json:"actor_id"`
+		ActorUsername string `json:"actor_username"`
+		IP            string `json:"ip"`
+		Source        string `json:"source"`
+		Decision      string `json:"decision"`
+		Reason        string `json:"reason"`
+		TX            bool   `json:"tx"`
+	}
+	if err := json.Unmarshal(raw, &a); err != nil || a.Event == "" {
+		return nil, badArg("security.record needs an event")
+	}
+	if m.host == nil || m.host.Security == nil {
+		return nil, noHost("security log")
+	}
+	// A package names its own events. An entry under one of the core's
+	// names would read as the core's own (a console command that never
+	// ran, say), and a source label cannot say otherwise, so it is refused
+	// rather than filed.
+	if coreEvents[strings.TrimSpace(a.Event)] {
+		return nil, badArg("security.record: %s is an event the server writes itself", strings.TrimSpace(a.Event))
+	}
+	severity := securityevents.Severity(a.Severity)
+	switch severity {
+	case "", securityevents.SeverityInfo, securityevents.SeverityWarning, securityevents.SeverityDanger:
+	default:
+		return nil, badArg("security.record: severity must be info, warning or danger")
+	}
+	if err := st.countAudit(); err != nil {
+		return nil, err
+	}
+	q, err := m.queryer(st, a.TX)
+	if err != nil {
+		return nil, err
+	}
+	// The actor is whoever the request came from, as the core's entries record
+	// it, because a backend that named one could put an administrator's name
+	// on an event that administrator never did.
+	var actorID, actorName string
+	if c.Info.Actor != nil {
+		actorID, actorName = c.Info.Actor.ID, c.Info.Actor.Username
+	}
+	// The reason is bounded before it reaches the host's clean-up, so a
+	// plugin cannot make that walk an unlimited string. It is cut by
+	// character: a byte cut split multi-byte characters, which were then
+	// stored as replacement characters.
+	return nil, m.host.Security.Record(c.Ctx, q, securityevents.Event{
+		Event: a.Event, Severity: severity, UserID: a.UserID, Username: a.Username,
+		ActorID: actorID, ActorUsername: actorName, IP: a.IP,
+		Source:   securitySource(plugin, a.Source, administrator(c.Info.Actor)),
+		Decision: a.Decision, Reason: bounded.Truncate(a.Reason, securityevents.MaxReasonChars),
+	})
+}
+
+// revokeCardsOp takes back an account's cards that are not yet in use.
+func (m *Manager) revokeCardsOp(c *wasm.Call, st *callState, raw json.RawMessage) (any, error) {
+	var a struct {
+		UserID string `json:"user_id"`
+		Count  int    `json:"count"`
+		TX     bool   `json:"tx"`
+	}
+	if err := json.Unmarshal(raw, &a); err != nil || a.UserID == "" || a.Count < 0 {
+		return nil, badArg("cards.revoke_available needs a user_id and a count")
+	}
+	q, err := m.queryer(st, a.TX)
+	if err != nil {
+		return nil, err
+	}
+	var revoked int
+	err = m.granted(c.Ctx, q, c.Info.Actor, a.UserID, "users", func(q database.Queryer) error {
+		if m.host == nil || m.host.Cards == nil {
+			return noHost("card store")
+		}
+		n, err := m.host.Cards.RevokeAvailable(c.Ctx, q, a.UserID, a.Count)
+		if err != nil {
+			return &wasm.HostError{Code: "cards", Message: err.Error()}
+		}
+		revoked = n
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return revoked, nil
 }
 
 // queryer is the database the call is talking to: the open transaction when
 // the backend said its statement belongs to it, the pool otherwise.
+//
+// While a transaction is open the pool is refused. The transaction holds the
+// instance row from db.begin, and a statement on another connection that
+// needs that row (any change to an account takes it) would wait on the call's
+// own transaction until the deadline. The backend has to end the transaction
+// or put the statement inside it.
 func (m *Manager) queryer(st *callState, useTx bool) (database.Queryer, error) {
 	if useTx {
 		if st.tx == nil {
 			return nil, &wasm.HostError{Code: "no_tx", Message: "there is no open transaction"}
 		}
 		return st.tx, nil
+	}
+	if st.tx != nil {
+		return nil, &wasm.HostError{Code: "tx_open", Message: "a statement outside the open transaction cannot run; put it in the transaction or end the transaction first"}
 	}
 	return m.db, nil
 }
@@ -311,6 +507,15 @@ func (m *Manager) dbOp(c *wasm.Call, st *callState, op string, raw json.RawMessa
 		}
 		tx, err := m.db.Begin(c.Ctx)
 		if err != nil {
+			return nil, err
+		}
+		// The instance row is taken here, before the backend's first write and
+		// in the order the backoffice takes it (the instance row, then accounts).
+		// Taken at the first write instead, a read-only transaction would hold
+		// nothing, and a transaction that writes an account first would deadlock
+		// against an administrator's change to the same account.
+		if err := settings.Lock(c.Ctx, tx); err != nil {
+			_ = tx.Rollback()
 			return nil, err
 		}
 		st.tx = tx
@@ -358,7 +563,7 @@ func (m *Manager) dbOp(c *wasm.Call, st *callState, op string, raw json.RawMessa
 		return nil, &wasm.HostError{Code: "sql", Message: err.Error()}
 	}
 	defer rows.Close()
-	return rowsToJSON(rows)
+	return rowsToJSON(rows, m.engine().MaxMessage())
 }
 
 // bindArgs turns JSON values into what the driver binds. Numbers arrive as
@@ -394,12 +599,32 @@ func bindArgs(in []any) ([]any, error) {
 	return out, nil
 }
 
-func rowsToJSON(rows *sql.Rows) (any, error) {
+// replyWrapping is what the answer adds around a result: the envelope the
+// server writes and the result's own keys and brackets. It is counted, so the
+// reply as a whole is what stays within a message, not only its rows.
+const replyWrapping = len(`{"ok":true,"result":{"columns":,"rows":[]}}`)
+
+// rowsToJSON reads a query's rows into the answer a backend is given. What limit
+// bounds is host memory for one reply. The SDK grows its buffer to whatever
+// length the host reports, so the guest cannot refuse a long reply itself: the
+// host counts the encoded size as each row is read and stops once the reply
+// would pass limit, the per-message cap the plugin packages document states.
+//
+// It does not bound the driver's copy of a cell inside Scan. That copy is made
+// before any size is known, so one oversized cell is copied whole whatever limit
+// is. The floor check below stops such a cell from being encoded as well, and
+// only a length() guard in the package's own SQL bounds the copy.
+func rowsToJSON(rows *sql.Rows, limit int) (any, error) {
 	cols, err := rows.Columns()
 	if err != nil {
 		return nil, err
 	}
-	data := [][]any{}
+	names, err := json.Marshal(cols)
+	if err != nil {
+		return nil, err
+	}
+	size := replyWrapping + len(names)
+	data := []json.RawMessage{}
 	for rows.Next() {
 		vals := make([]any, len(cols))
 		ptrs := make([]any, len(cols))
@@ -409,6 +634,13 @@ func rowsToJSON(rows *sql.Rows) (any, error) {
 		if err := rows.Scan(ptrs...); err != nil {
 			return nil, &wasm.HostError{Code: "sql", Message: err.Error()}
 		}
+		// A row that cannot fit is refused before any cell is base64'd or
+		// marshalled, which is what keeps an oversized cell from being copied
+		// again by the encoder. The floor has to be what the encoder will write,
+		// not less: see cellFloor.
+		if size+cellFloor(vals) > limit {
+			return nil, &wasm.HostError{Code: "too_large", Message: fmt.Sprintf("a query's rows may be at most %d bytes", limit)}
+		}
 		for i, v := range vals {
 			switch x := v.(type) {
 			case []byte:
@@ -417,9 +649,21 @@ func rowsToJSON(rows *sql.Rows) (any, error) {
 				vals[i] = x.UTC().Format(time.RFC3339Nano)
 			}
 		}
-		data = append(data, vals)
+		row, err := json.Marshal(vals)
+		if err != nil {
+			return nil, &wasm.HostError{Code: "sql", Message: err.Error()}
+		}
+		// The reply has a comma between rows and none before the first.
+		if len(data) > 0 {
+			size++
+		}
+		size += len(row)
+		data = append(data, row)
 		if len(data) > maxRows {
 			return nil, &wasm.HostError{Code: "too_many_rows", Message: fmt.Sprintf("a query may return at most %d rows", maxRows)}
+		}
+		if size > limit {
+			return nil, &wasm.HostError{Code: "too_large", Message: fmt.Sprintf("a query's rows may be at most %d bytes", limit)}
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -428,35 +672,141 @@ func rowsToJSON(rows *sql.Rows) (any, error) {
 	return map[string]any{"columns": cols, "rows": data}, nil
 }
 
+// cellFloor is the fewest bytes a row's cells are written as, counted without
+// encoding anything, so a row that cannot fit is refused before the encoder
+// builds it. A bytes cell counts as the object it is written as, and a string
+// cell as json.Marshal writes it, escapes included. Numbers, booleans and times
+// are left out, which only lowers the floor.
+//
+// The count has to be exact for strings and bytes, not a lower guess. A raw
+// length let a cell of characters the encoder writes six bytes apiece reach the
+// encoder, which then built the whole escaped copy before any check refused it.
+func cellFloor(vals []any) int {
+	floor := 0
+	for _, v := range vals {
+		switch x := v.(type) {
+		case []byte:
+			floor += base64.StdEncoding.EncodedLen(len(x)) + len(`{"$b64":""}`)
+		case string:
+			floor += jsonStringLen(x)
+		}
+	}
+	return floor
+}
+
+// jsonStringLen is how many bytes json.Marshal writes for s, quotes included,
+// counted without writing them. It follows encoding/json's escaping with HTML
+// escaping on, which is what json.Marshal does: a quote, a backslash, a tab, a
+// newline, a carriage return, a backspace or a form feed takes two bytes; other
+// control characters take six, as do <, > and &, and the line and paragraph
+// separators. Each byte of an invalid UTF-8 sequence is written as the
+// replacement character, three bytes. Everything else is written as it is. The
+// count has to agree with the encoder exactly, which the tests hold it to.
+func jsonStringLen(s string) int {
+	n := 2
+	for i := 0; i < len(s); {
+		if b := s[i]; b < utf8.RuneSelf {
+			switch {
+			case b == '"', b == '\\', b == '\b', b == '\f', b == '\n', b == '\r', b == '\t':
+				n += 2
+			case b < 0x20, b == '<', b == '>', b == '&':
+				n += 6
+			default:
+				n++
+			}
+			i++
+			continue
+		}
+		c, size := utf8.DecodeRuneInString(s[i:])
+		switch {
+		case c == utf8.RuneError && size == 1:
+			n += utf8.RuneLen(utf8.RuneError)
+		case c == '\u2028' || c == '\u2029':
+			n += 6
+		default:
+			n += size
+		}
+		i += size
+	}
+	return n
+}
+
+// A request that names no timeout gets the default, and none may ask for more
+// than the cap, whatever the backend says it needs.
+const (
+	fetchDefaultTimeout = 10 * time.Second
+	fetchMaxTimeout     = 30 * time.Second
+)
+
+// The transport's limits. A dial that has not connected in ten seconds has a
+// host that is not answering; the header wait is how long a server may stay
+// silent before its answer has begun; idle connections are kept a minute so a
+// backend that calls one service again and again reuses them.
+const (
+	fetchDialTimeout   = 10 * time.Second
+	fetchHeaderTimeout = 30 * time.Second
+	fetchIdleTimeout   = 60 * time.Second
+)
+
 // fetchClient is what backends make their outgoing requests with. It refuses
 // the addresses no plugin has a use for and every server has reason to
-// guard: the link-local range where cloud hosts keep their credentials.
+// guard: the link-local range where cloud hosts keep their credentials, and
+// the two metadata services that sit outside it (see refuseFetchAddress).
 var fetchClient = &http.Client{
 	Transport: &http.Transport{
 		DialContext: (&net.Dialer{
-			Timeout: 10 * time.Second,
-			Control: func(_, address string, _ syscall.RawConn) error {
-				host, _, err := net.SplitHostPort(address)
-				if err != nil {
-					return err
-				}
-				ip := net.ParseIP(host)
-				if ip != nil && (ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast()) {
-					return errors.New("that address is not reachable from a plugin")
-				}
-				return nil
-			},
+			Timeout: fetchDialTimeout,
+			Control: refuseFetchAddress,
 		}).DialContext,
 		MaxIdleConns:          16,
-		IdleConnTimeout:       60 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
+		IdleConnTimeout:       fetchIdleTimeout,
+		ResponseHeaderTimeout: fetchHeaderTimeout,
 	},
-	CheckRedirect: func(_ *http.Request, via []*http.Request) error {
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 5 {
 			return errors.New("too many redirects")
 		}
+		// The headers a backend sets are the package's own upstream credentials,
+		// and the client copies them to every hop. Go's client removes its
+		// credential headers (Authorization, Cookie, and the WWW-Authenticate and
+		// Proxy variants) when a hop leaves the domain, but copies every other
+		// header, including the backend's own key, so on a hop to another origin
+		// every header is dropped here, before the copy is sent.
+		if req.URL.Scheme != via[0].URL.Scheme || req.URL.Host != via[0].URL.Host {
+			req.Header = http.Header{}
+		}
 		return nil
 	},
+}
+
+// refuseFetchAddress is fetchClient's dial-time check. It runs on the address
+// each connection is about to be made to, after the name has been resolved, so
+// a name that resolves into a refused range is caught as well as a literal.
+//
+// Loopback and private addresses stay reachable: a plugin's own services run
+// there, and a backend calls services on the operator's network by design.
+//
+// The address is parsed with netip, not net.ParseIP. ParseIP rejects a zone,
+// so fe80::1%en0 used to pass the link-local check; netip keeps the zone and
+// the check sees the address. The zone is dropped before the comparison:
+// netip's == counts it as part of the address, so a zoned fd00:ec2::254 or
+// ::%en0 would slip past the metadata list and the unspecified check.
+func refuseFetchAddress(_, address string, _ syscall.RawConn) error {
+	addrPort, err := netip.ParseAddrPort(address)
+	if err != nil {
+		return err
+	}
+	ip := addrPort.Addr().Unmap().WithZone("")
+	// The NAT64/6to4 expansion and the metadata list are the provider
+	// dialer's own. They were copies once, and the copies drifted.
+	if embedded, ok := adapter.EmbeddedIPv4(ip); ok {
+		ip = embedded
+	}
+	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() ||
+		adapter.IsCloudMetadata(ip) {
+		return errors.New("that address is not reachable from a plugin")
+	}
+	return nil
 }
 
 func (m *Manager) fetch(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -482,9 +832,9 @@ func (m *Manager) fetch(ctx context.Context, raw json.RawMessage) (any, error) {
 	}
 	timeout := time.Duration(a.TimeoutMS) * time.Millisecond
 	if timeout <= 0 {
-		timeout = 10 * time.Second
+		timeout = fetchDefaultTimeout
 	}
-	timeout = min(timeout, 30*time.Second)
+	timeout = min(timeout, fetchMaxTimeout)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -501,6 +851,9 @@ func (m *Manager) fetch(ctx context.Context, raw json.RawMessage) (any, error) {
 		return nil, badArg("http.fetch: %v", err)
 	}
 	for k, v := range a.Header {
+		if forwardedHeaders[http.CanonicalHeaderKey(k)] {
+			continue
+		}
 		req.Header.Set(k, v)
 	}
 	res, err := fetchClient.Do(req)
@@ -551,22 +904,306 @@ func (m *Manager) userOp(c *wasm.Call, st *callState, op string, raw json.RawMes
 		if a.ID == "" || (status != user.StatusActive && status != user.StatusDisabled) {
 			return nil, badArg("users.set_status needs an id and a status of active or disabled")
 		}
-		if _, err := m.users.UpdateAdminFields(c.Ctx, q, a.ID, user.AdminUpdate{Status: &status}); err != nil {
-			return nil, &wasm.HostError{Code: "users", Message: err.Error()}
-		}
-		return nil, nil
+		return nil, m.changeAccount(c.Ctx, q, c.Info.Actor, a.ID, false, func(q database.Queryer) error {
+			if _, err := m.users.UpdateAdminFields(c.Ctx, q, a.ID, user.AdminUpdate{Status: &status}); err != nil {
+				return err
+			}
+			// The core ends the account's sessions in the same transaction as the
+			// suspension. Left alone, a session survives it and comes back when
+			// an administrator re-activates the account. A Manager with no host
+			// has no session store to end, and a running server always attaches
+			// its host.
+			if status == user.StatusDisabled && m.host != nil {
+				return m.host.Auth.Sessions().DeleteByUser(c.Ctx, q, a.ID)
+			}
+			return nil
+		})
 	default:
 		if a.ID == "" {
 			return nil, badArg("users.delete needs an id")
 		}
-		if err := m.users.Delete(c.Ctx, q, a.ID); err != nil {
-			return nil, &wasm.HostError{Code: "users", Message: err.Error()}
-		}
-		return nil, nil
+		return nil, m.changeAccount(c.Ctx, q, c.Info.Actor, a.ID, true, func(q database.Queryer) error {
+			return m.users.Delete(c.Ctx, q, a.ID)
+		})
 	}
 }
 
-func (m *Manager) consoleOp(st *callState, op string, raw json.RawMessage) (any, error) {
+// changeAccount runs a change to one account under the lock every change to
+// the set of administrators holds (see admin.lockAdminPopulation), so a package
+// ends accounts by the same rules the backoffice does: the last active
+// super administrator is never the one, and — beyond that — an administrator
+// is a package's to touch only on a super administrator's behalf. A package is
+// not part of the administrators' hierarchy and has no standing of its own
+// over an operator: a sweep, a webhook or a delegated administrator's request
+// cannot end one, and a bug or a hostile package cannot take the instance's
+// administration away. What the package is given is the actor the server
+// itself resolved from the session, read again here under the lock, so it is
+// the backoffice's own rule (a super administrator may manage anybody) rather
+// than a claim a backend could make.
+//
+// When the backend has a transaction open and says the call belongs to it, the
+// lock is taken in that one and held until the backend ends it; otherwise the
+// check and the change share a short transaction of their own.
+func (m *Manager) changeAccount(ctx context.Context, q database.Queryer, actor *wasm.Actor, id string, deleting bool, change func(database.Queryer) error) error {
+	run := func(tx *database.Tx) error {
+		if err := settings.Lock(ctx, tx); err != nil {
+			return err
+		}
+		// Before the lookup, so a caller without the grant gets the same refusal
+		// whether or not the account exists; after it, the answer would tell
+		// apart an account that is there from one that is not.
+		if !m.actorMay(ctx, tx, actor, id, "users") {
+			return actorGrantDenied()
+		}
+		target, err := m.users.ByID(ctx, tx, id)
+		if err != nil {
+			if deleting && errors.Is(err, user.ErrNotFound) {
+				return nil
+			}
+			return &wasm.HostError{Code: "users", Message: err.Error()}
+		}
+		if target.IsSuperAdmin() {
+			others, err := m.users.CountActiveAdmins(ctx, tx, id)
+			if err != nil {
+				return &wasm.HostError{Code: "users", Message: err.Error()}
+			}
+			if others == 0 {
+				return &wasm.HostError{Code: "last_admin", Message: "that is the last active super administrator"}
+			}
+		}
+		if m.adminOutOfReach(ctx, tx, actor, target) {
+			return &wasm.HostError{Code: "admin_account", Message: "a plugin cannot suspend or delete an administrator's account"}
+		}
+		if err := change(tx); err != nil {
+			return &wasm.HostError{Code: "users", Message: err.Error()}
+		}
+		return nil
+	}
+	if tx, ok := q.(*database.Tx); ok {
+		return run(tx)
+	}
+	return m.db.Tx(ctx, run)
+}
+
+// actorGrantDenied is the refusal for a request that acts on an account it does
+// not speak for, without the administrator's grant that covers the change.
+func actorGrantDenied() error {
+	return &wasm.HostError{Code: "permission_denied", Message: "a plugin acting for another account needs that administrator's grant"}
+}
+
+// granted makes a change to target that the request's grant must cover, with the
+// check and the change in one unit. Left apart, a grant an administrator takes
+// away between the two is still honoured. The acting account's row is locked
+// first, so a revocation either waits for the change to end or lands before the
+// check reads the grant. When the backend has a transaction open the lock is
+// taken in that one and held until the backend ends it; otherwise the check and
+// the change share a short transaction of their own, which never spans a
+// provider call.
+func (m *Manager) granted(ctx context.Context, q database.Queryer, actor *wasm.Actor, target, permission string, change func(database.Queryer) error) error {
+	run := func(tx *database.Tx) error {
+		if actor != nil && actor.ID != "" && actor.ID != target {
+			if _, err := tx.Exec(ctx, `UPDATE users SET updated_at = updated_at WHERE id = ?`, actor.ID); err != nil {
+				return err
+			}
+		}
+		if !m.actorMay(ctx, tx, actor, target, permission) {
+			return actorGrantDenied()
+		}
+		return change(tx)
+	}
+	if tx, ok := q.(*database.Tx); ok {
+		return run(tx)
+	}
+	return m.db.Tx(ctx, run)
+}
+
+// actorMay is whether the request a call answers for may act on the account
+// target under the grant permission. An account acting on itself is
+// self-service, and a call with no actor is a sweep's, which has no request to
+// answer for. Anybody else's account needs an active administrator holding the
+// grant, read again here as superAdminActing reads the role, so a grant taken
+// away since the session began is not used.
+func (m *Manager) actorMay(ctx context.Context, q database.Queryer, actor *wasm.Actor, target, permission string) bool {
+	if actor == nil || actor.ID == "" || actor.ID == target {
+		return true
+	}
+	account, err := m.users.ByID(ctx, q, actor.ID)
+	return err == nil && account.IsActive() && account.CanAdmin(permission)
+}
+
+// adminOutOfReach is whether target is an administrator the call may not
+// suspend, delete or sign out: only an active super administrator's own request
+// reaches one, since the users grant alone would let a delegate act on the
+// owner. Both changeAccount and sessions.revoke_user ask it, so the rule cannot
+// drift between them.
+func (m *Manager) adminOutOfReach(ctx context.Context, q database.Queryer, actor *wasm.Actor, target user.User) bool {
+	return target.IsAdmin() && !m.superAdminActing(ctx, q, actor)
+}
+
+// superAdminActing is whether the call is being made by an active super
+// administrator, as the account reads now rather than as the session read
+// when the request began.
+func (m *Manager) superAdminActing(ctx context.Context, q database.Queryer, actor *wasm.Actor) bool {
+	if actor == nil || actor.ID == "" {
+		return false
+	}
+	account, err := m.users.ByID(ctx, q, actor.ID)
+	return err == nil && account.IsActive() && account.IsSuperAdmin()
+}
+
+// maxBonusDays is the longest lifetime a backend may give a bonus, in days. A
+// day is 8.64e13 nanoseconds and time.Duration holds about 292 years of them,
+// so past 106751 days the product wraps around, and a grant asked to last for
+// centuries can expire minutes after it is made. A century stays well clear.
+const maxBonusDays = 36500
+
+// rewardOp gives an account something the core knows how to spend, by the
+// same rules the check-in's rewards follow: a bonus without a lifetime of its
+// own keeps the bar's default one, and a card's days are clamped by the
+// card store. The grant is marked as the plugin's, so the bonus page can say
+// where it came from.
+func (m *Manager) rewardOp(c *wasm.Call, st *callState, plugin, op string, raw json.RawMessage) (any, error) {
+	var a rewardRequest
+	if err := json.Unmarshal(raw, &a); err != nil || a.UserID == "" || a.ValidDays < 0 {
+		return nil, badArg("%s needs a user_id, and valid_days of zero or more", op)
+	}
+	q, err := m.queryer(st, a.TX)
+	if err != nil {
+		return nil, err
+	}
+	// Crediting an account another person is signed in to is an administrator's
+	// grant, the same one the backoffice needs for it; a package may still reward
+	// the account a request is for.
+	grant := "usage"
+	if op == "rewards.cards" {
+		grant = "users"
+	}
+	var out any
+	err = m.granted(c.Ctx, q, c.Info.Actor, a.UserID, grant, func(q database.Queryer) error {
+		var err error
+		out, err = m.reward(c, q, plugin, op, a)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// rewardRequest is what the rewards.bonus and rewards.cards calls take.
+type rewardRequest struct {
+	UserID    string  `json:"user_id"`
+	BarID     string  `json:"bar_id"`
+	Amount    float64 `json:"amount"`
+	Count     int     `json:"count"`
+	ValidDays int     `json:"valid_days"`
+	Name      string  `json:"name"`
+	Note      string  `json:"note"`
+	TX        bool    `json:"tx"`
+}
+
+// reward makes the credit a rewards call asks for. rewardOp has already checked
+// the grant under the same transaction, so this only reads and writes.
+func (m *Manager) reward(c *wasm.Call, q database.Queryer, plugin, op string, a rewardRequest) (any, error) {
+	if op == "rewards.cards" {
+		if m.host == nil || m.host.Cards == nil {
+			return nil, &wasm.HostError{Code: "unavailable", Message: "this server has no reset cards"}
+		}
+		if a.Count < 1 || a.Count > card.MaxCards {
+			return nil, badArg("rewards.cards: count is between 1 and %d", card.MaxCards)
+		}
+		cards, err := m.host.Cards.GrantNamed(c.Ctx, q, a.UserID, a.Count, a.ValidDays, a.Name, nil)
+		if err != nil {
+			return nil, &wasm.HostError{Code: "cards", Message: err.Error()}
+		}
+		expires := int64(0)
+		if len(cards) > 0 {
+			expires = cards[0].ExpiresAt
+		}
+		return map[string]any{"count": len(cards), "expires_at": expires}, nil
+	}
+
+	if m.host == nil || m.host.Bonus == nil {
+		return nil, &wasm.HostError{Code: "unavailable", Message: "this server has no bonus bars"}
+	}
+	if a.BarID == "" {
+		return nil, badArg("rewards.bonus needs a bar_id")
+	}
+	if a.ValidDays > maxBonusDays {
+		return nil, badArg("rewards.bonus: valid_days is at most %d", maxBonusDays)
+	}
+	now := time.Now()
+	expires := int64(0)
+	if a.ValidDays > 0 {
+		expires = now.Add(time.Duration(a.ValidDays) * 24 * time.Hour).UnixMilli()
+	} else {
+		bar, err := m.host.Bonus.Bar(c.Ctx, q, a.BarID)
+		switch {
+		case errors.Is(err, bonus.ErrNotFound):
+			// GrantTo answers for a bar that is not there.
+		case err != nil:
+			// A lookup that failed for any other reason must not fall through to
+			// zero, which is the same credit that never expires.
+			return nil, &wasm.HostError{Code: "bonus", Message: err.Error()}
+		case bar.DefaultExpiresAt > 0:
+			// A bar whose default lifetime has run out would, taken as zero, hand
+			// out credit that never expires — the opposite of what its owner set.
+			// The plugin can still say how long it wants with valid_days.
+			if bar.DefaultExpiresAt <= now.UnixMilli() {
+				return nil, &wasm.HostError{Code: "bonus_bar_expired", Message: "the bonus bar's default expiry has passed; give valid_days"}
+			}
+			expires = bar.DefaultExpiresAt
+		}
+	}
+	if _, err := m.host.Bonus.GrantTo(c.Ctx, q, a.BarID, a.UserID, a.Amount, expires, "plugin:"+plugin, a.Note); err != nil {
+		switch {
+		case errors.Is(err, bonus.ErrNotFound):
+			return nil, &wasm.HostError{Code: "bonus_bar_not_found", Message: "there is no active bonus bar with that id"}
+		case errors.Is(err, bonus.ErrInvalidAmount), errors.Is(err, bonus.ErrInvalidExpiry):
+			return nil, badArg("rewards.bonus: %v", err)
+		}
+		return nil, &wasm.HostError{Code: "bonus", Message: err.Error()}
+	}
+	return map[string]any{"expires_at": expires}, nil
+}
+
+// challengeOp lends a plugin the instance's own human check. Which kinds it
+// asks for is the core's decision, not the plugin's, so a plugin cannot ask
+// for something weaker than the instance would; and the keys never leave the
+// server.
+func (m *Manager) challengeOp(c *wasm.Call, op string, raw json.RawMessage) (any, error) {
+	if m.host == nil || m.host.Challenge.Describe == nil || m.host.Challenge.Verify == nil {
+		return nil, &wasm.HostError{Code: "challenge_unavailable", Message: "this server has no human check to lend"}
+	}
+	if op == "challenge.describe" {
+		return m.host.Challenge.Describe(), nil
+	}
+	var a struct {
+		ChallengeProof
+		IP string `json:"ip"`
+	}
+	if err := json.Unmarshal(raw, &a); err != nil {
+		return nil, badArg("challenge.verify: %v", err)
+	}
+	if err := m.host.Challenge.Verify(c.Ctx, a.ChallengeProof, a.IP); err != nil {
+		if errors.Is(err, turnstile.ErrUnavailable) {
+			return nil, &wasm.HostError{Code: "challenge_unavailable", Message: "the challenge service could not be reached"}
+		}
+		return nil, &wasm.HostError{Code: "challenge_failed", Message: "the challenge was not passed"}
+	}
+	return nil, nil
+}
+
+func (m *Manager) consoleOp(c *wasm.Call, st *callState, op string, raw json.RawMessage) (any, error) {
+	// Bound to the invocation: a call the backend made must not outlive the
+	// deadline the backend was given, which the console session's own context
+	// does not carry. The runtime is the command's own, not a copy: Call leaves
+	// the body it received on the receiver, which is what --json prints, so the
+	// command has to read it from the runtime that made the call. Its context is
+	// put back when the call returns, since the command goes on under its own.
+	prev := st.console.Ctx
+	st.console.Ctx = c.Ctx
+	defer func() { st.console.Ctx = prev }()
 	rt := st.console
 	switch op {
 	case "console.resolve_user":
@@ -578,11 +1215,18 @@ func (m *Manager) consoleOp(st *callState, op string, raw json.RawMessage) (any,
 		}
 		id, err := console.ResolveUser(rt, a.Ref)
 		if err != nil {
-			st.consoleErr = err
+			st.noteConsoleErr(err)
 			return nil, &wasm.HostError{Code: "console", Message: err.Error()}
 		}
 		return id, nil
 	default:
+		// The endpoint may reach outside the server (a mail test, a health probe),
+		// and a transaction held open across that call keeps its connection and
+		// the rows it locked for as long as the call takes. http.fetch refuses for
+		// the same reason.
+		if st.tx != nil {
+			return nil, &wasm.HostError{Code: "tx_open", Message: "a console command cannot run while a transaction is open"}
+		}
 		var a struct {
 			Method string `json:"method"`
 			Path   string `json:"path"`
@@ -594,11 +1238,134 @@ func (m *Manager) consoleOp(st *callState, op string, raw json.RawMessage) (any,
 		if !strings.HasPrefix(a.Path, "/api/admin/") {
 			return nil, badArg("console.call reaches administrative endpoints only")
 		}
+		// The method alone is not enough: a command that declared one write could
+		// otherwise send any method to any administrative path, a DELETE among
+		// them, without the --yes a destructive command is asked for.
+		if st.legacyCall {
+			if !rt.MayCall(a.Method) {
+				return nil, badArg("console.call: %s is not an endpoint this command declares", a.Method)
+			}
+		} else if !declaresEndpoint(st.endpoints, a.Method, a.Path) {
+			return nil, badArg("console.call: %s %s is not an endpoint this command declares", a.Method, a.Path)
+		}
 		data, _, err := rt.Call(a.Method, a.Path, a.Body)
 		if err != nil {
-			st.consoleErr = err
+			st.noteConsoleErr(err)
 			return nil, &wasm.HostError{Code: "console", Message: err.Error()}
 		}
 		return map[string]any{"data": data}, nil
 	}
+}
+
+// declaresEndpoint is whether method and path are one of the endpoints given.
+// A query string is the command's to choose and is not compared. A {name}
+// segment matches any one segment but a dot or two, which the router would
+// clean into a different path from the one declared.
+func declaresEndpoint(endpoints []string, method, path string) bool {
+	if i := strings.IndexByte(path, '?'); i >= 0 {
+		path = path[:i]
+	}
+	got := strings.Split(path, "/")
+	for _, endpoint := range endpoints {
+		wantMethod, pattern, ok := strings.Cut(endpoint, " ")
+		if !ok || wantMethod != method {
+			continue
+		}
+		want := strings.Split(strings.TrimSpace(pattern), "/")
+		if len(want) != len(got) {
+			continue
+		}
+		match := true
+		for i, seg := range want {
+			if strings.HasPrefix(seg, "{") && strings.HasSuffix(seg, "}") {
+				if got[i] == "" || got[i] == "." || got[i] == ".." {
+					match = false
+					break
+				}
+				continue
+			}
+			if seg != got[i] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
+}
+
+// countAudit charges one row to the invocation's notification and security
+// budget. A backend that loops over its accounts would otherwise write one
+// row per account with nothing to stop it.
+func (st *callState) countAudit() error {
+	if st.auditWrites >= maxAuditWrites {
+		return &wasm.HostError{Code: "write_limit", Message: "this call has written as many notifications and security events as it may"}
+	}
+	st.auditWrites++
+	return nil
+}
+
+// administrator reports whether a call was made by an administrator's own
+// request. Only such a request may speak for every account or for the
+// administrators' own labels.
+func administrator(actor *wasm.Actor) bool {
+	return actor != nil && user.User{Role: user.Role(actor.Role)}.IsAdmin()
+}
+
+// securitySource is the source a package's security event is filed under. A
+// package names its own events and nobody else's: a label the core writes its
+// own events under, or another package's "plugin:" label, is filed under this
+// package instead, so an event never reads as the core's or another package's.
+// Refusing every label would take away the ones a package uses for its own
+// events, which an installed package would then lose without a word.
+// "admin" is the exception an administrator's own request may carry, since an
+// administrator's page records its actions under it and the actor says who.
+func securitySource(plugin, claimed string, admin bool) string {
+	own := "plugin:" + plugin
+	switch {
+	case claimed == "", strings.HasPrefix(claimed, "plugin:"):
+		return own
+	case claimed == "admin":
+		if admin {
+			return claimed
+		}
+		return own
+	case coreSources[claimed]:
+		return own
+	}
+	return claimed
+}
+
+// coreSources are the labels the core writes security events under, apart
+// from "admin", which securitySource handles itself. "web" and "ssh" are the
+// transports a console command is recorded under.
+//
+// These are literals rather than constants because the packages that write
+// them are imported by this one, so they cannot import it back for a shared
+// name. A label the core starts writing has to be added here too: a missing one
+// lets a package file under it, and the entry reads as the core's own.
+var coreSources = map[string]bool{
+	"backoffice": true, "system": true, "user": true, "ai": true, "chat_speed": true,
+	"web": true, "ssh": true,
+}
+
+// coreEvents are the event names the core records itself (internal/security,
+// the admin's account actions and log prune). A package's entries carry its
+// own names.
+var coreEvents = map[string]bool{
+	securityevents.EventSignupReview:       true,
+	securityevents.EventAPIRestriction:     true,
+	securityevents.EventAPIRestrictionLift: true,
+	securityevents.EventChatChallenge:      true,
+	securityevents.EventPoWChallenge:       true,
+	securityevents.EventTurnstileChallenge: true,
+	securityevents.EventConsoleCommand:     true,
+	securityevents.EventTwoFactor:          true,
+	securityevents.EventNewDevice:          true,
+	securityevents.EventPlugin:             true,
+	securityevents.EventPasswordReset:      true,
+	securityevents.EventAccountDeleted:     true,
+	securityevents.EventLogPrune:           true,
 }

@@ -4,6 +4,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, nextTick, type App } from 'vue';
+import { createMemoryHistory, createRouter } from 'vue-router';
 import { changeLanguage, t } from '@/composables/useI18n';
 import OaToastStack from '@/components/OaToastStack.vue';
 
@@ -13,11 +14,14 @@ vi.mock('@/api/client', () => ({
     post: vi.fn(async () => undefined) as unknown as <T>(url: string, body?: unknown) => Promise<T>,
   },
 }));
-vi.mock('@/router', () => ({ router: { push: vi.fn() } }));
 
 import { api } from '@/api/client';
-import { router } from '@/router';
 import { activeToasts, stopNotifications } from '@/stores/notifications';
+
+// The card navigates through the router it is mounted with. A memory router
+// records the push without moving the page.
+const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:p(.*)*', component: { render: () => null } }] });
+const pushRoute = vi.spyOn(router, 'push').mockResolvedValue(undefined);
 
 const POLL_MS = 30_000;
 
@@ -35,14 +39,15 @@ afterEach(() => {
   app?.unmount();
   app = null;
   host.remove();
-  document.body.textContent = '';
   stopNotifications();
   vi.clearAllMocks();
   vi.useRealTimers();
 });
 
+// Not mountComponent: the stack is the app's root here, and under fake timers it advances them once for the store's first load where settle would advance four rounds.
 async function mount(): Promise<void> {
   app = createApp(OaToastStack);
+  app.use(router);
   app.mount(host);
   await vi.advanceTimersByTimeAsync(0); // the store's own initial load
   await nextTick();
@@ -74,7 +79,7 @@ describe('OaToastStack', () => {
     host.querySelector<HTMLElement>('.oa-toast')!.click();
     await nextTick();
 
-    expect(router.push).toHaveBeenCalledWith('/usage');
+    expect(pushRoute).toHaveBeenCalledWith('/usage');
     expect(activeToasts.value).toHaveLength(0);
   });
 
@@ -86,8 +91,18 @@ describe('OaToastStack', () => {
     host.querySelector<HTMLElement>('.oa-toast-close')!.click();
     await nextTick();
 
-    expect(router.push).not.toHaveBeenCalled();
+    expect(pushRoute).not.toHaveBeenCalled();
     expect(activeToasts.value).toHaveLength(0);
+  });
+
+  it('names the close button in a tooltip as well as for a screen reader', async () => {
+    await mount();
+    push('a');
+    await nextTick();
+
+    const close = host.querySelector<HTMLButtonElement>('.oa-toast-close')!;
+    expect(close.title).toBe(t('close'));
+    expect(close.getAttribute('aria-label')).toBe(t('close'));
   });
 
   it('auto-dismisses six seconds after it appears', async () => {

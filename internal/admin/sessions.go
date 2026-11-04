@@ -57,7 +57,7 @@ func (h *Handlers) userSessions(w http.ResponseWriter, r *http.Request) error {
 	out := make([]adminSessionPayload, 0, len(sessions))
 	for _, s := range sessions {
 		out = append(out, adminSessionPayload{
-			ID: s.ID[:16], CreatedAt: s.CreatedAt, LastSeenAt: s.LastSeenAt, IP: s.IP, UserAgent: s.UserAgent,
+			ID: auth.SessionRef(s.ID), CreatedAt: s.CreatedAt, LastSeenAt: s.LastSeenAt, IP: s.IP, UserAgent: s.UserAgent,
 		})
 	}
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"sessions": out})
@@ -74,14 +74,14 @@ func (h *Handlers) revokeUserSession(w http.ResponseWriter, r *http.Request) err
 
 	ref := r.PathValue("sid")
 	if !auth.ValidSessionRef(ref) {
-		return httpx.BadRequest("Malformed session id.")
+		return httpx.BadRequestCode("malformed_session_id", "Malformed session id.")
 	}
 	removed, err := h.auth.Sessions().DeleteByPrefixForUser(r.Context(), userID, ref)
 	if err != nil {
 		return httpx.Internal(err)
 	}
 	if !removed {
-		return httpx.NotFound("No such session.")
+		return httpx.NotFoundCode("session_not_found", "No such session.")
 	}
 	return httpx.NoContent(w)
 }

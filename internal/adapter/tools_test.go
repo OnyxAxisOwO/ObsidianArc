@@ -3,6 +3,7 @@ package adapter
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -210,6 +211,50 @@ func TestOpenAIReadsBufferedToolCalls(t *testing.T) {
 	}
 }
 
+// The buffered path refuses what the streamed path refuses. Arguments that parse
+// as JSON but are not an object would reach the caller's tool and fail there;
+// null is the same as no arguments.
+func TestOpenAIBufferedArgumentsMustBeAnObject(t *testing.T) {
+	t.Run("an array is refused rather than handed to the tool", func(t *testing.T) {
+		server := jsonServer(t, `{"choices":[{"message":{"content":null,"tool_calls":[
+		{"id":"call_x","type":"function","function":{"name":"lookup","arguments":"[1,2]"}}]},
+		"finish_reason":"tool_calls"}]}`, nil)
+
+		var out collected
+		result, err := testRegistry().Chat(context.Background(),
+			Provider{Kind: KindOpenAI, BaseURL: server.URL, APIKey: "k"},
+			ChatRequest{Model: testModel(), Tools: toolFixture(),
+				Messages: []Message{{Role: RoleUser, Parts: []Part{{Kind: PartText, Text: "hi"}}}}},
+			out.sink)
+		var upstream *Error
+		if !errors.As(err, &upstream) || upstream.Kind != ErrorUpstream {
+			t.Fatalf("err = %v, want an upstream error", err)
+		}
+		if len(result.ToolCalls) != 0 {
+			t.Errorf("tool calls = %+v, want none", result.ToolCalls)
+		}
+	})
+
+	t.Run("null is a call with no arguments", func(t *testing.T) {
+		server := jsonServer(t, `{"choices":[{"message":{"content":null,"tool_calls":[
+		{"id":"call_x","type":"function","function":{"name":"lookup","arguments":"null"}}]},
+		"finish_reason":"tool_calls"}]}`, nil)
+
+		var out collected
+		result, err := testRegistry().Chat(context.Background(),
+			Provider{Kind: KindOpenAI, BaseURL: server.URL, APIKey: "k"},
+			ChatRequest{Model: testModel(), Tools: toolFixture(),
+				Messages: []Message{{Role: RoleUser, Parts: []Part{{Kind: PartText, Text: "hi"}}}}},
+			out.sink)
+		if err != nil {
+			t.Fatalf("chat: %v", err)
+		}
+		if len(result.ToolCalls) != 1 || result.ToolCalls[0].Arguments != "{}" {
+			t.Errorf("calls = %+v, want the one call with {} arguments", result.ToolCalls)
+		}
+	})
+}
+
 // The arguments of a streamed call arrive a few characters at a time, and two
 // calls in flight interleave. The index is the identity, not the order of
 // arrival.
@@ -255,6 +300,195 @@ func TestOpenAIStreamAssemblesInterleavedToolCalls(t *testing.T) {
 	if len(out.calls) != 2 || out.calls[0].Arguments != `{"q":"go"}` {
 		t.Errorf("events = %+v", out.calls)
 	}
+}
+
+// A server that leaves the index off while two calls are in flight names each
+// call by its id. Two ids are two calls: the second must not overwrite the
+// first or have its arguments appended to it.
+func TestOpenAIStreamKeepsIndexlessCallsApart(t *testing.T) {
+	t.Run("two calls, each with its own id", func(t *testing.T) {
+		server := sseServer(t, []string{
+			`{"choices":[{"delta":{"tool_calls":[{"id":"call_a","type":"function","function":{"name":"lookup","arguments":"{\"q\":\"go\"}"}}]}}]}`,
+			`{"choices":[{"delta":{"tool_calls":[{"id":"call_b","type":"function","function":{"name":"clock","arguments":"{}"}}]}}]}`,
+			`{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+		}, nil)
+
+		var out collected
+		result, err := testRegistry().Chat(context.Background(),
+			Provider{Kind: KindOpenAI, BaseURL: server.URL, APIKey: "k"},
+			ChatRequest{Model: testModel(), Stream: true, Tools: toolFixture(),
+				Messages: []Message{{Role: RoleUser, Parts: []Part{{Kind: PartText, Text: "hi"}}}}},
+			out.sink)
+		if err != nil {
+			t.Fatalf("chat: %v", err)
+		}
+		if len(result.ToolCalls) != 2 {
+			t.Fatalf("tool calls = %+v, want two", result.ToolCalls)
+		}
+		if got := result.ToolCalls[0]; got.ID != "call_a" || got.Name != "lookup" || got.Arguments != `{"q":"go"}` {
+			t.Errorf("first call = %+v", got)
+		}
+		if got := result.ToolCalls[1]; got.ID != "call_b" || got.Name != "clock" || got.Arguments != "{}" {
+			t.Errorf("second call = %+v", got)
+		}
+	})
+
+	t.Run("one call whose id repeats on every fragment", func(t *testing.T) {
+		server := sseServer(t, []string{
+			`{"choices":[{"delta":{"tool_calls":[{"id":"call_a","type":"function","function":{"name":"lookup","arguments":"{\"q\""}}]}}]}`,
+			`{"choices":[{"delta":{"tool_calls":[{"id":"call_a","function":{"arguments":":\"go\"}"}}]}}]}`,
+			`{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+		}, nil)
+
+		var out collected
+		result, err := testRegistry().Chat(context.Background(),
+			Provider{Kind: KindOpenAI, BaseURL: server.URL, APIKey: "k"},
+			ChatRequest{Model: testModel(), Stream: true, Tools: toolFixture(),
+				Messages: []Message{{Role: RoleUser, Parts: []Part{{Kind: PartText, Text: "hi"}}}}},
+			out.sink)
+		if err != nil {
+			t.Fatalf("chat: %v", err)
+		}
+		if len(result.ToolCalls) != 1 || result.ToolCalls[0].Arguments != `{"q":"go"}` {
+			t.Errorf("calls = %+v, want the one call with its arguments whole", result.ToolCalls)
+		}
+	})
+
+	t.Run("arguments that do not parse are not handed on", func(t *testing.T) {
+		server := sseServer(t, []string{
+			`{"choices":[{"delta":{"tool_calls":[{"id":"call_a","type":"function","function":{"name":"lookup","arguments":"{\"a\":1}{\"b\":2}"}}]}}]}`,
+			`{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+		}, nil)
+
+		var out collected
+		_, err := testRegistry().Chat(context.Background(),
+			Provider{Kind: KindOpenAI, BaseURL: server.URL, APIKey: "k"},
+			ChatRequest{Model: testModel(), Stream: true, Tools: toolFixture(),
+				Messages: []Message{{Role: RoleUser, Parts: []Part{{Kind: PartText, Text: "hi"}}}}},
+			out.sink)
+		var upstream *Error
+		if !errors.As(err, &upstream) || upstream.Kind != ErrorUpstream {
+			t.Fatalf("err = %v, want an upstream error for the broken arguments", err)
+		}
+		if len(out.calls) != 0 {
+			t.Errorf("a call with broken arguments was delivered: %+v", out.calls)
+		}
+	})
+}
+
+// The first frame of a call can carry its id and name with no index, and a
+// later frame can carry the index with the arguments. Both name one call; an
+// index is not a reason to open a second, nameless one.
+func TestOpenAIStreamJoinsIndexLaterThanId(t *testing.T) {
+	t.Run("the index arrives after an index-less opening frame", func(t *testing.T) {
+		server := sseServer(t, []string{
+			`{"choices":[{"delta":{"tool_calls":[{"id":"call_a","function":{"name":"lookup","arguments":""}}]}}]}`,
+			`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"q\":\"go\"}"}}]}}]}`,
+			`{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+		}, nil)
+
+		var out collected
+		result, err := testRegistry().Chat(context.Background(),
+			Provider{Kind: KindOpenAI, BaseURL: server.URL, APIKey: "k"},
+			ChatRequest{Model: testModel(), Stream: true, Tools: toolFixture(),
+				Messages: []Message{{Role: RoleUser, Parts: []Part{{Kind: PartText, Text: "hi"}}}}},
+			out.sink)
+		if err != nil {
+			t.Fatalf("chat: %v", err)
+		}
+		if len(result.ToolCalls) != 1 {
+			t.Fatalf("tool calls = %+v, want the one call", result.ToolCalls)
+		}
+		if got := result.ToolCalls[0]; got.ID != "call_a" || got.Name != "lookup" || got.Arguments != `{"q":"go"}` {
+			t.Errorf("call = %+v, want its arguments whole", got)
+		}
+		if len(out.calls) != 1 || out.calls[0].Arguments != `{"q":"go"}` {
+			t.Errorf("events = %+v, want the one call whole", out.calls)
+		}
+	})
+
+	t.Run("the id repeats on the frame that carries the index", func(t *testing.T) {
+		server := sseServer(t, []string{
+			`{"choices":[{"delta":{"tool_calls":[{"id":"call_a","function":{"name":"lookup","arguments":""}}]}}]}`,
+			`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","function":{"arguments":"{\"q\":\"go\"}"}}]}}]}`,
+			`{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+		}, nil)
+
+		var out collected
+		result, err := testRegistry().Chat(context.Background(),
+			Provider{Kind: KindOpenAI, BaseURL: server.URL, APIKey: "k"},
+			ChatRequest{Model: testModel(), Stream: true, Tools: toolFixture(),
+				Messages: []Message{{Role: RoleUser, Parts: []Part{{Kind: PartText, Text: "hi"}}}}},
+			out.sink)
+		if err != nil {
+			t.Fatalf("chat: %v", err)
+		}
+		if len(result.ToolCalls) != 1 || result.ToolCalls[0].Arguments != `{"q":"go"}` {
+			t.Errorf("calls = %+v, want the one call with its arguments whole", result.ToolCalls)
+		}
+	})
+
+	// The index after a call that already has one of its own names a second
+	// call: the first must not swallow it.
+	t.Run("a second index opens a second call", func(t *testing.T) {
+		server := sseServer(t, []string{
+			`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","function":{"name":"lookup","arguments":"{\"q\":\"go\"}"}}]}}]}`,
+			`{"choices":[{"delta":{"tool_calls":[{"index":1,"function":{"name":"clock","arguments":"{}"}}]}}]}`,
+			`{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+		}, nil)
+
+		var out collected
+		result, err := testRegistry().Chat(context.Background(),
+			Provider{Kind: KindOpenAI, BaseURL: server.URL, APIKey: "k"},
+			ChatRequest{Model: testModel(), Stream: true, Tools: toolFixture(),
+				Messages: []Message{{Role: RoleUser, Parts: []Part{{Kind: PartText, Text: "hi"}}}}},
+			out.sink)
+		if err != nil {
+			t.Fatalf("chat: %v", err)
+		}
+		if len(result.ToolCalls) != 2 {
+			t.Fatalf("tool calls = %+v, want two", result.ToolCalls)
+		}
+		if got := result.ToolCalls[0]; got.ID != "call_a" || got.Arguments != `{"q":"go"}` {
+			t.Errorf("first call = %+v", got)
+		}
+		if got := result.ToolCalls[1]; got.Name != "clock" || got.Arguments != "{}" {
+			t.Errorf("second call = %+v", got)
+		}
+	})
+
+	// Two parallel calls that happen to share an id are still two calls. Folding
+	// the second into the first would run both argument strings together, and
+	// the turn would fail on JSON that cannot parse.
+	t.Run("two indexes sharing an id are two calls", func(t *testing.T) {
+		server := sseServer(t, []string{
+			`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_x","function":{"name":"lookup","arguments":"{\"q\":\"go\"}"}}]}}]}`,
+			`{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_x","function":{"name":"lookup","arguments":"{\"q\":\"rust\"}"}}]}}]}`,
+			`{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+		}, nil)
+
+		var out collected
+		result, err := testRegistry().Chat(context.Background(),
+			Provider{Kind: KindOpenAI, BaseURL: server.URL, APIKey: "k"},
+			ChatRequest{Model: testModel(), Stream: true, Tools: toolFixture(),
+				Messages: []Message{{Role: RoleUser, Parts: []Part{{Kind: PartText, Text: "hi"}}}}},
+			out.sink)
+		if err != nil {
+			t.Fatalf("chat: %v", err)
+		}
+		if len(result.ToolCalls) != 2 {
+			t.Fatalf("tool calls = %+v, want two", result.ToolCalls)
+		}
+		if got := result.ToolCalls[0]; got.Name != "lookup" || got.Arguments != `{"q":"go"}` {
+			t.Errorf("first call = %+v, want its arguments whole", got)
+		}
+		if got := result.ToolCalls[1]; got.Name != "lookup" || got.Arguments != `{"q":"rust"}` {
+			t.Errorf("second call = %+v, want its arguments whole", got)
+		}
+		if len(out.calls) != 2 {
+			t.Errorf("events = %+v, want two calls", out.calls)
+		}
+	})
 }
 
 // A server that repeats the whole name on every fragment is more common than
@@ -418,6 +652,65 @@ func TestAnthropicToolResultsHeadTheirTurn(t *testing.T) {
 	}
 }
 
+// The history is trimmed to open on a user turn. Trimming can cut off the call
+// a result answers, and a result whose call is gone is refused by the API, so
+// it goes with the call: the rest of its turn stays, and a turn with nothing
+// left is dropped.
+func TestAnthropicTrimsResultsOrphanedByTheHead(t *testing.T) {
+	call := Part{Kind: PartToolCall, ToolCallID: "call_1", ToolName: "lookup", ToolArgs: `{}`}
+	result := Part{Kind: PartToolResult, ToolCallID: "call_1", Text: "a language"}
+	question := Part{Kind: PartText, Text: "and now?"}
+
+	send := func(t *testing.T, messages []Message) []any {
+		t.Helper()
+		var sent map[string]any
+		server := jsonServer(t, `{"content":[{"type":"text","text":"ok"}],"usage":{}}`, &sent)
+		var out collected
+		if _, err := testRegistry().Chat(context.Background(),
+			Provider{Kind: KindAnthropic, BaseURL: server.URL, APIKey: "k"},
+			ChatRequest{Model: testModel(), Tools: toolFixture(), Messages: messages}, out.sink); err != nil {
+			t.Fatalf("chat: %v", err)
+		}
+		sentMessages, _ := sent["messages"].([]any)
+		return sentMessages
+	}
+
+	t.Run("the result shares its turn with the question", func(t *testing.T) {
+		messages := send(t, []Message{
+			{Role: RoleAssistant, Parts: []Part{call}},
+			{Role: RoleTool, Parts: []Part{result}},
+			{Role: RoleUser, Parts: []Part{question}},
+		})
+		if len(messages) != 1 {
+			t.Fatalf("messages = %v, want the question alone", messages)
+		}
+		turn, _ := messages[0].(map[string]any)
+		blocks, _ := turn["content"].([]any)
+		if len(blocks) != 1 {
+			t.Fatalf("turn = %v, want only the question", turn["content"])
+		}
+		if block, _ := blocks[0].(map[string]any); block["type"] != "text" || block["text"] != "and now?" {
+			t.Errorf("the question did not survive the trim: %v", block)
+		}
+	})
+
+	t.Run("a turn holding only the orphaned result is dropped", func(t *testing.T) {
+		messages := send(t, []Message{
+			{Role: RoleAssistant, Parts: []Part{call}},
+			{Role: RoleTool, Parts: []Part{result}},
+			{Role: RoleAssistant, Parts: []Part{{Kind: PartText, Text: "It is a language."}}},
+			{Role: RoleUser, Parts: []Part{question}},
+		})
+		if len(messages) != 1 {
+			t.Fatalf("messages = %v, want the question alone", messages)
+		}
+		turn, _ := messages[0].(map[string]any)
+		if turn["role"] != "user" {
+			t.Errorf("the conversation opens with %v, want a user turn", turn["role"])
+		}
+	})
+}
+
 // Forcing a tool is refused while thinking is on, so the push is dropped
 // rather than made into a failed turn — the same trade the temperature makes.
 func TestAnthropicDropsAForcedToolChoiceWhileThinking(t *testing.T) {
@@ -452,6 +745,77 @@ func TestAnthropicDropsAForcedToolChoiceWhileThinking(t *testing.T) {
 	choice, _ := sent["tool_choice"].(map[string]any)
 	if choice["type"] != "none" {
 		t.Errorf("tool_choice = %v, want none", sent["tool_choice"])
+	}
+}
+
+// A forced choice must not survive into a continuation. Thinking is off there,
+// so keying the drop on the per-turn flag sent it on every result, and the model
+// had to call a tool again each time.
+func TestAnthropicForcedChoiceIsDroppedOnContinuations(t *testing.T) {
+	var sent map[string]any
+	server := jsonServer(t, `{"content":[{"type":"text","text":"ok"}],"usage":{}}`, &sent)
+
+	var out collected
+	if _, err := testRegistry().Chat(context.Background(),
+		Provider{Kind: KindAnthropic, BaseURL: server.URL, APIKey: "k"},
+		ChatRequest{
+			Model: testModel(), Tools: toolFixture(),
+			Reasoning:  Reasoning{Enabled: true, Effort: EffortLow},
+			ToolChoice: ToolChoice{Mode: ToolChoiceRequired},
+			Messages:   toolTranscript(),
+		}, out.sink); err != nil {
+		t.Fatalf("chat: %v", err)
+	}
+	if _, present := sent["thinking"]; present {
+		t.Fatalf("the continuation was sent with thinking: %v", sent["thinking"])
+	}
+	if _, present := sent["tool_choice"]; present {
+		t.Errorf("a forced choice reached a continuation: %v", sent["tool_choice"])
+	}
+}
+
+// A tool loop's continuation has no signed thinking block to replay with the
+// call it made, so the request goes out without thinking. The first turn of
+// the same conversation has no tool history and keeps its reasoning.
+func TestAnthropicThinkingStopsOnceAToolLoopBegins(t *testing.T) {
+	var sent map[string]any
+	server := jsonServer(t, `{"content":[{"type":"text","text":"ok"}],"usage":{}}`, &sent)
+
+	send := func(messages []Message) map[string]any {
+		t.Helper()
+		var out collected
+		if _, err := testRegistry().Chat(context.Background(),
+			Provider{Kind: KindAnthropic, BaseURL: server.URL, APIKey: "k"},
+			ChatRequest{
+				Model: testModel(), Tools: toolFixture(),
+				Reasoning: Reasoning{Enabled: true, Effort: EffortLow},
+				Messages:  messages,
+			}, out.sink); err != nil {
+			t.Fatalf("chat: %v", err)
+		}
+		return sent
+	}
+
+	first := send([]Message{{Role: RoleUser, Parts: []Part{{Kind: PartText, Text: "what is go"}}}})
+	if _, present := first["thinking"]; !present {
+		t.Error("the first turn of a conversation lost its thinking")
+	}
+
+	continuation := send(toolTranscript())
+	if _, present := continuation["thinking"]; present {
+		t.Errorf("a tool continuation was sent with thinking: %v", continuation["thinking"])
+	}
+	if _, present := continuation["tools"]; !present {
+		t.Error("the tools were dropped from a tool continuation")
+	}
+
+	// The loop finished and the user asked something new: that is a turn with
+	// no call to replay, so its reasoning stays on.
+	finished := append(toolTranscript(),
+		Message{Role: RoleAssistant, Parts: []Part{{Kind: PartText, Text: "a language"}}},
+		Message{Role: RoleUser, Parts: []Part{{Kind: PartText, Text: "and rust?"}}})
+	if _, present := send(finished)["thinking"]; !present {
+		t.Error("a new question after a finished tool loop lost its thinking")
 	}
 }
 
@@ -501,6 +865,7 @@ func TestAnthropicStreamAssemblesToolCalls(t *testing.T) {
 		`{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\"go\"}"}}`,
 		`{"type":"content_block_stop","index":1}`,
 		`{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":12}}`,
+		`{"type":"message_stop"}`,
 	}
 	server := sseServer(t, frames, nil)
 
@@ -546,6 +911,11 @@ func TestArgumentsAreAlwaysParseableJSON(t *testing.T) {
 	}
 	if got := toolArguments(`{"q":1}`); got != `{"q":1}` {
 		t.Errorf("toolArguments passed through as %q", got)
+	}
+	// A turn cut off at max_tokens hands over half a call. The compat surfaces
+	// encode this as a RawMessage, so the text must not reach them.
+	if got := toolArguments(`{"q":`); got != "{}" {
+		t.Errorf("toolArguments(truncated) = %q, want {}", got)
 	}
 }
 

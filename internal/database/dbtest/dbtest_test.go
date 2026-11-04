@@ -45,7 +45,7 @@ func TestSearchPathIsAddedToTheKeywordForm(t *testing.T) {
 }
 
 func TestASchemaNameIsUsableAsAnIdentifier(t *testing.T) {
-	name := schemaName(t)
+	name := schemaName(t, "/work/internal/some/package")
 	if !strings.HasPrefix(name, "oa_") {
 		t.Errorf("name = %q, want the oa_ prefix that says who left it behind", name)
 	}
@@ -60,5 +60,30 @@ func TestASchemaNameIsUsableAsAnIdentifier(t *testing.T) {
 			continue
 		}
 		t.Fatalf("name %q carries %q, which would need quoting", name, r)
+	}
+	// A name longer than the room left must still fit, and keep its tail: the
+	// tail is what tells one subtest from its sibling.
+	t.Run(strings.Repeat("a-very-long-subtest-name-", 4)+"final", func(t *testing.T) {
+		long := schemaName(t, "/work/internal/some/package")
+		if len(long) > 63 {
+			t.Errorf("long name is %d bytes: %q", len(long), long)
+		}
+		if !strings.HasSuffix(long, "_final") {
+			t.Errorf("long name %q lost its distinguishing tail", long)
+		}
+	})
+}
+
+// Two packages can each have a test of the same name, and CI runs their
+// binaries against one database at the same time. Their schemas must differ, or
+// one package's cleanup drops the other's tables.
+func TestTheSameTestNameInTwoPackagesGetsTwoSchemas(t *testing.T) {
+	mail := schemaName(t, "/work/internal/mail")
+	server := schemaName(t, "/work/internal/server")
+	if mail == server {
+		t.Fatalf("both packages get %q; their tests would share one schema", mail)
+	}
+	if again := schemaName(t, "/work/internal/mail"); again != mail {
+		t.Errorf("the same package got %q then %q; a crashed run's schema would never be found again", mail, again)
 	}
 }

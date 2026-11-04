@@ -6,7 +6,6 @@ let app: App | undefined;
 afterEach(() => {
   app?.unmount();
   app = undefined;
-  document.body.textContent = '';
   // The component writes to <body>; a test that fails partway through must not
   // leave that behind for the next one.
   document.body.classList.remove('oa-resizing');
@@ -18,6 +17,7 @@ afterEach(() => {
  * component calls. `captured` is exposed because more than one of the ways a
  * drag ends depends on whether the capture is still held when it does.
  */
+// Not mountComponent: the tests use the screen the moment it is mounted, without awaiting, and read its first render.
 function mount(): { handle: HTMLElement; captured: () => boolean; drop: () => void } {
   const host = document.createElement('div');
   document.body.append(host);

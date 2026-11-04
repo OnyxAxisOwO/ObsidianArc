@@ -18,8 +18,8 @@ package health
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -120,8 +120,9 @@ func (s *Store) Record(ctx context.Context, modelID string, ok bool, code, messa
 	return nil
 }
 
-// Samples reads every piece of evidence about one model since a moment, newest
-// first, from both sources at once.
+// Samples reads the newest evidence about one model since a moment, up to
+// limit rows, from both sources at once. It is a capped slice of the window:
+// a count or a rate over the whole window is Rates' job, not this one's.
 //
 // A UNION rather than two queries and a merge in Go: the two tables answer the
 // same question in the same shape, and the ordering has to be across both of
@@ -169,6 +170,94 @@ func (s *Store) Samples(ctx context.Context, modelID string, since int64, limit 
 		return nil, fmt.Errorf("health: samples: %w", err)
 	}
 	return samples, nil
+}
+
+// samplesForBatch is how many models one SamplesFor statement asks about.
+// Each model is one arm of a compound SELECT, and SQLite refuses a compound
+// with more than 500 arms; well under that, the statement stays a size the
+// planner reads quickly.
+const samplesForBatch = 100
+
+// SamplesFor is Samples for many models at once: the same evidence, the same
+// statuses, the same window, and each model's newest perModelLimit rows,
+// keyed by model id. A model with no evidence has no entry.
+//
+// The cap is applied in the database, one ORDER BY ... LIMIT per model, so
+// each arm is exactly the query Samples runs and walks the same (model_id,
+// time) indexes, stopping at its cap. A window function over the whole window
+// would be one arm, but it reads every row of the window before it can cut
+// any, and on a busy ledger that is far more than the page shows.
+func (s *Store) SamplesFor(ctx context.Context, modelIDs []string, since int64, perModelLimit int) (map[string][]Sample, error) {
+	if perModelLimit <= 0 {
+		perModelLimit = 200
+	}
+	seen := make(map[string]bool, len(modelIDs))
+	unique := make([]string, 0, len(modelIDs))
+	for _, modelID := range modelIDs {
+		if !seen[modelID] {
+			seen[modelID] = true
+			unique = append(unique, modelID)
+		}
+	}
+
+	out := make(map[string][]Sample, len(unique))
+	for start := 0; start < len(unique); start += samplesForBatch {
+		batch := unique[start:min(start+samplesForBatch, len(unique))]
+		arms := make([]string, 0, len(batch))
+		args := make([]any, 0, len(batch)*9)
+		for i, modelID := range batch {
+			arms = append(arms, fmt.Sprintf(`SELECT * FROM (
+				SELECT model_id, at, ok, code, message, source FROM (
+					SELECT model_id, started_at AS at,
+					       CASE WHEN status = ? THEN 1 ELSE 0 END AS ok,
+					       error_code AS code, '' AS message, 'user' AS source
+					FROM usage_records
+					WHERE model_id = ? AND started_at >= ? AND status IN (?, ?)
+					UNION ALL
+					SELECT model_id, at, CASE WHEN ok THEN 1 ELSE 0 END AS ok, code, message, 'system' AS source
+					FROM model_probes
+					WHERE model_id = ? AND at >= ?
+				) AS evidence
+				ORDER BY at DESC
+				LIMIT ?
+			) AS m%d`, i))
+			// The statuses are Samples', for Samples' reason.
+			args = append(args, statusOK, modelID, since, statusOK, statusError,
+				modelID, since, perModelLimit)
+		}
+		if err := s.readSamples(ctx, strings.Join(arms, "\nUNION ALL\n"), args, out); err != nil {
+			return nil, err
+		}
+	}
+	// Each arm is ordered inside itself, but nothing orders the rows of a
+	// compound once the arms are joined, so the newest-first order Samples
+	// promises is restored here.
+	for _, samples := range out {
+		sort.SliceStable(samples, func(i, j int) bool { return samples[i].At > samples[j].At })
+	}
+	return out, nil
+}
+
+func (s *Store) readSamples(ctx context.Context, query string, args []any, out map[string][]Sample) error {
+	rows, err := s.db.Query(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("health: samples: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var modelID string
+		var sample Sample
+		var ok int
+		if err := rows.Scan(&modelID, &sample.At, &ok, &sample.Code, &sample.Message, &sample.Source); err != nil {
+			return fmt.Errorf("health: samples: %w", err)
+		}
+		sample.OK = ok == 1
+		out[modelID] = append(out[modelID], sample)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("health: samples: %w", err)
+	}
+	return nil
 }
 
 // The two statuses in usage_records that say something about the model. They
@@ -273,9 +362,15 @@ func (s *Store) Prune(ctx context.Context, before int64) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("health: prune: %w", err)
 	}
-	dropped, _ := result.RowsAffected()
-	if dropped > 0 {
+	// The rows are gone even when the driver cannot say how many it removed, so
+	// the revision moves in that case too. A count the driver could not give is
+	// reported as an error, not as zero rows dropped.
+	dropped, err := result.RowsAffected()
+	if err != nil || dropped > 0 {
 		s.revision.Add(1)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("health: prune: %w", err)
 	}
 	return dropped, nil
 }
@@ -304,54 +399,17 @@ func Probe(ctx context.Context, registry *adapter.Registry, upstream adapter.Pro
 	return time.Since(started), err
 }
 
-// Code turns an upstream failure into the short token the page groups by.
-//
-// Deliberately coarse. An operator scanning a list wants "the key is wrong"
-// and "it is rate limiting us" to each be one line, not one line per minute
-// with a different request id in it.
-func Code(err error) string {
-	if err == nil {
-		return ""
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return "timeout"
-	}
-	if errors.Is(err, context.Canceled) {
-		return "cancelled"
-	}
-
-	message := strings.ToLower(err.Error())
-	switch {
-	case strings.Contains(message, "401"), strings.Contains(message, "unauthorized"),
-		strings.Contains(message, "invalid api key"):
-		return "unauthorized"
-	case strings.Contains(message, "403"), strings.Contains(message, "forbidden"):
-		return "forbidden"
-	case strings.Contains(message, "404"), strings.Contains(message, "not found"):
-		return "model_not_found"
-	case strings.Contains(message, "429"), strings.Contains(message, "rate limit"):
-		return "rate_limited"
-	case strings.Contains(message, "timeout"), strings.Contains(message, "deadline"):
-		return "timeout"
-	case strings.Contains(message, "no such host"), strings.Contains(message, "connection refused"),
-		strings.Contains(message, "dial "):
-		return "unreachable"
-	case strings.Contains(message, "500"), strings.Contains(message, "502"),
-		strings.Contains(message, "503"), strings.Contains(message, "504"):
-		return "upstream_error"
-	default:
-		return "error"
-	}
-}
-
 // truncate bounds one stored message, with the cut delegated to text.Truncate
 // so it lands on a rune boundary. A byte-offset cut is what this used to do,
 // and an upstream error is routinely multi-byte UTF-8 — a Chinese provider's
 // message, a quoted response body. Cutting one of those mid-character produced
 // bytes PostgreSQL refuses, so the INSERT failed and the probe sample was
 // dropped: the evidence disappeared exactly when a model was failing loudly.
+//
+// The same refusal applies to a NUL byte or a byte that is not UTF-8, which an
+// upstream body can carry. text.Truncate keeps those, so Clean runs first.
 func truncate(value string, limit int) string {
-	value = strings.TrimSpace(value)
+	value = strings.TrimSpace(text.Clean(value))
 	cut := text.Truncate(value, limit)
 	// text.Truncate returns its input untouched when it already fits, which is
 	// what distinguishes "this was cut" from "this was the whole message".
@@ -423,110 +481,10 @@ func (s *Store) Reset(ctx context.Context) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("health: reset: %w", err)
 	}
-	dropped, _ := result.RowsAffected()
 	s.revision.Add(1)
-	return dropped, nil
-}
-
-// TimePoint is evidence aggregated into one time bucket for graphing.
-type TimePoint struct {
-	At     int64    `json:"at"`
-	Uptime *float64 `json:"uptime"`
-	Total  int      `json:"total"`
-}
-
-// Timeline groups recent evidence for each model into uniform time buckets so
-// that callers can render a trend without pulling thousands of raw samples.
-//
-// If resetAt is non-zero, evidence before resetAt is excluded from the buckets
-// while preserving the uniform time span across the requested window.
-func (s *Store) Timeline(ctx context.Context, since int64, resetAt int64, buckets int) (map[string][]TimePoint, error) {
-	if buckets <= 0 {
-		buckets = 24
-	}
-	now := time.Now().UnixMilli()
-	if resetAt > now {
-		resetAt = now
-	}
-	if since >= now {
-		since = now - 24*time.Hour.Milliseconds()
-	}
-	bucketSpan := (now - since) / int64(buckets)
-	if bucketSpan <= 0 {
-		bucketSpan = 1
-	}
-
-	evidenceSince := since
-	if resetAt > evidenceSince {
-		evidenceSince = resetAt
-	}
-
-	rows, err := s.db.Query(ctx, `
-		SELECT model_id, at, ok FROM (
-			SELECT model_id, started_at AS at,
-			       CASE WHEN status = ? THEN 1 ELSE 0 END AS ok
-			FROM usage_records
-			WHERE started_at >= ? AND status IN (?, ?)
-			UNION ALL
-			SELECT model_id, at, CASE WHEN ok THEN 1 ELSE 0 END AS ok
-			FROM model_probes
-			WHERE at >= ?
-		) AS evidence
-		ORDER BY at ASC`,
-		statusOK, evidenceSince, statusOK, statusError,
-		evidenceSince)
+	dropped, err := result.RowsAffected()
 	if err != nil {
-		return nil, fmt.Errorf("health: timeline: %w", err)
+		return 0, fmt.Errorf("health: reset: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
-
-	type count struct {
-		total int
-		ok    int
-	}
-	byModel := map[string][]count{}
-
-	for rows.Next() {
-		var modelID string
-		var at int64
-		var ok int
-		if err := rows.Scan(&modelID, &at, &ok); err != nil {
-			return nil, fmt.Errorf("health: timeline: %w", err)
-		}
-		list, exists := byModel[modelID]
-		if !exists {
-			list = make([]count, buckets)
-			byModel[modelID] = list
-		}
-		idx := int((at - since) / bucketSpan)
-		if idx < 0 {
-			idx = 0
-		}
-		if idx >= buckets {
-			idx = buckets - 1
-		}
-		list[idx].total++
-		if ok == 1 {
-			list[idx].ok++
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("health: timeline: %w", err)
-	}
-
-	result := make(map[string][]TimePoint, len(byModel))
-	for modelID, list := range byModel {
-		pts := make([]TimePoint, buckets)
-		for i := 0; i < buckets; i++ {
-			at := since + int64(i)*bucketSpan + bucketSpan/2
-			pt := TimePoint{At: at, Total: list[i].total}
-			if list[i].total > 0 {
-				u := float64(list[i].ok) / float64(list[i].total)
-				pt.Uptime = &u
-			}
-			pts[i] = pt
-		}
-		result[modelID] = pts
-	}
-	return result, nil
+	return dropped, nil
 }

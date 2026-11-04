@@ -9,9 +9,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math/rand/v2"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ordered records what reached the sink and in what order, which is the
@@ -51,7 +54,7 @@ func TestACallSurvivesItsOwnTagQuotedInAnArgument(t *testing.T) {
 	var sink collected
 	result, err := testRegistry().Chat(context.Background(),
 		Provider{Kind: KindOpenAI, BaseURL: server.URL},
-		ChatRequest{Model: toollessModel(), Tools: oneTool(), Messages: oneTurn()}, sink.sink)
+		ChatRequest{Model: toollessModel(), Tools: toolsNamed("lookup", "write_file"), Messages: oneTurn()}, sink.sink)
 	if err != nil {
 		t.Fatalf("chat: %v", err)
 	}
@@ -101,8 +104,6 @@ type failingAdapter struct {
 	deltas []string
 }
 
-func (failingAdapter) Kind() Kind { return KindOpenAI }
-
 func (a failingAdapter) Chat(_ context.Context, _ *http.Client, _ Provider, _ ChatRequest, sink Sink) (Result, error) {
 	for _, delta := range a.deltas {
 		if err := sink(Event{Type: EventDelta, Text: delta}); err != nil {
@@ -151,7 +152,7 @@ func TestAFailedTurnKeepsTheCallsItAlreadyFinished(t *testing.T) {
 	result, err := emulatedChat(context.Background(),
 		failingAdapter{text: done + " and then", deltas: []string{done + " and then"}},
 		nil, Provider{Kind: KindOpenAI},
-		ChatRequest{Model: toollessModel(), Tools: oneTool(), Messages: oneTurn(), Stream: true},
+		ChatRequest{Model: toollessModel(), Tools: toolsNamed("read_file"), Messages: oneTurn(), Stream: true},
 		sink.sink)
 
 	if err == nil {
@@ -290,12 +291,87 @@ func TestNullArgumentsBecomeAnEmptyObject(t *testing.T) {
 	}
 }
 
+// Arguments are an object or they are nothing. Present arguments that are not
+// an object leave the block as prose: a number, an array or a string that is
+// not JSON would reach the caller's function and fail there, and a truncated
+// object replaced by {} would run the tool with arguments the model never
+// finished writing.
+func TestArgumentsThatAreNotAnObjectLeaveTheBlockAsProse(t *testing.T) {
+	for _, body := range []string{
+		`{"name":"clock","arguments":5}`,
+		`{"name":"clock","arguments":[1,2]}`,
+		`{"name":"clock","arguments":"not json"}`,
+		`{"name":"clock","arguments":"42"}`,
+		`{"name":"lookup","arguments":"{\"q\":"}`,
+		`{"name":"lookup","arguments":"{\"q\":\"go\"}{\"r\":1}"}`,
+	} {
+		if call, ok := parseToolCallBody(body); ok {
+			t.Errorf("%s was parsed as a call: %+v", body, call)
+		}
+	}
+
+	// An empty string is no arguments at all, which is how some models spell
+	// a tool that takes none.
+	if call, ok := parseToolCallBody(`{"name":"clock","arguments":""}`); !ok || call.Arguments != "{}" {
+		t.Errorf("empty-string arguments = %+v, %v; want a call with {}", call, ok)
+	}
+
+	// An object is still an object, however the model wrote it.
+	for body, want := range map[string]string{
+		`{"name":"clock","arguments":{"a":1}}`:     `{"a":1}`,
+		`{"name":"clock","arguments":"{\"a\":1}"}`: `{"a":1}`,
+	} {
+		call, ok := parseToolCallBody(body)
+		if !ok {
+			t.Fatalf("%s did not parse", body)
+		}
+		if call.Arguments != want {
+			t.Errorf("%s gave arguments %q, want %q", body, call.Arguments, want)
+		}
+	}
+}
+
+// A block that names the tag and then reads as prose is released as soon as
+// that is clear. Held to its closing tag it would stall the whole reply behind
+// a sentence that merely mentions the format.
+func TestAProseMentionOfTheTagStreamsAsItArrives(t *testing.T) {
+	var streamed strings.Builder
+	filter := &toolCallFilter{parse: true, offered: offeredNames(toolsNamed("lookup")), sink: func(event Event) error {
+		if event.Type == EventDelta {
+			streamed.WriteString(event.Text)
+		}
+		return nil
+	}}
+
+	if err := filter.delta("<tool_call> is the tag"); err != nil {
+		t.Fatal(err)
+	}
+	if got := streamed.String(); got != "<tool_call> is the tag" {
+		t.Fatalf("after the first delta the reader has %q; the prose should not wait for the rest of the reply", got)
+	}
+	if err := filter.delta(", and more prose follows."); err != nil {
+		t.Fatal(err)
+	}
+
+	var result Result
+	if err := filter.finish(&result); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	const want = "<tool_call> is the tag, and more prose follows."
+	if result.Text != want || streamed.String() != want {
+		t.Errorf("text = %q, streamed = %q, want %q", result.Text, streamed.String(), want)
+	}
+	if len(result.ToolCalls) != 0 {
+		t.Errorf("prose became calls: %+v", result.ToolCalls)
+	}
+}
+
 // finish has two readings of an answer that stops inside a block, and both
 // are reachable: a length limit cutting a real call in half, and prose that
 // opened a tag it never closed.
 func TestAnAnswerThatEndsInsideABlock(t *testing.T) {
 	t.Run("a real call cut in half is still a call", func(t *testing.T) {
-		filter := &toolCallFilter{parse: true}
+		filter := &toolCallFilter{parse: true, offered: offeredNames(toolsNamed("lookup", "write_file"))}
 		if err := filter.delta(toolCallOpen + `{"name":"lookup","arguments":{"q":"go"}}`); err != nil {
 			t.Fatal(err)
 		}
@@ -309,7 +385,7 @@ func TestAnAnswerThatEndsInsideABlock(t *testing.T) {
 	})
 
 	t.Run("a tag that was never a call stays visible", func(t *testing.T) {
-		filter := &toolCallFilter{parse: true}
+		filter := &toolCallFilter{parse: true, offered: offeredNames(toolsNamed("lookup", "write_file"))}
 		if err := filter.delta("the opening tag is " + toolCallOpen + " and that is all"); err != nil {
 			t.Fatal(err)
 		}
@@ -326,11 +402,228 @@ func TestAnAnswerThatEndsInsideABlock(t *testing.T) {
 	})
 }
 
+// A call whose arguments hold an unescaped quote never closes in the stream.
+// The last-resort reading ends it at the first closing tag, and the text after
+// that tag, the answer's last sentence included, used to be dropped with it.
+func TestTextAfterAMalformedCallSurvives(t *testing.T) {
+	const malformed = toolCallOpen + `{"name":"lookup","arguments":{"q":"x}}` + toolCallClose
+	const tail = "\n\nHere is the final answer."
+
+	check := func(t *testing.T, text string, calls []ToolCall) {
+		t.Helper()
+		if !strings.Contains(text, "Here is the final answer.") {
+			t.Errorf("the text after the malformed call was lost: %q", text)
+		}
+		if len(calls) != 0 {
+			t.Errorf("a malformed call became a call: %+v", calls)
+		}
+	}
+
+	t.Run("streamed", func(t *testing.T) {
+		got := readAnswer(t, []string{"Let me look." + malformed + tail})
+		check(t, got.text, got.calls)
+	})
+
+	t.Run("buffered", func(t *testing.T) {
+		filter := &toolCallFilter{parse: true, offered: offeredNames(toolsNamed("lookup"))}
+		result := Result{Text: "Let me look." + malformed + tail}
+		if err := filter.finish(&result); err != nil {
+			t.Fatal(err)
+		}
+		check(t, result.Text, result.ToolCalls)
+	})
+
+	t.Run("a call after it is still taken", func(t *testing.T) {
+		later := toolCallOpen + `{"name":"lookup","arguments":{}}` + toolCallClose
+		got := readAnswer(t, []string{"Let me look." + malformed + "Next." + later})
+		if !strings.Contains(got.text, "Next.") {
+			t.Errorf("the prose between the calls was lost: %q", got.text)
+		}
+		if len(got.calls) != 1 || got.calls[0].Name != "lookup" {
+			t.Errorf("calls = %+v, want the call after the malformed one", got.calls)
+		}
+	})
+}
+
+// A name the model was not offered is prose, whatever the block around it
+// says. An agent dispatches a call by its name, so a call to a tool it never
+// had is a request to run something the caller did not provide.
+func TestAnUnofferedToolNameIsProseNotACall(t *testing.T) {
+	reply := "Trying." + toolCallOpen + `{"name":"delete_everything","arguments":{}}` + toolCallClose + " Done."
+	filter := &toolCallFilter{parse: true, offered: offeredNames(toolsNamed("lookup"))}
+	if err := filter.delta(reply); err != nil {
+		t.Fatal(err)
+	}
+	var result Result
+	if err := filter.finish(&result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.ToolCalls) != 0 {
+		t.Errorf("an unoffered tool became a call: %+v", result.ToolCalls)
+	}
+	if !strings.Contains(result.Text, "Done.") {
+		t.Errorf("the reply was eaten: %q", result.Text)
+	}
+}
+
+// A name goes into the protocol's own tags and JSON, where a closing tag in it
+// would end the block early. It is escaped the same as a result's text.
+func TestAToolNameCannotCloseItsOwnTag(t *testing.T) {
+	if got := openResponseTag("x" + toolResponseClose); strings.Contains(got, toolResponseClose) {
+		t.Errorf("the result header carries a closing tag: %q", got)
+	}
+	if got := serializeEmittedCall("x"+toolCallClose, "{}"); strings.Count(got, toolCallClose) != 1 {
+		t.Errorf("the replayed call carries a closing tag in its name: %q", got)
+	}
+}
+
+// The same answer can arrive in any pieces, and the filter has to read it the
+// same way whichever pieces they are. Each stream puts a tag, a quoted tag or
+// an escape where a piece could end. Each is fed whole, cut in two at every
+// byte, and cut at random; the whole-stream feed is the reference.
+func TestChunkingDoesNotChangeWhatTheFilterReads(t *testing.T) {
+	streams := []string{
+		"Before. " + toolCallOpen + `{"name":"lookup","arguments":{"q":"go"}}` + toolCallClose + " After.",
+		toolCallOpen + `{"name":"write_file","arguments":{"content":"Write </tool_call> to close \"a\" block \\"}}` + toolCallClose + "done",
+		"see " + toolCallOpen + " </tool_call> is not a call " + toolCallClose + " and " +
+			toolCallOpen + `{"name":"a","arguments":{"s":"\\"}}` + toolCallClose,
+		toolCallOpen + `{"name":"b","arguments":{"s":"</tool_call>\"x"}}` + toolCallClose +
+			toolCallOpen + `{"name":"c","arguments":{}}` + toolCallClose + "tail",
+		"a < b and <tool_cal that never opens " + toolCallOpen + `{"name":"d","arguments":{"u":"unfinished`,
+		`no tags, only quotes " and backslashes \ and <tool_ca partial`,
+		// A block that names the tag and is already closed is prose, and the
+		// call after it must still be read. Cut inside that second opening tag,
+		// the prose block was once released whole, call included.
+		"The format starts with " + toolCallOpen + " is a mention. Now the call: " +
+			toolCallOpen + `{"name":"lookup","arguments":{"q":"go"}}` + toolCallClose,
+	}
+
+	rng := rand.New(rand.NewPCG(7, 11))
+	for index, stream := range streams {
+		want := readAnswer(t, []string{stream})
+		if index == 0 && (len(want.calls) != 1 || !strings.Contains(want.text, "Before.")) {
+			t.Fatalf("the whole-stream reading is wrong, so the comparison means nothing: %+v", want)
+		}
+		if index == len(streams)-1 && (len(want.calls) != 1 || want.calls[0].Name != "lookup") {
+			t.Fatalf("the whole-stream reading must find the call after the prose mention: %+v", want)
+		}
+		for cut := 0; cut <= len(stream); cut++ {
+			if got := readAnswer(t, []string{stream[:cut], stream[cut:]}); !reflect.DeepEqual(got, want) {
+				t.Fatalf("stream %d cut at byte %d read %+v, want %+v", index, cut, got, want)
+			}
+		}
+		for range 200 {
+			pieces := randomPieces(rng, stream)
+			if got := readAnswer(t, pieces); !reflect.DeepEqual(got, want) {
+				t.Fatalf("stream %d cut into %q read %+v, want %+v", index, pieces, got, want)
+			}
+		}
+	}
+}
+
+// answer is what a reader of one reply sees: the prose as it streamed, the
+// calls as they were announced, and what the finished turn reports.
+type answer struct {
+	streamed  string
+	announced []ToolCall
+	text      string
+	calls     []ToolCall
+}
+
+func readAnswer(t *testing.T, pieces []string) answer {
+	t.Helper()
+	var out answer
+	filter := &toolCallFilter{parse: true, offered: offeredNames(toolsNamed("lookup", "write_file")), sink: func(event Event) error {
+		switch event.Type {
+		case EventDelta:
+			out.streamed += event.Text
+		case EventToolCall:
+			out.announced = append(out.announced, event.ToolCall)
+		}
+		return nil
+	}}
+	for _, piece := range pieces {
+		if err := filter.delta(piece); err != nil {
+			t.Fatalf("delta: %v", err)
+		}
+	}
+	var result Result
+	if err := filter.finish(&result); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	out.text, out.calls = result.Text, result.ToolCalls
+	return out
+}
+
+// randomPieces cuts a stream into pieces of one to eight bytes.
+func randomPieces(rng *rand.Rand, stream string) []string {
+	var pieces []string
+	for rest := stream; rest != ""; {
+		n := min(len(rest), 1+rng.IntN(8))
+		pieces = append(pieces, rest[:n])
+		rest = rest[n:]
+	}
+	return pieces
+}
+
+// An answer that opens a block and never closes it is the worst case the filter
+// meets: every delta lands inside the block and none of them ends it. Rereading
+// the block from its first byte on each delta made that quadratic. A 0.5 MB
+// block arriving four bytes at a time is about 3x10^10 byte steps, so the
+// budget sits far above what a linear scan needs and far below what the
+// quadratic one costs. The block closes at the end, so the call built from it
+// is checked as well.
+func TestAnUnclosedBlockCostsLinearTime(t *testing.T) {
+	const (
+		step   = 4
+		budget = 5 * time.Second
+	)
+	// Escaped quotes and a near miss of the closing tag, so the search has
+	// string state to follow and the real close is not the first thing it meets.
+	const filler = `a \"q\" </tool_cal \\ b `
+	var content strings.Builder
+	for content.Len() < 512<<10 {
+		content.WriteString(filler)
+	}
+	arguments := `{"content": "` + content.String() + `"}`
+	block := toolCallOpen + `{"name": "write_file", "arguments": ` + arguments + `}` + toolCallClose
+
+	filter := &toolCallFilter{parse: true, offered: offeredNames(toolsNamed("lookup", "write_file"))}
+	start := time.Now()
+	for offset := 0; offset < len(block); offset += step {
+		end := min(offset+step, len(block))
+		if err := filter.delta(block[offset:end]); err != nil {
+			t.Fatal(err)
+		}
+		if elapsed := time.Since(start); elapsed > budget {
+			t.Fatalf("the first %d bytes of one block took %v; a linear scan needs milliseconds", end, elapsed)
+		}
+	}
+
+	if len(filter.calls) != 1 || filter.calls[0].Name != "write_file" {
+		t.Fatalf("calls = %+v, want the one write_file call", filter.calls)
+	}
+	if filter.calls[0].Arguments != arguments {
+		t.Error("the arguments came back altered by the scan")
+	}
+}
+
 func oneTool() []Tool {
 	return []Tool{{
 		Name:       "lookup",
 		Parameters: json.RawMessage(`{"type":"object","properties":{}}`),
 	}}
+}
+
+// toolsNamed offers each name with an empty schema. A call names a tool the
+// model was offered or it is not read as a call, so a fixture that writes a
+// call must offer the tool it names.
+func toolsNamed(names ...string) []Tool {
+	tools := make([]Tool, 0, len(names))
+	for _, name := range names {
+		tools = append(tools, Tool{Name: name, Parameters: json.RawMessage(`{"type":"object","properties":{}}`)})
+	}
+	return tools
 }
 
 func oneTurn() []Message {

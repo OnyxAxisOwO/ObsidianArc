@@ -76,16 +76,19 @@ func init() {
 		Name:    "2fa enable",
 		Group:   "profile",
 		Summary: Text{EN: "Confirm and switch on two-step sign-in", ZH: "确认并启用两步验证"},
-		Usage:   "2fa enable <code> --yes",
+		Usage:   "2fa enable <code> [--current-password PASSWORD] --yes",
 		Help: Text{
 			EN: "Confirms the secret from `2fa setup` with a code from your app. Prints ten recovery " +
 				"codes, once: keep them somewhere other than the phone. Every other session on your " +
-				"account is ended.",
+				"account is ended. An account with a password must give it with --current-password.",
 			ZH: "用应用中的验证码确认 `2fa setup` 给出的密钥。会打印十个恢复码，仅显示这一次：请保存在手机" +
-				"以外的地方。你账户在其他地方的登录会话都会被结束。",
+				"以外的地方。你账户在其他地方的登录会话都会被结束。设有密码的账户须用 --current-password 给出密码。",
 		},
-		Args:        []Arg{{Name: "code", Hint: Text{EN: "the six digits your app shows", ZH: "应用显示的六位数字"}, Required: true}},
-		Examples:    []string{"2fa enable 123456 --yes", "2fa enable '123 456' -y"},
+		Args: []Arg{{Name: "code", Hint: Text{EN: "the six digits your app shows", ZH: "应用显示的六位数字"}, Required: true, Sensitive: true}},
+		Flags: []Flag{
+			{Name: "--current-password", Hint: Text{EN: "your current password, if the account has one", ZH: "当前密码（账户设有密码时需要）"}, Value: "PASSWORD", Sensitive: true},
+		},
+		Examples:    []string{"2fa enable 123456 --current-password 'my-password' --yes", "2fa enable '123 456' -y"},
 		Permission:  Anyone,
 		Destructive: true,
 		Endpoints:   []string{"POST /api/profile/two-factor/enable"},
@@ -94,7 +97,8 @@ func init() {
 			if err != nil {
 				return err
 			}
-			data, _, err := rt.Call(http.MethodPost, "/api/profile/two-factor/enable", map[string]any{"code": code})
+			data, _, err := rt.Call(http.MethodPost, "/api/profile/two-factor/enable",
+				map[string]any{"code": code, "current_password": rt.String("current-password")})
 			if err != nil {
 				return err
 			}
@@ -112,7 +116,7 @@ func init() {
 				"server requires two-step sign-in for your account.",
 			ZH: "需要应用中的验证码，或一个恢复码。若本服务器要求你的账户启用两步验证，则会被拒绝。",
 		},
-		Args:        []Arg{{Name: "code", Hint: Text{EN: "a code from your app, or a recovery code", ZH: "应用中的验证码，或恢复码"}, Required: true}},
+		Args:        []Arg{{Name: "code", Hint: Text{EN: "a code from your app, or a recovery code", ZH: "应用中的验证码，或恢复码"}, Required: true, Sensitive: true}},
 		Examples:    []string{"2fa disable 123456 --yes", "2fa disable abcde-fghjk -y"},
 		Permission:  Anyone,
 		Destructive: true,
@@ -125,12 +129,7 @@ func init() {
 			if _, _, err := rt.Call(http.MethodPost, "/api/profile/two-factor/disable", map[string]any{"code": code}); err != nil {
 				return err
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("两步验证已关闭。\n")
-			} else {
-				rt.Printf("two-step sign-in is off.\n")
-			}
-			return nil
+			return rt.confirm(Text{EN: "two-step sign-in is off.", ZH: "两步验证已关闭。"})
 		},
 	})
 
@@ -143,7 +142,7 @@ func init() {
 			EN: "Every unused recovery code stops working and ten new ones are printed, once.",
 			ZH: "所有未使用的恢复码都会失效，并打印十个新的恢复码，仅显示这一次。",
 		},
-		Args:        []Arg{{Name: "code", Hint: Text{EN: "a code from your app, or a recovery code", ZH: "应用中的验证码，或恢复码"}, Required: true}},
+		Args:        []Arg{{Name: "code", Hint: Text{EN: "a code from your app, or a recovery code", ZH: "应用中的验证码，或恢复码"}, Required: true, Sensitive: true}},
 		Examples:    []string{"2fa recovery 123456 --yes", "2fa recovery 123456 --yes --json"},
 		Permission:  Anyone,
 		Destructive: true,
@@ -176,7 +175,7 @@ func init() {
 			ZH: "当服务器要求进入管理后台时输入验证码，终端里的管理命令同样需要，验证码就在这里输入。在网页终端中，" +
 				"它对当前浏览器有效（包括后台页面）；通过 SSH 时，它对当前连接有效，断开即失效。有效多久由服务器设置决定。",
 		},
-		Args:       []Arg{{Name: "code", Hint: Text{EN: "a code from your app, or a recovery code", ZH: "应用中的验证码，或恢复码"}, Required: true}},
+		Args:       []Arg{{Name: "code", Hint: Text{EN: "a code from your app, or a recovery code", ZH: "应用中的验证码，或恢复码"}, Required: true, Sensitive: true}},
 		Examples:   []string{"2fa backoffice 123456", "2fa backoffice abcde-fghjk"},
 		SeeAlso:    []string{"2fa status"},
 		Permission: Anyone,
@@ -189,12 +188,7 @@ func init() {
 			if _, _, err := rt.Call(http.MethodPost, "/api/profile/two-factor/backoffice", map[string]any{"code": code}); err != nil {
 				return err
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("后台命令已解锁。\n")
-			} else {
-				rt.Printf("backoffice commands unlocked.\n")
-			}
-			return nil
+			return rt.confirm(Text{EN: "backoffice commands unlocked.", ZH: "后台命令已解锁。"})
 		},
 	})
 }
@@ -204,10 +198,10 @@ func printRecoveryCodes(rt *Runtime, raw any) error {
 	for _, code := range asSlice(raw) {
 		rows = append(rows, []string{asStr(code)})
 	}
-	if rt.Session.Lang == "zh" {
-		rt.Printf("恢复码（仅显示这一次，每个只能用一次）：\n")
-	} else {
-		rt.Printf("recovery codes (shown once; each works once):\n")
+	// The header is for a person reading the codes. Under --json the table
+	// prints the response body, and a line of text before it is not JSON.
+	if !rt.effectiveJSON() {
+		rt.Say(Text{EN: "recovery codes (shown once; each works once):\n", ZH: "恢复码（仅显示这一次，每个只能用一次）：\n"})
 	}
 	return rt.Table([]string{"recovery_code"}, rows)
 }

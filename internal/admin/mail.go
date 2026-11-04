@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/mail"
 )
@@ -55,7 +56,19 @@ func (h *Handlers) putMail(w http.ResponseWriter, r *http.Request) error {
 	if err := mail.ValidateConfig(cfg); err != nil {
 		return httpx.BadRequest("%s", err.Error())
 	}
-	if err := h.Mail.Save(r.Context(), cfg, body.Password, body.ClearPassword); err != nil {
+	// The address every mailed link is built from is the super administrator's
+	// to move; the store makes that call under its lock, so it is asked the
+	// question here rather than answered from a copy of the row.
+	if err := h.Mail.Save(r.Context(), cfg, body.Password, body.ClearPassword, auth.MustUser(r.Context()).IsSuperAdmin()); err != nil {
+		if errors.Is(err, mail.ErrOriginNeedsSuperAdmin) {
+			return httpx.ForbiddenCode("super_admin_required", "Only a super administrator can change the public site URL.")
+		}
+		if errors.Is(err, mail.ErrTransportNeedsSuperAdmin) {
+			return httpx.ForbiddenCode("super_admin_required", "Only a super administrator can change the SMTP server, port or username.")
+		}
+		if errors.Is(err, mail.ErrPasswordNeededForMove) {
+			return httpx.BadRequestCode("mail_password_needed", "A new SMTP server or username needs the password entered again.")
+		}
 		return httpx.Internal(err)
 	}
 	cfg, passwordSet := h.Mail.Config()
@@ -73,10 +86,10 @@ func (h *Handlers) testMail(w http.ResponseWriter, r *http.Request) error {
 	to := strings.TrimSpace(body.To)
 	address, err := netmail.ParseAddress(to)
 	if err != nil || address.Address != to {
-		return httpx.BadRequest("A recipient email address is required.")
+		return httpx.BadRequestCode("mail_recipient_required", "A recipient email address is required.")
 	}
 	if !h.Mail.Sender().Configured() {
-		return httpx.BadRequest("SMTP is not configured.")
+		return httpx.BadRequestCode("smtp_not_configured", "SMTP is not configured.")
 	}
 	allowed, err := h.Mail.ClaimTestSend(r.Context(), time.Now())
 	if err != nil {

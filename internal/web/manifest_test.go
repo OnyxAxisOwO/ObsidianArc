@@ -119,6 +119,10 @@ func TestManifestHandlerGuessesIconMediaType(t *testing.T) {
 		"/icon.jpg":                        "image/jpeg",
 		"/icon.gif":                        "image/gif",
 		"/icon.png":                        "image/png",
+		"/favicon.ico":                     "image/x-icon",
+		"/icon.svg?v=3":                    "image/svg+xml",
+		"/Logo.SVG?x=1":                    "image/svg+xml",
+		"/brand/logo.webp#frag":            "image/webp",
 		"data:image/png;base64,AAAA":       "image/png",
 		"data:image/svg+xml;base64,AAAA==": "image/svg+xml",
 	}

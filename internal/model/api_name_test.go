@@ -142,11 +142,11 @@ func TestAnAPINameIsHeldToTheShapeOfAnIdentifier(t *testing.T) {
 	}
 }
 
-// readCallable spells out its own scan targets rather than going through
-// scan(), so the two lists can drift apart in silence — adding api_name to
-// the shared column list and not to that hand-written scan turned every
-// completion into a 500 with no clue in it. This is the guard: the gateway's
-// own read has to carry the field too.
+// readCallable used to spell out its own scan targets rather than going
+// through scan(), and adding api_name to the shared column list and not to
+// that hand-written scan turned every completion into a 500 with no clue in
+// it. It goes through scan() now; this stays as the guard that the gateway's
+// own read carries the field too.
 func TestTheGatewaysReadCarriesTheAPIName(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -202,5 +202,38 @@ func TestAModelsOwnPromptReplacesTheInstances(t *testing.T) {
 	// And with no instance prompt either, its own still stands.
 	if got := (Model{SystemPrompt: own}).Prompt(""); got != own {
 		t.Errorf("got %q", got)
+	}
+}
+
+// A display name is a label for the picker; an API name is what a client
+// types. When the two collide, the typed name has to win, whatever the sort
+// order says, or the operator's own name for a model is unreachable.
+func TestAPINameBeatsADisplayNameMatch(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	upstream := f.provider(t, "Upstream")
+
+	labelled, err := f.models.Create(ctx, CreateInput{
+		ProviderID: upstream.ID, ModelID: "gpt-labelled", DisplayName: "claude",
+		Enabled: true, SortOrder: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	named, err := f.models.Create(ctx, CreateInput{
+		ProviderID: upstream.ID, ModelID: "claude-opus-5", APIName: "claude",
+		Enabled: true, SortOrder: 5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := f.models.FindAPIModel(ctx, "", true, nil, "claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != named.ID {
+		t.Fatalf("\"claude\" resolved to %s, want the model whose API name it is (%s); the display-name match was %s",
+			got, named.ID, labelled.ID)
 	}
 }

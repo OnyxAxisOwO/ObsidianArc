@@ -1,14 +1,18 @@
 package admin
 
 import (
+	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/reqlog"
+	securityevents "github.com/OnyxAxisOwO/ObsidianArc/internal/security"
 )
 
 // The request log: every call the server answered, filterable.
@@ -23,9 +27,11 @@ func (h *Handlers) listLogs(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
+	// Returned as is, not wrapped as Internal: a busy aggregation slot is an
+	// *httpx.Error that must reach the client as the 503 it is.
 	entries, total, err := h.requests.List(r.Context(), filter)
 	if err != nil {
-		return httpx.Internal(err)
+		return err
 	}
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"entries": entries,
@@ -45,10 +51,14 @@ func (h *Handlers) logFacets(w http.ResponseWriter, r *http.Request) error {
 
 	facets, err := h.requests.Facets(r.Context(), since)
 	if err != nil {
-		return httpx.Internal(err)
+		return err
 	}
 	return httpx.WriteJSON(w, http.StatusOK, facets)
 }
+
+// eventLogPrune is the security-log entry a prune writes. Kept beside the
+// prune rather than with the account actions because only this handler uses it.
+const eventLogPrune = securityevents.EventLogPrune
 
 // pruneLogs deletes entries older than a number of days.
 //
@@ -64,21 +74,59 @@ func (h *Handlers) pruneLogs(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	if body.Days < 0 || body.Days > 3650 {
-		return httpx.BadRequest("Give a number of days between 0 and 3650.")
+		return httpx.BadRequestCode("retention_days_range", "Give a number of days between 0 and 3650.")
 	}
+	actor := auth.MustUser(r.Context())
 
-	// Zero means everything: an operator clearing the log entirely is a
-	// legitimate thing to want, and making them pass -1 for it would be a
-	// puzzle rather than a safeguard.
+	// Zero means everything. That is the one prune that also takes away the
+	// record of other administrators' actions, which is why it is a
+	// super administrator's to do. The logs grant may still forget old
+	// entries on its own schedule.
 	window := time.Duration(body.Days) * 24 * time.Hour
 	if body.Days == 0 {
+		if !actor.IsSuperAdmin() {
+			return permissionDenied()
+		}
 		window = time.Nanosecond
+	}
+
+	// Recorded before the delete and in the security log, which is never pruned,
+	// so the record of the prune outlives the rows it removes. If the record
+	// cannot be written nothing is deleted: a prune nobody can see is refused.
+	// It says what was asked for, not what happened, because the delete may
+	// still fail; the outcome is recorded after it succeeds.
+	if h.security != nil {
+		if err := h.security.Record(r.Context(), nil, securityevents.Event{
+			Event: eventLogPrune, Severity: securityevents.SeverityWarning,
+			ActorID: actor.ID, ActorUsername: actor.Username,
+			Source: "admin", Decision: "prune",
+			Reason: fmt.Sprintf("prune requested for request log entries older than %d days", body.Days),
+		}); err != nil {
+			return httpx.Internal(err)
+		}
 	}
 
 	removed, err := h.requests.Prune(r.Context(), window)
 	if err != nil {
 		return httpx.Internal(err)
 	}
+	// The count is known only now, so it is a second entry. The rows are
+	// already gone, so a write that fails here is logged rather than turned
+	// into an error for the administrator. The outcome is written on a detached
+	// context, so a disconnect after the rows are gone cannot lose it. The
+	// request entry is not detached on purpose: a disconnect before the delete
+	// aborts the prune.
+	if h.security != nil {
+		if err := h.recordDetached(r.Context(), securityevents.Event{
+			Event: eventLogPrune, Severity: securityevents.SeverityWarning,
+			ActorID: actor.ID, ActorUsername: actor.Username,
+			Source: "admin", Decision: "pruned",
+			Reason: fmt.Sprintf("request log entries older than %d days removed: %d", body.Days, removed),
+		}); err != nil {
+			slog.ErrorContext(r.Context(), "could not record a completed request-log prune", "error", err)
+		}
+	}
+	slog.WarnContext(r.Context(), "administrator pruned the request log", "actor", actor.ID, "days", body.Days, "removed", removed)
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"removed": removed})
 }
 
@@ -87,27 +135,34 @@ func logFilterFrom(r *http.Request) (reqlog.Filter, error) {
 	filter := reqlog.Filter{
 		Channel:   strings.TrimSpace(query.Get("channel")),
 		Method:    strings.TrimSpace(query.Get("method")),
-		Outcome:   strings.TrimSpace(query.Get("outcome")),
+		Outcome:   strings.ToLower(strings.TrimSpace(query.Get("outcome"))),
 		Path:      strings.TrimSpace(query.Get("path")),
 		ErrorCode: strings.TrimSpace(query.Get("error_code")),
+	}
+	// An outcome the store does not know would add no condition, and the log
+	// would come back unfiltered under a filter the operator believes is in force.
+	switch filter.Outcome {
+	case "", reqlog.OutcomeOK, reqlog.OutcomeFailed:
+	default:
+		return filter, httpx.BadRequestCode("outcome_filter_invalid", "Outcome must be ok or failed.")
 	}
 
 	if value := strings.TrimSpace(query.Get("user_id")); value != "" {
 		if !id.Valid(value) {
-			return filter, httpx.BadRequest("Malformed user id.")
+			return filter, httpx.BadRequestCode("malformed_user_id", "Malformed user id.")
 		}
 		filter.UserID = value
 	}
 	if value := strings.TrimSpace(query.Get("model_id")); value != "" {
 		if !id.Valid(value) {
-			return filter, httpx.BadRequest("Malformed model id.")
+			return filter, httpx.BadRequestCode("malformed_model_id", "Malformed model id.")
 		}
 		filter.ModelID = value
 	}
 	if value := strings.TrimSpace(query.Get("status")); value != "" {
 		status, err := strconv.Atoi(value)
 		if err != nil || status < 100 || status > 599 {
-			return filter, httpx.BadRequest("Status must be an HTTP status code.")
+			return filter, httpx.BadRequestCode("status_code_invalid", "Status must be an HTTP status code.")
 		}
 		filter.Status = status
 	}
@@ -120,8 +175,8 @@ func logFilterFrom(r *http.Request) (reqlog.Filter, error) {
 		return filter, err
 	}
 
-	filter.Limit, _ = strconv.Atoi(query.Get("limit"))
-	filter.Offset, _ = strconv.Atoi(query.Get("offset"))
+	filter.Limit = intParam(query.Get("limit"), 0)
+	filter.Offset = intParam(query.Get("offset"), 0)
 	return filter, nil
 }
 
@@ -132,7 +187,8 @@ func epochParam(r *http.Request, name string) (int64, error) {
 	}
 	value, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || value < 0 {
-		return 0, httpx.BadRequest("%s must be a timestamp in milliseconds.", name)
+		return 0, httpx.BadRequestCode("timestamp_invalid", "%s must be a timestamp in milliseconds.", name).
+			WithDetails(map[string]any{"param": name})
 	}
 	return value, nil
 }

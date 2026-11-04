@@ -3,7 +3,10 @@ package web
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strings"
+
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 )
 
 // defaultIcon mirrors the favicon link in index.html: the same triangle
@@ -28,6 +31,11 @@ type Manifest struct {
 	// settings.ValidPWAIconURL: a root-relative path or a data URI, the only
 	// two references the page's own image policy allows through.
 	IconURL string
+	// The media type of the image at IconURL, when the caller knows it. Empty
+	// means work it out from the URL, which is only possible when the URL names
+	// its file; the site logo's URL does not, so its caller passes the type it
+	// was stored as.
+	IconType string
 }
 
 // ManifestHandler serves the web app manifest a browser reads for the
@@ -41,7 +49,7 @@ type Manifest struct {
 func ManifestHandler(get func() Manifest) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			httpx.WriteError(w, r, httpx.MethodNotAllowed())
 			return
 		}
 
@@ -68,7 +76,7 @@ func ManifestHandler(get func() Manifest) http.HandlerFunc {
 			// looks like installed, not a new posture.
 			"start_url": "/",
 			"display":   "standalone",
-			"icons":     []map[string]any{icon(m.IconURL)},
+			"icons":     []map[string]any{icon(m.IconURL, m.IconType)},
 		}
 		if m.Description != "" {
 			doc["description"] = m.Description
@@ -85,7 +93,7 @@ func ManifestHandler(get func() Manifest) http.HandlerFunc {
 
 		body, err := json.Marshal(doc)
 		if err != nil {
-			http.Error(w, "could not build manifest", http.StatusInternalServerError)
+			httpx.WriteError(w, r, httpx.Internal(err))
 			return
 		}
 		w.Header().Set("Content-Type", "application/manifest+json")
@@ -101,11 +109,14 @@ func ManifestHandler(get func() Manifest) http.HandlerFunc {
 // measured size: the built-in mark is a vector, and a custom one is asked for
 // by URL rather than upload, so nothing here has ever decoded it to know its
 // real dimensions.
-func icon(url string) map[string]any {
-	if url == "" {
+func icon(src, mediaType string) map[string]any {
+	if src == "" {
 		return map[string]any{"src": defaultIcon, "sizes": "any", "type": "image/svg+xml", "purpose": "any"}
 	}
-	return map[string]any{"src": url, "sizes": "any", "type": iconMediaType(url), "purpose": "any"}
+	if mediaType == "" {
+		mediaType = iconMediaType(src)
+	}
+	return map[string]any{"src": src, "sizes": "any", "type": mediaType, "purpose": "any"}
 }
 
 // iconMediaType guesses a manifest icon's declared type from a data URI's own
@@ -113,21 +124,33 @@ func icon(url string) map[string]any {
 // this project does not read the bytes behind a URL it was only ever handed
 // a reference to, and a browser that receives the wrong declared type simply
 // probes the file itself rather than refusing it outright.
-func iconMediaType(url string) string {
-	if strings.HasPrefix(url, "data:") {
-		if end := strings.IndexAny(url, ";,"); end > len("data:") {
-			return url[len("data:"):end]
+func iconMediaType(src string) string {
+	if strings.HasPrefix(src, "data:") {
+		if end := strings.IndexAny(src, ";,"); end > len("data:") {
+			return src[len("data:"):end]
 		}
 	}
+	// The extension is read from the path alone: an operator's cache-busting
+	// query (/logo.svg?v=3) is not part of the file's name, and matching the
+	// raw string would declare it image/png.
+	name := src
+	if u, err := url.Parse(src); err == nil {
+		name = u.Path
+	}
+	name = strings.ToLower(name)
 	switch {
-	case strings.HasSuffix(url, ".svg"):
+	case strings.HasSuffix(name, ".svg"):
 		return "image/svg+xml"
-	case strings.HasSuffix(url, ".webp"):
+	case strings.HasSuffix(name, ".webp"):
 		return "image/webp"
-	case strings.HasSuffix(url, ".jpg"), strings.HasSuffix(url, ".jpeg"):
+	case strings.HasSuffix(name, ".jpg"), strings.HasSuffix(name, ".jpeg"):
 		return "image/jpeg"
-	case strings.HasSuffix(url, ".gif"):
+	case strings.HasSuffix(name, ".gif"):
 		return "image/gif"
+	case strings.HasSuffix(name, ".ico"):
+		return "image/x-icon"
+	case strings.HasSuffix(name, ".avif"):
+		return "image/avif"
 	default:
 		return "image/png"
 	}

@@ -88,7 +88,8 @@ func (h *Handlers) list(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	// Counted from the rows already in hand rather than with a second query:
-	// ListFor returns the newest fifty, and the day's ten are inside that.
+	// ListFor returns the newest listedNewest, which is at least MaxPerDay, so
+	// the day's reports are all inside that list.
 	remaining := MaxPerDay
 	cutoff := time.Now().UnixMilli() - DayWindow.Milliseconds()
 	for _, record := range records {
@@ -138,7 +139,12 @@ func (h *Handlers) create(w http.ResponseWriter, r *http.Request) error {
 // dot on somebody's menu for good.
 func (h *Handlers) thread(w http.ResponseWriter, r *http.Request) error {
 	account := auth.MustUser(r.Context())
-	thread, err := h.store.Thread(r.Context(), nil, r.PathValue("id"), account.ID)
+	// Detached, like every other write that happens after the answer is
+	// decided: the reader has read it either way, and a tab closed in the
+	// same breath must not undo that. The read and the clear are one step, so a
+	// reply that lands meanwhile is either in this response or still flags the
+	// dot.
+	thread, err := h.store.OpenThread(context.WithoutCancel(r.Context()), r.PathValue("id"), account.ID, false)
 	if err != nil {
 		return TranslateError(err)
 	}
@@ -147,17 +153,10 @@ func (h *Handlers) thread(w http.ResponseWriter, r *http.Request) error {
 			if thread.Replies[i].FromStaff {
 				thread.Replies[i].Username = ""
 				thread.Replies[i].Nickname = ""
+				// The id names the operator as surely as the name does.
+				thread.Replies[i].UserID = ""
 			}
 		}
-	}
-	if thread.Feedback.AuthorUnread {
-		// Detached, like every other write that happens after the answer is
-		// decided: the reader has read it either way, and a tab closed in the
-		// same breath must not undo that.
-		if err := h.store.MarkSeen(context.WithoutCancel(r.Context()), thread.Feedback.ID, false); err != nil {
-			return httpx.Internal(err)
-		}
-		thread.Feedback.AuthorUnread = false
 	}
 	return httpx.WriteJSON(w, http.StatusOK, thread)
 }
@@ -215,16 +214,10 @@ func (h *Handlers) addressOf(r *http.Request) string {
 // same codes, so one string in the client covers every screen that can draw
 // the widget.
 func challengeError(err error) error {
-	switch {
-	case errors.Is(err, turnstile.ErrFailed):
-		return httpx.ForbiddenCode("challenge_failed",
-			"The verification could not be completed. Try again.")
-	case errors.Is(err, turnstile.ErrUnavailable):
-		return httpx.UnavailableCode("challenge_unavailable",
-			"Verification is unavailable right now. Try again shortly.")
-	default:
-		return httpx.Internal(err)
+	if apiErr := turnstile.HTTPError(err); apiErr != nil {
+		return apiErr
 	}
+	return httpx.Internal(err)
 }
 
 // TranslateError maps this package's sentinels onto responses, so the admin
@@ -232,19 +225,23 @@ func challengeError(err error) error {
 func TranslateError(err error) error {
 	switch {
 	case errors.Is(err, ErrNotFound):
-		return httpx.NotFound("No such feedback.")
+		return httpx.NotFoundCode("feedback_not_found", "No such feedback.")
 	case errors.Is(err, ErrInvalidTitle):
-		return httpx.BadRequest("A title of 1-120 characters is required.")
+		return httpx.BadRequestCode("feedback_title_invalid",
+			"A title of 1-%d characters is required.", MaxTitleChars).
+			WithDetails(map[string]any{"max": MaxTitleChars})
 	case errors.Is(err, ErrInvalidBody):
-		return httpx.BadRequest("Please describe it in 1-8000 characters.")
+		return httpx.BadRequestCode("feedback_body_invalid",
+			"Please describe it in 1-%d characters.", MaxBodyChars).
+			WithDetails(map[string]any{"max": MaxBodyChars})
 	case errors.Is(err, ErrInvalidKind):
-		return httpx.BadRequest("Feedback is either a bug or an idea.")
+		return httpx.BadRequestCode("feedback_kind_invalid", "Feedback is either a bug or an idea.")
 	case errors.Is(err, ErrInvalidPrio):
-		return httpx.BadRequest("Priority must be low, medium or high.")
+		return httpx.BadRequestCode("feedback_priority_invalid", "Priority must be low, medium or high.")
 	case errors.Is(err, ErrInvalidStatus):
-		return httpx.BadRequest("Status must be open or resolved.")
+		return httpx.BadRequestCode("feedback_status_invalid", "Status must be open or resolved.")
 	case errors.Is(err, ErrThreadFull):
-		return httpx.BadRequest("This conversation has reached its maximum length.")
+		return httpx.BadRequestCode("feedback_thread_full", "This conversation has reached its maximum length.")
 	case errors.Is(err, ErrTooMany):
 		return httpx.TooManyRequests("feedback_daily_limit",
 			"You have sent today's maximum number of reports. Please continue tomorrow.")

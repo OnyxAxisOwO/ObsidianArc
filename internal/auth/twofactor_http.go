@@ -19,6 +19,9 @@ type codeRequest struct {
 	// Only read by the sign-in step: whether this browser may skip the code
 	// next time, where the operator allows that at all.
 	Remember bool `json:"remember"`
+	// Only read by enabling the second step, which signs every other session
+	// out and so is not something a session alone may do.
+	CurrentPassword string `json:"current_password"`
 }
 
 // completeSignIn is the second step. It is public for the reason /login is:
@@ -41,7 +44,7 @@ func (h *Handlers) completeSignIn(w http.ResponseWriter, r *http.Request) error 
 	h.service.SetCookie(w, token)
 	h.service.AttachDevice(r.Context(), w, r, account, token, httpx.ClientIP(r, h.trust), r.UserAgent())
 	if body.Remember {
-		h.service.Remember(w, account)
+		h.service.Remember(r.Context(), w, account)
 	}
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"user": h.account(r, account)})
 }
@@ -77,8 +80,8 @@ func (h *Handlers) enableTwoFactor(w http.ResponseWriter, r *http.Request) error
 		return err
 	}
 	ip, userAgent := clientOf(r, h.trust)
-	codes, updated, err := h.service.EnableTwoFactor(r.Context(), account.ID, body.Code, session.ID,
-		ip, userAgent)
+	codes, updated, err := h.service.EnableTwoFactor(r.Context(), account.ID, body.CurrentPassword,
+		body.Code, session.ID, ip, userAgent)
 	if err != nil {
 		return twoFactorError(w, err)
 	}
@@ -160,6 +163,20 @@ func TranslateTwoFactorError(w http.ResponseWriter, err error) error {
 	switch {
 	case errors.Is(err, ErrTwoFactorCode):
 		return httpx.BadRequestCode("two_factor_code", "That code is not valid.")
+	case errors.Is(err, ErrPasswordRequired):
+		return httpx.BadRequestCode("password_required", "Enter your current password to do this.")
+	case errors.Is(err, ErrReauthRequired):
+		// Not a 401: the session is fine, only too old to vouch for an account
+		// with no password. A 401 would sign the person out of a session that
+		// is still good, when all that is asked is a fresh sign-in.
+		return httpx.ForbiddenCode("reauth_required", "Sign in again to make this change.")
+	case errors.Is(err, ErrSessionNotFound):
+		// The session that asked ended mid-request. The session code makes an open
+		// page sign itself out, where the generic 401 would leave it on a screen
+		// that no longer has an account behind it.
+		return httpx.UnauthorizedCode("session_required", "Sign in to continue.")
+	case errors.Is(err, ErrCurrentPasswordWrong):
+		return httpx.BadRequestCode("current_password_wrong", "That password is not correct.")
 	case errors.Is(err, ErrNoPendingSignIn):
 		return httpx.UnauthorizedCode("two_factor_expired",
 			"That sign-in has expired. Enter your password again.")

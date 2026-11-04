@@ -46,11 +46,7 @@ func init() {
 			if rt.effectiveJSON() {
 				return nil
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("\n项目数：%d，上限：%v\n", len(rows), asNum(m["max"]))
-			} else {
-				rt.Printf("\nprojects: %d, max: %v\n", len(rows), asNum(m["max"]))
-			}
+			rt.Say(Text{EN: fmt.Sprintf("\nprojects: %d, max: %v\n", len(rows), asNum(m["max"])), ZH: fmt.Sprintf("\n项目数：%d，上限：%v\n", len(rows), asNum(m["max"]))})
 			return nil
 		},
 	})
@@ -95,8 +91,7 @@ func init() {
 				return nil
 			}
 			if instructions := asStr(p["instructions"]); instructions != "" {
-				fmt.Fprintln(rt.Out, "\ninstructions:")
-				fmt.Fprintln(rt.Out, instructions)
+				rt.Printf("\ninstructions:\n%s\n", instructions)
 			}
 			return nil
 		},
@@ -113,7 +108,7 @@ func init() {
 		},
 		Flags: []Flag{
 			{Name: "--name", Hint: Text{EN: "project name, ≤80 chars", ZH: "项目名称，≤80 字符"}, Value: "TEXT"},
-			{Name: "--instructions", Hint: Text{EN: "system instructions inherited by conversations, ≤8000 chars", ZH: "对话继承的系统指令提示词，≤8000 字符"}, Value: "TEXT"},
+			{Name: "--instructions", Hint: Text{EN: "system instructions inherited by conversations, ≤8000 chars", ZH: "对话继承的系统指令提示词，≤8000 字符"}, Value: "TEXT", Sensitive: true},
 		},
 		Examples: []string{
 			`project create --name "Code Review"`,
@@ -125,10 +120,7 @@ func init() {
 		Run: func(_ context.Context, rt *Runtime) error {
 			name := strings.TrimSpace(rt.String("name"))
 			if name == "" {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("项目需要一个名称：请提供 --name")
-				}
-				return rt.Errorf("a project needs a name: provide --name")
+				return rt.Fail(Text{EN: "a project needs a name: provide --name", ZH: "项目需要一个名称：请提供 --name"})
 			}
 			body := map[string]any{"name": name}
 			if rt.Present("instructions") {
@@ -161,7 +153,7 @@ func init() {
 		},
 		Flags: []Flag{
 			{Name: "--name", Hint: Text{EN: "new project name, ≤80 chars", ZH: "新项目名称，≤80 字符"}, Value: "TEXT"},
-			{Name: "--instructions", Hint: Text{EN: "new instructions, ≤8000 chars", ZH: "新指令提示词，≤8000 字符"}, Value: "TEXT"},
+			{Name: "--instructions", Hint: Text{EN: "new instructions, ≤8000 chars", ZH: "新指令提示词，≤8000 字符"}, Value: "TEXT", Sensitive: true},
 		},
 		Examples: []string{
 			`project edit 01H9Z… --name "Updated Title"`,
@@ -179,10 +171,7 @@ func init() {
 			body.str(rt, "name", "name")
 			body.str(rt, "instructions", "instructions")
 			if len(body) == 0 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("没有需要修改的内容：请至少给出一个选项")
-				}
-				return rt.Errorf("nothing to change: give at least one flag")
+				return rt.Fail(Text{EN: "nothing to change: give at least one flag", ZH: "没有需要修改的内容：请至少给出一个选项"})
 			}
 			data, _, err := rt.Call(http.MethodPatch, "/api/projects/"+url.PathEscape(ref), map[string]any(body))
 			if err != nil {
@@ -222,12 +211,7 @@ func init() {
 			if _, _, err := rt.Call(http.MethodDelete, "/api/projects/"+url.PathEscape(ref), nil); err != nil {
 				return err
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已删除。\n")
-			} else {
-				rt.Printf("deleted.\n")
-			}
-			return nil
+			return rt.confirm(Text{EN: "deleted.", ZH: "已删除。"})
 		},
 	})
 }

@@ -19,8 +19,8 @@
 // model's answer is.
 
 import { computed, onMounted, ref } from 'vue';
-import { useRouter } from 'vue-router';
-import { ApiError } from '@/api/client';
+import { apiErrorText } from '@/lib/api-error';
+import { challengeText } from '@/lib/refusal';
 import {
   fetchThread, listFeedback, replyToFeedback, sendFeedback,
   type Feedback, type FeedbackKind, type FeedbackPriority, type FeedbackThread,
@@ -34,7 +34,9 @@ import OaTextArea from '@/components/OaTextArea.vue';
 import OaTextField from '@/components/OaTextField.vue';
 import OaTurnstile from '@/components/OaTurnstile.vue';
 import { t, type StringKey } from '@/composables/useI18n';
+import { usePanelExit } from '@/composables/usePanelExit';
 import { IconClose, IconLock } from '@/icons';
+import { kindKey, priorityKey, priorityTone, statusKey, statusTone } from '@/lib/feedback';
 import { absoluteTime, relativeTime } from '@/lib/format';
 import { refreshFeedbackUnread } from '@/stores/feedback';
 import { siteInfo } from '@/stores/session';
@@ -50,7 +52,10 @@ const PRIORITIES: Array<{ value: FeedbackPriority; label: StringKey }> = [
   { value: 'high', label: 'feedbackPriorityHigh' },
 ];
 
-const router = useRouter();
+// The server's cap on a report's body and on a reply, in characters (feedback.MaxBodyChars).
+const BODY_MAX_CHARS = 8000;
+
+const panels = usePanelExit();
 
 const kind = ref<FeedbackKind>('bug');
 const priority = ref<FeedbackPriority>('medium');
@@ -101,7 +106,7 @@ async function refresh(): Promise<void> {
     mine.value = result.feedback;
     remaining.value = result.remaining;
   } catch (failure) {
-    error.value = failure instanceof ApiError ? failure.message : t('failed');
+    error.value = apiErrorText(failure);
   } finally {
     loaded.value = true;
   }
@@ -155,17 +160,16 @@ async function submit(token: string): Promise<void> {
     // still find the answer when they look back.
     await refresh();
   } catch (failure) {
-    const code = failure instanceof ApiError ? failure.code : '';
     // A refused check is answered inside the sheet, with the widget reset —
     // a token is spent whether or not it passed — so the reader can try again
     // without losing what they wrote.
-    if (token && (code === 'challenge_failed' || code === 'challenge_unavailable')) {
-      challengeError.value = code === 'challenge_failed'
-        ? t('challengeFailed') : t('challengeUnavailable');
+    const challenge = challengeText(failure);
+    if (token && challenge) {
+      challengeError.value = challenge;
       guard.value?.reset();
     } else {
       challengeOpen.value = false;
-      error.value = failure instanceof ApiError ? failure.message : t('failed');
+      error.value = apiErrorText(failure);
     }
   } finally {
     busy.value = false;
@@ -194,30 +198,40 @@ function touched(): void {
 
 // --- the conversation on one report ------------------------------------------
 
+// Each open takes a number. A thread that arrives after the reader has opened
+// another report, or gone back, is not the one on screen, so it is dropped; the
+// read it made on the server still counts, so the row is marked either way.
+let openSeq = 0;
+
 /**
  * Opening a report is also what marks its answer read — on the server, in the
  * row behind this panel, and in the dot the account menu draws from, so the
  * three cannot disagree about whether this reader has seen it.
  */
 async function open(record: Feedback): Promise<void> {
+  const seq = ++openSeq;
   error.value = '';
   threadBusy.value = true;
   answer.value = '';
   try {
-    thread.value = await fetchThread(record.id);
+    const opened = await fetchThread(record.id);
     const row = mine.value.find((item) => item.id === record.id);
     if (row) row.author_unread = false;
     void refreshFeedbackUnread();
+    if (seq === openSeq) thread.value = opened;
   } catch (failure) {
-    error.value = failure instanceof ApiError ? failure.message : t('failed');
+    if (seq === openSeq) error.value = apiErrorText(failure);
   } finally {
-    threadBusy.value = false;
+    if (seq === openSeq) threadBusy.value = false;
   }
 }
 
 function back(): void {
+  // Anything still on its way is no longer wanted here.
+  openSeq += 1;
   thread.value = null;
   error.value = '';
+  threadBusy.value = false;
 }
 
 function reply(): void {
@@ -235,38 +249,38 @@ async function submitReply(token: string): Promise<void> {
   const current = thread.value;
   const text = answer.value.trim();
   if (!current || !text) return;
+  // The reader may go back or open another report while this is in flight.
+  // The draft and the error on screen then belong to that other report, so
+  // nothing this reply finishes may touch them.
+  const seq = openSeq;
   threadBusy.value = true;
   try {
     const record = await replyToFeedback(current.feedback.id, text, token);
     current.replies.push(record);
     current.feedback.replies = current.replies.length;
-    answer.value = '';
-    challengeOpen.value = false;
+    if (seq === openSeq) {
+      answer.value = '';
+      challengeOpen.value = false;
+    }
     // The list behind the thread carries the count and the status badge.
     await refresh();
   } catch (failure) {
-    const code = failure instanceof ApiError ? failure.code : '';
+    if (seq !== openSeq) return;
     // Answered inside the sheet, with the widget reset, so the reader can try
     // again without losing what they wrote — the same bargain the form makes.
-    if (token && (code === 'challenge_failed' || code === 'challenge_unavailable')) {
-      challengeError.value = code === 'challenge_failed'
-        ? t('challengeFailed') : t('challengeUnavailable');
+    const challenge = challengeText(failure);
+    if (token && challenge) {
+      challengeError.value = challenge;
       guard.value?.reset();
     } else {
       challengeOpen.value = false;
-      error.value = failure instanceof ApiError ? failure.message : t('failed');
+      error.value = apiErrorText(failure);
     }
   } finally {
-    threadBusy.value = false;
+    // A stale reply must not release the composer for the report now open,
+    // which may still be loading.
+    if (seq === openSeq) threadBusy.value = false;
   }
-}
-
-function kindLabel(record: Feedback): string {
-  return t(record.kind === 'bug' ? 'feedbackKindBug' : 'feedbackKindIdea');
-}
-
-function priorityLabel(value: FeedbackPriority): string {
-  return t(PRIORITIES.find((entry) => entry.value === value)!.label);
 }
 
 /**
@@ -284,10 +298,6 @@ function turnWho(turn: { from_staff: boolean; username?: string; nickname?: stri
   return name ? `${t('feedbackFromStaff')} · ${name}` : t('feedbackFromStaff');
 }
 
-function statusLabel(record: Feedback): string {
-  return t(record.status === 'resolved' ? 'feedbackStatusResolved' : 'feedbackStatusOpen');
-}
-
 onMounted(() => void refresh());
 </script>
 
@@ -303,18 +313,18 @@ onMounted(() => void refresh());
     :width="480"
     :busy="busy"
     :error="error"
-    @close="router.push('/')"
+    @close="panels.close('push')"
     @back="back"
     @confirm="send"
   >
     <template v-if="thread">
       <div class="oa-feedback-detail-badges">
-        <OaBadge tone="muted">{{ kindLabel(thread.feedback) }}</OaBadge>
-        <OaBadge :tone="thread.feedback.priority === 'high' ? 'warning' : 'muted'">
-          {{ priorityLabel(thread.feedback.priority) }}
+        <OaBadge tone="muted">{{ t(kindKey(thread.feedback.kind)) }}</OaBadge>
+        <OaBadge :tone="priorityTone(thread.feedback.priority)">
+          {{ t(priorityKey(thread.feedback.priority)) }}
         </OaBadge>
-        <OaBadge :tone="thread.feedback.status === 'resolved' ? 'muted' : 'default'">
-          {{ statusLabel(thread.feedback) }}
+        <OaBadge :tone="statusTone(thread.feedback.status)">
+          {{ t(statusKey(thread.feedback.status)) }}
         </OaBadge>
       </div>
 
@@ -352,6 +362,7 @@ onMounted(() => void refresh());
         :placeholder="t('feedbackReplyPlaceholder')"
         :hint="t('feedbackMarkdownHint')"
         :rows="5"
+        :max-length="BODY_MAX_CHARS"
       />
       <button
         type="button"
@@ -366,13 +377,13 @@ onMounted(() => void refresh());
 
       <div class="oa-field">
         <span class="oa-field-label">{{ t('feedbackKind') }}</span>
-        <div class="oa-segmented">
+        <div class="oa-segmented" role="group" :aria-label="t('feedbackKind')">
           <button
             v-for="entry in KINDS"
             :key="entry.value"
             type="button"
             class="oa-segmented-option"
-            :class="{ active: kind === entry.value }"
+            :aria-pressed="kind === entry.value"
             @click="kind = entry.value; touched()"
           >{{ t(entry.label) }}</button>
         </div>
@@ -380,13 +391,13 @@ onMounted(() => void refresh());
 
       <div class="oa-field">
         <span class="oa-field-label">{{ t('feedbackPriority') }}</span>
-        <div class="oa-segmented">
+        <div class="oa-segmented" role="group" :aria-label="t('feedbackPriority')">
           <button
             v-for="entry in PRIORITIES"
             :key="entry.value"
             type="button"
             class="oa-segmented-option"
-            :class="{ active: priority === entry.value }"
+            :aria-pressed="priority === entry.value"
             @click="priority = entry.value; touched()"
           >{{ t(entry.label) }}</button>
         </div>
@@ -411,6 +422,7 @@ onMounted(() => void refresh());
         :placeholder="t('feedbackBodyPlaceholder')"
         :hint="t('feedbackMarkdownHint')"
         :rows="12"
+        :max-length="BODY_MAX_CHARS"
         @update:model-value="touched"
       />
 
@@ -430,13 +442,13 @@ onMounted(() => void refresh());
               <span class="oa-feedback-item-head">
                 <span v-if="record.author_unread" class="oa-menu-unread" :title="t('feedbackHasReply')" />
                 <span class="oa-feedback-item-title">{{ record.title }}</span>
-                <OaBadge :tone="record.status === 'resolved' ? 'muted' : 'default'">
-                  {{ statusLabel(record) }}
+                <OaBadge :tone="statusTone(record.status)">
+                  {{ t(statusKey(record.status)) }}
                 </OaBadge>
               </span>
               <span class="oa-feedback-item-meta">
-                <span>{{ kindLabel(record) }}</span>
-                <span>{{ priorityLabel(record.priority) }}</span>
+                <span>{{ t(kindKey(record.kind)) }}</span>
+                <span>{{ t(priorityKey(record.priority)) }}</span>
                 <span v-if="record.replies">{{ t('feedbackReplyCount', { count: record.replies }) }}</span>
                 <span>{{ relativeTime(record.created_at) }}</span>
               </span>
@@ -454,6 +466,7 @@ onMounted(() => void refresh());
     v-if="challengeOpen"
     v-slot="{ close }"
     overlay-class="oa-modal-overlay"
+    :label="challengeFor === 'reply' ? t('feedbackReplyChallengeTitle') : t('feedbackChallengeTitle')"
     :dismissible="!busy && !threadBusy"
     @close="cancelChallenge"
   >

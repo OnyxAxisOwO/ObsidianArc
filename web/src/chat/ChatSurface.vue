@@ -11,29 +11,26 @@ import { useResizeObserver } from '@vueuse/core';
 import OaIconButton from '@/components/OaIconButton.vue';
 import OaScrollArea from '@/components/OaScrollArea.vue';
 import { t, type StringKey } from '@/composables/useI18n';
-import { isWork, pendingMode } from '@/stores/workspace';
+import { useLatestTimeout } from '@/composables/useLatestTimeout';
 import { IconMenu, IconPlus } from '@/icons';
+import AsciiField from './AsciiField.vue';
 import ChatComposer from './ChatComposer.vue';
 import ChatChallenge from './ChatChallenge.vue';
 import ChatMessage from './ChatMessage.vue';
-import ChatModeSwitch from './ChatModeSwitch.vue';
 import ChatPending from './ChatPending.vue';
 import ChatSidebar from './ChatSidebar.vue';
 import {
-  active, addImages, busy, chatChallenge, dragging, draft, flash, historyOpen, isEmpty, justSentID, messages, pending,
-  scrollTick, showPending, startNewConversation, status, submit, suggestions, switchTick,
+  active, addImages, addTextFiles, asciiFieldWanted, busy, chatChallenge, dragging, draft, flash, historyOpen, isEmpty, justSentID,
+  messages, RISE_MS, scrollTick, showPending, startNewConversation, status, submit, suggestions, switchTick,
 } from './useChat';
 import {
   cancelAllFlights, captureComposerRect, lastComposerRect, markFlying, playSendAnimation,
 } from './useSendAnimation';
+import { modelsListed } from './useModels';
 import { currentUser, isAdmin } from '@/stores/session';
 
-let route: ReturnType<typeof useRoute> | undefined;
-try {
-  route = useRoute();
-} catch {
-  // outside router context in tests
-}
+// Tests mount without a router, so there may be no route to read.
+const route = useRoute();
 const isTerminal = computed(() => route?.path === '/terminal');
 
 const emit = defineEmits<{ (event: 'open-setup'): void }>();
@@ -41,9 +38,14 @@ const emit = defineEmits<{ (event: 'open-setup'): void }>();
 const mainRef = ref<HTMLElement | null>(null);
 const scroll = ref<InstanceType<typeof OaScrollArea> | null>(null);
 const composer = ref<InstanceType<typeof ChatComposer> | null>(null);
+// Every message is mounted, with no windowing. Find-in-page and screen readers
+// need the whole transcript in the DOM, and a message painted lazily would need
+// a height estimate that scrollToEnd and the follow logic depend on. Opening a
+// long conversation pays for its full render once; that is the trade taken here.
 const transcriptRef = ref<HTMLElement | null>(null);
 const autoScroll = ref(true);
 const rising = ref(false);
+const settleRise = useLatestTimeout();
 
 function scroller(): HTMLElement | null {
   return scroll.value?.scroller ?? null;
@@ -96,19 +98,32 @@ watch(switchTick, () => {
   void nextTick(() => {
     scrollToBottom();
     rising.value = true;
-    window.setTimeout(() => { rising.value = false; }, 400);
+    // The newest switch owns the rise: an earlier one's timer must not end it early.
+    settleRise(() => { rising.value = false; }, RISE_MS);
   });
 });
 
-function carriesFiles(event: DragEvent): boolean {
-  if (!status.value.vision) return false;
+function isFileDrag(event: DragEvent): boolean {
   const types = event.dataTransfer?.types;
   return !!types && Array.prototype.indexOf.call(types, 'Files') !== -1;
 }
 
+// Whether a drop would be taken right now. Text files are taken whatever the
+// model, so this is about the conversation, not the model's vision.
+function acceptsDrop(): boolean {
+  return status.value.configured && !busy.value;
+}
+
+// A file dropped anywhere on the chat is cancelled here whether or not it is
+// taken: left alone, the browser opens the file in this tab and the draft is
+// gone. Only the hint depends on whether the drop would be accepted.
 function onDragOver(event: DragEvent): void {
-  if (!carriesFiles(event)) return;
+  if (!isFileDrag(event)) return;
   event.preventDefault();
+  if (!acceptsDrop()) {
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'none';
+    return;
+  }
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
   dragging.value = true;
 }
@@ -121,10 +136,13 @@ function onDragLeave(event: DragEvent): void {
 }
 
 function onDrop(event: DragEvent): void {
-  if (!carriesFiles(event)) return;
+  if (!isFileDrag(event)) return;
   event.preventDefault();
   dragging.value = false;
-  void addImages(event.dataTransfer?.files ?? null);
+  if (!acceptsDrop()) return;
+  const files = Array.from(event.dataTransfer?.files ?? []);
+  void addImages(files.filter((file) => file.type.startsWith('image/')));
+  void addTextFiles(files.filter((file) => !file.type.startsWith('image/')));
 }
 
 function ask(key: (typeof suggestions.value)[number]): void {
@@ -163,6 +181,8 @@ watch(isEmpty, (empty, was) => {
     if (Math.abs(delta) < 2) return;
     node.animate(
       [{ transform: `translateY(${delta}px)` }, { transform: 'none' }],
+      // --ai-ease-standard, spelled out: the Web Animations API parses its
+      // easing as a bare timing function and rejects var().
       { duration: 340, easing: 'cubic-bezier(0.2, 0, 0, 1)' },
     );
   });
@@ -215,6 +235,7 @@ defineExpose({ focus: () => composer.value?.focus() });
     @dragleave="onDragLeave"
     @drop="onDrop"
   >
+    <AsciiField v-if="isEmpty && asciiFieldWanted" />
     <!-- The wide skin hides this bar in favour of the workspace header; it is
          the navigation on a narrow screen, where the rail is an overlay. -->
     <div class="ai-chat-bar">
@@ -235,7 +256,9 @@ defineExpose({ focus: () => composer.value?.focus() });
       :scroll-class="rising ? 'ai-chat-scroll ai-chat-switching' : 'ai-chat-scroll'"
       @scroll="onScroll"
     >
-      <div v-if="!status.configured" class="ai-chat-setup">
+      <!-- Not before the list has answered: until then an empty picker is not
+           yet known to be empty, and this card says there are no models. -->
+      <div v-if="modelsListed && !status.configured" class="ai-chat-setup">
         <h3 class="ai-chat-setup-title">{{ t('setupTitle') }}</h3>
         <p class="ai-chat-setup-body">{{ isAdmin ? t('setupBody') : t('setupBodyUser') }}</p>
         <button
@@ -248,38 +271,20 @@ defineExpose({ focus: () => composer.value?.focus() });
 
       <div ref="transcriptRef" class="ai-chat-transcript">
         <ChatMessage v-for="message in messages" :key="message.id" :message="message" />
-        <ChatPending v-if="showPending && pending" :pending="pending" />
+        <ChatPending v-if="showPending" />
       </div>
 
       <div v-if="!messages.length && status.configured" class="ai-chat-empty">
-        <!-- Only on the empty state, because that is the only moment the
-             choice is still open: once a conversation exists it carries its
-             own mode, and a toggle over a running thread would offer to
-             change something it cannot. Its own component so the drag's window
-             listeners are torn down when this v-if drops it — see the file. -->
-        <ChatModeSwitch />
-
-        <div class="ai-chat-empty-intro-wrap">
-          <Transition name="ai-mode-text" mode="out-in">
-            <div :key="pendingMode" class="ai-chat-empty-intro">
-              <h3 class="ai-chat-empty-title">{{ isWork ? t('workGreeting') : greeting() }}</h3>
-              <p class="ai-chat-empty-body">{{ isWork ? t('workBlurb') : t('emptyBody') }}</p>
-            </div>
-          </Transition>
-        </div>
-
-        <div class="ai-chat-suggestions-accordion" :class="{ open: !isWork }">
-          <div class="ai-chat-suggestions-inner">
-            <div class="ai-chat-suggestions">
-              <button
-                v-for="key in suggestions"
-                :key="key"
-                type="button"
-                class="ai-chat-suggestion"
-                @click="ask(key)"
-              >{{ t(key) }}</button>
-            </div>
-          </div>
+        <h3 class="ai-chat-empty-title">{{ greeting() }}</h3>
+        <p class="ai-chat-empty-body">{{ t('emptyBody') }}</p>
+        <div class="ai-chat-suggestions">
+          <button
+            v-for="key in suggestions"
+            :key="key"
+            type="button"
+            class="ai-chat-suggestion"
+            @click="ask(key)"
+          >{{ t(key) }}</button>
         </div>
       </div>
     </OaScrollArea>

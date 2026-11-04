@@ -13,8 +13,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"math/rand/v2"
+	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
@@ -36,8 +42,15 @@ type Provider struct {
 	// loopback. Stored rather than checked once on entry, because every later
 	// edit revalidates the whole row: without it, changing a timeout would
 	// fail on the address that was already accepted.
-	AllowInsecure    bool                   `json:"allow_insecure"`
-	APIKeyHint       string                 `json:"api_key_hint"`
+	AllowInsecure bool `json:"allow_insecure"`
+	// The first key's hint, for the readers written before there could be
+	// more than one.
+	APIKeyHint string `json:"api_key_hint"`
+	// One per stored key, in the order they are taken. A form that keeps some
+	// of them names them by position in this list and sends it back, so the
+	// positions are checked against the list they were read from.
+	APIKeyHints      []string               `json:"api_key_hints"`
+	KeyRotation      KeyRotation            `json:"key_rotation"`
 	Headers          map[string]string      `json:"headers"`
 	AnthropicVersion string                 `json:"anthropic_version"`
 	ReasoningStyle   adapter.ReasoningStyle `json:"reasoning_style"`
@@ -51,43 +64,175 @@ type Provider struct {
 	ModelCount int `json:"model_count"`
 }
 
-var (
-	ErrNotFound       = errors.New("provider: not found")
-	ErrNameTaken      = errors.New("provider: a provider with that name already exists")
-	ErrInvalidName    = errors.New("provider: name must be 1-60 characters")
-	ErrInvalidKind    = errors.New("provider: kind must be openai or anthropic")
-	ErrInvalidStyle   = errors.New("provider: unknown reasoning style")
-	ErrKeyRequired    = errors.New("provider: an API key is required")
-	ErrTooManyHeaders = errors.New("provider: at most 20 extra headers")
+// Masked returns the record as an administrator's response shows it: each
+// header value replaced by its hint. A header is a credential as much as a key
+// is — a gateway token or an access secret travels in one — and the providers
+// grant reads these records, so the values are kept for Resolve alone, the one
+// reader that sends them.
+func (p Provider) Masked() Provider {
+	if len(p.Headers) == 0 {
+		return p
+	}
+	masked := make(map[string]string, len(p.Headers))
+	for name, value := range p.Headers {
+		masked[name] = headerHint(value)
+	}
+	p.Headers = masked
+	return p
+}
+
+// keepEchoedHeaders reads a header value that is the hint of the stored value
+// under the same name as "keep what is stored". Responses show headers as
+// hints (see Masked), so a client that sends back what it was shown sends
+// hints, and these must not overwrite the values they stand for. Keys work the
+// same way, by position.
+//
+// A hint with no stored value under its name is refused rather than kept. A
+// header renamed in the request would otherwise be saved with the mask as its
+// value, and every call would send that mask upstream in place of the secret.
+func keepEchoedHeaders(sent, stored map[string]string) (map[string]string, error) {
+	out := make(map[string]string, len(sent))
+	for name, value := range sent {
+		if original, ok := stored[name]; ok && value == headerHint(original) {
+			value = original
+		} else if isHint(value) {
+			return nil, ErrHiddenHeader
+		}
+		out[name] = value
+	}
+	return out, nil
+}
+
+// headerHint is the form a header value is shown in. Masked and
+// keepEchoedHeaders both go through it, so a value shown this way still
+// matches when it is sent back. Below sixteen characters a header shows none
+// of its own: four characters of a short token are most of it. This rule is
+// local to headers. Keys keep their last four characters (secret.Hint), since
+// an administrator compares keys by that tail and would lose the means to
+// tell two short keys apart.
+func headerHint(value string) string {
+	if utf8.RuneCountInString(value) < 16 {
+		return "••••"
+	}
+	return secret.Hint(value)
+}
+
+// isHint reports whether value has the shape secret.Hint gives: the mask, with
+// at most four characters after it. A value typed by hand has that shape only
+// when it was meant to.
+func isHint(value string) bool {
+	n := utf8.RuneCountInString(value)
+	return (n == 4 || n == 8) && strings.HasPrefix(value, "••••")
+}
+
+// KeyRotation is how a call picks one of a provider's keys.
+type KeyRotation string
+
+const (
+	RotateSequential KeyRotation = "sequential"
+	RotateRandom     KeyRotation = "random"
 )
+
+func (r KeyRotation) Valid() bool { return r == RotateSequential || r == RotateRandom }
+
+var (
+	ErrNotFound     = errors.New("provider: not found")
+	ErrNameTaken    = errors.New("provider: a provider with that name already exists")
+	ErrInvalidName  = errors.New("provider: name must be 1-60 characters")
+	ErrInvalidKind  = errors.New("provider: kind must be openai or anthropic")
+	ErrInvalidStyle = errors.New("provider: unknown reasoning style")
+	ErrKeyRequired  = errors.New("provider: an API key is required")
+	// A header value the list showed as a hint is not a value. Stored as one,
+	// the mask would travel upstream in place of the secret, so it is refused.
+	ErrHiddenHeader = errors.New("provider: a header value shown as a hint cannot be saved; enter the value")
+	// A name that is not an HTTP token is refused at save. net/http would reject
+	// it on every upstream call, and the operator would hear about it only at chat
+	// time, with an error that does not name the header.
+	ErrInvalidHeaderName = errors.New("provider: a header name may use only letters, digits and the characters !#$%&'*+-.^_`|~")
+	// Two names that differ only in surrounding space or letter case are one
+	// header on the wire, and the value that survived would depend on the order
+	// the map was read in.
+	ErrDuplicateHeader = errors.New("provider: two header names are the same once spaces are trimmed and letter case is ignored")
+	// Models on other providers route into this one's models. Deleting it
+	// would clear those routes, so the sources would be served by their own
+	// providers without anybody having chosen that.
+	ErrRouted = errors.New("provider: models on other providers route into this one")
+	// The key is sent wherever the base URL points, so it only goes to a
+	// new address when whoever pointed it there typed it again. Otherwise the
+	// write-only key was one edit and one "detect models" away from anybody
+	// trusted with the providers page, at a server of their own.
+	ErrKeyNeededForMove = errors.New("provider: a new base URL needs the API key entered again")
+	// Every chat on the provider is sent to this address, prompts and
+	// attachments included, so choosing it is the same decision as choosing
+	// the public URL or an OIDC endpoint, whether the provider is new or is
+	// being moved. Typing the key again does not make it safe: whoever picks
+	// the address chooses the key as well.
+	ErrBaseURLNeedsSuperAdmin = errors.New("provider: only a super administrator can set or change a provider's base URL")
+	// The adapter's sentences about a base URL are written for the person who
+	// typed it, and the admin layer shows them. Recognised by this marker, not
+	// by searching the text, so an internal error that happens to contain the
+	// word "https" is still a server fault.
+	ErrInvalidBaseURL  = errors.New("provider: invalid base URL")
+	ErrTooManyHeaders  = errors.New("provider: at most 20 extra headers")
+	ErrTooManyKeys     = errors.New("provider: at most 100 API keys")
+	ErrKeyTooLong      = errors.New("provider: an API key is at most 4096 characters")
+	ErrInvalidRotation = errors.New("provider: key rotation must be sequential or random")
+	// Kept keys are named by position, which means something only against the
+	// list the form was drawn from. Another administrator's edit in between
+	// would otherwise have it keep a key it never showed.
+	ErrKeysChanged = errors.New("provider: the API keys were changed meanwhile")
+)
+
+// baseURLError keeps the adapter's sentence as its message, so the text a
+// person sees does not change, and marks it as ErrInvalidBaseURL.
+type baseURLError struct{ error }
+
+func (e baseURLError) Is(target error) bool { return target == ErrInvalidBaseURL }
 
 const (
 	MaxNameChars   = 60
 	MaxHeaders     = 20
 	MaxHeaderChars = 200
 	MaxAPIKeyChars = 4096
+	MaxAPIKeys     = 100
 	DefaultTimeout = 120
 	MaxTimeoutSecs = 900
 )
 
 // Headers a provider may not override: they carry the credential and the
 // protocol contract, and an operator setting one by hand would either break
-// the request or send the key somewhere unintended.
+// the request or send the key somewhere unintended. The hop-by-hop ones
+// belong to each connection rather than to the request, so a value here could
+// only change how the transport reads the response: Upgrade would turn it into
+// a raw tunnel, and Proxy-Authorization would hand a proxy's credential to the
+// provider.
 var reservedHeaders = map[string]bool{
-	"authorization":     true,
-	"x-api-key":         true,
-	"anthropic-version": true,
-	"content-type":      true,
-	"content-length":    true,
-	"host":              true,
+	"authorization":       true,
+	"x-api-key":           true,
+	"anthropic-version":   true,
+	"content-type":        true,
+	"content-length":      true,
+	"host":                true,
+	"connection":          true,
+	"keep-alive":          true,
+	"proxy-authorization": true,
+	"proxy-connection":    true,
+	"te":                  true,
+	"trailer":             true,
+	"transfer-encoding":   true,
+	"upgrade":             true,
 }
 
 const columns = `id, name, kind, base_url, allow_insecure, api_key_hint, headers_json, anthropic_version,
-	reasoning_style, timeout_seconds, enabled, sort_order, created_at, updated_at`
+	reasoning_style, timeout_seconds, enabled, sort_order, created_at, updated_at, key_rotation`
 
 type Store struct {
 	db  *database.DB
 	box *secret.Box
+	// Provider id to the count of calls it has had, for sequential rotation.
+	// Per process: a second instance keeps its own, which still spreads the
+	// calls, and a counter in the database would be a write on every turn.
+	turns sync.Map
 }
 
 func NewStore(db *database.DB, box *secret.Box) *Store {
@@ -106,15 +251,44 @@ type CreateInput struct {
 	TimeoutSeconds   int
 	Enabled          bool
 	SortOrder        int
-	// The provider to take the API key from, for a duplicate. The key is
+	// Keys typed into the form, beside APIKey. Either may hold several, one
+	// per line.
+	APIKeys     []string
+	KeyRotation KeyRotation
+	// The provider to take the API keys from, for a duplicate. The keys are
 	// copied inside the database as ciphertext and never unsealed: carrying
 	// the credentials is most of the reason to duplicate a provider, and the
-	// browser asking for one has never been given them. Ignored when APIKey
-	// is set.
+	// browser asking for one has never been given them. Ignored when keys are
+	// typed and KeepKeys is nil.
 	CopyKeyFrom string
+	// The positions of the source's keys to take, in SeenKeyHints, when the
+	// duplicate keeps only some of them or adds its own beside them. Only
+	// this case opens the source's keys, since the list has to be rebuilt.
+	KeepKeys     *[]int
+	SeenKeyHints []string
 }
 
-func (s *Store) Create(ctx context.Context, in CreateInput) (Provider, error) {
+// Create adds a provider. superAdmin says whether the caller may choose its
+// address, the same question Update asks of an existing one. Anybody else may
+// only duplicate a provider at the address that provider already has.
+func (s *Store) Create(ctx context.Context, in CreateInput, superAdmin bool) (Provider, error) {
+	// A duplicate's headers are the ones the request sends, with any value the
+	// list showed as a hint read back as the stored one. See keepEchoedHeaders.
+	if in.Headers != nil {
+		var stored map[string]string
+		if in.CopyKeyFrom != "" {
+			source, err := s.ByID(ctx, in.CopyKeyFrom)
+			if err != nil {
+				return Provider{}, err
+			}
+			stored = source.Headers
+		}
+		headers, err := keepEchoedHeaders(in.Headers, stored)
+		if err != nil {
+			return Provider{}, err
+		}
+		in.Headers = headers
+	}
 	record, err := validate(Provider{
 		ID:               id.New(),
 		Name:             in.Name,
@@ -127,13 +301,72 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Provider, error) {
 		TimeoutSeconds:   in.TimeoutSeconds,
 		Enabled:          in.Enabled,
 		SortOrder:        in.SortOrder,
+		KeyRotation:      in.KeyRotation,
 	})
 	if err != nil {
 		return Provider{}, err
 	}
-	copying := strings.TrimSpace(in.APIKey) == "" && in.CopyKeyFrom != ""
-	if strings.TrimSpace(in.APIKey) == "" && !copying {
+	typed, err := keyList(append([]string{in.APIKey}, in.APIKeys...)...)
+	if err != nil {
+		return Provider{}, err
+	}
+
+	// Three ways to arrive with keys: the source's ciphertext as it is, some
+	// of the source's keys with or without typed ones, or typed ones alone.
+	copying := in.CopyKeyFrom != "" && in.KeepKeys == nil && len(typed) == 0
+	taking := in.CopyKeyFrom != "" && in.KeepKeys != nil && len(*in.KeepKeys) > 0
+	if copying || taking {
+		// A copied key goes to the same address it already went to, or the
+		// copy is a way to send it somewhere new without knowing it. A delegate
+		// is told the address is a super administrator's, not that the key needs
+		// typing again: typing it would not let them choose the address.
+		source, err := s.ByID(ctx, in.CopyKeyFrom)
+		if err != nil {
+			return Provider{}, err
+		}
+		if source.BaseURL != record.BaseURL {
+			if !superAdmin {
+				return Provider{}, ErrBaseURLNeedsSuperAdmin
+			}
+			return Provider{}, ErrKeyNeededForMove
+		}
+	}
+	if len(typed) > 0 && !superAdmin {
+		// A typed key goes wherever the address says, so creating a provider
+		// with one chooses the address. Refused before the insert, so there is
+		// no row for a detect call or a chat to be routed to.
+		return Provider{}, ErrBaseURLNeedsSuperAdmin
+	}
+
+	keys := typed
+	if taking {
+		// Read at the address the new row will have, so a source repointed
+		// since the check above gives up nothing.
+		var sealed []byte
+		var hints string
+		err := s.db.QueryRow(ctx, `SELECT api_key_enc, api_key_hint FROM providers WHERE id = ? AND base_url = ?`,
+			in.CopyKeyFrom, record.BaseURL).Scan(&sealed, &hints)
+		if err != nil {
+			if database.IsNotFound(err) {
+				return Provider{}, ErrNotFound
+			}
+			return Provider{}, fmt.Errorf("provider: read source keys: %w", err)
+		}
+		stored, err := s.openKeys(sealed)
+		if err != nil {
+			return Provider{}, err
+		}
+		chosen, err := keep(stored, splitHints(hints), *in.KeepKeys, in.SeenKeyHints)
+		if err != nil {
+			return Provider{}, err
+		}
+		keys = unique(append(chosen, typed...))
+	}
+	if !copying && len(keys) == 0 {
 		return Provider{}, ErrKeyRequired
+	}
+	if len(keys) > MaxAPIKeys {
+		return Provider{}, ErrTooManyKeys
 	}
 
 	now := time.Now().UnixMilli()
@@ -144,13 +377,15 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Provider, error) {
 		return Provider{}, fmt.Errorf("provider: encode headers: %w", err)
 	}
 
-	const columns = `INSERT INTO providers
+	const insertColumns = `INSERT INTO providers
 		(id, name, kind, base_url, allow_insecure, api_key_enc, api_key_hint, headers_json,
-		 anthropic_version, reasoning_style, timeout_seconds, enabled, sort_order, created_at, updated_at)`
+		 anthropic_version, reasoning_style, timeout_seconds, enabled, sort_order, created_at, updated_at,
+		 key_rotation)`
 
 	identity := []any{record.ID, record.Name, record.Kind, record.BaseURL, record.AllowInsecure}
 	rest := []any{string(headers), record.AnthropicVersion, record.ReasoningStyle,
-		record.TimeoutSeconds, record.Enabled, record.SortOrder, record.CreatedAt, record.UpdatedAt}
+		record.TimeoutSeconds, record.Enabled, record.SortOrder, record.CreatedAt, record.UpdatedAt,
+		record.KeyRotation}
 
 	var (
 		query string
@@ -160,46 +395,60 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Provider, error) {
 		// The two key columns come from the source row rather than from Go,
 		// so the ciphertext is moved by the database and the plaintext is
 		// never anywhere. Everything else is what the caller asked for.
-		query = columns + `
-		SELECT ?, ?, ?, ?, ?, api_key_enc, api_key_hint, ?, ?, ?, ?, ?, ?, ?, ?
-		FROM providers WHERE id = ?`
-		args = append(append(identity, rest...), in.CopyKeyFrom)
+		// The base URL is matched again here, so a source repointed between
+		// the check above and this insert copies nothing.
+		query = insertColumns + `
+		SELECT ?, ?, ?, ?, ?, api_key_enc, api_key_hint, ?, ?, ?, ?, ?, ?, ?, ?, ?
+		FROM providers WHERE id = ? AND base_url = ?`
+		args = append(append(identity, rest...), in.CopyKeyFrom, record.BaseURL)
 	} else {
-		sealed, sealErr := s.box.Seal(strings.TrimSpace(in.APIKey))
+		sealed, hints, sealErr := s.sealKeys(keys)
 		if sealErr != nil {
 			return Provider{}, sealErr
 		}
-		record.APIKeyHint = secret.Hint(strings.TrimSpace(in.APIKey))
-		query = columns + `
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-		args = append(append(identity, sealed, record.APIKeyHint), rest...)
+		record.setHints(hints)
+		query = insertColumns + `
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		args = append(append(identity, sealed, hints), rest...)
 	}
 
 	result, err := s.db.Exec(ctx, query, args...)
 	if err != nil {
-		if isUnique(err) {
+		if database.IsUnique(err) {
 			return Provider{}, ErrNameTaken
 		}
 		return Provider{}, fmt.Errorf("provider: create: %w", err)
 	}
 	if copying {
 		// A SELECT that matched nothing inserts nothing and reports no error.
-		if written, _ := result.RowsAffected(); written == 0 {
+		written, err := result.RowsAffected()
+		if err != nil {
+			return Provider{}, fmt.Errorf("provider: create rows: %w", err)
+		}
+		if written == 0 {
 			return Provider{}, ErrNotFound
 		}
-		// The hint travelled with the key, so it has to be read back rather
-		// than derived from a plaintext this path never saw.
+		// The hints travelled with the keys, so they have to be read back
+		// rather than derived from a plaintext this path never saw.
 		return s.ByID(ctx, record.ID)
 	}
 	return record, nil
 }
 
 type Update struct {
-	Name             *string
-	Kind             *adapter.Kind
-	BaseURL          *string
-	AllowInsecure    *bool
-	APIKey           *string
+	Name          *string
+	Kind          *adapter.Kind
+	BaseURL       *string
+	AllowInsecure *bool
+	// Replaces every stored key with what it holds, one per line.
+	APIKey *string
+	// Keys typed to go beside the ones kept.
+	AddKeys []string
+	// The positions of the stored keys to keep, in SeenKeyHints. Nil keeps
+	// them all; an empty list keeps none.
+	KeepKeys         *[]int
+	SeenKeyHints     []string
+	KeyRotation      *KeyRotation
 	Headers          *map[string]string
 	AnthropicVersion *string
 	ReasoningStyle   *adapter.ReasoningStyle
@@ -208,10 +457,11 @@ type Update struct {
 	SortOrder        *int
 }
 
-// Update applies a partial change. An absent APIKey leaves the stored one
-// alone, which is what lets the admin form round-trip a provider without ever
-// receiving the key it is editing.
-func (s *Store) Update(ctx context.Context, providerID string, in Update) (Provider, error) {
+// Update applies a partial change. With no APIKey, AddKeys or KeepKeys the
+// stored keys are left alone, which is what lets the admin form round-trip a
+// provider without ever receiving the keys it is editing. superAdmin says whether the caller may move
+// the base URL; anybody else is refused that before the key rule is consulted.
+func (s *Store) Update(ctx context.Context, providerID string, in Update, superAdmin bool) (Provider, error) {
 	var next Provider
 	err := s.db.Tx(ctx, func(tx *database.Tx) error {
 		// Models lock this same owner row before they are written. Keeping the
@@ -241,7 +491,11 @@ func (s *Store) Update(ctx context.Context, providerID string, in Update) (Provi
 			next.AllowInsecure = *in.AllowInsecure
 		}
 		if in.Headers != nil {
-			next.Headers = *in.Headers
+			kept, err := keepEchoedHeaders(*in.Headers, current.Headers)
+			if err != nil {
+				return err
+			}
+			next.Headers = kept
 		}
 		if in.AnthropicVersion != nil {
 			next.AnthropicVersion = *in.AnthropicVersion
@@ -258,10 +512,27 @@ func (s *Store) Update(ctx context.Context, providerID string, in Update) (Provi
 		if in.SortOrder != nil {
 			next.SortOrder = *in.SortOrder
 		}
+		if in.KeyRotation != nil {
+			next.KeyRotation = *in.KeyRotation
+		}
 
 		next, err = validate(next)
 		if err != nil {
 			return err
+		}
+		// Compared after validate has normalised both sides, so a save that
+		// only respells the same address is not taken for a move.
+		if next.BaseURL != current.BaseURL && !superAdmin {
+			return ErrBaseURLNeedsSuperAdmin
+		}
+		keys, touched, err := s.nextKeys(ctx, tx, providerID, current, in)
+		if err != nil {
+			return err
+		}
+		// Every key goes to the new address because it was typed for it: one
+		// kept from before would be sent somewhere its owner never chose.
+		if next.BaseURL != current.BaseURL && !(touched && keys.allTyped) {
+			return ErrKeyNeededForMove
 		}
 		next.UpdatedAt = time.Now().UnixMilli()
 
@@ -271,28 +542,24 @@ func (s *Store) Update(ctx context.Context, providerID string, in Update) (Provi
 		}
 
 		sets := `name = ?, kind = ?, base_url = ?, allow_insecure = ?, headers_json = ?, anthropic_version = ?,
-			reasoning_style = ?, timeout_seconds = ?, enabled = ?, sort_order = ?, updated_at = ?`
+			reasoning_style = ?, timeout_seconds = ?, enabled = ?, sort_order = ?, updated_at = ?, key_rotation = ?`
 		args := []any{next.Name, next.Kind, next.BaseURL, next.AllowInsecure, string(headers),
 			next.AnthropicVersion, next.ReasoningStyle, next.TimeoutSeconds, next.Enabled,
-			next.SortOrder, next.UpdatedAt}
+			next.SortOrder, next.UpdatedAt, next.KeyRotation}
 
-		if in.APIKey != nil {
-			key := strings.TrimSpace(*in.APIKey)
-			if key == "" {
-				return ErrKeyRequired
-			}
-			sealed, err := s.box.Seal(key)
+		if touched {
+			sealed, hints, err := s.sealKeys(keys.list)
 			if err != nil {
 				return err
 			}
-			next.APIKeyHint = secret.Hint(key)
+			next.setHints(hints)
 			sets += `, api_key_enc = ?, api_key_hint = ?`
-			args = append(args, sealed, next.APIKeyHint)
+			args = append(args, sealed, hints)
 		}
 
 		args = append(args, providerID)
 		if _, err := tx.Exec(ctx, `UPDATE providers SET `+sets+` WHERE id = ?`, args...); err != nil {
-			if isUnique(err) {
+			if database.IsUnique(err) {
 				return ErrNameTaken
 			}
 			return fmt.Errorf("provider: update: %w", err)
@@ -307,6 +574,62 @@ func (s *Store) Update(ctx context.Context, providerID string, in Update) (Provi
 		return nil
 	})
 	return next, err
+}
+
+// keySet is the key list an Update leaves behind. allTyped says every key in it
+// was typed in this request, the one condition under which the keys may follow a
+// new base URL.
+type keySet struct {
+	list     []string
+	allTyped bool
+}
+
+// nextKeys works out the list an Update leaves behind, and whether it touches
+// the keys at all.
+func (s *Store) nextKeys(
+	ctx context.Context, tx *database.Tx, providerID string, current Provider, in Update,
+) (keySet, bool, error) {
+	if in.APIKey == nil && in.KeepKeys == nil && len(in.AddKeys) == 0 {
+		return keySet{}, false, nil
+	}
+	typedBlocks := in.AddKeys
+	if in.APIKey != nil {
+		typedBlocks = append([]string{*in.APIKey}, typedBlocks...)
+	}
+	typed, err := keyList(typedBlocks...)
+	if err != nil {
+		return keySet{}, true, err
+	}
+
+	var kept []string
+	// A replacement keeps nothing, and neither does an empty keep list; only
+	// then is there no need to open what is stored — which is also how a
+	// provider whose keys no longer open, after the instance secret changed,
+	// is given new ones.
+	if in.APIKey == nil && (in.KeepKeys == nil || len(*in.KeepKeys) > 0) {
+		var sealed []byte
+		if err := tx.QueryRow(ctx, `SELECT api_key_enc FROM providers WHERE id = ?`, providerID).Scan(&sealed); err != nil {
+			return keySet{}, true, fmt.Errorf("provider: read keys: %w", err)
+		}
+		stored, err := s.openKeys(sealed)
+		if err != nil {
+			return keySet{}, true, fmt.Errorf("provider %q: %w", current.Name, err)
+		}
+		if in.KeepKeys == nil {
+			kept = stored
+		} else if kept, err = keep(stored, current.APIKeyHints, *in.KeepKeys, in.SeenKeyHints); err != nil {
+			return keySet{}, true, err
+		}
+	}
+
+	list := unique(append(kept, typed...))
+	if len(list) == 0 {
+		return keySet{}, true, ErrKeyRequired
+	}
+	if len(list) > MaxAPIKeys {
+		return keySet{}, true, ErrTooManyKeys
+	}
+	return keySet{list: list, allTyped: len(kept) == 0}, true, nil
 }
 
 func (s *Store) ByID(ctx context.Context, providerID string) (Provider, error) {
@@ -338,67 +661,74 @@ func (s *Store) List(ctx context.Context) ([]Provider, error) {
 	return out, rows.Err()
 }
 
+// Delete removes a provider and, through the cascade, its models and their
+// group permissions. A model on another provider that routes into one of
+// these models is refused: the cascade would clear that route and the source
+// would be served by its own provider, the one the operator routed away from.
 func (s *Store) Delete(ctx context.Context, providerID string) error {
-	// Models cascade; so do the group permissions that pointed at them.
-	if _, err := s.db.Exec(ctx, `DELETE FROM providers WHERE id = ?`, providerID); err != nil {
-		return fmt.Errorf("provider: delete: %w", err)
-	}
-	return nil
+	return s.db.Tx(ctx, func(tx *database.Tx) error {
+		if _, err := tx.Exec(ctx,
+			`UPDATE providers SET updated_at = updated_at WHERE id = ?`, providerID); err != nil {
+			return fmt.Errorf("provider: lock provider: %w", err)
+		}
+		// Each model is locked as a route write locks its target, so a route
+		// set on one of them concurrently waits here instead of being cleared
+		// by the cascade after the check below has passed.
+		if _, err := tx.Exec(ctx,
+			`UPDATE models SET updated_at = updated_at WHERE provider_id = ?`, providerID); err != nil {
+			return fmt.Errorf("provider: lock models: %w", err)
+		}
+		var routed int
+		if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM models src
+			JOIN models dst ON dst.id = src.route_to_id
+			WHERE dst.provider_id = ? AND src.provider_id <> ?`, providerID, providerID).Scan(&routed); err != nil {
+			return fmt.Errorf("provider: count routes: %w", err)
+		}
+		if routed > 0 {
+			return ErrRouted
+		}
+		// Models cascade; so do the group permissions that pointed at them.
+		if _, err := tx.Exec(ctx, `DELETE FROM providers WHERE id = ?`, providerID); err != nil {
+			return fmt.Errorf("provider: delete: %w", err)
+		}
+		return nil
+	})
 }
 
-// Resolve returns the provider with its key decrypted, ready to hand to an
-// adapter. This is the only path from the database to a usable credential,
-// and the returned value is never serialised.
+// Resolve returns the provider with one of its keys decrypted, ready to hand
+// to an adapter. This is the only path from the database to a usable
+// credential, and the returned value is never serialised.
 func (s *Store) Resolve(ctx context.Context, providerID string) (adapter.Provider, error) {
 	var (
-		record Provider
-		sealed []byte
+		record  Provider
+		sealed  []byte
+		headers string
+		hints   string
 	)
 	row := s.db.QueryRow(ctx, `SELECT `+columns+`, api_key_enc FROM providers WHERE id = ?`, providerID)
-
-	var headers string
 	err := row.Scan(&record.ID, &record.Name, &record.Kind, &record.BaseURL, &record.AllowInsecure,
-		&record.APIKeyHint, &headers, &record.AnthropicVersion, &record.ReasoningStyle,
+		&hints, &headers, &record.AnthropicVersion, &record.ReasoningStyle,
 		&record.TimeoutSeconds, &record.Enabled, &record.SortOrder, &record.CreatedAt,
-		&record.UpdatedAt, &sealed)
+		&record.UpdatedAt, &record.KeyRotation, &sealed)
 	if err != nil {
 		if database.IsNotFound(err) {
 			return adapter.Provider{}, ErrNotFound
 		}
 		return adapter.Provider{}, fmt.Errorf("provider: resolve: %w", err)
 	}
-
-	key, err := s.box.Open(sealed)
-	if err != nil {
-		// Almost always a changed OBSIDIAN_SECRET_KEY. Saying which provider
-		// is affected is what makes that recoverable.
-		return adapter.Provider{}, fmt.Errorf("provider %q: %w (was OBSIDIAN_SECRET_KEY changed? re-enter the API key)", record.Name, err)
-	}
-
-	timeout := time.Duration(record.TimeoutSeconds) * time.Second
-	if timeout <= 0 {
-		timeout = DefaultTimeout * time.Second
-	}
-	return adapter.Provider{
-		ID:               record.ID,
-		Name:             record.Name,
-		Kind:             record.Kind,
-		BaseURL:          record.BaseURL,
-		APIKey:           key,
-		Headers:          decodeHeaders(headers),
-		AnthropicVersion: record.AnthropicVersion,
-		ReasoningStyle:   record.ReasoningStyle,
-		Timeout:          timeout,
-	}, nil
+	record.Headers = DecodeHeaders(record.ID, headers)
+	return s.ResolveFrom(record, sealed)
 }
 
 // ResolveFrom is Resolve for a provider already loaded, used by the chat
 // gateway after it has joined the model to its provider — so a turn costs one
 // query rather than two.
 func (s *Store) ResolveFrom(record Provider, sealed []byte) (adapter.Provider, error) {
-	key, err := s.box.Open(sealed)
+	keys, err := s.openKeys(sealed)
 	if err != nil {
-		return adapter.Provider{}, fmt.Errorf("provider %q: %w", record.Name, err)
+		// Almost always a changed OBSIDIAN_SECRET_KEY. Saying which provider
+		// is affected is what makes that recoverable.
+		return adapter.Provider{}, fmt.Errorf("provider %q: %w (was OBSIDIAN_SECRET_KEY changed? re-enter the API key)", record.Name, err)
 	}
 	timeout := time.Duration(record.TimeoutSeconds) * time.Second
 	if timeout <= 0 {
@@ -409,12 +739,129 @@ func (s *Store) ResolveFrom(record Provider, sealed []byte) (adapter.Provider, e
 		Name:             record.Name,
 		Kind:             record.Kind,
 		BaseURL:          record.BaseURL,
-		APIKey:           key,
-		Headers:          record.Headers,
+		APIKey:           s.pick(record.ID, record.KeyRotation, keys),
+		Headers:          outboundHeaders(record.Headers),
 		AnthropicVersion: record.AnthropicVersion,
 		ReasoningStyle:   record.ReasoningStyle,
 		Timeout:          timeout,
 	}, nil
+}
+
+// pick chooses the key for one call.
+func (s *Store) pick(providerID string, rotation KeyRotation, keys []string) string {
+	if len(keys) == 1 {
+		return keys[0]
+	}
+	if rotation == RotateRandom {
+		return keys[rand.IntN(len(keys))]
+	}
+	counter, _ := s.turns.LoadOrStore(providerID, new(atomic.Uint64))
+	turn := counter.(*atomic.Uint64).Add(1) - 1
+	return keys[turn%uint64(len(keys))]
+}
+
+// --- keys --------------------------------------------------------------------
+//
+// A provider's keys are one ciphertext, joined by newlines: a key cannot hold
+// one, since it travels in a header that refuses them. One key is therefore
+// stored exactly as it was before there could be several, and the duplicate
+// that copies the ciphertext copies all of them without opening it.
+
+// keyList is what an administrator typed, as keys: one per line, so a list
+// pasted from a spreadsheet arrives whole, trimmed, and without repeats, since
+// a key entered twice would only be drawn twice as often.
+func keyList(typed ...string) ([]string, error) {
+	var out []string
+	for _, block := range typed {
+		for _, line := range strings.Split(block, "\n") {
+			key := strings.TrimSpace(line)
+			if key == "" {
+				continue
+			}
+			if len([]rune(key)) > MaxAPIKeyChars {
+				return nil, ErrKeyTooLong
+			}
+			out = append(out, key)
+		}
+	}
+	out = unique(out)
+	if len(out) > MaxAPIKeys {
+		return nil, ErrTooManyKeys
+	}
+	return out, nil
+}
+
+func unique(keys []string) []string {
+	seen := make(map[string]bool, len(keys))
+	out := keys[:0:0]
+	for _, key := range keys {
+		if !seen[key] {
+			seen[key] = true
+			out = append(out, key)
+		}
+	}
+	return out
+}
+
+// keep returns the stored keys at the positions a form chose, which mean
+// something only against the hints it was drawn from — so those come back
+// with them and must still be the ones stored.
+func keep(stored, hints []string, positions []int, seen []string) ([]string, error) {
+	if !slices.Equal(hints, seen) || len(stored) != len(hints) {
+		return nil, ErrKeysChanged
+	}
+	out := make([]string, 0, len(positions))
+	for _, position := range positions {
+		if position < 0 || position >= len(stored) {
+			return nil, ErrKeysChanged
+		}
+		out = append(out, stored[position])
+	}
+	return unique(out), nil
+}
+
+func (s *Store) sealKeys(keys []string) ([]byte, string, error) {
+	sealed, err := s.box.Seal(strings.Join(keys, "\n"))
+	if err != nil {
+		return nil, "", err
+	}
+	hints := make([]string, len(keys))
+	for i, key := range keys {
+		hints[i] = secret.Hint(key)
+	}
+	return sealed, strings.Join(hints, "\n"), nil
+}
+
+func (s *Store) openKeys(sealed []byte) ([]string, error) {
+	plain, err := s.box.Open(sealed)
+	if err != nil {
+		return nil, err
+	}
+	var keys []string
+	for _, key := range strings.Split(plain, "\n") {
+		if key != "" {
+			keys = append(keys, key)
+		}
+	}
+	if len(keys) == 0 {
+		return nil, ErrKeyRequired
+	}
+	return keys, nil
+}
+
+func splitHints(raw string) []string {
+	if raw == "" {
+		return []string{}
+	}
+	return strings.Split(raw, "\n")
+}
+
+func (p *Provider) setHints(raw string) {
+	p.APIKeyHints = splitHints(raw)
+	p.APIKeyHint = ""
+	if len(p.APIKeyHints) > 0 {
+		p.APIKeyHint = p.APIKeyHints[0]
+	}
 }
 
 // --- validation --------------------------------------------------------------
@@ -430,7 +877,7 @@ func validate(record Provider) (Provider, error) {
 
 	normalized, err := adapter.NormalizeBaseURL(record.BaseURL, record.AllowInsecure)
 	if err != nil {
-		return Provider{}, fmt.Errorf("provider: %w", err)
+		return Provider{}, fmt.Errorf("provider: %w", baseURLError{err})
 	}
 	record.BaseURL = normalized
 
@@ -439,6 +886,13 @@ func validate(record Provider) (Provider, error) {
 	}
 	if !record.ReasoningStyle.Valid() {
 		return Provider{}, ErrInvalidStyle
+	}
+
+	if record.KeyRotation == "" {
+		record.KeyRotation = RotateSequential
+	}
+	if !record.KeyRotation.Valid() {
+		return Provider{}, ErrInvalidRotation
 	}
 
 	if record.TimeoutSeconds <= 0 {
@@ -457,6 +911,20 @@ func validate(record Provider) (Provider, error) {
 	return record, nil
 }
 
+// outboundHeaders is what a call sends. sanitizeHeaders filters on the way in,
+// but a row written before a name was reserved still holds it, so the same
+// rule is applied again where the headers leave for the provider.
+func outboundHeaders(stored map[string]string) map[string]string {
+	out := make(map[string]string, len(stored))
+	for name, value := range stored {
+		if reservedHeaders[strings.ToLower(strings.TrimSpace(name))] {
+			continue
+		}
+		out[name] = value
+	}
+	return out
+}
+
 func sanitizeHeaders(in map[string]string) (map[string]string, error) {
 	if len(in) == 0 {
 		return map[string]string{}, nil
@@ -466,11 +934,29 @@ func sanitizeHeaders(in map[string]string) (map[string]string, error) {
 	}
 
 	out := make(map[string]string, len(in))
+	seen := make(map[string]bool, len(in))
 	for name, value := range in {
 		trimmed := strings.TrimSpace(name)
 		if trimmed == "" || reservedHeaders[strings.ToLower(trimmed)] {
 			continue
 		}
+		// The name is in the error because validate runs on every save, so a
+		// legacy header that no longer passes blocks all of them, and the
+		// operator has to be told which row to fix. That includes a save that
+		// only disables the provider: Update validates the stored headers too,
+		// so the way out is to fix or remove the row and save again.
+		if !validHeaderName(trimmed) {
+			return nil, fmt.Errorf("%w: %q", ErrInvalidHeaderName, trimmed)
+		}
+		// Net/http canonicalises names, so "X-Auth" and "x-auth" are one header
+		// on the wire and the value sent would depend on map order. The name is
+		// in the error for the reason above: the operator has to find the row
+		// that collides with another.
+		key := strings.ToLower(trimmed)
+		if seen[key] {
+			return nil, fmt.Errorf("%w: %q", ErrDuplicateHeader, trimmed)
+		}
+		seen[key] = true
 		// A newline in a header value is request splitting. Both are stripped
 		// rather than rejected: the operator typed a value, not an attack.
 		clean := strings.NewReplacer("\r", "", "\n", "").Replace(value)
@@ -483,35 +969,60 @@ func sanitizeHeaders(in map[string]string) (map[string]string, error) {
 	return out, nil
 }
 
-func decodeHeaders(raw string) map[string]string {
+// validHeaderName is the RFC 9110 token grammar: the characters a header name may
+// use. Written out rather than taken from a package, because the check is a few
+// lines and the set does not change.
+func validHeaderName(name string) bool {
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		switch {
+		case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z', '0' <= c && c <= '9':
+		case strings.IndexByte("!#$%&'*+-.^_`|~", c) >= 0:
+		default:
+			return false
+		}
+	}
+	return name != ""
+}
+
+// DecodeHeaders reads a provider's stored extra headers. The save path validates
+// the JSON, so a row that does not decode was written outside the server. It is
+// still read as no headers rather than failing the request, and the warning
+// names the provider because the symptom is an upstream 401 or 403 with nothing
+// else to say why.
+func DecodeHeaders(providerID, raw string) map[string]string {
 	out := map[string]string{}
 	if raw == "" {
 		return out
 	}
-	_ = json.Unmarshal([]byte(raw), &out)
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		slog.Warn("provider headers do not decode, so they are not sent", "provider", providerID, "error", err)
+	}
 	return out
 }
 
 // --- scanning ----------------------------------------------------------------
 
-type rowScanner interface{ Scan(dest ...any) error }
+type rowScanner = database.RowScanner
 
 func scan(row rowScanner) (Provider, error) {
 	var (
 		record  Provider
 		headers string
+		hints   string
 	)
 	err := row.Scan(&record.ID, &record.Name, &record.Kind, &record.BaseURL, &record.AllowInsecure,
-		&record.APIKeyHint, &headers, &record.AnthropicVersion, &record.ReasoningStyle,
+		&hints, &headers, &record.AnthropicVersion, &record.ReasoningStyle,
 		&record.TimeoutSeconds, &record.Enabled, &record.SortOrder, &record.CreatedAt,
-		&record.UpdatedAt)
+		&record.UpdatedAt, &record.KeyRotation)
 	if err != nil {
 		if database.IsNotFound(err) {
 			return Provider{}, ErrNotFound
 		}
 		return Provider{}, fmt.Errorf("provider: scan: %w", err)
 	}
-	record.Headers = decodeHeaders(headers)
+	record.Headers = DecodeHeaders(record.ID, headers)
+	record.setHints(hints)
 	return record, nil
 }
 
@@ -519,23 +1030,20 @@ func scanWithCount(row rowScanner) (Provider, int, error) {
 	var (
 		record  Provider
 		headers string
+		hints   string
 		count   int
 	)
 	err := row.Scan(&record.ID, &record.Name, &record.Kind, &record.BaseURL, &record.AllowInsecure,
-		&record.APIKeyHint, &headers, &record.AnthropicVersion, &record.ReasoningStyle,
+		&hints, &headers, &record.AnthropicVersion, &record.ReasoningStyle,
 		&record.TimeoutSeconds, &record.Enabled, &record.SortOrder, &record.CreatedAt,
-		&record.UpdatedAt, &count)
+		&record.UpdatedAt, &record.KeyRotation, &count)
 	if err != nil {
 		if database.IsNotFound(err) {
 			return Provider{}, 0, ErrNotFound
 		}
 		return Provider{}, 0, fmt.Errorf("provider: scan: %w", err)
 	}
-	record.Headers = decodeHeaders(headers)
+	record.Headers = DecodeHeaders(record.ID, headers)
+	record.setHints(hints)
 	return record, count, nil
-}
-
-func isUnique(err error) bool {
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "unique") || strings.Contains(message, "duplicate")
 }

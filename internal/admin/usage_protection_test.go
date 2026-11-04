@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -56,12 +57,17 @@ func setupAdminUsageFixture(t *testing.T) (*Handlers, *usage.Store, *database.DB
 
 	usageStore := usage.NewStore(db)
 	h := &Handlers{
-		usage:               usageStore,
-		UsageLimiter:        httpx.NewTokenBucketLimiter(5, 10),
-		usageSummaryCache:   make(map[string]*cachedUsageSummary),
-		usageBreakdownCache: make(map[string]*cachedUsageBreakdown),
+		usage:        usageStore,
+		UsageLimiter: httpx.NewTokenBucketLimiter(5, 10),
 	}
 	return h, usageStore, db, adminUser
+}
+
+// unlimitedBudget is a budget that never runs out, for the tests about
+// something other than the budget. The handlers always have one, so a
+// test turns it off by giving them one too large to spend.
+func unlimitedBudget() *httpx.TokenBucketLimiter {
+	return httpx.NewTokenBucketLimiter(math.Inf(1), math.Inf(1))
 }
 
 func TestFilterHourlyRoundingAndMaxSpan(t *testing.T) {
@@ -157,7 +163,7 @@ func TestAdminUsageRateLimiterThrottling(t *testing.T) {
 
 func TestAdminUsageTTL15sCache(t *testing.T) {
 	h, usageStore, db, adminUser := setupAdminUsageFixture(t)
-	h.UsageLimiter = nil // Focus on caching
+	h.UsageLimiter = unlimitedBudget() // Focus on caching
 
 	ctx := context.Background()
 	_ = usageStore.Write(ctx, usage.Record{
@@ -235,7 +241,7 @@ func TestAdminUsageTTL15sCache(t *testing.T) {
 
 func TestAdminUsageSingleflight(t *testing.T) {
 	h, usageStore, _, adminUser := setupAdminUsageFixture(t)
-	h.UsageLimiter = nil
+	h.UsageLimiter = unlimitedBudget()
 
 	ctx := context.Background()
 	_ = usageStore.Write(ctx, usage.Record{
@@ -276,7 +282,7 @@ func TestAdminUsageSingleflight(t *testing.T) {
 
 func TestAdminUsageSemaphoreTimeout503(t *testing.T) {
 	h, _, _, adminUser := setupAdminUsageFixture(t)
-	h.UsageLimiter = nil
+	h.UsageLimiter = unlimitedBudget()
 
 	// Occupy all 3 slots
 	rel1, err := httpx.GlobalAggregationSemaphore.Acquire(context.Background())
@@ -356,21 +362,18 @@ func TestAdminUsageCacheEviction(t *testing.T) {
 
 	// Populate cache with 55 expired entries
 	expiredTime := time.Now().Add(-20 * time.Second)
-	h.usageCacheMu.Lock()
+	h.usageCache.mu.Lock()
 	for i := 0; i < 55; i++ {
-		h.usageSummaryCache[strconv.Itoa(i)] = &cachedUsageSummary{
-			createdAt: expiredTime,
-			data:      map[string]any{"idx": i},
-		}
+		h.usageCache.summary.set(strconv.Itoa(i), map[string]any{"idx": i}, expiredTime)
 	}
-	h.usageCacheMu.Unlock()
+	h.usageCache.mu.Unlock()
 
 	// Setting a new entry should trigger sweep since len > 50
 	h.setSummaryCache("new_entry", map[string]any{"fresh": true})
 
-	h.usageCacheMu.RLock()
-	cacheLen := len(h.usageSummaryCache)
-	h.usageCacheMu.RUnlock()
+	h.usageCache.mu.RLock()
+	cacheLen := h.usageCache.summary.len()
+	h.usageCache.mu.RUnlock()
 
 	if cacheLen != 1 {
 		t.Fatalf("expected expired entries to be evicted leaving 1 entry, got %d", cacheLen)
@@ -379,7 +382,7 @@ func TestAdminUsageCacheEviction(t *testing.T) {
 
 func TestAdminUsageSingleflightCallerCancelResilience(t *testing.T) {
 	h, usageStore, _, adminUser := setupAdminUsageFixture(t)
-	h.UsageLimiter = nil
+	h.UsageLimiter = unlimitedBudget()
 	ctx := context.Background()
 
 	_ = usageStore.Write(ctx, usage.Record{

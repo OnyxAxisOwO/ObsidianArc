@@ -1,62 +1,45 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, type App, type Component } from 'vue';
-import { createMemoryHistory, createRouter } from 'vue-router';
+import { h, nextTick, type Component } from 'vue';
 import { adminApi, type AdminMailSettings, type AdminUserCheckSettings } from '../src/admin/api';
 import * as authApi from '../src/api/auth';
-import type { Account } from '../src/api/auth';
 import { api, ApiError } from '../src/api/client';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { describeNotification } from '../src/lib/notification-text';
 import { refusalText } from '../src/lib/refusal';
 import {
-  installPlugins, loadPlugins, pinnedProvider, pluginHost, pluginInviteeNote, pluginOAuthError, pluginRefusal,
-  pluginStrings, plugins, setModuleImporter,
+  installPlugins, loadPlugins, pinnedProvider, pluginHost, pluginInviteeNote, pluginNotification, pluginOAuthError,
+  pluginRefusal, pluginStrings, plugins, setModuleImporter,
 } from '../src/plugins/registry';
 import type { ArcPlugin } from '../src/plugins/types';
 import { adopt, forget, site, siteInfo } from '../src/stores/session';
 import AuthView from '../src/views/AuthView.vue';
 import AdminSecurity from '../src/views/admin/AdminSecurity.vue';
-import { provideAdminView } from '../src/views/admin/adminView';
 import PluginList from '../src/views/admin/PluginList.vue';
 import PluginUserActions from '../src/views/admin/PluginUserActions.vue';
 import example from './fixtures/example.plugin';
+import { catchAllRouter, adminShell, mountComponent, settle, button } from './helpers';
+import { makeAccount } from './fixtures/account';
 
 // The plugin framework's browser half: which plugins load, how the core
 // forms draw what a plugin declares, and that a plugin's settings travel
 // with the page's own save. The plugin is a made-up one (fixtures/), because
 // the core ships none; each real plugin's tests live with it.
 
-const ADMIN: Account = {
-  id: 'admin', username: 'founder', email: '', nickname: '', avatar: '', bio: '',
-  role: 'super_admin', group_id: '', group_expires_at: 0, group_name: '', status: 'active',
-  created_at: 1, updated_at: 1, last_login_at: 1, email_verified: true,
-  allow_stats: true, allow_delete_conversations: true, api_restricted: false,
-  api_restricted_until: 0, api_restriction_source: '',
-};
+const ADMIN = makeAccount({
+  id: 'admin', username: 'founder', email: '', nickname: '', role: 'super_admin', group_id: '', group_name: '',
+  last_login_at: 1,
+});
 
-let app: App | undefined;
+let unmount: (() => void) | undefined;
 let host: HTMLElement;
 let actions: HTMLElement;
 
-async function settle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await nextTick();
-}
 
 async function mount(component: Component, props: Record<string, unknown> = {}): Promise<void> {
-  const router = createRouter({
-    history: createMemoryHistory(),
-    routes: [{ path: '/:pathMatch(.*)*', component: { render: () => null } }],
+  // No panel host: the forms and pages here open no panel, so one starting to would fail here.
+  unmount = await mountComponent(component, props, {
+    host, panels: null, adminView: adminShell(actions), router: await catchAllRouter('/'),
   });
-  await router.push('/');
-  await router.isReady();
-  app = createApp({ setup() {
-    provideAdminView({ actionsHost: actions, setTitle() {}, reload() {}, params: [] });
-    return () => h(component, props);
-  } });
-  app.use(router);
-  app.mount(host);
-  await settle();
 }
 
 function field(root: ParentNode, label: string): HTMLInputElement {
@@ -72,13 +55,6 @@ function type(input: HTMLInputElement, value: string): void {
   input.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
-function button(root: ParentNode, label: string): HTMLButtonElement {
-  const found = [...root.querySelectorAll<HTMLButtonElement>('button')]
-    .find((node) => node.textContent?.trim() === label);
-  if (!found) throw new Error(`Missing button: ${label}`);
-  return found;
-}
-
 beforeEach(async () => {
   await changeLanguage('en');
   host = document.createElement('div');
@@ -87,9 +63,8 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  app?.unmount();
-  app = undefined;
-  document.body.textContent = '';
+  unmount?.();
+  unmount = undefined;
   vi.restoreAllMocks();
   installPlugins([]);
   setModuleImporter(null);
@@ -208,8 +183,8 @@ describe('a plugin account field on the sign-up form', () => {
     site.value = { ...siteInfo.value, fields: { ref: 'off' } };
     await mount(AuthView, { mode: 'register' });
     expect(() => field(host, example.fields!['ref']!.label())).toThrow();
-    app!.unmount();
-    app = undefined;
+    unmount!();
+    unmount = undefined;
 
     site.value = { ...siteInfo.value, fields: { ref: 'required' } };
     await mount(AuthView, { mode: 'register' });
@@ -283,7 +258,7 @@ describe('a plugin\'s settings on a backoffice page', () => {
     site.value = { ...siteInfo.value };
   });
 
-  it('draws the card under its category and saves its keys with the page\'s, secrets only when typed', async () => {
+  it('draws the card under its category and saves only the key that changed, never an untouched secret', async () => {
     installPlugins([example]);
     await mountSecurity({ 'example.base_url': '/rc', 'example.site': 'arc', 'example.secret_key': '••••••••', 'example.on_login': 'true' });
     openCategory(t('controlVerification'));
@@ -300,9 +275,35 @@ describe('a plugin\'s settings on a backoffice page', () => {
     type(field(card, 'Site key'), 'arc-2');
     button(actions, t('save')).click();
     await settle();
-    expect(saved).toHaveBeenCalledWith(expect.objectContaining({
-      'example.base_url': '/rc', 'example.site': 'arc-2', 'example.secret_key': '', 'example.on_login': 'true',
-    }));
+    // Unchanged keys are not written back: the page would otherwise undo any
+    // edit another administrator made to them since this page loaded.
+    expect(saved).toHaveBeenCalledWith({ 'example.site': 'arc-2' });
+  });
+
+  it('draws and sends only the keys the server showed this account', async () => {
+    // A plugin can keep where its service lives to a super administrator, and
+    // the server leaves those keys out for anybody else. Drawing them empty
+    // and sending them back had the whole page's save refused.
+    installPlugins([example]);
+    await mountSecurity({ 'example.on_login': 'true', 'turnstile.on_login': 'false' });
+    openCategory(t('controlVerification'));
+    await nextTick();
+
+    const card = host.querySelector<HTMLElement>('#secExample');
+    if (!card) throw new Error('the plugin card was not drawn');
+    expect(card.textContent).not.toContain('Service address');
+    expect(card.textContent).not.toContain('Site secret');
+
+    const saved = vi.spyOn(adminApi, 'saveSettings').mockResolvedValue({ settings: {} });
+    // The one switch this account is shown, edited: it is the only key a save
+    // may carry, and the hidden ones are never in the payload.
+    const toggle = card.querySelector<HTMLInputElement>('input[type="checkbox"]');
+    if (!toggle) throw new Error('the switch was not drawn');
+    toggle.click();
+    await nextTick();
+    button(actions, t('save')).click();
+    await settle();
+    expect(saved).toHaveBeenCalledWith({ 'example.on_login': 'false' });
   });
 
   it('offers a plugin\'s sign-up challenge in the page\'s own select', async () => {
@@ -317,10 +318,11 @@ describe('a plugin\'s settings on a backoffice page', () => {
     await mountSecurity({});
     expect(host.querySelector('#secExample')).toBeNull();
     const saved = vi.spyOn(adminApi, 'saveSettings').mockResolvedValue({ settings: {} });
+    // Nothing edited, so nothing is sent: a plugin that is not loaded has no
+    // key on this page that a save could carry.
     button(actions, t('save')).click();
     await settle();
-    const sent = saved.mock.calls[0]![0];
-    expect(Object.keys(sent).some((key) => key.startsWith('example.'))).toBe(false);
+    expect(saved).not.toHaveBeenCalled();
   });
 });
 
@@ -358,5 +360,20 @@ describe('a plugin\'s list and actions in the backoffice', () => {
     expect(post).toHaveBeenCalledWith('/api/admin/users/u1/process', { mode: 'disable', note: '' });
     expect(done).toHaveBeenCalledWith(false);
     expect(host.textContent).toContain('2 due, 1 taken back');
+  });
+});
+
+// A plugin's own tables are read by key, and only its own keys count: a name
+// every object inherits must not be taken for a notice or a pinned provider.
+describe("a plugin's tables are read by its own keys", () => {
+  it('finds no notice and no pin for an inherited name', () => {
+    installPlugins([{
+      name: 'demo',
+      notifications: { demo_kind: () => ({ title: () => 'Demo', body: () => 'Demo body', icon: () => null }) },
+    } as unknown as ArcPlugin]);
+    expect(pluginNotification('constructor', {})).toBeNull();
+    expect(pluginNotification('__proto__', {})).toBeNull();
+    expect(pluginNotification('demo_kind', {})).not.toBeNull();
+    expect(pinnedProvider('constructor')).toBeNull();
   });
 });

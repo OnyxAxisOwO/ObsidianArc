@@ -4,29 +4,45 @@
 
 import { computed, onMounted, ref, watch } from 'vue';
 import { useDocumentVisibility, useIntervalFn } from '@vueuse/core';
-import { adminApi, type AdminBackup, type AdminBackupInput } from '@/admin/api';
+import { adminApi, type AdminBackup, type AdminBackupInput, type StorageType } from '@/admin/api';
 import { ApiError } from '@/api/client';
 import OaBadge from '@/components/OaBadge.vue';
 import OaNumberField from '@/components/OaNumberField.vue';
+import OaSelectField from '@/components/OaSelectField.vue';
 import OaSwitchField from '@/components/OaSwitchField.vue';
 import OaTextField from '@/components/OaTextField.vue';
+import type { Choice } from '@/components/choice';
 import { t } from '@/composables/useI18n';
+import { useLatestRequest } from '@/composables/useLatestRequest';
 import { IconArchive, IconServer } from '@/icons';
 import { absoluteTime } from '@/lib/format';
 import AdminControlCard from './AdminControlCard.vue';
 import AdminFailure from './AdminFailure.vue';
 import { useAdminView } from './adminView';
+import { failureText } from './shared';
 
-type BackupForm = Omit<AdminBackupInput, 'interval_hours' | 'retention_hours'> & {
+interface BackupForm {
+  type: StorageType;
+  enabled: boolean;
+  endpoint: string;
+  bucket: string;
+  region: string;
+  prefix: string;
+  access_key_id: string;
+  secret_access_key: string;
+  webdav_url: string;
+  webdav_username: string;
+  webdav_password: string;
   interval_hours: number | null;
   retention_hours: number | null;
-};
+}
 
 const view = useAdminView();
-view.setTitle(t('navBackup'), t('backupSubtitle'));
+view.setTitle(() => t('navBackup'), () => t('backupSubtitle'));
 
 const snapshot = ref<AdminBackup | null>(null);
 const form = ref<BackupForm>({
+  type: 's3',
   enabled: false,
   endpoint: '',
   bucket: '',
@@ -34,6 +50,9 @@ const form = ref<BackupForm>({
   prefix: '',
   access_key_id: '',
   secret_access_key: '',
+  webdav_url: '',
+  webdav_username: '',
+  webdav_password: '',
   interval_hours: 24,
   retention_hours: 168,
 });
@@ -41,20 +60,38 @@ const baseline = ref('');
 const loaded = ref(false);
 const loading = ref(false);
 const busy = ref(false);
+// Only the run itself reads as "Running": busy also covers a save and a storage
+// test, which start nothing.
+const runPending = ref(false);
 const error = ref('');
 const actionError = ref('');
 const notice = ref('');
 const logRef = ref<HTMLPreElement | null>(null);
 
-function collect(): AdminBackupInput {
+const storageTypeChoices = computed<ReadonlyArray<Choice<StorageType>>>(() => [
+  { value: 's3', label: t('backupTypeS3') },
+  { value: 'webdav', label: t('backupTypeWebDAV') },
+]);
+
+// The draft as the page holds it. A blank interval or retention stays null: a
+// default written in its place would be saved under a box that still reads
+// empty, and the page would then show one number and store another.
+type BackupDraft = Omit<AdminBackupInput, 'interval_hours' | 'retention_hours'> & {
+  interval_hours: number | null;
+  retention_hours: number | null;
+};
+
+function collect(): BackupDraft {
   return {
     ...form.value,
-    interval_hours: form.value.interval_hours ?? 24,
-    retention_hours: form.value.retention_hours ?? 168,
+    type: form.value.type || 's3',
+    interval_hours: form.value.interval_hours,
+    retention_hours: form.value.retention_hours,
   };
 }
 
 const dirty = computed(() => baseline.value !== JSON.stringify(collect()));
+const fieldsFilled = computed(() => form.value.interval_hours !== null && form.value.retention_hours !== null);
 const actionDisabled = computed(() => (
   busy.value || dirty.value || !snapshot.value?.configured || !!snapshot.value.running
 ));
@@ -72,6 +109,18 @@ const statusTone = computed<'default' | 'muted' | 'danger' | 'warning'>(() => {
   if (snapshot.value?.last_status === 'error') return 'danger';
   return snapshot.value?.last_status === 'success' ? 'default' : 'muted';
 });
+const credentialsLabel = computed(() => {
+  if (snapshot.value?.type === 'webdav') {
+    return snapshot.value?.webdav_secret_configured ? t('backupCredentialsSaved') : t('backupCredentialsMissing');
+  }
+  return snapshot.value?.secret_configured ? t('backupCredentialsSaved') : t('backupCredentialsMissing');
+});
+const credentialsTone = computed<'default' | 'warning'>(() => {
+  if (snapshot.value?.type === 'webdav') {
+    return snapshot.value?.webdav_secret_configured ? 'default' : 'warning';
+  }
+  return snapshot.value?.secret_configured ? 'default' : 'warning';
+});
 const nextRunLabel = computed(() => {
   const current = snapshot.value;
   if (!current || !current.enabled) return t('backupNotScheduled');
@@ -81,7 +130,7 @@ const nextRunLabel = computed(() => {
 
 const visibility = useDocumentVisibility();
 let inFlightCount = 0;
-let refreshSeq = 0;
+const refreshSeq = useLatestRequest();
 const statusPollInterval = computed(() => snapshot.value?.running ? 5000 : 30000);
 const { pause: pauseStatusPoll, resume: resumeStatusPoll } = useIntervalFn(() => {
   if (visibility.value === 'visible') void refreshStatus();
@@ -109,8 +158,17 @@ watch(
   { flush: 'post' },
 );
 
+// A server sentence is kept unless its code has a reader's translation: a 503
+// from the storage is the operator's only clue, and it arrives untranslated.
 function message(failure: unknown): string {
-  return failure instanceof ApiError ? failure.message : String(failure);
+  return failureText(failure);
+}
+
+// Matched by code so the refusal reads in the operator's language; the server's
+// English sentence is only the fallback for a code this page does not know.
+function saveMessage(failure: unknown): string {
+  if (failure instanceof ApiError && failure.code === 'backup_credentials_needed') return t('backupCredentialsNeeded');
+  return message(failure);
 }
 
 function backupTime(at: number): string {
@@ -127,6 +185,7 @@ async function load(): Promise<void> {
     // lets a write preserve the stored credentials unless the operator enters
     // replacements.
     form.value = {
+      type: data.type || 's3',
       enabled: data.enabled,
       endpoint: data.endpoint,
       bucket: data.bucket,
@@ -134,6 +193,9 @@ async function load(): Promise<void> {
       prefix: data.prefix,
       access_key_id: '',
       secret_access_key: '',
+      webdav_url: data.webdav_url || '',
+      webdav_username: data.webdav_username || '',
+      webdav_password: '',
       interval_hours: data.interval_hours,
       retention_hours: data.retention_hours,
     };
@@ -154,14 +216,14 @@ async function load(): Promise<void> {
 async function refreshStatus(fromAction = false): Promise<void> {
   if (inFlightCount > 0 && !fromAction) return;
   inFlightCount++;
-  const seq = ++refreshSeq;
+  const seq = refreshSeq.begin();
   try {
     const data = await adminApi.backup();
-    if (seq === refreshSeq) {
+    if (refreshSeq.isCurrent(seq)) {
       snapshot.value = data;
     }
   } catch (failure) {
-    if (fromAction && seq === refreshSeq) {
+    if (fromAction && refreshSeq.isCurrent(seq)) {
       actionError.value = message(failure);
     }
   } finally {
@@ -170,11 +232,12 @@ async function refreshStatus(fromAction = false): Promise<void> {
 }
 
 async function save(): Promise<void> {
-  if (!loaded.value || busy.value || !dirty.value) return;
+  const { interval_hours: interval, retention_hours: retention } = form.value;
+  if (!loaded.value || busy.value || !dirty.value || interval === null || retention === null) return;
   busy.value = true;
   actionError.value = '';
   notice.value = '';
-  const input = collect();
+  const input: AdminBackupInput = { ...collect(), interval_hours: interval, retention_hours: retention };
   try {
     await adminApi.saveBackup(input);
     // Clear the one-time input only if it still contains what this request
@@ -182,11 +245,17 @@ async function save(): Promise<void> {
     // next save.
     if (form.value.access_key_id === input.access_key_id) form.value.access_key_id = '';
     if (form.value.secret_access_key === input.secret_access_key) form.value.secret_access_key = '';
-    baseline.value = JSON.stringify({ ...input, access_key_id: '', secret_access_key: '' });
+    if (form.value.webdav_password === input.webdav_password) form.value.webdav_password = '';
+    baseline.value = JSON.stringify({
+      ...input,
+      access_key_id: '',
+      secret_access_key: '',
+      webdav_password: '',
+    });
     notice.value = t('backupSaved');
     await refreshStatus(true);
   } catch (failure) {
-    actionError.value = message(failure);
+    actionError.value = saveMessage(failure);
   } finally {
     busy.value = false;
   }
@@ -211,6 +280,7 @@ async function testStorage(): Promise<void> {
 async function runBackup(): Promise<void> {
   if (actionDisabled.value) return;
   busy.value = true;
+  runPending.value = true;
   actionError.value = '';
   notice.value = '';
   try {
@@ -221,6 +291,7 @@ async function runBackup(): Promise<void> {
     actionError.value = message(failure);
   } finally {
     busy.value = false;
+    runPending.value = false;
   }
 }
 
@@ -232,7 +303,7 @@ onMounted(load);
     <span v-if="loaded" class="oa-control-save-state" :class="{ dirty }" role="status">
       <span class="oa-dashboard-dot" />{{ dirty ? t('controlUnsaved') : t('controlSaved') }}
     </span>
-    <button type="button" class="oa-btn primary" :disabled="busy || !loaded || !!error || !dirty" @click="save">
+    <button type="button" class="oa-btn primary" :disabled="busy || !loaded || !!error || !dirty || !fieldsFilled" @click="save">
       {{ busy ? t('saving') : t('save') }}
     </button>
   </Teleport>
@@ -243,15 +314,31 @@ onMounted(load);
     <div class="oa-workbench-grid">
       <AdminControlCard id="backupConfig" :title="t('backupConfig')" :hint="t('backupConfigHint')" :icon="IconArchive">
         <OaSwitchField v-model="form.enabled" :label="t('backupEnabled')" :hint="t('backupEnabledHint')" />
-        <OaTextField v-model="form.endpoint" :label="t('backupEndpoint')" :hint="t('backupEndpointHint')" placeholder="https://storage.example.com" monospace />
-        <OaTextField v-model="form.bucket" :label="t('backupBucket')" :hint="t('backupBucketHint')" />
-        <OaTextField v-model="form.region" :label="t('backupRegion')" :hint="t('backupRegionHint')" />
-        <OaTextField v-model="form.prefix" :label="t('backupPrefix')" :hint="t('backupPrefixHint')" monospace />
-        <OaTextField v-model="form.access_key_id" :label="t('backupAccessKey')" autocomplete="off" />
-        <OaTextField v-model="form.secret_access_key" type="password" :label="t('backupSecretKey')" autocomplete="new-password" />
-        <p class="oa-field-hint">{{ t('backupCredentialsHint') }}</p>
+        <OaSelectField v-model="form.type" :label="t('backupType')" :options="storageTypeChoices" :searchable="false" />
+
+        <!-- S3 Compatible Storage Fields -->
+        <template v-if="form.type === 's3' || !form.type">
+          <OaTextField v-model="form.endpoint" :label="t('backupEndpoint')" :hint="t('backupEndpointHint')" placeholder="https://storage.example.com" monospace />
+          <OaTextField v-model="form.bucket" :label="t('backupBucket')" :hint="t('backupBucketHint')" />
+          <OaTextField v-model="form.region" :label="t('backupRegion')" :hint="t('backupRegionHint')" />
+          <OaTextField v-model="form.prefix" :label="t('backupPrefix')" :hint="t('backupPrefixHint')" monospace />
+          <OaTextField v-model="form.access_key_id" :label="t('backupAccessKey')" autocomplete="off" />
+          <OaTextField v-model="form.secret_access_key" type="password" :label="t('backupSecretKey')" autocomplete="new-password" />
+          <p class="oa-field-hint">{{ t('backupCredentialsHint') }}</p>
+        </template>
+
+        <!-- WebDAV Storage Fields -->
+        <template v-else-if="form.type === 'webdav'">
+          <OaTextField v-model="form.webdav_url" :label="t('backupWebDAVUrl')" :hint="t('backupWebDAVUrlHint')" placeholder="https://dav.example.com/remote.php/webdav" monospace />
+          <OaTextField v-model="form.prefix" :label="t('backupPrefix')" :hint="t('backupPrefixHint')" monospace />
+          <OaTextField v-model="form.webdav_username" :label="t('backupWebDAVUsername')" autocomplete="off" />
+          <OaTextField v-model="form.webdav_password" type="password" :label="t('backupWebDAVPassword')" autocomplete="new-password" />
+          <p class="oa-field-hint">{{ t('backupCredentialsHint') }}</p>
+        </template>
+
         <OaNumberField v-model="form.interval_hours" :label="t('backupInterval')" :hint="t('backupIntervalHint')" :min="1" :step="1" />
         <OaNumberField v-model="form.retention_hours" :label="t('backupRetention')" :hint="t('backupRetentionHint')" :min="1" :step="1" />
+        <p v-if="!fieldsFilled" class="oa-field-hint" role="alert">{{ t('settingNumberRequired') }}</p>
       </AdminControlCard>
 
       <AdminControlCard id="backupStatus" :title="t('backupStatus')" :hint="t('backupStatusHint')" :icon="IconServer">
@@ -266,7 +353,7 @@ onMounted(load);
           </div>
           <div>
             <dt>{{ t('backupCredentialsStatus') }}</dt>
-            <dd><OaBadge :tone="snapshot?.secret_configured ? 'default' : 'warning'">{{ snapshot?.secret_configured ? t('backupCredentialsSaved') : t('backupCredentialsMissing') }}</OaBadge></dd>
+            <dd><OaBadge :tone="credentialsTone">{{ credentialsLabel }}</OaBadge></dd>
           </div>
           <div>
             <dt>{{ t('backupLastStarted') }}</dt>
@@ -293,7 +380,7 @@ onMounted(load);
             {{ t('backupTest') }}
           </button>
           <button type="button" class="oa-btn primary" :disabled="actionDisabled" @click="runBackup">
-            {{ busy && !dirty ? t('backupStatusRunning') : t('backupRun') }}
+            {{ runPending || snapshot?.running ? t('backupStatusRunning') : t('backupRun') }}
           </button>
         </div>
         <p v-if="dirty" class="oa-field-hint">{{ t('backupActionsHint') }}</p>

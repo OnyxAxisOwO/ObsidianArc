@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -22,6 +23,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/provider"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/reqlog"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
@@ -30,6 +32,7 @@ import (
 // --- fixture ------------------------------------------------------------------
 
 type fixture struct {
+	db       *database.DB
 	mux      *http.ServeMux
 	handlers *Handlers
 	settings *settings.Service
@@ -189,7 +192,7 @@ func newFixture(t *testing.T) *fixture {
 	providerRecord, err := providers.Create(ctx, provider.CreateInput{
 		Name: "Secret Upstream", Kind: adapter.KindOpenAI,
 		BaseURL: upstream.server.URL + "/v1", APIKey: "sk-provider-secret", Enabled: true,
-	})
+	}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,16 +219,17 @@ func newFixture(t *testing.T) *fixture {
 	}
 
 	keys := apikey.NewStore(db)
-	_, token, err := keys.Issue(ctx, account.ID, "test", "", 0)
+	_, token, err := keys.IssueModels(ctx, account.ID, "test", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, adminToken, err := keys.Issue(ctx, administrator.ID, "root", "", 0)
+	_, adminToken, err := keys.IssueModels(ctx, administrator.ID, "root", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	f := &fixture{
+		db:       db,
 		settings: set, models: models, groups: groups, keys: keys, users: users,
 		upstream: upstream, openGroup: openGroup, account: account,
 		token: token, admin: adminToken, model: modelRecord,
@@ -502,7 +506,7 @@ func TestDuplicatePublicModelNamesResolveByQualifiedRef(t *testing.T) {
 		ref, _ := entry["id"].(string)
 		refs[ref] = true
 	}
-	wantRefs := []string{f.model.ModelID + "-" + tail(f.model.ID), duplicate.ModelID + "-" + tail(duplicate.ID)}
+	wantRefs := []string{f.model.ModelID + "-" + model.IDTail(f.model.ID), duplicate.ModelID + "-" + model.IDTail(duplicate.ID)}
 	for _, ref := range wantRefs {
 		if !refs[ref] {
 			t.Errorf("listed refs %v, want qualified ref %q", refs, ref)
@@ -512,6 +516,72 @@ func TestDuplicatePublicModelNamesResolveByQualifiedRef(t *testing.T) {
 		if response.Code != http.StatusOK {
 			t.Errorf("qualified ref %q: status = %d: %s", ref, response.Code, response.Body.String())
 		}
+	}
+}
+
+// GET and POST resolve a qualified ref by one ranking but through two reads of
+// the catalogue. Only POST was pinned, so the same ref is asked of GET here.
+func TestQualifiedRefResolvesOnGETAsOnPOST(t *testing.T) {
+	f := newFixture(t)
+	duplicate, err := f.models.Create(context.Background(), model.CreateInput{
+		ProviderID: f.model.ProviderID, ModelID: f.model.ModelID,
+		DisplayName: "Mock Fast Backup", Enabled: true,
+		Capabilities: model.Capabilities{SupportsStreaming: true, SupportsSystemPrompt: true},
+		Weights:      model.Weights{InputToken: 1, OutputToken: 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ref := duplicate.ModelID + "-" + model.IDTail(duplicate.ID)
+	got := f.do(t, http.MethodGet, "/v1/models/"+ref, f.token, "")
+	if got.Code != http.StatusOK {
+		t.Fatalf("GET qualified ref %q: status = %d, want 200: %s", ref, got.Code, got.Body.String())
+	}
+	if id, _ := decodeJSON(t, got)["id"].(string); id != ref {
+		t.Errorf("GET qualified ref answered with id %q, want %q", id, ref)
+	}
+}
+
+// SQLite's LOWER folds ASCII alone. GET compared names in Go and found a
+// display name spelled with another case of a non-ASCII letter, while POST's
+// SQL prefilter missed it and answered 404.
+func TestNonASCIIDisplayNameResolvesOnGET(t *testing.T) {
+	f := newFixture(t)
+	if _, err := f.models.Create(context.Background(), model.CreateInput{
+		ProviderID: f.model.ProviderID, ModelID: "aether-upstream",
+		DisplayName: "Äther", Enabled: true,
+		Capabilities: model.Capabilities{SupportsStreaming: true, SupportsSystemPrompt: true},
+		Weights:      model.Weights{InputToken: 1, OutputToken: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := f.do(t, http.MethodGet, "/v1/models/"+url.PathEscape("äther"), f.token, "")
+	if got.Code != http.StatusOK {
+		t.Fatalf("GET status = %d, want 200: %s", got.Code, got.Body.String())
+	}
+	if id, _ := decodeJSON(t, got)["id"].(string); id != "aether-upstream" {
+		t.Errorf("GET answered with id %q, want aether-upstream", id)
+	}
+}
+
+func TestNonASCIIDisplayNameResolvesOnPOST(t *testing.T) {
+	f := newFixture(t)
+	if _, err := f.models.Create(context.Background(), model.CreateInput{
+		ProviderID: f.model.ProviderID, ModelID: "aether-upstream",
+		DisplayName: "Äther", Enabled: true,
+		Capabilities: model.Capabilities{SupportsStreaming: true, SupportsSystemPrompt: true},
+		Weights:      model.Weights{InputToken: 1, OutputToken: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.upstream.reply(answer)
+	response := f.do(t, http.MethodPost, "/v1/chat/completions", f.token, completionBody("äther"))
+	if response.Code != http.StatusOK {
+		t.Fatalf("POST status = %d, want 200: %s", response.Code, response.Body.String())
+	}
+	if got := f.upstream.received()["model"]; got != "aether-upstream" {
+		t.Errorf("POST reached upstream model %v, want aether-upstream", got)
 	}
 }
 
@@ -528,7 +598,7 @@ func TestChosenAPINameResolvesAheadOfUnchosenCollision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	qualified := chosenName + "-" + tail(unnamed.ID)
+	qualified := chosenName + "-" + model.IDTail(unnamed.ID)
 
 	for _, test := range []struct {
 		ref           string
@@ -623,7 +693,7 @@ func TestViewOnlyModelIsNotOfferedToClients(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.models.SetGroupModels(ctx, restricted.ID,
+	if err := f.models.SetGroupModels(ctx, nil, restricted.ID,
 		[]model.GroupGrant{{ModelID: f.model.ID, Access: model.AccessView}}); err != nil {
 		t.Fatal(err)
 	}
@@ -910,7 +980,7 @@ func TestGuardRefusalStopsTheTurnBeforeTheProvider(t *testing.T) {
 	f.upstream.reply(answer)
 
 	consulted := false
-	f.handlers.Guard = func(context.Context, user.User, model.Model) (func(), error) {
+	f.handlers.Guard = func(context.Context, user.User, model.Model, int) (func(), error) {
 		consulted = true
 		return nil, httpx.TooManyRequests("quota_exceeded", "You have used your allowance for this week.")
 	}
@@ -938,7 +1008,7 @@ func TestReservationIsAlwaysReleased(t *testing.T) {
 	f.upstream.fail(http.StatusInternalServerError, `{"error":{"message":"upstream is down"}}`)
 
 	released := 0
-	f.handlers.Guard = func(context.Context, user.User, model.Model) (func(), error) {
+	f.handlers.Guard = func(context.Context, user.User, model.Model, int) (func(), error) {
 		return func() { released++ }, nil
 	}
 
@@ -1091,17 +1161,17 @@ func TestInlineImagesAreAccepted(t *testing.T) {
 }
 
 func TestContentAcceptsBothWireShapes(t *testing.T) {
-	parts, err := readContent(json.RawMessage(`"just a string"`))
+	parts, err := readContent(json.RawMessage(`"just a string"`), 6<<20)
 	if err != nil || len(parts) != 1 || parts[0].Text != "just a string" {
 		t.Fatalf("string form: %+v, %v", parts, err)
 	}
 
-	parts, err = readContent(json.RawMessage(`[{"type":"text","text":"an array"}]`))
+	parts, err = readContent(json.RawMessage(`[{"type":"text","text":"an array"}]`), 6<<20)
 	if err != nil || len(parts) != 1 || parts[0].Text != "an array" {
 		t.Fatalf("array form: %+v, %v", parts, err)
 	}
 
-	if parts, err := readContent(json.RawMessage(`null`)); err != nil || len(parts) != 0 {
+	if parts, err := readContent(json.RawMessage(`null`), 6<<20); err != nil || len(parts) != 0 {
 		t.Errorf("null content: %+v, %v", parts, err)
 	}
 }
@@ -1188,7 +1258,7 @@ func TestAnUnverifiedAccountIsNotLockedOutOfTheAPI(t *testing.T) {
 	if unconfirmed.EmailVerified {
 		t.Fatal("the fixture account is confirmed; this test proves nothing")
 	}
-	_, token, err := f.keys.Issue(ctx, unconfirmed.ID, "unconfirmed key", "", 0)
+	_, token, err := f.keys.IssueModels(ctx, unconfirmed.ID, "unconfirmed key", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1212,7 +1282,7 @@ func TestAnUnverifiedAccountIsNotLockedOutOfTheAPI(t *testing.T) {
 
 	// And where verification IS in force, the guard is what says so — with the
 	// code a client can act on.
-	f.handlers.Guard = func(context.Context, user.User, model.Model) (func(), error) {
+	f.handlers.Guard = func(context.Context, user.User, model.Model, int) (func(), error) {
 		return nil, httpx.ForbiddenCode("email_unverified", "Confirm your email address first.")
 	}
 	refused := f.do(t, http.MethodPost, "/v1/chat/completions", token,
@@ -1241,7 +1311,7 @@ func TestPausedKeyIsRefused(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture(t)
 
-	keyRecord, pausedToken, err := f.keys.Issue(ctx, f.account.ID, "paused-key", "", 0)
+	keyRecord, pausedToken, err := f.keys.IssueModels(ctx, f.account.ID, "paused-key", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1453,5 +1523,123 @@ func TestADocumentIsAssembledFromAStreamUpstream(t *testing.T) {
 	usage, _ := body["usage"].(map[string]any)
 	if usage["completion_tokens"] != float64(2) {
 		t.Fatalf("usage = %v", usage)
+	}
+}
+
+// A refused request still has a caller. The request log has an account column
+// for exactly this, and an operator reading it needs to see whose key was
+// turned away and why. Each refusal is written against the account it belongs
+// to. An unknown key is the one refusal with no account to name.
+func TestRefusedRequestsAreLoggedAgainstTheirCaller(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	store := reqlog.NewStore(f.db)
+	logged := store.Middleware(nil, nil)(f.mux)
+
+	call := func(method, path, token, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		var reader io.Reader
+		if body != "" {
+			reader = strings.NewReader(body)
+		}
+		r := httptest.NewRequest(method, path, reader)
+		r.Header.Set("Content-Type", "application/json")
+		if token != "" {
+			r.Header.Set("Authorization", "Bearer "+token)
+		}
+		w := httptest.NewRecorder()
+		logged.ServeHTTP(w, r)
+		return w
+	}
+
+	unknown := call(http.MethodGet, "/v1/models", "sk-not-a-real-key", "")
+	if unknown.Code != http.StatusUnauthorized || errorCode(t, unknown) != "invalid_api_key" {
+		t.Fatalf("unknown key: %d %s", unknown.Code, unknown.Body.String())
+	}
+
+	// A paused key is refused by name: the owner is known, and the row must say so.
+	pausedKey, pausedToken, err := f.keys.IssueModels(ctx, f.account.ID, "paused", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pausedYes := true
+	if _, err := f.keys.Update(ctx, f.account.ID, pausedKey.ID, apikey.Update{Disabled: &pausedYes}); err != nil {
+		t.Fatal(err)
+	}
+	paused := call(http.MethodGet, "/v1/models", pausedToken, "")
+	if paused.Code != http.StatusUnauthorized || errorCode(t, paused) != "api_key_paused" {
+		t.Fatalf("paused key: %d %s", paused.Code, paused.Body.String())
+	}
+
+	// The same write the administration ban makes.
+	disabled, reason := user.StatusDisabled, "spam"
+	if _, err := f.users.UpdateAdminFields(ctx, nil, f.account.ID, user.AdminUpdate{
+		Status: &disabled, BanReason: &reason,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	banned := call(http.MethodGet, "/v1/models", f.token, "")
+	if banned.Code != http.StatusForbidden || errorCode(t, banned) != "account_banned" {
+		t.Fatalf("banned models: %d %s", banned.Code, banned.Body.String())
+	}
+	bannedCompletion := call(http.MethodPost, "/v1/chat/completions", f.token, completionBody("upstream-real-name"))
+	if bannedCompletion.Code != http.StatusForbidden || errorCode(t, bannedCompletion) != "account_banned" {
+		t.Fatalf("banned completion: %d %s", bannedCompletion.Code, bannedCompletion.Body.String())
+	}
+
+	active := user.StatusActive
+	if _, err := f.users.UpdateAdminFields(ctx, nil, f.account.ID, user.AdminUpdate{Status: &active}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.users.UpdateAPIRestriction(
+		ctx, nil, f.account.ID, true, time.Now().Add(time.Hour).UnixMilli(), "signup_review"); err != nil {
+		t.Fatal(err)
+	}
+	restricted := call(http.MethodGet, "/v1/models", f.token, "")
+	if restricted.Code != http.StatusForbidden || errorCode(t, restricted) != "api_restricted" {
+		t.Fatalf("restricted: %d %s", restricted.Code, restricted.Body.String())
+	}
+
+	// Run returns once the queued rows are written. The cancelled context
+	// makes it take the final drain straight away.
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	store.Run(cancelled)
+
+	entries, _, err := store.List(ctx, reqlog.Filter{Path: "/v1/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 5 {
+		t.Fatalf("logged %d /v1 requests, want 5: %+v", len(entries), entries)
+	}
+
+	type row struct{ method, path, code string }
+	attributed := map[row]bool{
+		{http.MethodGet, "/v1/models", "invalid_api_key"}:           false,
+		{http.MethodGet, "/v1/models", "api_key_paused"}:            true,
+		{http.MethodGet, "/v1/models", "account_banned"}:            true,
+		{http.MethodPost, "/v1/chat/completions", "account_banned"}: true,
+		{http.MethodGet, "/v1/models", "api_restricted"}:            true,
+	}
+	for _, entry := range entries {
+		key := row{entry.Method, entry.Path, entry.ErrorCode}
+		named, known := attributed[key]
+		if !known {
+			t.Errorf("unexpected row %s %s code %q", entry.Method, entry.Path, entry.ErrorCode)
+			continue
+		}
+		if entry.Channel != reqlog.ChannelAPI {
+			t.Errorf("%s %s %s: channel %q, want api", entry.Method, entry.Path, entry.ErrorCode, entry.Channel)
+		}
+		if named {
+			if entry.UserID != f.account.ID || entry.Username != f.account.Username {
+				t.Errorf("%s %s %s: attributed to %q (%s), want %q (%s)",
+					entry.Method, entry.Path, entry.ErrorCode,
+					entry.Username, entry.UserID, f.account.Username, f.account.ID)
+			}
+		} else if entry.UserID != "" || entry.Username != "" {
+			t.Errorf("an unknown key was attributed to %q (%s)", entry.Username, entry.UserID)
+		}
 	}
 }

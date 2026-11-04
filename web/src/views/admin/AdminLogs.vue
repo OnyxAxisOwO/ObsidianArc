@@ -13,8 +13,8 @@
 
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import { BACKOFFICE_PANEL_PARAM } from '@/composables/usePanelExit';
 import { adminApi, type LogEntry, type LogFacets, type LogOption } from '@/admin/api';
-import { ApiError } from '@/api/client';
 import OaPagination from '@/components/OaPagination.vue';
 import type { PageState } from '@/components/table-types';
 import OaBadge from '@/components/OaBadge.vue';
@@ -23,14 +23,18 @@ import OaPanel from '@/components/OaPanel.vue';
 import OaSelectField from '@/components/OaSelectField.vue';
 import OaTextField from '@/components/OaTextField.vue';
 import type { Choice } from '@/components/choice';
-import { RefreshCw } from 'lucide-vue-next';
+import { IconRefresh } from '@/icons';
 import { t, type StringKey } from '@/composables/useI18n';
+import { useLatestRequest } from '@/composables/useLatestRequest';
 import { absoluteTime, relativeTime } from '@/lib/format';
+import { rememberedPageSize } from '@/lib/page-size';
+import { HOUR_MS } from '@/lib/time';
 import { maskUser, maskLog } from '@/admin/safeMode';
 import AdminFailure from './AdminFailure.vue';
 import { useAdminView } from './adminView';
+import { failureText } from './shared';
 
-const pageSize = ref(20);
+const pageSize = ref(rememberedPageSize());
 
 /**
  * Windows offered for "since". Empty is everything, which is the point of a
@@ -45,7 +49,7 @@ const WINDOWS: Array<{ value: string; label: StringKey; hours: number }> = [
 ];
 
 const view = useAdminView();
-view.setTitle(t('navLogs'), t('logsSubtitle'));
+view.setTitle(() => t('navLogs'), () => t('logsSubtitle'));
 
 const router = useRouter();
 const route = useRoute();
@@ -66,8 +70,24 @@ function parseRouteQuery() {
 
 const query = ref(parseRouteQuery());
 
+// The selects' choices, computed so a render does not hand each select a new
+// array, and so the labels follow a change of language.
+const outcomeChoices = computed(() => [
+  { value: '', label: t('logAnyOutcome') },
+  { value: 'ok', label: t('logSucceeded') },
+  { value: 'failed', label: t('logFailed') },
+]);
+const channelChoices = computed(() => [
+  { value: '', label: t('logAnyChannel') },
+  { value: 'web', label: t('logChannelWeb') },
+  { value: 'api', label: t('logChannelAPI') },
+]);
+
+// Only the filters are read from the address. A panel opened beside this page
+// is named in the address too, and it must neither reset the filters set here
+// nor make the log be fetched again.
 watch(
-  () => route.query,
+  () => JSON.stringify(parseRouteQuery()),
   () => {
     query.value = parseRouteQuery();
     void reload();
@@ -77,20 +97,22 @@ watch(
 const facets = ref<LogFacets | null>(null);
 const entries = ref<LogEntry[]>([]);
 const total = ref(0);
-const offset = ref(0);
-const error = ref('');
+// A failed facets answer costs the filter controls, not the list: the list does
+// not read the facets, so the two are shown and failed separately.
+const facetsError = ref('');
 const listError = ref('');
 const loading = ref(true);
 const opened = ref<LogEntry | null>(null);
-let listRequest = 0;
+const listRequest = useLatestRequest();
+const facetRequest = useLatestRequest();
 
 function since(): number {
   const entry = WINDOWS.find((window) => window.value === query.value.window);
   if (!entry || entry.hours === 0) return 0;
-  return Date.now() - entry.hours * 60 * 60 * 1000;
+  return Date.now() - entry.hours * HOUR_MS;
 }
 
-function listQuery(): string {
+function listQuery(): URLSearchParams {
   const params = new URLSearchParams();
   const at = since();
   if (at > 0) params.set('since', String(at));
@@ -103,7 +125,7 @@ function listQuery(): string {
   if (query.value.path) params.set('path', query.value.path);
   params.set('limit', String(pageSize.value));
   params.set('offset', String(query.value.offset));
-  return `?${params.toString()}`;
+  return params;
 }
 
 function withAny(options: LogOption[], anyLabel: string, fallbackValue?: string, maskFn?: (s: string) => string): Array<Choice<string>> {
@@ -126,48 +148,74 @@ function narrow(): void {
   void paint();
 }
 
+// The facets and the list go out together. The list does not read the facets,
+// so waiting for them held the rows back by a whole round trip for nothing.
 async function reload(): Promise<void> {
-  error.value = '';
-  try {
-    // The facets follow the window: which accounts and models appear in the
-    // last hour is a different list from the last month's.
-    const at = since();
-    facets.value = await adminApi.logFacets(at > 0 ? `?since=${at}` : '');
-  } catch (failure) {
-    error.value = failure instanceof Error ? failure.message : String(failure);
-    return;
-  }
-  await paint();
+  // Ticketed like paint(): a window changed twice in quick succession sends
+  // two requests, and the older answer must not land after the newer one.
+  const ticket = facetRequest.begin();
+  facetsError.value = '';
+  // The facets follow the window: which accounts and models appear in the
+  // last hour is a different list from the last month's.
+  const at = since();
+  const facetsDone = adminApi.logFacets(at > 0 ? { since: at } : undefined).then(
+    (next) => { if (facetRequest.isCurrent(ticket)) facets.value = next; },
+    (failure: unknown) => {
+      if (!facetRequest.isCurrent(ticket)) return;
+      // Without facets the filter controls cannot be drawn, so they give way to
+      // the failure; the retry asks for both again.
+      facets.value = null;
+      facetsError.value = failureText(failure);
+    },
+  );
+  await Promise.all([facetsDone, paint()]);
 }
 
 async function paint(): Promise<void> {
-  const ticket = ++listRequest;
+  const ticket = listRequest.begin();
   loading.value = true;
   listError.value = '';
   try {
     const data = await adminApi.logs(listQuery());
-    if (ticket !== listRequest) return;
+    if (!listRequest.isCurrent(ticket)) return;
+    // A page past the end, because the list shrank under it (a row deleted,
+    // a sliding window moving on), is asked again for its last page rather
+    // than left empty: with one page left the pager shows no way back.
+    if (data.total > 0 && query.value.offset >= data.total) {
+      query.value.offset = Math.floor((data.total - 1) / pageSize.value) * pageSize.value;
+      await paint(); return;
+    }
     entries.value = data.entries;
     total.value = data.total;
-    offset.value = data.offset;
   } catch (failure) {
-    if (ticket !== listRequest) return;
+    if (!listRequest.isCurrent(ticket)) return;
     entries.value = [];
-    listError.value = failure instanceof ApiError ? failure.message : t('failed');
+    listError.value = failureText(failure);
   } finally {
-    if (ticket === listRequest) loading.value = false;
+    if (listRequest.isCurrent(ticket)) loading.value = false;
   }
 }
 
 function clearFilters(): void {
+  // The window is not one of the address's filters, so it has to be written back
+  // here: the route watch re-reads the address after this replace, and without
+  // it Clear fell back to the default window and undid the operator's choice.
+  const window = query.value.window;
   query.value = {
     ...query.value,
     userID: '', modelID: '', outcome: '', status: '',
     channel: '', errorCode: '', path: '', offset: 0,
   };
   if (Object.keys(route.query).length > 0) {
-    void router.replace({ path: '/admin/logs', query: {} });
+    // Clearing the filters must not close a panel open beside the page.
+    const panel = route.query[BACKOFFICE_PANEL_PARAM];
+    const keep: Record<string, string> = typeof panel === 'string' ? { [BACKOFFICE_PANEL_PARAM]: panel } : {};
+    keep.window = window;
+    void router.replace({ path: '/admin/logs', query: keep });
   }
+  // Kept even when the replace also reloads through the route watch: the watch
+  // fires only if the parsed address changed, and a Clear that changes nothing
+  // in the address would otherwise leave the filtered rows on screen.
   void paint();
 }
 
@@ -208,14 +256,12 @@ onMounted(reload);
     <!-- A refresh icon, which it had not been: the button was a chevron, and
          read as a control that collapsed something. -->
     <OaIconButton class="oa-icon-btn" :label="t('refresh')" :disabled="loading" @click="reload">
-      <RefreshCw :size="15" :class="{ 'is-refreshing': loading }" aria-hidden="true" />
+      <IconRefresh :size="15" :class="{ 'is-refreshing': loading }" aria-hidden="true" />
     </OaIconButton>
   </Teleport>
 
-  <AdminFailure v-if="error" :message="error" @retry="reload" />
-
-  <div v-else class="oa-log-page">
-    <div v-if="facets" id="logsFilter" class="oa-viz-card oa-log-filters">
+  <div class="oa-log-page">
+    <div v-if="facets" id="logsFilter" class="oa-viz-card">
       <div class="oa-log-filter-grid">
         <OaSelectField
           v-model="query.window"
@@ -226,11 +272,7 @@ onMounted(reload);
         <OaSelectField
           v-model="query.outcome"
           :label="t('logOutcome')"
-          :options="[
-            { value: '', label: t('logAnyOutcome') },
-            { value: 'ok', label: t('logSucceeded') },
-            { value: 'failed', label: t('logFailed') },
-          ]"
+          :options="outcomeChoices"
           @update:model-value="narrow"
         />
         <OaSelectField
@@ -262,11 +304,7 @@ onMounted(reload);
         <OaSelectField
           v-model="query.channel"
           :label="t('logChannel')"
-          :options="[
-            { value: '', label: t('logAnyChannel') },
-            { value: 'web', label: t('logChannelWeb') },
-            { value: 'api', label: t('logChannelAPI') },
-          ]"
+          :options="channelChoices"
           @update:model-value="narrow"
         />
         <OaTextField v-model="query.path" :label="t('logPath')" placeholder="/api/chat" />
@@ -284,12 +322,13 @@ onMounted(reload);
         </span>
       </div>
     </div>
+    <AdminFailure v-else-if="facetsError" :message="facetsError" @retry="reload" />
 
     <!-- Columns rather than two stacked lines per row: the questions asked of
          a log — which ones failed, whose, how slow — are asked down a column,
          and a column is only readable when every row puts the same thing in
          the same place. -->
-    <div id="logsTable" class="oa-viz-card oa-log-results">
+    <div id="logsTable" class="oa-viz-card">
       <p v-if="loading && !entries.length" class="oa-table-empty">{{ t('loading') }}</p>
       <p v-else-if="listError" class="oa-table-empty">{{ listError }}</p>
       <p v-else-if="!entries.length" class="oa-table-empty">{{ t('logEmpty') }}</p>

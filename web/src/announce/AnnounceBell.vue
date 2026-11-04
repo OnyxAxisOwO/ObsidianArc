@@ -1,3 +1,12 @@
+<script lang="ts">
+// Announcements shown during this page load, so an "every visit" one does not
+// reappear the moment it is dismissed. This lives in the plain script block,
+// not in setup: setup runs once per mount, and the bell is mounted again on
+// every move between the chat and the backoffice, which would forget what was
+// already shown and pop it up again.
+const shownThisVisit = new Set<string>();
+</script>
+
 <script setup lang="ts">
 // The bell in the header and the announcement it sometimes puts in front of
 // you.
@@ -8,9 +17,11 @@
 // "have we already shown it since the tab was opened" is a property of the
 // tab and would be pointless to store.
 
-import { computed, nextTick, onMounted, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
+import { useRouter } from 'vue-router';
 import type { Notification } from '@/api/notifications';
 import {
+  fetchAnnouncement,
   fetchAnnouncements,
   markAllRead,
   markRead,
@@ -29,12 +40,20 @@ import {
 } from '@/stores/notifications';
 import AnnouncementSheet from './AnnouncementSheet.vue';
 
-// Announcements shown during this page load, so an "every visit" one does not
-// reappear the moment it is dismissed.
-const shownThisVisit = new Set<string>();
+// Several refreshes can be in flight at once (mount, a bell open, a dismissal).
+// Only the newest one is applied: an older response that lands last would
+// otherwise restore the read flags and unread count the newer one had cleared.
+let latestRefresh = 0;
+
+// A response that answers after the bell has left the page must not raise a
+// sheet. Nothing would render it, but it would still be recorded as shown, and
+// the remounted bell would then never show that every-visit popup again.
+let alive = true;
+onBeforeUnmount(() => { alive = false; });
 
 const feed = ref<AnnouncementFeed>({ announcements: [], unread: 0, popup: null });
 const showing = ref<Announcement | null>(null);
+const showingAsPopup = ref(false);
 const menu = ref<InstanceType<typeof OaMenu> | null>(null);
 
 // The badge is one dot for two feeds: a reader does not care whether what is
@@ -50,9 +69,11 @@ const label = computed(() => (totalUnread.value
 // count and show the same arrival twice.
 const notificationRows = computed(() => notificationList.value.filter((record) => record.kind !== 'announcement'));
 
+const router = useRouter();
+
 function onNotificationClick(close: () => void, n: Notification): void {
   close();
-  void openNotification(n);
+  void openNotification(n, (link) => router.push(link));
 }
 
 /**
@@ -61,23 +82,50 @@ function onNotificationClick(close: () => void, n: Notification): void {
  * that moment would cover the thing they asked to see.
  */
 async function refresh(options: { popup?: boolean } = {}): Promise<void> {
+  const ticket = ++latestRefresh;
   try {
     const next = await fetchAnnouncements();
-    feed.value = next;
-    await nextTick();
-    menu.value?.fit();
-    if (options.popup === false) return;
+    // An overtaken answer leaves the feed alone, but it still decides its own
+    // popup: a bell opened while the mount refresh was in flight answers first,
+    // and must not cancel the every-visit sheet the mount asked for.
+    if (ticket === latestRefresh) {
+      feed.value = next;
+      await nextTick();
+      menu.value?.fit();
+    }
+    if (options.popup === false || !alive) return;
     // Only on the first read of a given announcement per visit. An "every
     // visit" one that has just been dismissed must not come straight back
     // when something else refreshes the feed.
-    if (next.popup && !shownThisVisit.has(next.popup.id)) show(next.popup);
+    if (next.popup && !shownThisVisit.has(next.popup.id)) show(next.popup, true);
   } catch {
     // A bell nobody can ring is not worth an error state.
   }
 }
 
-function show(record: Announcement): void {
+// The list carries titles only, so the body is fetched when a row is opened.
+// A row that cannot be fetched stays closed; the next refresh reflects the
+// server's view of it.
+//
+// Rows can be opened faster than their bodies arrive, and the answers can come
+// back in any order. The row opened last is the one the reader is waiting on,
+// so an earlier answer that lands after it must not replace its sheet.
+let openTicket = 0;
+let shownTicket = 0;
+
+function openAnnouncement(record: Announcement): void {
+  const ticket = ++openTicket;
+  void fetchAnnouncement(record.id).then((full) => {
+    if (alive && ticket > shownTicket) {
+      shownTicket = ticket;
+      show(full);
+    }
+  }).catch(() => undefined);
+}
+
+function show(record: Announcement, popup = false): void {
   shownThisVisit.add(record.id);
+  showingAsPopup.value = popup;
   showing.value = record;
 }
 
@@ -88,13 +136,24 @@ function dismiss(): void {
   void markRead(record.id).then(() => refresh({ popup: false })).catch(() => refresh({ popup: false }));
 }
 
+// Only the announcements this bell rendered are marked. One published after
+// the list was fetched was never shown, so it stays unread and its popup
+// still comes. A failed "mark all" still reloads the feed, so the bell shows
+// what the server actually has rather than what this tab assumed.
+function markEveryAnnouncementRead(): void {
+  const ids = feed.value.announcements.map((record) => record.id);
+  void markAllRead(ids).then(() => refresh({ popup: false })).catch(() => refresh({ popup: false }));
+}
+
 /**
  * Opening the bell is the moment the reader says "I'm looking now", so that
  * is when both feeds are marked read — the badge clears immediately rather
- * than waiting for a separate button click. Failures are swallowed: the next
- * poll's unread count is the source of truth either way, and a menu that
- * refuses to open because a mark-read call hiccuped is worse than a stale
- * badge for one tick.
+ * than waiting for a separate button click. The announcements marked are
+ * the ones this bell rendered, as with the section's own button: one
+ * published after the list was fetched was never shown, so it stays unread.
+ * Failures are swallowed: the next poll's unread count is the source of
+ * truth either way, and a menu that refuses to open because a mark-read
+ * call hiccuped is worse than a stale badge for one tick.
  */
 function onTrigger(wasOpen: boolean): void {
   if (wasOpen) return;
@@ -103,7 +162,8 @@ function onTrigger(wasOpen: boolean): void {
   // and put the dot straight back — the very bug this clears. allSettled
   // rather than all, so a mark that fails still refreshes; the server's own
   // count is the truth either way, exactly as the failure case wants.
-  void Promise.allSettled([markAllRead(), markAllNotificationsRead()])
+  const ids = feed.value.announcements.map((record) => record.id);
+  void Promise.allSettled([markAllRead(ids), markAllNotificationsRead()])
     .then(() => refresh({ popup: false }));
 }
 
@@ -115,12 +175,13 @@ onMounted(() => void refresh());
     <template #trigger="{ open, toggle }">
       <OaIconButton
         class="oa-icon-btn oa-bell"
+        :class="{ 'has-unread': totalUnread > 0 }"
         :label="label"
         aria-haspopup="menu"
         :aria-expanded="open ? 'true' : 'false'"
         @click="onTrigger(open); toggle()"
       >
-        <IconBell :size="17" />
+        <IconBell :size="16" />
         <span v-if="totalUnread > 0" class="oa-bell-dot" />
       </OaIconButton>
     </template>
@@ -132,7 +193,7 @@ onMounted(() => void refresh());
           v-if="feed.unread > 0"
           type="button"
           class="oa-menu-head-action"
-          @click="close(); markAllRead().then(() => refresh({ popup: false }))"
+          @click="close(); markEveryAnnouncementRead()"
         >
           {{ t('markAllRead') }}
         </button>
@@ -144,7 +205,7 @@ onMounted(() => void refresh());
         :key="record.id"
         :title="record.title"
         :sub="relativeTime(record.updated_at)"
-        @click="close(); show(record)"
+        @click="close(); openAnnouncement(record)"
       >
         <template v-if="!record.read" #leading>
           <span class="oa-menu-unread" />
@@ -177,5 +238,5 @@ onMounted(() => void refresh());
     </template>
   </OaMenu>
 
-  <AnnouncementSheet v-if="showing" :announcement="showing" @dismiss="dismiss" />
+  <AnnouncementSheet v-if="showing" :announcement="showing" :popup="showingAsPopup" @dismiss="dismiss" />
 </template>

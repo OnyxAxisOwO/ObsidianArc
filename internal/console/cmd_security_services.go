@@ -101,7 +101,7 @@ func init() {
 				body["port"] = port
 			}
 			if rt.Present("implicit-tls") {
-				value, err := strconv.ParseBool(rt.String("implicit-tls"))
+				value, err := parseBoolValue(rt.String("implicit-tls"))
 				if err != nil {
 					return rt.Errorf("--implicit-tls must be true or false")
 				}
@@ -218,7 +218,7 @@ func init() {
 				"clear_api_key":  rt.Bool("clear-api-key"),
 			}
 			if rt.Present("enabled") {
-				value, err := strconv.ParseBool(rt.String("enabled"))
+				value, err := parseBoolValue(rt.String("enabled"))
 				if err != nil {
 					return rt.Errorf("--enabled must be true or false")
 				}
@@ -273,12 +273,13 @@ func init() {
 }
 
 func mailSetRequested(rt *Runtime) bool {
-	for _, name := range []string{"host", "port", "username", "from", "implicit-tls", "public-url", "password", "clear-password"} {
+	for _, name := range []string{"host", "port", "username", "from", "implicit-tls", "public-url", "password"} {
 		if rt.Present(name) {
 			return true
 		}
 	}
-	return false
+	// clear-password is a bare boolean: "--clear-password false" asks for nothing.
+	return rt.Bool("clear-password")
 }
 
 func mailFields(m map[string]any) [][2]string {
@@ -294,12 +295,13 @@ func mailFields(m map[string]any) [][2]string {
 }
 
 func userCheckSetRequested(rt *Runtime) bool {
-	for _, name := range []string{"enabled", "exempt-domains", "failure-mode", "api-key", "clear-api-key"} {
+	for _, name := range []string{"enabled", "exempt-domains", "failure-mode", "api-key"} {
 		if rt.Present(name) {
 			return true
 		}
 	}
-	return false
+	// clear-api-key is a bare boolean: "--clear-api-key false" asks for nothing.
+	return rt.Bool("clear-api-key")
 }
 
 func userCheckFields(m map[string]any) [][2]string {

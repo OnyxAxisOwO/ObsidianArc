@@ -50,6 +50,7 @@ Content-Type: application/json
 | 404 | `api_disabled` | 全站 API 已关闭，包括管理员调用 |
 | 401 | `invalid_api_key` | 缺少或无效的密钥，也可能是账号或用户组不允许调用 |
 | 401 | `api_key_paused` | 密钥已暂停 |
+| 403 | `account_banned` | 账号已被封禁；`message` 里带管理员填写的封禁理由 |
 | 404 | `model_not_found` | 模型名称不可解析或不在可用范围 |
 | 403 | `model_not_permitted` | 请求不在密钥绑定的模型范围内 |
 | 403 | `email_unverified` | 当前生效的邮箱验证要求尚未完成 |

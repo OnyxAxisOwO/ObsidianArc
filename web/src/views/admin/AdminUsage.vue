@@ -16,7 +16,6 @@ import {
   type Group, type QuotaWindowKind, type UsageBreakdown, type UsagePoint,
   type UsageRecord, type UsageReport, type UsageTotals,
 } from '@/admin/api';
-import { ApiError } from '@/api/client';
 import OaCellStack from '@/components/OaCellStack.vue';
 import OaFormSection from '@/components/OaFormSection.vue';
 import OaHoldButton from '@/components/OaHoldButton.vue';
@@ -30,9 +29,15 @@ import OaTextField from '@/components/OaTextField.vue';
 import type { Column, PageState } from '@/components/table-types';
 import { celebrate } from '@/composables/useConfetti';
 import { t, tn, type StringKey } from '@/composables/useI18n';
+import { useLatestRequest } from '@/composables/useLatestRequest';
 import { IconClose } from '@/icons';
-import { compactNumber, relativeTime, tokenFigure } from '@/lib/format';
+import { compactNumber, localeTag, relativeTime, tokenFigure } from '@/lib/format';
+import { rememberedPageSize } from '@/lib/page-size';
+import { isAbortError } from '@/lib/abort';
 import { maskUser, maskProvider, maskBilling } from '@/admin/safeMode';
+import { QUOTA_WINDOWS as WINDOWS, windowFigure } from '@/admin/quota';
+import { customUntilBound } from '@/admin/usageRange';
+import { outcomeLabel } from '@/admin/outcome';
 import AdminFailure from './AdminFailure.vue';
 import CreditsField from './CreditsField.vue';
 import StatusBadge from './StatusBadge.vue';
@@ -42,9 +47,11 @@ import UsageBoard from './usage/UsageBoard.vue';
 import UsageDelta from './usage/UsageDelta.vue';
 import UsageHeatmap from './usage/UsageHeatmap.vue';
 import UsageMatrix from './usage/UsageMatrix.vue';
-import UsagePlot from './usage/UsagePlot.vue';
-import { fillBuckets, formatDuration, percent } from './usage/scale';
+import UsageTrend from './usage/UsageTrend.vue';
+import { DAY, HOUR, fillBuckets, formatDuration, percent } from './usage/scale';
 import type { BoardMetric, PlotPoint } from './usage/shape';
+import { toDateTimeLocal, failureText } from './shared';
+import { DAY_MS, HOUR_MS } from '@/lib/time';
 
 interface RangePreset {
   key: string;
@@ -64,8 +71,6 @@ const RANGE_PRESETS: RangePreset[] = [
   { key: 'all', label: 'rangeAllShort', long: 'rangeAll', hours: 0 },
 ];
 
-const WINDOWS: QuotaWindowKind[] = ['5h', '1w', '1m'];
-
 type Dimension = 'model' | 'user' | 'group' | 'provider';
 type Outcome = '' | 'ok' | 'error' | 'aborted' | 'rejected';
 type TrendMetric = 'requests' | 'total_tokens' | 'credits' | 'users';
@@ -73,10 +78,12 @@ type CellMetric = 'requests' | 'total_tokens' | 'credits';
 type Spread = 'group' | 'provider' | 'status';
 
 const view = useAdminView();
-view.setTitle(t('usageTitle'), t('usageSubtitle'));
+view.setTitle(() => t('usageTitle'), () => t('usageSubtitle'));
 
+// Written by the ten-second poll alone (refreshRPM). The summary carries the
+// same figure, but out of a cache that can be fifteen seconds old, and letting
+// it write too made the header step back to an older number on every refresh.
 const currentRPM = ref(0);
-const rpmTimer = ref<number | null>(null);
 
 const range = ref<string>(String(selectedRange));
 const customRangeOpen = ref(false);
@@ -87,12 +94,11 @@ let customSince = savedCustomSince;
 let customUntil = savedCustomUntil;
 
 function toLocalISO(date: Date): string {
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  return toDateTimeLocal(date);
 }
 
 const customLabel = computed(() => range.value === 'custom' && customSince && customUntil
-  ? `${new Date(customSince).toLocaleDateString()} – ${new Date(customUntil).toLocaleDateString()}`
+  ? `${new Date(customSince).toLocaleDateString(localeTag())} – ${new Date(customUntil).toLocaleDateString(localeTag())}`
   : t('rangeCustomShort'));
 const rangeKicker = computed(() => range.value === 'custom'
   ? customLabel.value
@@ -132,15 +138,22 @@ const anyFilter = computed(() => Object.values(filters.value).some(Boolean));
 const report = ref<UsageReport | null>(null);
 const records = ref<UsageRecord[]>([]);
 const recordTotal = ref(0);
-const recordPage = ref<PageState>({ page: 1, pageSize: 20 });
+const recordPage = ref<PageState>({ page: 1, pageSize: rememberedPageSize() });
 const recordsBusy = ref(false);
+// The ledger's own failure. It stays out of error, which replaces the whole
+// report: a page of records that did not load should not take the figures
+// down with it.
+const recordError = ref('');
 const error = ref('');
+// Kept apart from error: the refresh clears error after every good answer, and
+// a message about the defaults must not vanish fifteen seconds after it shows.
+const policyReadError = ref('');
 const loaded = ref(false);
-let recordRequest = 0;
+const recordRequest = useLatestRequest();
 // The summary fetch needs a ticket of its own. A request that outlives a
 // range or filter change must not paint its stale numbers over the newer
 // one's — loadRecords has always done this; this is the other half.
-let summaryRequest = 0;
+const summaryRequest = useLatestRequest();
 let periodSince = 0;
 let periodUntil = 0;
 let offsetMs = 0;
@@ -172,7 +185,11 @@ function figure(value: number | undefined): number {
 // eventually disagree about which slice is on screen.
 function sliceQuery(): URLSearchParams {
   const params = new URLSearchParams();
-  if (periodSince > 0) params.set('since', String(periodSince));
+  // The all preset sends since=0 on purpose. Left out, the server starts the
+  // window at thirty days, and the summary would answer a window the preset
+  // does not name; with it, the server answers its widest window, the same
+  // one the chart already asks for.
+  if (periodSince > 0 || range.value === 'all') params.set('since', String(periodSince));
   if (periodUntil > 0) params.set('until', String(periodUntil));
   if (filters.value.model) params.set('model_id', filters.value.model);
   if (filters.value.user) params.set('user_id', filters.value.user);
@@ -182,23 +199,20 @@ function sliceQuery(): URLSearchParams {
   return params;
 }
 
-function summaryQuery(): string {
+function summaryQuery(): URLSearchParams {
   const params = sliceQuery();
   // The server ranks every breakdown by this; the boards re-sort on their
   // own, so what it decides here is only which accounts and models make the
   // grid — the ones that spend the most tokens.
   params.set('metric', 'tokens');
-  return `?${params.toString()}&${zoneQuery()}`;
+  new URLSearchParams(zoneQuery()).forEach((value, key) => params.set(key, value));
+  return params;
 }
 
-function isAbortError(err: unknown): boolean {
-  return (
-    (err instanceof DOMException && err.name === 'AbortError') ||
-    (err instanceof Error && err.name === 'AbortError') ||
-    (typeof err === 'object' && err !== null && (err as { name?: string }).name === 'AbortError')
-  );
-}
-
+// Two, because the ledger moves on its own: turning a page of records cancels
+// the records request alone, and must leave the summary beside it running.
+// Each is cleared by whoever finishes with it — the request's own finally, by
+// identity, so a newer one is never forgotten in its place.
 let summaryController: AbortController | null = null;
 let recordController: AbortController | null = null;
 
@@ -217,21 +231,24 @@ function abortRecords(): void {
 }
 
 async function loadRecords(quiet = false, signal?: AbortSignal): Promise<void> {
-  const ticket = ++recordRequest;
+  const ticket = recordRequest.begin();
   recordsBusy.value = true;
   try {
     const params = sliceQuery();
     params.set('limit', String(recordPage.value.pageSize));
     params.set('offset', String((recordPage.value.page - 1) * recordPage.value.pageSize));
-    const result = await adminApi.usageRecords(`?${params.toString()}`, signal ? { signal } : undefined);
-    if (ticket !== recordRequest || signal?.aborted) return;
+    const result = await adminApi.usageRecords(params, signal ? { signal } : undefined);
+    if (!recordRequest.isCurrent(ticket) || signal?.aborted) return;
     records.value = result.records ?? [];
     recordTotal.value = result.total;
+    recordError.value = '';
   } catch (failure) {
     if (signal?.aborted || isAbortError(failure)) return;
-    if (!quiet && ticket === recordRequest) error.value = String(failure);
+    if (!quiet && recordRequest.isCurrent(ticket)) {
+      recordError.value = failureText(failure);
+    }
   } finally {
-    if (ticket === recordRequest) recordsBusy.value = false;
+    if (recordRequest.isCurrent(ticket)) recordsBusy.value = false;
     if (recordController?.signal === signal) {
       recordController = null;
     }
@@ -245,16 +262,37 @@ function changeRecords(next: PageState): void {
   void loadRecords(false, ctrl.signal);
 }
 
+function sameList(a: UsageBreakdown[], b: UsageBreakdown[]): boolean {
+  return a.length === b.length && a.every((row, i) => row.key === b[i]!.key && row.label === b[i]!.label && row.detail === b[i]!.detail);
+}
+
 function applyReport(next: UsageReport): void {
   report.value = next;
   loaded.value = true;
-  if (typeof next.current_rpm === 'number') currentRPM.value = next.current_rpm;
   const lists: Record<Dimension, UsageBreakdown[]> = {
     model: next.by_model ?? [], user: next.by_user ?? [], group: next.by_group ?? [], provider: next.by_provider ?? [],
   };
   for (const dimension of Object.keys(lists) as Dimension[]) {
-    if (!filters.value[dimension]) known.value[dimension] = lists[dimension];
+    // Every refresh brings new arrays. The filter menus watch their choices by
+    // identity, so an unchanged list must keep its old identity or an open
+    // menu is reset on each refresh.
+    if (!filters.value[dimension] && !sameList(known.value[dimension], lists[dimension])) known.value[dimension] = lists[dimension];
   }
+}
+
+// A preset is a rolling window: "last 24 hours" means the 24 hours before the
+// request is sent, not before the page was opened. So the bounds are worked
+// out again for every request that is built, and only a custom range keeps
+// the bounds it was given.
+function startPeriod(): void {
+  if (range.value === 'custom') {
+    periodSince = customSince;
+    periodUntil = customUntil > 0 ? customUntilBound(customUntil) : 0;
+    return;
+  }
+  const preset = RANGE_PRESETS.find((p) => p.key === range.value) ?? RANGE_PRESETS[1]!;
+  periodSince = preset.hours > 0 ? Date.now() - preset.hours * HOUR : 0;
+  periodUntil = 0;
 }
 
 async function load(): Promise<void> {
@@ -266,34 +304,29 @@ async function load(): Promise<void> {
   recordController = currentRecordCtrl;
 
   error.value = '';
-  if (range.value === 'custom') {
-    periodSince = customSince;
-    periodUntil = customUntil;
-  } else {
-    const preset = RANGE_PRESETS.find((p) => p.key === range.value) ?? RANGE_PRESETS[1]!;
-    periodSince = preset.hours > 0 ? Date.now() - preset.hours * 3600_000 : 0;
-    periodUntil = 0;
-  }
+  policyReadError.value = '';
+  startPeriod();
   offsetMs = -new Date().getTimezoneOffset() * 60_000;
   recordPage.value.page = 1;
 
-  const ticket = ++summaryRequest;
+  const ticket = summaryRequest.begin();
+  // The ledger page is not waited for. Nothing in the report depends on it,
+  // and over a long range its count is often the slower of the two; it has
+  // its own busy state and its own error, and clears its own controller.
+  void loadRecords(false, currentRecordCtrl.signal);
+  // The live rate is asked again under the new slice now, rather than showing
+  // the old filters' figure until the next tick of its poll.
+  void refreshRPM();
   try {
-    const [summary] = await Promise.all([
-      adminApi.usage(summaryQuery(), { signal: currentSummaryCtrl.signal }),
-      loadRecords(false, currentRecordCtrl.signal),
-    ]);
-    if (ticket !== summaryRequest || currentSummaryCtrl.signal.aborted) return;
+    const summary = await adminApi.usage(summaryQuery(), { signal: currentSummaryCtrl.signal });
+    if (!summaryRequest.isCurrent(ticket) || currentSummaryCtrl.signal.aborted) return;
     applyReport(summary);
   } catch (failure) {
     if (currentSummaryCtrl.signal.aborted || isAbortError(failure)) return;
-    if (ticket === summaryRequest) error.value = failure instanceof Error ? failure.message : String(failure);
+    if (summaryRequest.isCurrent(ticket)) error.value = failureText(failure);
   } finally {
     if (summaryController === currentSummaryCtrl) {
       summaryController = null;
-    }
-    if (recordController === currentRecordCtrl) {
-      recordController = null;
     }
     if (!currentSummaryCtrl.signal.aborted) {
       loaded.value = true;
@@ -335,20 +368,30 @@ function choicesFor(dimension: Dimension, all: StringKey): Array<{ value: string
   const selected = filters.value[dimension];
   // The one in force stays pickable even if the cached list predates it.
   if (selected && !rows.some((row) => row.key === selected)) rows.unshift({ key: selected, label: nameOf(dimension, selected) } as UsageBreakdown);
+  // Account and provider names are what safe mode hides, and the filter menus
+  // are where they are most often written out in full. A model's second line is
+  // its provider, so it is masked there too.
   const labelled = (row: UsageBreakdown): string => {
-    const name = row.label || row.key;
+    const plain = row.label || row.key;
+    const name = dimension === 'user' ? maskUser(plain) : dimension === 'provider' ? maskProvider(plain) : plain;
     if (!row.detail || row.detail === row.label) return name;
-    return dimension === 'user' ? `${name} · @${row.detail}` : `${name} · ${row.detail}`;
+    if (dimension === 'user') return `${name} · @${maskUser(row.detail)}`;
+    if (dimension === 'model') return `${name} · ${maskProvider(row.detail)}`;
+    return `${name} · ${row.detail}`;
   };
   return [{ value: '', label: t(all) }, ...rows.slice(0, 200).map((row) => ({ value: row.key, label: labelled(row) }))];
 }
 
+// Cached for the same reason as the lists above: a new array on each render
+// would reset an open menu on every refresh.
+const modelChoices = computed(() => choicesFor('model', 'filterAllModels'));
+const userChoices = computed(() => choicesFor('user', 'filterAllUsers'));
+const groupChoices = computed(() => choicesFor('group', 'anyGroup'));
+const providerChoices = computed(() => choicesFor('provider', 'filterAllProviders'));
+
 const outcomeChoices = computed<Array<{ value: Outcome; label: string }>>(() => [
   { value: '', label: t('filterAllOutcomes') },
-  { value: 'ok', label: t('statusOk') },
-  { value: 'error', label: t('statusFailed') },
-  { value: 'aborted', label: t('statusStopped') },
-  { value: 'rejected', label: t('statusRefused') },
+  ...(['ok', 'error', 'aborted', 'rejected'] as const).map((value) => ({ value, label: t(outcomeLabel(value)) })),
 ]);
 
 /** The one model or account the page has been narrowed to, for the banner. */
@@ -359,7 +402,7 @@ const focus = computed(() => {
   }
   if (filters.value.user) {
     const row = byUser.value.find((entry) => entry.key === filters.value.user);
-    return { kind: 'user' as const, name: nameOf('user', filters.value.user), row };
+    return { kind: 'user' as const, name: maskUser(nameOf('user', filters.value.user)), row };
   }
   return null;
 });
@@ -369,10 +412,10 @@ function focusNotes(): string[] {
   if (!row) return [t('noRequestsPeriod')];
   const notes: string[] = [];
   if (focus.value?.kind === 'model') {
-    if (row.detail) notes.push(row.detail);
+    if (row.detail) notes.push(maskProvider(row.detail));
     notes.push(tn(row.users, 'boardUsersOne', 'boardUsersOther', { count: row.users }));
   } else {
-    if (row.detail) notes.push(`@${row.detail}`);
+    if (row.detail) notes.push(`@${maskUser(row.detail)}`);
     notes.push(tn(row.models, 'boardModelsOne', 'boardModelsOther', { count: row.models }));
   }
   notes.push(t('boardRequests', { count: compactNumber(row.requests) }));
@@ -413,7 +456,6 @@ const TREND_METRICS: Array<{ value: TrendMetric; label: StringKey }> = [
   { value: 'credits', label: 'statCredits' },
   { value: 'users', label: 'trendUsers' },
 ];
-const activePoint = ref<number | null>(null);
 // Narrowed to one account, "how many accounts" is always one: the options
 // that would only ever say so are left out rather than drawn flat.
 const trendOptions = computed(() => filters.value.user ? TREND_METRICS.filter((option) => option.value !== 'users') : TREND_METRICS);
@@ -433,28 +475,28 @@ const series = computed<UsagePoint[]>(() => {
 const plotPoints = computed<PlotPoint[]>(() => series.value.map((point) => ({ at: point.at, value: figure(point[trendShown.value]) })));
 // Through safe mode when the line is spending: the axis, the readout and the
 // peak are all figures somebody recording the screen would otherwise get.
+// Credits to the cent, the precision the figures are read at.
+function round2(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+// Stable across renders: an inline arrow in the template is a new function on
+// every render of this page, and each child it is passed to redraws its rows.
+const matrixFormat = (value: number): string => compactNumber(cellMetric.value === 'credits' ? round2(value) : value);
+const heatFormat = (value: number): string => heatMetric.value === 'requests'
+  ? t('boardRequests', { count: compactNumber(value) })
+  : t('boardTokens', { count: maskBilling(compactNumber(value)) });
+const recordPagination = computed(() => ({ ...recordPage.value, total: recordTotal.value }));
+const isMutedRecord = (row: UsageRecord): boolean => row.status !== 'ok';
+
 const trendFormat = computed(() => {
   const spending = trendShown.value === 'credits' || trendShown.value.endsWith('tokens');
   const plain = trendShown.value === 'credits'
-    ? (value: number) => compactNumber(Math.round(value * 100) / 100)
+    ? (value: number) => compactNumber(round2(value))
     : (value: number) => compactNumber(value);
   return spending ? (value: number) => maskBilling(plain(value)) : plain;
 });
-const trendSummary = computed(() => {
-  const point = activePoint.value === null ? null : series.value[activePoint.value];
-  if (point) return figure(point[trendShown.value]);
-  const value = totals.value;
-  // Accounts are counted once for the whole range, not summed per bucket:
-  // somebody active every day is one account, not thirty.
-  return value ? figure(value[trendShown.value]) : 0;
-});
 const trendPeak = computed(() => Math.max(0, ...plotPoints.value.map((point) => point.value)));
-const plot = ref<InstanceType<typeof UsagePlot> | null>(null);
-const trendCaption = computed(() => {
-  const point = activePoint.value === null ? null : series.value[activePoint.value];
-  if (point && plot.value) return plot.value.describe(point.at);
-  return trendShown.value === 'users' ? t('trendDistinct') : t('trendTotal');
-});
 
 // --- the boards and the grid -----------------------------------------------------------------
 
@@ -495,7 +537,7 @@ const showMatrix = computed(() => !filters.value.model && !filters.value.user
   && (report.value?.matrix?.rows?.length ?? 0) > 0 && (report.value?.matrix?.cols?.length ?? 0) > 0);
 
 // One setter per control, each remembering its choice for the next visit.
-function onTrend(next: TrendMetric): void { trendMetric.value = next; selectedTrend = next; activePoint.value = null; }
+function onTrend(next: TrendMetric): void { trendMetric.value = next; selectedTrend = next; }
 function onModelMetric(next: BoardMetric): void { modelMetric.value = next; selectedModelMetric = next; }
 function onUserMetric(next: BoardMetric): void { userMetric.value = next; selectedUserMetric = next; }
 function onCellMetric(next: CellMetric): void { cellMetric.value = next; selectedCellMetric = next; }
@@ -504,8 +546,7 @@ function onSpreadChoice(next: Spread): void { spread.value = next; selectedSprea
 
 const statusRows = computed<UsageBreakdown[]>(() => byStatus.value.map((row) => ({
   ...row,
-  label: row.key === 'ok' ? t('statusOk') : row.key === 'aborted' ? t('statusStopped')
-    : row.key === 'rejected' ? t('statusRefused') : t('statusFailed'),
+  label: t(outcomeLabel(row.key)),
 })));
 const spreadRows = computed(() => spread.value === 'group' ? byGroup.value : spread.value === 'provider' ? byProvider.value : statusRows.value);
 function onSpread(key: string): void {
@@ -539,11 +580,18 @@ const policyForm = ref({
 
 async function openPolicy(): Promise<void> {
   let policy = emptyPolicy('global', '');
+  // The retry button on a failed read comes back here, so a good read has to
+  // take its own failure off the page.
+  policyReadError.value = '';
   try {
     const { policies } = await adminApi.policies();
     policy = policies.find((entry) => entry.scope === 'global') ?? policy;
-  } catch {
-    // Fall through with the blank policy; saving will create it.
+  } catch (failure) {
+    // A failed read is not an empty list. The blank form would show no limit
+    // anywhere, and Save would write those blanks over the stored instance
+    // defaults, so the panel stays shut and the page says what went wrong.
+    policyReadError.value = failureText(failure);
+    return;
   }
   const windows = {} as typeof policyForm.value.windows;
   for (const kind of WINDOWS) {
@@ -560,6 +608,15 @@ async function openPolicy(): Promise<void> {
   policyOpen.value = true;
 }
 
+// A saved allowance or a reset changes the figures, but the page need not start
+// over: a full reload also drops the drill-down, which is in the component's
+// own state. The allowance list loads itself on mount, so it is re-keyed.
+const allowanceRevision = ref(0);
+function refreshAfterChange(): void {
+  allowanceRevision.value++;
+  void load();
+}
+
 async function savePolicy(): Promise<void> {
   policyBusy.value = true;
   try {
@@ -570,15 +627,15 @@ async function savePolicy(): Promise<void> {
       tpm: policyForm.value.tpm,
       windows: Object.fromEntries(WINDOWS.map((kind) => [kind, {
         enabled: policyForm.value.windows[kind].enabled ? true : null,
-        requests: policyForm.value.windows[kind].requests,
-        tokens: policyForm.value.windows[kind].tokens,
-        credits: policyForm.value.windows[kind].credits,
+        requests: windowFigure(policyForm.value.windows[kind].requests),
+        tokens: windowFigure(policyForm.value.windows[kind].tokens),
+        credits: windowFigure(policyForm.value.windows[kind].credits),
       }])),
     });
     policyOpen.value = false;
-    view.reload();
+    refreshAfterChange();
   } catch (failure) {
-    policyError.value = failure instanceof ApiError ? failure.message : String(failure);
+    policyError.value = failureText(failure);
   } finally {
     policyBusy.value = false;
   }
@@ -588,6 +645,13 @@ async function savePolicy(): Promise<void> {
 
 const resetOpen = ref(false);
 const resetScope = ref<'all' | 'group' | 'user'>('all');
+// Computed so a render does not hand the select a new array, and so the
+// labels follow a change of language.
+const resetScopeChoices = computed(() => [
+  { value: 'all' as const, label: t('resetScopeAll') },
+  { value: 'group' as const, label: t('resetScopeGroup') },
+  { value: 'user' as const, label: t('resetScopeUser') },
+]);
 const resetGroup = ref('');
 const resetAccount = ref('');
 const resetGroups = ref<Pick<Group, 'id' | 'name'>[]>([]);
@@ -627,16 +691,16 @@ async function runReset(): Promise<void> {
     resetTitle.value = t('resetDone', { count: accounts });
     resetError.value = '';
     celebrate();
-    view.reload();
+    refreshAfterChange();
   } catch (failure) {
-    resetError.value = failure instanceof ApiError ? failure.message : String(failure);
+    resetError.value = failureText(failure);
   }
 }
 
 // --- a custom range ------------------------------------------------------------------------
 
 function openCustomRange(): void {
-  if (!customStart.value) customStart.value = toLocalISO(new Date(Date.now() - 24 * 3600_000));
+  if (!customStart.value) customStart.value = toLocalISO(new Date(Date.now() - DAY));
   if (!customEnd.value) customEnd.value = toLocalISO(new Date());
   customRangeError.value = '';
   customRangeOpen.value = true;
@@ -658,7 +722,10 @@ function applyCustomRange(): void {
     return;
   }
   const startMs = new Date(customStart.value).getTime();
-  const endMs = new Date(customEnd.value).getTime();
+  // The picker has minute precision, so the end is the whole minute that was
+  // picked, through its last millisecond. startPeriod widens it to the hour
+  // that holds it, because the server rounds its bound down to the hour.
+  const endMs = new Date(customEnd.value).getTime() + 59_999;
   if (isNaN(startMs) || isNaN(endMs) || startMs >= endMs) {
     customRangeError.value = t('customInvalidRange');
     return;
@@ -713,10 +780,10 @@ function setPreset(preset: Preset): void {
       start.setHours(0, 0, 0, 0);
       break;
     case 'last7d':
-      start.setTime(now.getTime() - 7 * 24 * 3600_000);
+      start.setTime(now.getTime() - 7 * DAY);
       break;
     case 'last30d':
-      start.setTime(now.getTime() - 30 * 24 * 3600_000);
+      start.setTime(now.getTime() - 30 * DAY);
       break;
   }
   customStart.value = toLocalISO(start);
@@ -726,11 +793,18 @@ function setPreset(preset: Preset): void {
 
 // --- keeping it current --------------------------------------------------------------------
 
+// A filter change asks at once while a tick's request may still be out; the
+// older answer is about the old filters and must not land after the newer.
+const rpmRequest = useLatestRequest();
+
 async function refreshRPM(): Promise<void> {
   if (visibility.value === 'hidden') return;
+  const ticket = rpmRequest.begin();
   try {
-    const res = await adminApi.rpm();
-    currentRPM.value = res.rpm;
+    // Narrowed by the filters, as every figure beside it is. The server fixes
+    // the window at the last minute whatever period is sent.
+    const res = await adminApi.rpm(sliceQuery());
+    if (rpmRequest.isCurrent(ticket)) currentRPM.value = res.rpm;
   } catch {
     // Keep existing RPM on transient error
   }
@@ -748,55 +822,66 @@ async function refreshRPM(): Promise<void> {
 // unreachable server recovers on its own.
 const REFRESH_MS = 15000;
 
-// Nobody reads a background tab. Each refresh recomputes every aggregate on
-// the page over the whole range — a dozen queries across the ledger — and a
-// tab left open overnight used to run them four times a minute for no one.
-// It catches up the moment it is looked at again.
+// Nobody reads a background tab. Each refresh asks for every aggregate on the
+// page again — a dozen queries, most of them over the hourly rollup, and the
+// ledger page's count over the raw records — and a tab left open overnight
+// used to run them four times a minute for no one. It catches up the moment
+// it is looked at again.
 const visibility = useDocumentVisibility();
 watch(visibility, (now, was) => {
   if (now === 'visible' && was === 'hidden') { refreshQuietly(); void refreshRPM(); }
 });
 
+// A tick that finds a request still out leaves that one alone instead of
+// cancelling it and asking again. It is already the same question — or a
+// newer one, from load() or a page turn — and a ledger count slower than the
+// interval would otherwise be cancelled every tick and never arrive.
 function refreshQuietly(): void {
   if (visibility.value === 'hidden' || !loaded.value) return;
-  abortSummary();
-  abortRecords();
-  const currentSummaryCtrl = new AbortController();
-  const currentRecordCtrl = new AbortController();
-  summaryController = currentSummaryCtrl;
-  recordController = currentRecordCtrl;
+  startPeriod();
 
-  const ticket = ++summaryRequest;
-  void adminApi.usage(summaryQuery(), { signal: currentSummaryCtrl.signal }).then((summary) => {
-    if (ticket !== summaryRequest || currentSummaryCtrl.signal.aborted) return;
-    applyReport(summary);
-    error.value = '';
-  }).catch((err) => {
-    if (isAbortError(err)) return;
-  }).finally(() => {
-    if (summaryController === currentSummaryCtrl) {
-      summaryController = null;
-    }
-  });
-  void loadRecords(true, currentRecordCtrl.signal);
+  if (!summaryController) {
+    const currentSummaryCtrl = new AbortController();
+    summaryController = currentSummaryCtrl;
+    const ticket = summaryRequest.begin();
+    void adminApi.usage(summaryQuery(), { signal: currentSummaryCtrl.signal }).then((summary) => {
+      if (!summaryRequest.isCurrent(ticket) || currentSummaryCtrl.signal.aborted) return;
+      applyReport(summary);
+      error.value = '';
+    }).catch(() => {
+      // Ignored, aborted or not: the last good figures stay on screen (see
+      // above), and the next tick asks again.
+    }).finally(() => {
+      if (summaryController === currentSummaryCtrl) {
+        summaryController = null;
+      }
+    });
+  }
+  if (!recordController) {
+    const currentRecordCtrl = new AbortController();
+    recordController = currentRecordCtrl;
+    void loadRecords(true, currentRecordCtrl.signal);
+  }
 }
 
 useIntervalFn(refreshQuietly, REFRESH_MS);
+useIntervalFn(refreshRPM, 10000);
 
 onMounted(() => {
   void load();
-  const timer = window.setInterval(refreshRPM, 10000);
-  rpmTimer.value = timer;
 });
 
 onBeforeUnmount(() => {
-  if (rpmTimer.value !== null) clearInterval(rpmTimer.value);
   abortSummary();
   abortRecords();
 });
 </script>
 
 <script lang="ts">
+// Module state, not component state: the choices made on this page survive
+// leaving it and coming back, within one load of the app. The setters write
+// these alongside their refs, which is what keeps the copy current; the
+// component starts from them. A reload starts them over.
 let selectedRange = '24h';
 let selectedTrend: 'requests' | 'total_tokens' | 'credits' | 'users' = 'requests';
 let selectedModelMetric: 'users' | 'requests' | 'tokens' | 'credits' = 'users';
@@ -827,15 +912,16 @@ let savedCustomUntil = 0;
   <div v-else-if="!loaded" class="oa-report-loading" role="status" :aria-label="t('loading')"><div /><div /><div /></div>
 
   <div v-else class="oa-report">
+    <AdminFailure v-if="policyReadError" :message="policyReadError" @retry="openPolicy" />
     <div id="usageFilters" class="oa-report-filters">
       <OaSelect class="oa-filter-select" :class="{ set: !!filters.model }" :model-value="filters.model" :aria-label="t('colModel')"
-        :choices="choicesFor('model', 'filterAllModels')" @update:model-value="setFilter('model', $event)" />
+        :choices="modelChoices" @update:model-value="setFilter('model', $event)" />
       <OaSelect class="oa-filter-select" :class="{ set: !!filters.user }" :model-value="filters.user" :aria-label="t('colUser')"
-        :choices="choicesFor('user', 'filterAllUsers')" @update:model-value="setFilter('user', $event)" />
+        :choices="userChoices" @update:model-value="setFilter('user', $event)" />
       <OaSelect class="oa-filter-select" :class="{ set: !!filters.group }" :model-value="filters.group" :aria-label="t('colGroup')"
-        :choices="choicesFor('group', 'anyGroup')" @update:model-value="setFilter('group', $event)" />
+        :choices="groupChoices" @update:model-value="setFilter('group', $event)" />
       <OaSelect class="oa-filter-select" :class="{ set: !!filters.provider }" :model-value="filters.provider" :aria-label="t('colProvider')"
-        :choices="choicesFor('provider', 'filterAllProviders')" @update:model-value="setFilter('provider', $event)" />
+        :choices="providerChoices" @update:model-value="setFilter('provider', $event)" />
       <OaSelect class="oa-filter-select" :class="{ set: !!filters.status }" :model-value="filters.status" :aria-label="t('colStatus')"
         :choices="outcomeChoices" :searchable="false" @update:model-value="setFilter('status', $event)" />
       <button v-if="anyFilter" type="button" class="oa-text-btn" @click="clearFilters">{{ t('filterClear') }}</button>
@@ -876,10 +962,10 @@ let savedCustomUntil = 0;
       </article>
       <article class="oa-kpi">
         <span class="oa-kpi-label">{{ t('statCredits') }}</span>
-        <strong class="oa-kpi-value" :title="maskBilling(figure(totals?.credits).toLocaleString())">{{ maskBilling(compactNumber(Math.round(figure(totals?.credits) * 100) / 100)) }}</strong>
+        <strong class="oa-kpi-value" :title="maskBilling(figure(totals?.credits).toLocaleString())">{{ maskBilling(compactNumber(round2(figure(totals?.credits)))) }}</strong>
         <span class="oa-kpi-foot">
           <UsageDelta :current="figure(totals?.credits)" :previous="previous?.credits" />
-          <span v-if="totals?.requests">{{ t('kpiPerRequest', { value: maskBilling(compactNumber(Math.round(figure(totals?.credits) / totals.requests * 100) / 100)) }) }}</span>
+          <span v-if="totals?.requests">{{ t('kpiPerRequest', { value: maskBilling(compactNumber(round2(figure(totals?.credits) / totals.requests))) }) }}</span>
         </span>
       </article>
       <!-- One account's page counts its models instead: "active accounts: 1"
@@ -926,23 +1012,17 @@ let savedCustomUntil = 0;
             @click="onTrend(option.value)">{{ t(option.label) }}</button>
         </div>
       </header>
-      <div class="oa-viz-summary">
-        <strong>{{ trendFormat(trendSummary) }}</strong>
-        <span>{{ trendCaption }}</span>
-      </div>
-      <UsagePlot
-        v-if="plotPoints.some((point) => point.value > 0)"
-        ref="plot" v-model:active="activePoint" :points="plotPoints" :bucket-ms="report?.bucket_ms ?? 3600000"
-        :format="trendFormat" :label="t('dashboardChartKeyboard')" :height="190"
+      <UsageTrend
+        :series="series" :points="plotPoints" :totals="totals" :metric="trendShown" :format="trendFormat"
+        :bucket-ms="report?.bucket_ms ?? HOUR_MS" :offset-ms="offsetMs"
       />
-      <p v-else class="oa-viz-empty">{{ t('noRequestsPeriod') }}</p>
       <footer class="oa-viz-foot">
-        <span><span class="oa-dashboard-dot" />{{ (report?.bucket_ms ?? 0) >= 86400000 ? t('trendDaily') : t('trendHourly') }}</span>
+        <span><span class="oa-dashboard-dot" />{{ (report?.bucket_ms ?? 0) >= DAY_MS ? t('trendDaily') : t('trendHourly') }}</span>
         <span>{{ t('dashboardPeak', { value: trendFormat(trendPeak) }) }}</span>
       </footer>
     </section>
 
-    <UsageAllowances v-if="!filters.user" :group-id="filters.group" @select="setFilter('user', $event)" />
+    <UsageAllowances v-if="!filters.user" :key="allowanceRevision" :group-id="filters.group" @select="setFilter('user', $event)" />
 
     <div class="oa-report-row">
       <section v-if="!filters.model" id="secPopularModels" class="oa-viz-card">
@@ -977,7 +1057,7 @@ let savedCustomUntil = 0;
       </header>
       <UsageMatrix
         :matrix="report.matrix" :users="byUser" :models="byModel" :metric="cellMetric"
-        :format="(value) => compactNumber(cellMetric === 'credits' ? Math.round(value * 100) / 100 : value)"
+        :format="matrixFormat"
         @user="setFilter('user', $event)" @model="setFilter('model', $event)"
       />
     </section>
@@ -991,7 +1071,7 @@ let savedCustomUntil = 0;
             <button type="button" :aria-pressed="heatMetric === 'total_tokens'" @click="onHeatMetric('total_tokens')">{{ t('statTokens') }}</button>
           </div>
         </header>
-        <UsageHeatmap :slots="report?.heatmap ?? []" :metric="heatMetric" :format="(value) => heatMetric === 'requests' ? t('boardRequests', { count: compactNumber(value) }) : t('boardTokens', { count: maskBilling(compactNumber(value)) })" />
+        <UsageHeatmap :slots="report?.heatmap ?? []" :metric="heatMetric" :format="heatFormat" />
       </section>
       <section id="secSpread" class="oa-viz-card">
         <header class="oa-viz-head">
@@ -1002,7 +1082,7 @@ let savedCustomUntil = 0;
             <button type="button" :aria-pressed="spread === 'status'" @click="onSpreadChoice('status')">{{ t('spreadOutcomes') }}</button>
           </div>
         </header>
-        <UsageBoard :rows="spreadRows" :kind="spread === 'status' ? 'provider' : spread" metric="requests" :limit="5" :empty-text="t('nothingInPeriod')" @select="onSpread" />
+        <UsageBoard :rows="spreadRows" :kind="spread" metric="requests" :limit="5" :empty-text="t('nothingInPeriod')" @select="onSpread" />
       </section>
     </div>
 
@@ -1010,13 +1090,15 @@ let savedCustomUntil = 0;
       <header class="oa-viz-head">
         <div><span class="oa-kicker">{{ t('recordsHint') }}</span><h2>{{ t('secRequestsN', { count: recordTotal }) }}</h2></div>
       </header>
+      <AdminFailure v-if="recordError" :message="recordError" @retry="changeRecords(recordPage)" />
       <OaTable
-        :pagination="{ ...recordPage, total: recordTotal }"
+        v-else
+        :pagination="recordPagination"
         :busy="recordsBusy"
         :columns="recordColumns"
         :rows="records"
         :empty="t('noRequestsPeriod')"
-        :muted="(row) => row.status !== 'ok'"
+        :muted="isMutedRecord"
         @page="changeRecords"
       >
         <template #cell-user="{ row }">
@@ -1071,13 +1153,13 @@ let savedCustomUntil = 0;
         v-model="policyForm.windows[kind].requests"
         :label="t('limitRequests')"
         :placeholder="t('noLimit')"
-        :min="0"
+        :min="1"
       />
       <OaNumberField
         v-model="policyForm.windows[kind].tokens"
         :label="t('limitTokens')"
         :placeholder="t('noLimit')"
-        :min="0"
+        :min="1"
       />
       <CreditsField v-model="policyForm.windows[kind].credits" />
     </template>
@@ -1097,11 +1179,7 @@ let savedCustomUntil = 0;
     <OaSelectField
       v-model="resetScope"
       :label="t('resetScope')"
-      :options="[
-        { value: 'all', label: t('resetScopeAll') },
-        { value: 'group', label: t('resetScopeGroup') },
-        { value: 'user', label: t('resetScopeUser') },
-      ]"
+      :options="resetScopeChoices"
     />
     <OaSelectField
       v-if="resetScope === 'group'"

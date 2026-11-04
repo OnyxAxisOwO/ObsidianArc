@@ -1,10 +1,13 @@
 package config
 
 import (
+	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -43,6 +46,9 @@ func TestDefaultsAreTheDocumentedOnes(t *testing.T) {
 	}
 	if len(cfg.TrustedProxies) != 0 {
 		t.Errorf("TrustedProxies = %v, want empty", cfg.TrustedProxies)
+	}
+	if cfg.TrustCloudflare {
+		t.Error("CF-Connecting-IP is believed without the operator's claim")
 	}
 	if !cfg.Session.SecureCookie {
 		t.Error("the session cookie is not marked secure by default")
@@ -139,8 +145,8 @@ func TestSecretKeyIsGeneratedOnceAndThenReused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !first.GeneratedSecret() {
-		t.Error("the first run did not report that it generated a key")
+	if !first.SecretFromDataDir() {
+		t.Error("the first run did not report that its key is in the data directory")
 	}
 	if len(first.SecretKey) < 16 {
 		t.Fatalf("generated a %d-byte key", len(first.SecretKey))
@@ -169,10 +175,309 @@ func TestSecretKeyIsGeneratedOnceAndThenReused(t *testing.T) {
 	}
 }
 
+// A key file that exists without a usable key stops the start, and the file is
+// left exactly as it was. Overwriting it would make every value sealed under
+// the original key unreadable, with nothing at boot to say why.
+func TestAnUnusableSecretFileRefusesToStartAndIsLeftAlone(t *testing.T) {
+	for name, contents := range map[string]string{
+		"empty":               "",
+		"whitespace only":     " \n\t\n",
+		"short":               "too-short\n",
+		"one under the floor": strings.Repeat("k", MinSecretLen-1) + "\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, SecretKeyFile)
+			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv(envPrefix+"DATA_DIR", dir)
+			t.Setenv(envPrefix+"SECRET_KEY", "")
+
+			_, err := Load()
+			if err == nil {
+				t.Fatal("a key file with no usable key let the instance start")
+			}
+			if !strings.Contains(err.Error(), path) {
+				t.Errorf("the error does not name the file: %v", err)
+			}
+			if !strings.Contains(err.Error(), "Restore") || !strings.Contains(err.Error(), "Delete") {
+				t.Errorf("the error does not say what to do: %v", err)
+			}
+
+			left, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(left) != contents {
+				t.Errorf("the key file was rewritten from %q to %q", contents, left)
+			}
+		})
+	}
+}
+
+// The first start on an empty data directory creates the key file, and the key
+// the instance then uses is the one stored in it.
+func TestAMissingSecretFileIsCreatedWithTheKeyInUse(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(envPrefix+"DATA_DIR", dir)
+	t.Setenv(envPrefix+"SECRET_KEY", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := os.ReadFile(filepath.Join(dir, SecretKeyFile))
+	if err != nil {
+		t.Fatalf("no key file was written: %v", err)
+	}
+	if strings.TrimSpace(string(stored)) != string(cfg.SecretKey) {
+		t.Error("the key file does not hold the key the instance uses")
+	}
+}
+
+// A key file that holds a usable key is loaded as it is, and nothing is written
+// back to it. The surrounding whitespace belongs to the editor, not the key.
+func TestAValidSecretFileIsLoadedAndNotRewritten(t *testing.T) {
+	const key = "7f3c9a1e5b2d48608c7e1a4f9b3d2c5e8a6f01"
+	dir := t.TempDir()
+	path := filepath.Join(dir, SecretKeyFile)
+	contents := "  " + key + "\r\n"
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(envPrefix+"DATA_DIR", dir)
+	t.Setenv(envPrefix+"SECRET_KEY", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(cfg.SecretKey) != key {
+		t.Error("the instance did not use the key stored in the file")
+	}
+	// A key read back from the data directory is still reported as coming from
+	// it: main advises OBSIDIAN_SECRET_KEY on every start for that reason.
+	if !cfg.SecretFromDataDir() {
+		t.Error("a key read from the data directory was not reported as coming from it")
+	}
+	left, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(left) != contents {
+		t.Errorf("the key file was rewritten from %q to %q", contents, left)
+	}
+}
+
+// The environment key takes precedence and never reads the file, so a stale or
+// truncated file in the data directory cannot stop a deployment that supplies
+// its key through the environment.
+func TestTheEnvironmentKeyIgnoresAnUnusableSecretFile(t *testing.T) {
+	const key = "7f3c9a1e5b2d48608c7e1a4f9b3d2c5e8a6f01"
+	dir := t.TempDir()
+	path := filepath.Join(dir, SecretKeyFile)
+	if err := os.WriteFile(path, []byte("short\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(envPrefix+"DATA_DIR", dir)
+	t.Setenv(envPrefix+"SECRET_KEY", key)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("a stale key file blocked a start that supplies its key: %v", err)
+	}
+	if string(cfg.SecretKey) != key {
+		t.Error("the environment key was not used")
+	}
+	left, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(left) != "short\n" {
+		t.Errorf("the key file was rewritten to %q", left)
+	}
+}
+
+// Starts that find no key file race to create one. Before the create was
+// exclusive, each could write its own key over the other's, so one instance
+// served a key that was already gone from disk. Every start that succeeds must
+// return the key the file ends up holding, and that is what each trial checks.
+// Real goroutines, released together, because the bug is the window between
+// the read and the write.
+func TestConcurrentFirstStartsAgreeOnOneKey(t *testing.T) {
+	t.Setenv(envPrefix+"SECRET_KEY", "")
+	const trials = 200
+	const starters = 8
+
+	type outcome struct {
+		key []byte
+		err error
+	}
+	for trial := 0; trial < trials; trial++ {
+		dir := t.TempDir()
+		gate := make(chan struct{})
+		results := make(chan outcome, starters)
+		for i := 0; i < starters; i++ {
+			go func() {
+				<-gate
+				key, _, err := loadOrCreateSecret(dir)
+				results <- outcome{key: key, err: err}
+			}()
+		}
+		close(gate)
+
+		// Every result is collected before anything can fail the trial, so no
+		// start is still touching the directory when the test stops.
+		outcomes := make([]outcome, 0, starters)
+		for i := 0; i < starters; i++ {
+			outcomes = append(outcomes, <-results)
+		}
+		var agreed []byte
+		succeeded := 0
+		for _, r := range outcomes {
+			if r.err != nil {
+				// A start that loses the race may be told to start again. It may
+				// not be told the file is unusable: that sends an operator to delete
+				// a key file that another start is using.
+				if errors.Is(r.err, errUnusableSecretFile) {
+					t.Fatalf("trial %d: a start that raced another found the key file unusable: %v", trial, r.err)
+				}
+				continue
+			}
+			succeeded++
+			if agreed == nil {
+				agreed = r.key
+			} else if string(r.key) != string(agreed) {
+				t.Fatalf("trial %d: two first starts used different keys", trial)
+			}
+		}
+		if succeeded == 0 {
+			t.Fatalf("trial %d: no first start got a key", trial)
+		}
+		stored, err := os.ReadFile(filepath.Join(dir, SecretKeyFile))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.TrimSpace(string(stored)) != string(agreed) {
+			t.Fatalf("trial %d: the key file does not hold the key the starts used", trial)
+		}
+	}
+}
+
+// The name a key file is published under must never name a partial key. The
+// key is staged in a temporary file, synced, and then linked into place, so at
+// the moment the name appears the file already holds the whole key, and the
+// staged file is gone afterwards.
+func TestTheKeyFileAppearsOnlyWhenItIsComplete(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, SecretKeyFile)
+
+	// 32 random bytes as 64 hex characters, and the newline the file ends with.
+	const keyFileBytes = 65
+
+	published := false
+	previous := linkSecretFile
+	linkSecretFile = func(oldname, newname string) error {
+		published = true
+		if _, err := os.Stat(newname); !os.IsNotExist(err) {
+			t.Errorf("the key file name existed before the key was published: %v", err)
+		}
+		staged, err := os.ReadFile(oldname)
+		if err != nil {
+			t.Errorf("read the staged key: %v", err)
+		} else if len(staged) != keyFileBytes || staged[len(staged)-1] != '\n' {
+			t.Errorf("the staged key is %d bytes, want the whole key and its newline", len(staged))
+		}
+		return previous(oldname, newname)
+	}
+	t.Cleanup(func() { linkSecretFile = previous })
+
+	key, generated, err := createSecretFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !published {
+		t.Fatal("the key was not published by linking a staged file")
+	}
+	if !generated {
+		t.Error("a key created here was not reported as generated")
+	}
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(stored) != string(key)+"\n" {
+		t.Errorf("the key file holds %q, want the key the start uses", stored)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != SecretKeyFile {
+		t.Errorf("publishing left %d entries in the data directory, want only the key file", len(entries))
+	}
+}
+
+// Some filesystems cannot make hard links, FAT and exFAT among them. A first
+// start there must still get a key: publication falls back to creating the file
+// in place, as it did before.
+func TestAFirstStartSucceedsWhereHardLinksAreRefused(t *testing.T) {
+	previous := linkSecretFile
+	linkSecretFile = func(oldname, newname string) error {
+		return &os.LinkError{Op: "link", Old: oldname, New: newname, Err: syscall.EPERM}
+	}
+	t.Cleanup(func() { linkSecretFile = previous })
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, SecretKeyFile)
+	key, _, err := createSecretFile(path)
+	if err != nil {
+		t.Fatalf("a filesystem without hard links refused the first start: %v", err)
+	}
+	stored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(stored) != string(key)+"\n" {
+		t.Errorf("the key file holds %q, want the key the start uses", stored)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("the fallback left %d entries in the data directory, want only the key file", len(entries))
+	}
+}
+
+// A start whose publish finds the name taken lost the race. It is told to start
+// again, and the key the winner published is left as it was.
+func TestAStartThatLosesThePublishLeavesTheWinnersKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, SecretKeyFile)
+	const winner = "7f3c9a1e5b2d48608c7e1a4f9b3d2c5e8a6f01\n"
+	if err := os.WriteFile(path, []byte(winner), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := createSecretFile(path)
+	if err == nil || !strings.Contains(err.Error(), "start again") {
+		t.Fatalf("a start that lost the race returned %v, want the start-again refusal", err)
+	}
+	left, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(left) != winner {
+		t.Errorf("the winner's key was rewritten to %q", left)
+	}
+}
+
 func TestASuppliedSecretIsUsedAndBoundedBelow(t *testing.T) {
 	cfg := load(t, map[string]string{"SECRET_KEY": strings.Repeat("k", 32)})
-	if cfg.GeneratedSecret() {
-		t.Error("a supplied key was reported as generated")
+	if cfg.SecretFromDataDir() {
+		t.Error("a supplied key was reported as coming from the data directory")
 	}
 	if string(cfg.SecretKey) != strings.Repeat("k", 32) {
 		t.Error("the supplied key was not the one used")
@@ -182,6 +487,72 @@ func TestASuppliedSecretIsUsedAndBoundedBelow(t *testing.T) {
 	t.Setenv(envPrefix+"SECRET_KEY", "too-short")
 	if _, err := Load(); err == nil {
 		t.Fatal("a nine-character secret key was accepted")
+	}
+}
+
+// A short or guessable key still boots — refusing would take down deployments
+// that already run on one — but the operator is told, once, at startup.
+func TestAWeakSuppliedSecretStillStartsButIsWarnedAbout(t *testing.T) {
+	var logged strings.Builder
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	weak := map[string]string{
+		"sixteen chars!!!":                       "only 16 characters",
+		strings.Repeat("a", 40):                  "one kind of character",
+		"0123456789012345678901234567890123456":  "one kind of character",
+		strings.Repeat("ab12", 10):               "distinct characters",
+		"passwordpasswordpasswordpasswordpass":   "one kind of character",
+		strings.Repeat("Ab", 20) + "0123456789":  "",
+		"7f3c9a1e5b2d48608c7e1a4f9b3d2c5e8a6f01": "",
+	}
+	for key, want := range weak {
+		logged.Reset()
+		cfg := load(t, map[string]string{"SECRET_KEY": key})
+		if string(cfg.SecretKey) != key {
+			t.Fatalf("%q: the supplied key was not used", key)
+		}
+		if want == "" {
+			if strings.Contains(logged.String(), "weak") {
+				t.Errorf("%q: a fine key was warned about: %s", key, logged.String())
+			}
+			continue
+		}
+		if !strings.Contains(logged.String(), "weak") || !strings.Contains(logged.String(), "OBSIDIAN_SECRET_KEY") ||
+			!strings.Contains(logged.String(), want) {
+			t.Errorf("%q: no warning naming the setting and %q:\n%s", key, want, logged.String())
+		}
+		if strings.Contains(logged.String(), key) {
+			t.Errorf("%q: the warning printed the key itself", key)
+		}
+	}
+}
+
+func TestAGeneratedSecretIsNotWarnedAbout(t *testing.T) {
+	var logged strings.Builder
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	load(t, nil)
+	if strings.Contains(logged.String(), "weak") {
+		t.Errorf("a key this process generated was called weak:\n%s", logged.String())
+	}
+}
+
+func TestAnUnparseableSMTPPortIsReportedOnce(t *testing.T) {
+	var logged strings.Builder
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	cfg := load(t, map[string]string{"SMTP_PORT": "twenty-five"})
+	if cfg.Mail.Port != 587 || cfg.Mail.ImplicitTLS {
+		t.Errorf("port %d, implicit TLS %v; want the defaults", cfg.Mail.Port, cfg.Mail.ImplicitTLS)
+	}
+	if n := strings.Count(logged.String(), envPrefix+"SMTP_PORT"); n != 1 {
+		t.Errorf("the bad port was reported %d times, want once:\n%s", n, logged.String())
 	}
 }
 
@@ -196,15 +567,22 @@ func TestImplicitTLSFollowsThePort(t *testing.T) {
 	}
 }
 
+func TestTrustCloudflareParsesOn(t *testing.T) {
+	if !load(t, map[string]string{"TRUST_CLOUDFLARE": "true"}).TrustCloudflare {
+		t.Error("TRUST_CLOUDFLARE=true was not read as the claim")
+	}
+}
+
 // A value that will not parse falls back to the default rather than refusing
 // to boot. That is a deliberate choice — a typo in a tuning knob should not
-// take the server down — and it means a typo is silent, so it is worth
-// stating rather than discovering.
+// take the server down — and the fallback is logged, so a typo is stated rather
+// than discovered later.
 func TestUnparseableValuesFallBackToTheDefault(t *testing.T) {
 	cfg := load(t, map[string]string{
 		"SESSION_TTL":      "not-a-duration",
 		"DB_MAX_CONNS":     "several",
 		"TRUST_PROXY":      "maybe",
+		"TRUST_CLOUDFLARE": "maybe",
 		"SMTP_PORT":        "",
 		"ARGON_MEMORY_KIB": "lots",
 	})
@@ -216,6 +594,9 @@ func TestUnparseableValuesFallBackToTheDefault(t *testing.T) {
 	}
 	if cfg.TrustProxy {
 		t.Error("an unparseable TRUST_PROXY was read as true")
+	}
+	if cfg.TrustCloudflare {
+		t.Error("an unparseable TRUST_CLOUDFLARE was read as true")
 	}
 	if cfg.Mail.Port != 587 {
 		t.Errorf("Port = %d, want 587", cfg.Mail.Port)
@@ -233,6 +614,75 @@ func TestPoolAndHasherAreKeptSelfConsistent(t *testing.T) {
 
 	if got := load(t, map[string]string{"ARGON_MAX_PARALLEL": "0"}).Password.MaxParallel; got < 1 {
 		t.Errorf("MaxParallel = %d; zero would let no password ever be hashed", got)
+	}
+}
+
+// The fallback is the documented behaviour, and the value is pinned above. What
+// this adds is the log line: without it OBSIDIAN_TRUST_PROXY=yes leaves every
+// client behind a proxy keyed to the proxy's address, and nothing says why.
+func TestAnUnparseableSettingIsLoggedWithItsName(t *testing.T) {
+	var logged strings.Builder
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	if load(t, map[string]string{"TRUST_PROXY": "yes"}).TrustProxy {
+		t.Fatal("TRUST_PROXY=yes was read as true")
+	}
+	if !strings.Contains(logged.String(), "OBSIDIAN_TRUST_PROXY") || !strings.Contains(logged.String(), "yes") {
+		t.Errorf("no log line names the setting and its value:\n%s", logged.String())
+	}
+}
+
+// A pool of zero is unlimited to database/sql, and a touch interval of zero
+// writes last_seen_at on every request. Both used to pass through unchanged.
+func TestAPoolOrTouchIntervalThatCannotBeUsedFallsBack(t *testing.T) {
+	var logged strings.Builder
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	for _, value := range []string{"0", "-3"} {
+		cfg := load(t, map[string]string{"DB_MAX_CONNS": value})
+		if cfg.Database.MaxOpenConns != 4 {
+			t.Errorf("DB_MAX_CONNS=%s gave MaxOpenConns %d, want the sqlite default 4",
+				value, cfg.Database.MaxOpenConns)
+		}
+		if cfg.Database.MaxIdleConns != 4 {
+			t.Errorf("DB_MAX_CONNS=%s gave MaxIdleConns %d, want 4", value, cfg.Database.MaxIdleConns)
+		}
+	}
+	if got := load(t, map[string]string{"SESSION_TOUCH_INTERVAL": "0s"}).Session.TouchInterval; got != time.Hour {
+		t.Errorf("TouchInterval = %s, want the default 1h", got)
+	}
+	for _, name := range []string{"OBSIDIAN_DB_MAX_CONNS", "OBSIDIAN_SESSION_TOUCH_INTERVAL"} {
+		if !strings.Contains(logged.String(), name) {
+			t.Errorf("no warning names %s:\n%s", name, logged.String())
+		}
+	}
+}
+
+// A zero or negative parallel-hash bound falls back to the same default an unset
+// one gets, and is reported like the other fallbacks. Quietly taking one hash at
+// a time would serialise every login on a host meant to run several.
+func TestAnUnusableMaxParallelFallsBackToTheDefaultAndSaysSo(t *testing.T) {
+	var logged strings.Builder
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	want := min(4, runtime.NumCPU())
+	if got := load(t, nil).Password.MaxParallel; got != want {
+		t.Fatalf("unset MaxParallel = %d, want the default %d", got, want)
+	}
+	for _, value := range []string{"0", "-1"} {
+		logged.Reset()
+		if got := load(t, map[string]string{"ARGON_MAX_PARALLEL": value}).Password.MaxParallel; got != want {
+			t.Errorf("ARGON_MAX_PARALLEL=%s gave %d, want the default %d", value, got, want)
+		}
+		if !strings.Contains(logged.String(), "OBSIDIAN_ARGON_MAX_PARALLEL") {
+			t.Errorf("ARGON_MAX_PARALLEL=%s is not reported:\n%s", value, logged.String())
+		}
 	}
 }
 

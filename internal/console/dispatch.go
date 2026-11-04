@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 
@@ -21,9 +22,8 @@ type Dispatcher func(ctx context.Context, actor user.User, method, path string, 
 
 // recorder is an in-process http.ResponseWriter with no socket behind it —
 // header map, status, buffer. httpx has no exported recorder (its own is
-// the access log's private type), and the contract is explicit that
-// dispatch.go must not reach for net/http/httptest from non-test code, so
-// this is the one place that type has to exist.
+// the access log's private type), and this package keeps net/http/httptest
+// out of non-test code, so this is the one place that type has to exist.
 type recorder struct {
 	header http.Header
 	status int
@@ -75,10 +75,7 @@ func NewDispatcher(mux http.Handler) Dispatcher {
 			req.Header.Set("Content-Type", "application/json")
 		}
 		req.Header.Set("Accept", "application/json")
-		// There is no real peer to read one from; a handler that wants the
-		// caller's address reads it from Session.IP through the command,
-		// not from the request.
-		req.RemoteAddr = "127.0.0.1:0"
+		req.RemoteAddr = callerAddr(ctx)
 
 		rec := newRecorder()
 		// Recovered here because nothing further up will: the SSH console
@@ -89,13 +86,40 @@ func NewDispatcher(mux http.Handler) Dispatcher {
 	}
 }
 
+// callerKey is where a command's caller address travels, from runTokens to the
+// dispatcher. It rides the context rather than the Dispatcher's arguments
+// because every Dispatcher a test supplies is written against the current
+// shape, and the address is a value only the dispatcher reads.
+type callerKey struct{}
+
+func withCaller(ctx context.Context, ip string) context.Context {
+	return context.WithValue(ctx, callerKey{}, ip)
+}
+
+// callerAddr is the peer an in-process request reports. Nothing is on the far
+// end of it, so the person typing the command stands in for the socket: a
+// handler that keys a limit on its peer then keys it on that person, not on a
+// loopback bucket that every console user shares.
+//
+// Trust is not a concern. The request is built fresh and carries no forwarding
+// headers, so httpx.ClientIP answers with this peer whether or not its address
+// is one a proxy is trusted from. The loopback stand-in is kept for a caller
+// that has no address to give.
+func callerAddr(ctx context.Context) string {
+	ip, _ := ctx.Value(callerKey{}).(string)
+	if net.ParseIP(ip) == nil {
+		return "127.0.0.1:0"
+	}
+	return net.JoinHostPort(ip, "0")
+}
+
 // SSEFrame is one frame of a text/event-stream response. ParseSSE exists
 // for the one admin route that is not JSON, POST /api/admin/health/probe:
 // the recorder above has no socket to stream over, so it simply
 // accumulates every frame httpx.SSE writes, in order, into Response.Body —
 // this turns that accumulation back into the frames a real client would
-// have seen one at a time, so a `health probe` command (added once
-// cmd_ops.go exists) does not need to know the wire format itself.
+// have seen one at a time, so the `health probe` command in cmd_ops.go does
+// not need to know the wire format itself.
 type SSEFrame struct {
 	Event string
 	Data  []byte

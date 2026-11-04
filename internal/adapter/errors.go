@@ -39,9 +39,8 @@ type Error struct {
 	Kind ErrorKind
 	// The upstream HTTP status, when there was one.
 	Status int
-	// Safe to show a user: it is either our own sentence or the provider's
-	// own error message, which is written for a developer rather than
-	// containing our credentials.
+	// Diagnostic text for operators. Upstream messages can echo credentials
+	// in forms exact redaction cannot recognise; responses use PublicMessage.
 	Message string
 	// From a 429's Retry-After, when the provider sent one.
 	RetryAfter time.Duration
@@ -57,11 +56,56 @@ func (e *Error) Error() string {
 
 func (e *Error) Unwrap() error { return e.cause }
 
+// PublicMessage never trusts provider diagnostics with a credential boundary.
+// Encoding or splitting an echoed key defeats literal replacement, so only
+// locally authored sentences may leave through a response or transcript.
+func (e *Error) PublicMessage() string {
+	switch e.Kind {
+	case ErrorAuth:
+		return "This model is not configured correctly. Ask an administrator to check its provider."
+	case ErrorRateLimit:
+		return "The provider is rate limiting this server. Try again shortly."
+	case ErrorImagesUnsupported:
+		return "This model does not accept images."
+	case ErrorRefusal:
+		return "The model declined to answer this request."
+	case ErrorNetwork:
+		return "Could not reach the provider."
+	case ErrorCancelled:
+		return "The request was cancelled."
+	case ErrorUpstream:
+		return "The provider could not complete this request. Try again shortly."
+	default:
+		return "The provider would not accept this request."
+	}
+}
+
 // Retryable reports whether trying the same request again could plausibly
 // work. Nothing retries automatically today — a chat turn is expensive and
 // the user is watching — but the classification belongs with the error.
 func (e *Error) Retryable() bool {
 	return e.Kind == ErrorRateLimit || e.Kind == ErrorUpstream || e.Kind == ErrorNetwork
+}
+
+// rejectsImage reports whether a failure on a request that carried a picture
+// is about the picture. A 400 or 422 is also how a provider refuses a context
+// length or a bad parameter, and reading those as an image rejection tells
+// the user the model cannot see what was attached. A 415 names the media
+// itself, so it needs no wording to be trusted.
+func rejectsImage(status int, message string) bool {
+	if status == 415 {
+		return true
+	}
+	if status != 400 && status != 422 {
+		return false
+	}
+	lower := strings.ToLower(message)
+	for _, term := range []string{"image", "media type", "content type", "content part", "multimodal"} {
+		if strings.Contains(lower, term) {
+			return true
+		}
+	}
+	return false
 }
 
 // classifyHTTP turns a response status and a decoded error body into one of
@@ -77,7 +121,7 @@ func (e *Error) Retryable() bool {
 //   - A text-only model behind an OpenAI-compatible base URL rejects an image
 //     by naming the wire format. The cause is that the model cannot see.
 func classifyHTTP(p Provider, endpoint string, status int, retryAfter string, payload []byte, carriedImages bool) *Error {
-	message := extractErrorMessage(payload)
+	message := extractErrorMessage(payload, p.APIKey)
 
 	switch {
 	case status == 401 || status == 403:
@@ -85,9 +129,10 @@ func classifyHTTP(p Provider, endpoint string, status int, retryAfter string, pa
 			message = fmt.Sprintf("The provider rejected our credentials (HTTP %d).", status)
 		}
 		return &Error{
-			Kind:    ErrorAuth,
-			Status:  status,
-			Message: fmt.Sprintf("%s (sent as %s to %s)", message, p.Kind, redactURL(endpoint)),
+			Kind:   ErrorAuth,
+			Status: status,
+			Message: fmt.Sprintf("%s (sent as %s to %s)", message, p.Kind,
+				redactSecret(redactURL(endpoint), p.APIKey)),
 		}
 
 	case status == 429:
@@ -101,7 +146,7 @@ func classifyHTTP(p Provider, endpoint string, status int, retryAfter string, pa
 			RetryAfter: parseRetryAfter(retryAfter),
 		}
 
-	case carriedImages && (status == 400 || status == 415 || status == 422):
+	case carriedImages && rejectsImage(status, message):
 		return &Error{
 			Kind:    ErrorImagesUnsupported,
 			Status:  status,
@@ -131,6 +176,15 @@ func networkError(ctx context.Context, err error) *Error {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return &Error{Kind: ErrorNetwork, Message: "The provider did not respond in time.", cause: err}
 	}
+	// Said as a refusal, not as an unreachable provider: the base URL names an
+	// address this server will not connect to, and trying again changes nothing.
+	if errors.Is(err, errDestinationRefused) {
+		return &Error{
+			Kind:    ErrorNetwork,
+			Message: "The provider's address is refused. This server does not connect to link-local, multicast, unspecified or cloud metadata addresses.",
+			cause:   err,
+		}
+	}
 	return &Error{
 		Kind:    ErrorNetwork,
 		Message: "Could not reach the provider.",
@@ -151,6 +205,20 @@ func redactURL(raw string) string {
 		parsed.RawQuery = "…"
 	}
 	return parsed.String()
+}
+
+// redactSecret replaces every occurrence of the provider's key with ***.
+//
+// A provider that echoes the credential it was sent, in an error body or an
+// error event, would otherwise hand the key to everything the message reaches:
+// the chat bubble, the saved transcript, the API caller and the log. An empty
+// key is left alone, because replacing "" would put *** between every
+// character of the message.
+func redactSecret(message, secret string) string {
+	if secret == "" {
+		return message
+	}
+	return strings.ReplaceAll(message, secret, "***")
 }
 
 func parseRetryAfter(value string) time.Duration {

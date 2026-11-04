@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 )
 
 func TestAdminUsageRPMAndCustomTime(t *testing.T) {
@@ -82,5 +84,39 @@ func TestAdminUsageRPMAndCustomTime(t *testing.T) {
 	}](t, longRes)
 	if longPayload.BucketMS != 86400000 {
 		t.Errorf("expected bucket_ms = 86400000 for 5d span, got %d", longPayload.BucketMS)
+	}
+}
+
+// A limit written on a group that does not exist can never be enforced, and
+// the groups page would show it with nothing to belong to. A negative figure
+// is refused for the reason enforcement treats it as no limit at all.
+func TestAdminUsagePolicyRefusesUnknownGroupAndNegativeFigures(t *testing.T) {
+	in := newInstance(t)
+	admin := in.register("policy_admin", "password123")
+
+	missing := in.do(http.MethodPut, "/api/admin/quota/policies", map[string]any{
+		"scope": "group", "scope_id": id.New(), "rpm": 10,
+	}, admin)
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("policy for a group that does not exist: %d %s", missing.Code, missing.Body.String())
+	}
+
+	negative := in.do(http.MethodPut, "/api/admin/quota/policies", map[string]any{
+		"scope": "global", "rpm": -5,
+	}, admin)
+	if negative.Code != http.StatusBadRequest {
+		t.Fatalf("negative rpm: %d %s", negative.Code, negative.Body.String())
+	}
+
+	listed := decode[struct {
+		Policies []struct {
+			Scope   string `json:"scope"`
+			ScopeID string `json:"scope_id"`
+		} `json:"policies"`
+	}](t, in.do(http.MethodGet, "/api/admin/quota/policies", nil, admin))
+	for _, policy := range listed.Policies {
+		if policy.Scope == "group" {
+			t.Fatalf("a refused group policy was stored: %+v", policy)
+		}
 	}
 }

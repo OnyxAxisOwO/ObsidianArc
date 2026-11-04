@@ -1,4 +1,4 @@
-// The terminal's HTTP client: CONTRACT.md #4.
+// The terminal's HTTP client.
 //
 // Three endpoints, one of which streams. `exec` is deliberately the same
 // shape as `sendTurn` in `api/chat.ts` — fetch + ReadableStream, not
@@ -6,23 +6,24 @@
 // aborting a fetch is the only cancellation mechanism: there is no stop
 // endpoint, so `Ctrl-C` in the pane is one `AbortController.abort()`.
 
-import { ApiError, api } from '@/api/client';
+import { ApiError, api, fetchApi } from '@/api/client';
+import { readSSE, streamRefusal, type SSEEvent } from '@/api/sse';
 import { currentLanguage, t } from '@/composables/useI18n';
 
-export interface ConsoleYou {
+interface ConsoleYou {
   username: string;
   role: 'super_admin' | 'admin' | 'user';
   permissions: string[];
 }
 
-export interface ConsoleSSHInfo {
+interface ConsoleSSHInfo {
   enabled: boolean;
   addr: string;
   fingerprint: string;
 }
 
 /** One flag a command accepts, as the spec describes it for `help` and completion. */
-export interface ConsoleCommandFlag {
+interface ConsoleCommandFlag {
   name: string;
   hint: string;
   /** Absent for a boolean flag like `--yes`; present names the value's placeholder, e.g. "TEXT". */
@@ -30,14 +31,14 @@ export interface ConsoleCommandFlag {
 }
 
 /** One positional argument a command accepts. */
-export interface ConsoleCommandArg {
+interface ConsoleCommandArg {
   name: string;
   hint: string;
   required: boolean;
 }
 
 /** One command, as the spec describes it — everything the client needs to render `help` and complete locally without a round trip per keystroke. */
-export interface ConsoleCommandSpec {
+interface ConsoleCommandSpec {
   name: string;
   group: string;
   summary: string;
@@ -78,20 +79,33 @@ export interface ConsoleCompletion {
   items: ConsoleCompletionItem[];
 }
 
-export function completeConsoleLine(line: string, pos: number, signal?: AbortSignal): Promise<ConsoleCompletion> {
+// The hints should match the language the tab's output comes back in, so a tab
+// that ran `lang` passes its language; otherwise the UI language applies.
+export function completeConsoleLine(
+  line: string,
+  pos: number,
+  lang?: string,
+  signal?: AbortSignal,
+): Promise<ConsoleCompletion> {
   return api.post<ConsoleCompletion>(
     '/api/console/complete',
-    { line, pos, lang: currentLanguage() },
+    { line, pos, lang: lang ?? currentLanguage() },
     signal ? { signal } : {},
   );
 }
 
-/** `POST /api/console/exec` request body. `lang` is not a caller-supplied field — `execConsoleLine` fills it from `currentLanguage()`, the same way every other admin request does. */
+/** `POST /api/console/exec` request body. `lang` defaults to `currentLanguage()` in `execConsoleLine`, the same as every other admin request; a tab that has run `lang` passes the value back so it sticks. */
 export interface ConsoleExecRequest {
   line: string;
   /** Terminal columns, for the server's own table layout (`render.Table`). */
   cols: number;
   json: boolean;
+  /**
+   * The language the last `lang` command left this tab on, carried back from
+   * the done frame. Absent until a command sets one; then the UI language is
+   * the default.
+   */
+  lang?: string;
 }
 
 /** `event: done` payload — the command's own verdict, not a transport-level failure. */
@@ -114,7 +128,7 @@ export interface ConsoleExecDone {
 }
 
 /** `event: error` payload — an engine failure (bad permission, a line that could not be parsed), never a command's own error output. A command's own failure is text inside `onOut`, rendered by `render.go` as `error: <message>`. */
-export interface ConsoleExecError {
+interface ConsoleExecError {
   code: string;
   message: string;
 }
@@ -137,59 +151,23 @@ export async function execConsoleLine(
   handlers: ConsoleExecHandlers,
   signal: AbortSignal,
 ): Promise<void> {
-  const response = await fetch('/api/console/exec', {
+  const response = await fetchApi('/api/console/exec', {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-    body: JSON.stringify({ ...request, lang: currentLanguage() }),
+    body: JSON.stringify({ ...request, lang: request.lang ?? currentLanguage() }),
     signal,
   });
 
-  if (!response.ok) {
-    // Everything checkable before the stream opens — permission, a malformed
-    // line — is checked before it opens, so a refusal here is still an
-    // ordinary JSON error with a real status, same as `sendTurn`.
-    const text = await response.text();
-    let code = 'error';
-    let message = `Request failed with HTTP ${response.status}.`;
-    let details: Record<string, unknown> = {};
-    try {
-      const body = JSON.parse(text) as { error?: { code?: string; message?: string } & Record<string, unknown> };
-      if (body.error) {
-        const { code: bodyCode, message: bodyMessage, ...rest } = body.error;
-        code = bodyCode ?? code;
-        message = bodyMessage ?? message;
-        details = rest;
-      }
-    } catch {
-      // A non-JSON body (a proxy's error page) leaves the defaults.
-    }
-    throw new ApiError(response.status, code, message, details);
-  }
-
+  // Everything checkable before the stream opens — permission, a malformed
+  // line — is checked before it opens, same as `sendTurn`. The terminal is a
+  // stream too, so a console left open when the session ends signs out with
+  // every other page rather than sitting on a dead prompt.
+  if (!response.ok) throw await streamRefusal(response);
   if (!response.body) throw new ApiError(0, 'stream', t('streamMissing'));
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-
   try {
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-
-      // `\r\n\r\n` as well as `\n\n` — see api/chat.ts for why: a proxy that
-      // rewrites line endings must not turn this into one event that never
-      // closes.
-      let boundary = /\r?\n\r?\n/.exec(buffer);
-      while (boundary) {
-        const frame = buffer.slice(0, boundary.index);
-        buffer = buffer.slice(boundary.index + boundary[0].length);
-        boundary = /\r?\n\r?\n/.exec(buffer);
-        dispatch(frame, handlers);
-      }
-    }
+    await readSSE(response.body, (event) => dispatch(event, handlers));
   } catch (error) {
     // Stop is one `AbortController.abort()` and nothing else — there is no
     // stop endpoint. The aborted read is the expected shape of cancelling,
@@ -199,16 +177,7 @@ export async function execConsoleLine(
   }
 }
 
-function dispatch(frame: string, handlers: ConsoleExecHandlers): void {
-  let event = '';
-  let data = '';
-
-  for (const line of frame.split(/\r?\n/)) {
-    if (line.startsWith('event:')) event = line.slice(6).trim();
-    else if (line.startsWith('data:')) data += line.slice(5).trim();
-  }
-  if (!data) return;
-
+function dispatch({ event, data }: SSEEvent, handlers: ConsoleExecHandlers): void {
   let payload: unknown;
   try {
     payload = JSON.parse(data);
@@ -217,15 +186,28 @@ function dispatch(frame: string, handlers: ConsoleExecHandlers): void {
     return;
   }
 
-  switch (event) {
-    case 'out':
-      handlers.onOut?.((payload as { text: string }).text);
+  // The one place the frame's shape is asserted; the server writes each
+  // payload from a struct. Not narrowed to an object first, unlike the chat's.
+  const frame = { event, payload } as ConsoleFrame;
+  switch (frame.event) {
+    // Destructuring still throws for a null frame, as reading .text always did:
+    // the terminal's stream test relies on a failing handler closing the stream.
+    case 'out': {
+      const { text } = frame.payload;
+      if (typeof text === 'string') handlers.onOut?.(text);
       break;
+    }
     case 'done':
-      handlers.onDone?.(payload as ConsoleExecDone);
+      handlers.onDone?.(frame.payload);
       break;
     case 'error':
-      handlers.onError?.(payload as ConsoleExecError);
+      handlers.onError?.(frame.payload);
       break;
   }
 }
+
+// Each event the console stream sends, with the payload that event carries.
+type ConsoleFrame =
+  | { event: 'out'; payload: { text?: unknown } }
+  | { event: 'done'; payload: ConsoleExecDone }
+  | { event: 'error'; payload: ConsoleExecError };

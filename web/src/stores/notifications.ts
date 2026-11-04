@@ -11,10 +11,25 @@
 
 import { ref, watch, type Ref } from 'vue';
 import { useDocumentVisibility, useIntervalFn, useWindowFocus } from '@vueuse/core';
-import { fetchNotifications, markNotificationsRead, pollNotifications, type Notification } from '@/api/notifications';
-import { router } from '@/router';
+import {
+  fetchNotifications, markNotificationsRead, pollNotifications,
+  type Notification, type NotificationPoll,
+} from '@/api/notifications';
+import { refreshFeedbackUnread } from '@/stores/feedback';
+import { onSignOut } from '@/stores/session';
 
 const POLL_MS = 30_000;
+// Mirrors internal/notify's pollGraceMillis and pollLimit. The grace window
+// is reached back from `after`, so asking again from a page's last row sends
+// that row plus the grace.
+const POLL_GRACE_MS = 10_000;
+const POLL_PAGE = 200;
+// A request that is accepted and never answered (a half-open connection after
+// a laptop wakes) would hold the in-flight gate below, and with it every later
+// poll, until the tab is reloaded. Far longer than this endpoint takes to
+// answer, and shorter than the polling interval, so a stalled ask is given up
+// before the next tick wants the gate.
+const REQUEST_DEADLINE_MS = 20_000;
 
 export interface Toast {
   /** The notification's own id doubles as the toast's — one arrival, one card. */
@@ -34,6 +49,9 @@ export const activeToasts: Ref<Toast[]> = toasts;
 // notification backlog; a burst still reaches the bell list in full, just not
 // the corner of the screen.
 const TOAST_CAP = 3;
+// The bell's own list, which a poll grows from the top. A page of history is
+// what the bell shows; older rows are still on the server.
+const BELL_LIST_CAP = 50;
 
 // The highest created_at this session has already asked about. Zero at boot,
 // which is why the very first fetch is a plain list rather than a poll: a
@@ -58,11 +76,30 @@ let inFlight = false;
 // is where the duplicate stops.
 const seenIds = new Set<string>();
 
-async function load(): Promise<void> {
+/**
+ * Runs one load or poll under the in-flight gate. The generation is taken
+ * before the request goes out, so a response that lands after a sign-out is
+ * dropped, and only the request that set the gate may lift it.
+ */
+async function exclusive(run: (gen: number, signal: AbortSignal) => Promise<void>): Promise<void> {
   const gen = generation;
   inFlight = true;
+  const controller = new AbortController();
+  const deadline = setTimeout(() => controller.abort(), REQUEST_DEADLINE_MS);
   try {
-    const feed = await fetchNotifications();
+    await run(gen, controller.signal);
+  } catch {
+    // A feed nobody could reach is not worth an error state; the next tick
+    // tries again, and whatever this session last knew stays on screen.
+  } finally {
+    clearTimeout(deadline);
+    if (gen === generation) inFlight = false;
+  }
+}
+
+function load(): Promise<void> {
+  return exclusive(async (gen, signal) => {
+    const feed = await fetchNotifications(undefined, signal);
     if (gen !== generation) return; // stale: signed out (or in) since the request went out
     notifications.value = feed.notifications;
     unread.value = feed.unread;
@@ -76,12 +113,28 @@ async function load(): Promise<void> {
     // backlog for its new scope raised as toasts on the next poll.
     cursor = Math.max(newest, feed.now);
     loaded = true;
-  } catch {
-    // A feed nobody could reach is not worth an error state; the next tick
-    // tries again, and whatever this session last knew stays on screen.
-  } finally {
-    if (gen === generation) inFlight = false;
+  });
+}
+
+/**
+ * Every row newer than `after`, across as many pages as it takes. A full page
+ * can be made of rows this session already has, because the grace window
+ * reaches back over them. Asking again from the same cursor would then return
+ * the same page for ever, and nothing newer would ever reach the reader, so
+ * the next page starts at the last row of the one before.
+ */
+async function pollAfter(after: number, signal: AbortSignal): Promise<NotificationPoll> {
+  let feed = await pollNotifications(after, signal);
+  const rows = [...feed.notifications];
+  while (feed.notifications.length >= POLL_PAGE) {
+    // Read and checked per page: an index read is possibly undefined, and the
+    // check has to sit beside the read it guards.
+    const tail = feed.notifications[feed.notifications.length - 1];
+    if (!tail) break;
+    feed = await pollNotifications(tail.created_at + POLL_GRACE_MS, signal);
+    rows.push(...feed.notifications);
   }
+  return { ...feed, notifications: rows };
 }
 
 async function poll(): Promise<void> {
@@ -90,10 +143,8 @@ async function poll(): Promise<void> {
     await load();
     return;
   }
-  const gen = generation;
-  inFlight = true;
-  try {
-    const feed = await pollNotifications(cursor);
+  await exclusive(async (gen, signal) => {
+    const feed = await pollAfter(cursor, signal);
     if (gen !== generation) return;
     unread.value = feed.unread;
     if (!feed.notifications.length) return;
@@ -106,6 +157,9 @@ async function poll(): Promise<void> {
       cursor = Math.max(cursor, record.created_at);
     }
     if (!fresh.length) return;
+    // The account menu's dot is the same answer as this row, and nothing else
+    // asks for it between page loads.
+    if (fresh.some((record) => record.kind === 'feedback_reply')) void refreshFeedbackUnread();
     // Ascending from the server, oldest first, so the toasts raised below
     // appear in the order the events actually happened, and so the cap below
     // keeps the newest of the batch rather than the earliest.
@@ -115,16 +169,12 @@ async function poll(): Promise<void> {
     // saw.
     toasts.value = [...toasts.value, ...batch].slice(-TOAST_CAP);
     const newestFirst = [...fresh].reverse();
-    notifications.value = [...newestFirst, ...notifications.value].slice(0, 50);
-  } catch {
-    // Transient network hiccup; the next tick tries again.
-  } finally {
-    if (gen === generation) inFlight = false;
-  }
+    notifications.value = [...newestFirst, ...notifications.value].slice(0, BELL_LIST_CAP);
+  });
 }
 
-// A tab nobody can see does not poll. Every open tab used to ask every thirty
-// seconds, hidden or not, and each ask is a session lookup and three queries
+// A tab nobody can see does not poll. Polling every open tab on the same
+// schedule, hidden or not, would make each ask a session lookup and three queries
 // on the server — a reader with a dozen tabs open paid for all of them. The
 // visible tab still polls, and a hidden one catches up the moment it is shown.
 const visibility = useDocumentVisibility();
@@ -147,6 +197,10 @@ export function startNotifications(): void {
   if (active) return;
   active = true;
   generation += 1;
+  // Whatever is still listed belongs to an earlier account: a stop that never
+  // ran (the shell tore down out of order) must not leave its inbox showing.
+  notifications.value = [];
+  unread.value = 0;
   seenIds.clear();
   toasts.value = [];
   cursor = 0;
@@ -155,8 +209,10 @@ export function startNotifications(): void {
   interval.resume();
 }
 
-/** Called on sign-out: the next account's inbox is not this one's. */
-export function stopNotifications(): void {
+// Clears one account's inbox. It runs on sign-out through onSignOut, so the
+// data is gone whether or not the toast stack has unmounted yet; the stop
+// below is kept for the unmount itself, which pauses the poll.
+function forgetAccount(): void {
   active = false;
   generation += 1; // orphans any request already in flight
   inFlight = false;
@@ -167,6 +223,13 @@ export function stopNotifications(): void {
   seenIds.clear();
   cursor = 0;
   loaded = false;
+}
+
+onSignOut(forgetAccount);
+
+/** Called on sign-out: the next account's inbox is not this one's. */
+export function stopNotifications(): void {
+  forgetAccount();
 }
 
 export function dismissToast(id: string): void {
@@ -206,13 +269,27 @@ export async function markAllNotificationsRead(): Promise<void> {
  * opening the newest of several unread emails in a single-threaded inbox
  * would.
  */
-export async function openNotification(n: Notification): Promise<void> {
+// The caller passes the navigation: the store does not import the router, which
+// imports the shell that draws these notifications, so the import would cycle.
+export async function openNotification(n: Notification, go: (link: string) => unknown): Promise<void> {
   dismissToast(n.id);
-  if (n.link) void router.push(n.link);
-  unread.value = Math.max(0, unread.value - 1);
+  if (n.link) void go(n.link);
+  const gen = generation;
   try {
     await markNotificationsRead(n.created_at);
   } catch {
     // Best effort; the next poll's unread count corrects it either way.
+    return;
+  }
+  // Not taken down locally: the client cannot tell whether this row was unread,
+  // and the watermark also covers every older row, so a guess here was wrong
+  // whenever the row had already been read. The server's count is asked for
+  // instead. The cursor and the list are left alone, so rows this poll returns
+  // are still raised by the poll that owns them.
+  try {
+    const feed = await pollNotifications(cursor);
+    if (gen === generation) unread.value = feed.unread;
+  } catch {
+    // Transient; the next poll corrects it.
   }
 }

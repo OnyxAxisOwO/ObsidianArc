@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -118,6 +119,25 @@ func TestAdminCreatedAccountWithoutPasswordCannotSignIn(t *testing.T) {
 			map[string]string{"username": "station-bot", "password": attempt}, nil)
 		if login.Code == http.StatusOK {
 			t.Fatalf("signed in to a passwordless account with %q", attempt)
+		}
+	}
+}
+
+// A name the signup form refuses must be refused the same way here. The admin
+// route answered 500 for it: the translation had no case for the username
+// sentinel, so it fell through to the internal-error default.
+func TestAdminCreateUserRejectsAnInvalidUsername(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+
+	for _, name := range []string{"bad name!", "中文用户", "ab"} {
+		response := in.do(http.MethodPost, "/api/admin/users",
+			map[string]any{"username": name, "password": "a-good-password"}, founder)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("username %q: %d %s, want 400", name, response.Code, response.Body.String())
+		}
+		if !strings.Contains(response.Body.String(), "Username must be 3-32 characters") {
+			t.Fatalf("username %q: the body does not name the rule: %s", name, response.Body.String())
 		}
 	}
 }

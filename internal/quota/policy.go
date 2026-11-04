@@ -153,8 +153,66 @@ func (s *Store) Get(ctx context.Context, q database.Queryer, scope Scope, scopeI
 		scope, scopeID))
 }
 
-// GetOrEmpty is what the resolver uses: a level with no row simply
-// contributes nothing.
+// accountLayers is the order Resolve layers an account's policies in: the global
+// level, then the account's group when it has one, then the account's own. A
+// level with no row is nil and contributes nothing. Both the single read and the
+// batch read stack levels through here, so the rule for which levels count is
+// written once.
+func accountLayers(hasGroup bool, global, group, user *Policy) []Policy {
+	layers := make([]Policy, 0, 3)
+	if global != nil {
+		layers = append(layers, *global)
+	}
+	// An account with no group must not pick up a group row whose id is empty,
+	// which the query for its layers would otherwise match.
+	if hasGroup && group != nil {
+		layers = append(layers, *group)
+	}
+	if user != nil {
+		layers = append(layers, *user)
+	}
+	return layers
+}
+
+// layersFor reads the policies that apply to one account in one query, in the
+// order Resolve layers them. Every chat and API turn resolves its account's
+// policy, and three lookups were three round trips before the turn could
+// start. A level with no row contributes nothing, so it is simply absent.
+func (s *Store) layersFor(ctx context.Context, q database.Queryer, groupID, userID string) ([]Policy, error) {
+	if q == nil {
+		q = s.db
+	}
+	rows, err := q.Query(ctx,
+		`SELECT `+policyColumns+` FROM quota_policies
+		 WHERE (scope = ? AND scope_id = '') OR (scope = ? AND scope_id = ?) OR (scope = ? AND scope_id = ?)`,
+		ScopeGlobal, ScopeGroup, groupID, ScopeUser, userID)
+	if err != nil {
+		return nil, fmt.Errorf("quota: policies for account: %w", err)
+	}
+	defer rows.Close()
+
+	byScope := map[Scope]Policy{}
+	for rows.Next() {
+		policy, err := scanPolicy(rows)
+		if err != nil {
+			return nil, err
+		}
+		byScope[policy.Scope] = policy
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	pick := func(scope Scope) *Policy {
+		if policy, ok := byScope[scope]; ok {
+			return &policy
+		}
+		return nil
+	}
+	return accountLayers(groupID != "", pick(ScopeGlobal), pick(ScopeGroup), pick(ScopeUser)), nil
+}
+
+// GetOrEmpty reads one level, as an empty policy where it has no row, which is
+// what an editor starts from.
 func (s *Store) GetOrEmpty(ctx context.Context, q database.Queryer, scope Scope, scopeID string) (Policy, error) {
 	policy, err := s.Get(ctx, q, scope, scopeID)
 	if err != nil {
@@ -184,8 +242,14 @@ func (s *Store) List(ctx context.Context) ([]Policy, error) {
 	return out, rows.Err()
 }
 
-// Save writes a policy, replacing whatever was at that scope.
-func (s *Store) Save(ctx context.Context, policy Policy) (Policy, error) {
+// Save writes a policy, replacing whatever was at that scope. It takes the
+// caller's transaction when there is one, because a scope's owner is often
+// checked just before the write, and the check is only good if the write commits
+// with it.
+func (s *Store) Save(ctx context.Context, q database.Queryer, policy Policy) (Policy, error) {
+	if q == nil {
+		q = s.db
+	}
 	if policy.Scope != ScopeGlobal && policy.Scope != ScopeGroup && policy.Scope != ScopeUser {
 		return Policy{}, fmt.Errorf("quota: unknown scope %q", policy.Scope)
 	}
@@ -204,7 +268,7 @@ func (s *Store) Save(ctx context.Context, policy Policy) (Policy, error) {
 	week := policy.Windows[WindowWeek]
 	month := policy.Windows[WindowMonth]
 
-	_, err := s.db.Exec(ctx, `INSERT INTO quota_policies (`+policyColumns+`)
+	_, err := q.Exec(ctx, `INSERT INTO quota_policies (`+policyColumns+`)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (scope, scope_id) DO UPDATE SET
 			rpm = excluded.rpm, tpm = excluded.tpm,
@@ -229,7 +293,7 @@ func (s *Store) Save(ctx context.Context, policy Policy) (Policy, error) {
 	if err != nil {
 		return Policy{}, fmt.Errorf("quota: save policy: %w", err)
 	}
-	return s.Get(ctx, nil, policy.Scope, policy.ScopeID)
+	return s.Get(ctx, q, policy.Scope, policy.ScopeID)
 }
 
 func (s *Store) Delete(ctx context.Context, scope Scope, scopeID string) error {
@@ -240,7 +304,7 @@ func (s *Store) Delete(ctx context.Context, scope Scope, scopeID string) error {
 	return nil
 }
 
-type rowScanner interface{ Scan(dest ...any) error }
+type rowScanner = database.RowScanner
 
 func scanPolicy(row rowScanner) (Policy, error) {
 	var (

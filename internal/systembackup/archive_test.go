@@ -17,6 +17,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database/dbtest"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 )
 
 var testMasterKey = []byte("automated-backup-tests-instance-key")
@@ -129,6 +130,54 @@ func writeArchiveFile(t *testing.T, db *database.DB, path string) {
 	}
 }
 
+// The row cap has to be judged against what an operator may configure, not
+// just against the rows this repo's own tests write: an attachment at the
+// very ceiling travels base64-encoded and would blow past a cap sized by
+// eye. The relation is pinned here so neither constant can move alone.
+func TestArchiveRowCapCoversTheAttachmentCeiling(t *testing.T) {
+	if maxArchiveRowBytes < 2*settings.MaxAttachmentCeilingMB<<20 {
+		t.Fatalf("archive row cap = %d MiB, want at least twice the %d MB attachment ceiling",
+			maxArchiveRowBytes>>20, settings.MaxAttachmentCeilingMB)
+	}
+}
+
+// An attachment at the very ceiling is the row the archive cap exists to
+// carry: base64 inflates 64 MB to roughly 85 MiB, which the old cap
+// rejected outright — every backup of such an instance failed for as long
+// as the attachment lived. The round trip proves both halves accept it.
+func TestArchiveRoundTripsAnAttachmentAtTheCeiling(t *testing.T) {
+	source := openBackupTestDB(t, t.TempDir())
+	want := insertSampleData(t, source, "ceiling")
+	blob := make([]byte, settings.MaxAttachmentCeilingMB<<20)
+	for i := range blob {
+		blob[i] = byte(i * 7)
+	}
+	if _, err := source.Exec(context.Background(),
+		`UPDATE attachments SET data = ?, size = ? WHERE id = ?`, blob, len(blob), want.attachmentID); err != nil {
+		t.Fatalf("store ceiling attachment: %v", err)
+	}
+
+	archive := makeArchive(t, source)
+	destination := openBackupTestDB(t, t.TempDir())
+	if err := RestoreArchive(context.Background(), destination, archive, testMasterKey); err != nil {
+		t.Fatalf("restore archive: %v", err)
+	}
+
+	var restored []byte
+	if err := destination.QueryRow(context.Background(),
+		`SELECT data FROM attachments WHERE id = ?`, want.attachmentID).Scan(&restored); err != nil {
+		t.Fatalf("read restored attachment: %v", err)
+	}
+	if !bytes.Equal(restored, blob) {
+		t.Fatalf("restored %d bytes, want the %d-byte attachment", len(restored), len(blob))
+	}
+	var size int
+	if err := destination.QueryRow(context.Background(),
+		`SELECT size FROM attachments WHERE id = ?`, want.attachmentID).Scan(&size); err != nil || size != len(blob) {
+		t.Fatalf("restored size = %d, %v; want %d", size, err, len(blob))
+	}
+}
+
 func TestArchiveRestorePreservesBinaryRowsAndSelfReferences(t *testing.T) {
 	source := openBackupTestDB(t, t.TempDir())
 	want := insertSampleData(t, source, "roundtrip")
@@ -184,6 +233,28 @@ func TestRestoreRejectsWrongKeyBeforeWriting(t *testing.T) {
 	var count int
 	if err := destination.QueryRow(context.Background(), `SELECT COUNT(*) FROM users`).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("wrong-key restore wrote %d users, %v", count, err)
+	}
+}
+
+func TestRestoreWithNilKeyIsTheDeclaredKeyLostPath(t *testing.T) {
+	source := openBackupTestDB(t, t.TempDir())
+	want := insertSampleData(t, source, "keylost")
+	archive := makeArchive(t, source)
+	destination := openBackupTestDB(t, t.TempDir())
+
+	if err := VerifyArchiveKey(archive, nil); err != nil {
+		t.Fatalf("nil key refused by the check: %v", err)
+	}
+	if err := RestoreArchive(context.Background(), destination, archive, nil); err != nil {
+		t.Fatalf("restore without the key: %v", err)
+	}
+	var content string
+	if err := destination.QueryRow(context.Background(), `SELECT content FROM messages WHERE id = ?`, want.messageID).Scan(&content); err != nil || content != "restore me" {
+		t.Fatalf("restored message = %q, %v", content, err)
+	}
+	// An empty, non-nil key is not "lost", it is wrong, and must still fail.
+	if err := VerifyArchiveKey(archive, []byte{}); err == nil {
+		t.Fatal("empty key unexpectedly accepted")
 	}
 }
 

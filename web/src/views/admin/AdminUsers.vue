@@ -1,29 +1,31 @@
 <script setup lang="ts">
-// Users: search, edit, disable, reset, and read their conversations.
+// Users: search, edit, ban, reset, and read their conversations.
 //
 // That last one is an intrusion even when it is justified, so it sits behind
 // its own click, says whose transcript it is, and leaves a line in the server
 // log. Nothing about it is incidental to opening the account panel.
 
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useDebounceFn } from '@vueuse/core';
 import {
   adminApi, emptyPolicy,
-  type Account, type AccountStatus, type AdminSession, type ApiKey, type CardHolding, type Conversation,
+  type Account, type AdminSession, type ApiKey, type CardHolding, type Conversation,
   type Group, type Message, type QuotaWindowKind, type Role, type UsageBreakdown,
+  type AdminUserPatch,
 } from '@/admin/api';
-import { ApiError } from '@/api/client';
 import type { UsageSummary } from '@/api/usage';
 import { ADMIN_PERMISSIONS } from '@/admin/permissions';
 import OaCheckList from '@/components/OaCheckList.vue';
 import type { PageState } from '@/components/table-types';
 import OaBadge from '@/components/OaBadge.vue';
 import OaBadgeRow from '@/components/OaBadgeRow.vue';
+import OaBulkBar from '@/components/OaBulkBar.vue';
 import OaCellStack from '@/components/OaCellStack.vue';
 import OaConfirmButton from '@/components/OaConfirmButton.vue';
-import OaFormSection from '@/components/OaFormSection.vue';
+import OaRow from '@/components/OaRow.vue';
 import OaNumberField from '@/components/OaNumberField.vue';
 import OaPanel from '@/components/OaPanel.vue';
+import OaMarkdown from '@/components/OaMarkdown.vue';
 import OaSelect from '@/components/OaSelect.vue';
 import OaSelectField from '@/components/OaSelectField.vue';
 import OaStatGrid from '@/components/OaStatGrid.vue';
@@ -35,34 +37,44 @@ import OaUsageWindow from '@/components/OaUsageWindow.vue';
 import type { Column } from '@/components/table-types';
 import type { Stat } from '@/components/stat';
 import { t, tn } from '@/composables/useI18n';
+import { cardTitle, formatCardScope, windowChoices } from '@/lib/card-scope';
+import { DAY, HOUR } from './usage/scale';
+import { toDateTimeLocal, failureText } from './shared';
+import { useBulk } from '@/composables/useBulk';
+import { usePanelSlot } from '@/composables/usePanelSlot';
+import { useLatestRequest } from '@/composables/useLatestRequest';
 import { IconTrash } from '@/icons';
-import { absoluteTime, compactNumber, relativeTime } from '@/lib/format';
+import { absoluteTime, compactNumber, localeTag, relativeTime } from '@/lib/format';
+import { rememberedPageSize } from '@/lib/page-size';
 import { describeUserAgent } from '@/lib/ua';
 import { currentUser, canAdmin, isSuperAdmin, siteInfo } from '@/stores/session';
 import OaAccountFields from '@/components/OaAccountFields.vue';
 import { allFields, fieldValues } from '@/lib/account-fields';
 import { fieldSpec, plugins } from '@/plugins/registry';
+import AdminControlCard from './AdminControlCard.vue';
 import PluginUserActions from './PluginUserActions.vue';
 import { isMasked, maskUser, maskLog, maskBilling, maskCredential } from '@/admin/safeMode';
-import AdminFailure from './AdminFailure.vue';
+import { QUOTA_WINDOWS as WINDOWS, scopePresetChoices, windowFigure } from '@/admin/quota';
 import CreditsField from './CreditsField.vue';
 import ExpiryPresets from './ExpiryPresets.vue';
 import UsageBoard from './usage/UsageBoard.vue';
 import { useAdminView } from './adminView';
 
-const WINDOWS: QuotaWindowKind[] = ['5h', '1w', '1m'];
-
 const view = useAdminView();
-view.setTitle(t('usersTitle'));
+// Null until the first list lands, so the heading shows no count before then.
+const listedTotal = ref<number | null>(null);
+view.setTitle(
+  () => t('usersTitle'),
+  () => (listedTotal.value === null ? '' : tn(listedTotal.value, 'accountsCountOne', 'accountsCountOther')),
+);
 
 const groups = ref<Pick<Group, 'id' | 'name'>[]>([]);
 const users = ref<Account[]>([]);
 const total = ref(0);
-const paging = ref<PageState>({ page: 1, pageSize: 20 });
-let request = 0;
+const paging = ref<PageState>({ page: 1, pageSize: rememberedPageSize() });
+const request = useLatestRequest();
 function changePage(next: PageState): void { paging.value = next; void list(); }
-function filterList(): void { paging.value.page = 1; ++request; void list(); }
-const error = ref('');
+function filterList(): void { paging.value.page = 1; void list(); }
 const listError = ref('');
 const loaded = ref(false);
 const listing = ref(false);
@@ -86,13 +98,18 @@ function groupName(id: string): string {
   return groups.value.find((group) => group.id === id)?.name ?? '—';
 }
 
+// Once the page is left, a late list must not set the title: the heading is
+// the shell's, and the page that replaced this one has already set its own.
+let disposed = false;
+onBeforeUnmount(() => { disposed = true; });
+
 // Typing filters after a pause rather than on each keystroke: one request per
 // word, not one per letter.
-const debouncedList = useDebounceFn(() => void list(), 250);
-watch(() => filters.value.q, () => { paging.value.page = 1; ++request; void debouncedList(); });
+const debouncedList = useDebounceFn(() => { if (!disposed) void list(); }, 250);
+watch(() => filters.value.q, () => { paging.value.page = 1; request.invalidate(); void debouncedList(); });
 
 async function list(): Promise<void> {
-  const ticket = ++request;
+  const ticket = request.begin();
   Object.assign(state, filters.value);
   listing.value = true;
   listError.value = '';
@@ -104,38 +121,69 @@ async function list(): Promise<void> {
   if (filters.value.group) query.set('group_id', filters.value.group);
 
   try {
-    const result = await adminApi.users(query.toString() ? `?${query}` : '');
-    if (ticket !== request) return;
+    const result = await adminApi.users(query);
+    if (!request.isCurrent(ticket) || disposed) return;
     if (result.total > 0 && (paging.value.page - 1) * paging.value.pageSize >= result.total) {
       paging.value.page = Math.ceil(result.total / paging.value.pageSize);
       await list(); return;
     }
     users.value = result.users ?? [];
     total.value = result.total;
-    view.setTitle(t('usersTitle'), tn(result.total, 'accountsCountOne', 'accountsCountOther'));
+    listedTotal.value = result.total;
   } catch (failure) {
-    if (ticket !== request) return;
-    listError.value = failure instanceof ApiError ? failure.message : String(failure);
+    if (!request.isCurrent(ticket)) return;
+    listError.value = failureText(failure);
   } finally {
-    if (ticket === request) listing.value = false;
+    if (request.isCurrent(ticket)) listing.value = false;
   }
+}
+
+/**
+ * A change that failed for an account the panel has since left. The panel now
+ * belongs to another account, so the failure goes to the list, named, where the
+ * operator will read it. list() clears listError as it starts, which is why the
+ * message is written after it.
+ */
+function failedForAccount(row: Account, failure: unknown): void {
+  void list();
+  const message = failureText(failure);
+  listError.value = t('accountChangeFailed', { name: maskUser(row.nickname || row.username), error: message });
+}
+
+/**
+ * A change made to one account that failed: into the panel while it still
+ * shows that account, otherwise to the list as failedForAccount does. Reads
+ * keep their own handling, since a failed read has nothing to route to the list.
+ */
+function panelFailure(row: Account, failure: unknown): void {
+  if (panelShows(row.id)) panelError.value = failureText(failure);
+  else failedForAccount(row, failure);
 }
 
 // --- the account panel ------------------------------------------------------------
 
 type PanelMode = 'account' | 'conversations' | 'transcript';
 
-const panelOpen = ref(false);
+const { open: panelOpen, panel, key: panelKey, show: showPanel, hide: hidePanel, closed: panelClosed } = usePanelSlot();
 const loadingDetail = ref(false);
 // Whether the form below holds this account. Until it does the panel shows
 // nothing editable: an empty form saved by mistake would clear real fields.
 const detailReady = ref(false);
-let opening = 0;
+const opening = useLatestRequest();
 const mode = ref<PanelMode>('account');
 const busy = ref(false);
 const panelError = ref('');
+// The reason typed for a ban, which belongs to the account on screen: it is
+// cleared when another account is opened, so it cannot land on the wrong one.
+const banDraft = ref('');
+const banBusy = ref(false);
 
 const account = ref<Account | null>(null);
+// The account as the form was loaded, or as the last save left it. Save diffs
+// the form against this and not against `account`, which refreshFacts re-reads
+// for display: diffing against the fresher copy would send this form's older
+// values back over a change made since the panel opened.
+const baseline = ref<Account | null>(null);
 const usage = ref<UsageSummary | null>(null);
 const lifetime = ref<{ requests: number; total_tokens: number; credits: number } | null>(null);
 const cards = ref<CardHolding | null>(null);
@@ -143,6 +191,10 @@ const cards = ref<CardHolding | null>(null);
 const models = ref<UsageBreakdown[]>([]);
 const keys = ref<ApiKey[] | null>(null);
 const sessions = ref<AdminSession[] | null>(null);
+// Kept apart from `keys` and `sessions` staying null: null-forever would read as
+// "still loading" and an empty array would read as "none", and a failed read is
+// neither. The same holds for keys, which used to be cleared to [] on failure.
+const keysError = ref('');
 // Kept apart from `sessions` staying null: null-forever would read as "still
 // loading" and an empty array would read as "signed in nowhere", and a 403 on
 // a restricted operator is neither.
@@ -150,21 +202,49 @@ const sessionsError = ref('');
 const revokingSession = ref('');
 const signOutAllBusy = ref(false);
 const conversations = ref<Conversation[] | null>(null);
-const conversationPage = ref<PageState>({ page: 1, pageSize: 20 });
+const conversationPage = ref<PageState>({ page: 1, pageSize: rememberedPageSize() });
 const conversationTotal = ref(0);
 async function changeConversationPage(next: PageState): Promise<void> { conversationPage.value = next; await openConversations(); }
 const transcript = ref<Message[] | null>(null);
 const transcriptTitle = ref('');
 const apiRestrictionTouched = ref(false);
 
-const grantCount = ref<number | null>(1);
-const grantName = ref('');
-const grantScopePreset = ref<'full' | '5h' | '1w' | '1m' | 'custom'>('full');
-const grantCustomWindows = ref<string[]>(['5h']);
-const grantExpiresAt = ref(defaultGrantExpiry());
+// What the grant form starts at, for each account the panel opens on. A
+// function, not a constant: the expiry is thirty days from the moment it is
+// asked, and a panel opened tomorrow should not offer yesterday's date.
+function grantDefaults() {
+  return {
+    count: 1 as number | null,
+    name: '',
+    preset: 'full' as 'full' | '5h' | '1w' | '1m' | 'custom',
+    custom: ['5h'],
+    expiresAt: defaultGrantExpiry(),
+  };
+}
+const initialGrant = grantDefaults();
+const grantCount = ref(initialGrant.count);
+const grantName = ref(initialGrant.name);
+const grantScopePreset = ref(initialGrant.preset);
+const grantCustomWindows = ref<string[]>(initialGrant.custom);
+const grantExpiresAt = ref(initialGrant.expiresAt);
+// The result line under the card buttons. Kept apart from the buttons' own
+// state: a button that reads "granted" and stays disabled leaves nothing to
+// click until the panel is reopened.
 const grantLabel = ref('');
+const granting = ref(false);
 const rescheduleLabel = ref('');
-const rescheduling = ref('');
+// Whether a reschedule or a revocation is out. One at a time for the whole
+// card list: either one re-reads the list when it lands.
+const rescheduling = ref(false);
+
+/**
+ * Whether the panel still shows this account. An answer to a request sent for
+ * one account, arriving after another was opened, must not be written into
+ * the panel of the other.
+ */
+function panelShows(id: string): boolean {
+  return account.value?.id === id;
+}
 
 function grantSelectedWindows(): string[] {
   if (grantScopePreset.value === 'custom') {
@@ -174,34 +254,6 @@ function grantSelectedWindows(): string[] {
     return [];
   }
   return [grantScopePreset.value];
-}
-
-function formatCardScope(card: { windows?: string[] }): string {
-  const wins = card.windows ?? [];
-  if (wins.length === 0 || wins.includes('full')) {
-    return t('cardFullReset');
-  }
-  const order = ['5h', '1w', '1m'];
-  const sorted = [...wins].sort((a, b) => order.indexOf(a) - order.indexOf(b));
-  if (sorted.length === 1) {
-    if (sorted[0] === '5h') return t('cardScope5H');
-    if (sorted[0] === '1w') return t('cardScope1W');
-    if (sorted[0] === '1m') return t('cardScope1M');
-  }
-  const labels = sorted.map((w) => {
-    if (w === '5h') return t('cardScopeLabel5H');
-    if (w === '1w') return t('cardScopeLabel1W');
-    if (w === '1m') return t('cardScopeLabel1M');
-    return w;
-  });
-  return t('cardScopeCombined', { windows: labels.join(' + ') });
-}
-
-function cardTitle(card: { name?: string; windows?: string[] }): string {
-  if (card.name && card.name.trim()) {
-    return card.name.trim();
-  }
-  return formatCardScope(card);
 }
 
 function cardSubtitle(card: { name?: string; windows?: string[]; source: string; expires_at: number }): string {
@@ -219,13 +271,8 @@ function cardSubtitle(card: { name?: string; windows?: string[]; source: string;
 // or the operator will read the result as a failure.
 const movableCards = computed(() => (cards.value?.available ?? 0) + (cards.value?.expired ?? 0));
 
-function dateTimeLocal(at: number): string {
-  const date = new Date(at);
-  return new Date(at - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
-}
-
 function defaultGrantExpiry(): string {
-  return dateTimeLocal(Date.now() + 30 * 24 * 3_600_000);
+  return toDateTimeLocal(Date.now() + 30 * DAY);
 }
 
 
@@ -233,8 +280,6 @@ const form = ref({
   nickname: '', email: '', fields: {} as Record<string, string>, bio: '', avatar: '',
   role: 'user' as Role,
   permissions: [] as string[],
-  status: 'active' as AccountStatus,
-  banReason: '',
   group: '',
   groupExpiresAt: '',
   apiRestricted: false,
@@ -247,6 +292,19 @@ const form = ref({
     requests: number | null; tokens: number | null; credits: number | null;
   }>,
 });
+// Whether an operator has edited a limit since the form was loaded. The policy
+// is one row that a save replaces whole, so a Save that touched only the
+// profile must not write the limits it was loaded with over another
+// administrator's change to them. A switch flipped on and off again still
+// counts: what the operator left on the form is what gets written.
+let limitsEdited = false;
+// Counts the edits, so a save can tell whether one came after it took its copy.
+let limitEdits = 0;
+watch(() => JSON.stringify(policyBody(form.value)), () => {
+  if (!detailReady.value) return;
+  limitsEdited = true;
+  limitEdits += 1;
+}, { flush: 'sync' });
 
 /**
  * "No limits at all", as one switch over the fields that already say it.
@@ -279,6 +337,13 @@ const unlimitedQuota = computed({
 });
 
 const self = computed(() => currentUser.value?.id === account.value?.id);
+// Computed so a render does not hand the select a new array, and so the
+// labels follow a change of language.
+const roleChoices = computed(() => [
+  { value: 'user' as const, label: t('roleUser') },
+  { value: 'admin' as const, label: t('roleAdmin') },
+  ...(isSuperAdmin.value ? [{ value: 'super_admin' as const, label: t('superAdmin') }] : []),
+]);
 const twoFactorFlash = ref('');
 
 function apiRestrictionActive(row: Account): boolean {
@@ -298,7 +363,7 @@ const summaryStats = computed<Stat[]>(() => {
     { label: t('statCredits'), value: maskBilling(compactNumber(totals.credits)) },
     {
       label: t('joined'),
-      value: new Date(row.created_at).toLocaleDateString(),
+      value: new Date(row.created_at).toLocaleDateString(localeTag()),
       note: (row.last_active_at || row.last_login_at)
         ? t('lastSeenAt', { when: relativeTime(row.last_active_at || row.last_login_at) })
         : t('neverSignedIn'),
@@ -325,9 +390,6 @@ const identity = computed<Array<[string, string, boolean]>>(() => {
   // an empty row reads as a missing value rather than an absent one.
   if (row.signup_ip) rows.push([t('colSignupIP'), maskLog(row.signup_ip), true]);
   if (row.signup_user_agent) rows.push([t('registrationUserAgent'), maskLog(row.signup_user_agent), true]);
-  if (row.status === 'disabled' && row.ban_reason) {
-    rows.push([t('banReason'), row.ban_reason, false]);
-  }
   return rows;
 });
 
@@ -340,19 +402,23 @@ const conversationColumns = computed<Array<Column<Conversation>>>(() => [
 async function open(id: string): Promise<void> {
   panelError.value = '';
   twoFactorFlash.value = '';
+  banDraft.value = '';
   mode.value = 'account';
   conversationPage.value.page = 1;
   keys.value = null;
+  keysError.value = '';
   sessions.value = null;
   sessionsError.value = '';
   grantLabel.value = '';
+  granting.value = false;
   rescheduleLabel.value = '';
-  rescheduling.value = '';
-  grantName.value = '';
-  grantScopePreset.value = 'full';
-  grantCustomWindows.value = ['5h'];
-  grantCount.value = 1;
-  grantExpiresAt.value = defaultGrantExpiry();
+  rescheduling.value = false;
+  const grantForm = grantDefaults();
+  grantName.value = grantForm.name;
+  grantScopePreset.value = grantForm.preset;
+  grantCustomWindows.value = grantForm.custom;
+  grantCount.value = grantForm.count;
+  grantExpiresAt.value = grantForm.expiresAt;
 
   // The panel opens on the click, with the row the list already has, and
   // fills in when the detail arrives. It used to wait for the detail first:
@@ -360,31 +426,39 @@ async function open(id: string): Promise<void> {
   // total, nothing moved in the meantime, and a failure was written above
   // the list — out of sight of a reader scrolled down to the row — so the
   // click looked like it had done nothing at all.
-  const ticket = ++opening;
+  const ticket = opening.begin();
   const listed = users.value.find((candidate) => candidate.id === id);
   account.value = listed ?? null;
+  baseline.value = null;
   usage.value = null;
   lifetime.value = null;
   models.value = [];
   cards.value = null;
   loadingDetail.value = true;
   detailReady.value = false;
-  panelOpen.value = true;
+  // Saving leaves this set while the panel slides out.
+  busy.value = false;
+  showPanel();
+  // The keys and devices need only the id, so they start with the detail
+  // instead of after it. That is safe only when the list already has the row:
+  // then the panel shows this account and can match their answers to it. With
+  // no listed row they wait for the detail, which sets the account.
+  if (listed) loadAccess(id);
 
   let detail;
   try {
     detail = await adminApi.user(id);
   } catch (failure) {
-    if (ticket !== opening) return;
+    if (!opening.isCurrent(ticket)) return;
     loadingDetail.value = false;
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    panelError.value = failureText(failure);
     // Without a row to show there is no panel to put the error in.
     if (!account.value) { listError.value = panelError.value; panelOpen.value = false; }
     return;
   }
   // A second click while the first was loading wins; the late answer about
   // the first account must not overwrite the panel now showing another.
-  if (ticket !== opening) return;
+  if (!opening.isCurrent(ticket)) return;
   loadingDetail.value = false;
 
   const row = detail.user;
@@ -403,6 +477,7 @@ async function open(id: string): Promise<void> {
   }
 
   account.value = row;
+  baseline.value = row;
   usage.value = detail.usage;
   lifetime.value = detail.lifetime;
   models.value = detail.models ?? [];
@@ -410,7 +485,7 @@ async function open(id: string): Promise<void> {
   apiRestrictionTouched.value = false;
   const restrictionActive = apiRestrictionActive(row);
   const restrictionHours = restrictionActive && row.api_restricted_until > 0
-    ? Math.max(1, Math.ceil((row.api_restricted_until - Date.now()) / 3_600_000))
+    ? Math.max(1, Math.ceil((row.api_restricted_until - Date.now()) / HOUR))
     : 0;
   form.value = {
     nickname: row.nickname,
@@ -420,10 +495,8 @@ async function open(id: string): Promise<void> {
     avatar: row.avatar,
     role: row.role,
     permissions: [...(row.admin_permissions ?? [])],
-    status: row.status,
-    banReason: row.ban_reason || '',
     group: row.group_id,
-    groupExpiresAt: row.group_expires_at ? dateTimeLocal(row.group_expires_at) : '',
+    groupExpiresAt: row.group_expires_at ? toDateTimeLocal(row.group_expires_at) : '',
     apiRestricted: restrictionActive,
     apiRestrictionHours: restrictionActive ? restrictionHours : 24,
     newPassword: '',
@@ -431,85 +504,196 @@ async function open(id: string): Promise<void> {
     tpm: policy.tpm,
     windows,
   };
+  limitsEdited = false;
   detailReady.value = true;
 
+  if (!listed) loadAccess(id);
+}
+
+/**
+ * The keys and devices are a second round trip after the detail, so each
+ * answer is checked against the panel when it lands: opening another account
+ * in the meantime must not show this one's keys under the other's name.
+ */
+function loadAccess(id: string): void {
   // The list and nothing else: the server keeps a digest, so there is no token
   // to show and no endpoint that could produce one. What an operator needs
   // here is to see that a key exists and to be able to revoke it.
   void adminApi.userKeys(id)
-    .then(({ keys: list }) => { keys.value = list; })
-    .catch(() => { keys.value = []; });
-  void adminApi.userSessions(id)
-    .then(({ sessions: list }) => { sessions.value = list; })
+    .then(({ keys: list }) => {
+      if (!panelShows(id)) return;
+      keys.value = list;
+      keysError.value = '';
+    })
     .catch((failure: unknown) => {
-      sessionsError.value = failure instanceof ApiError ? failure.message : String(failure);
+      if (panelShows(id)) keysError.value = failureText(failure);
+    });
+  void adminApi.userSessions(id)
+    .then(({ sessions: list }) => {
+      if (!panelShows(id)) return;
+      sessions.value = list;
+      sessionsError.value = '';
+    })
+    .catch((failure: unknown) => {
+      if (panelShows(id)) sessionsError.value = failureText(failure);
     });
 }
 
+/**
+ * The panel slides away and the list is fetched again where it stands, rather
+ * than the page being mounted again — which put the reader back at the top and
+ * on the first page of accounts.
+ */
+function finish(): void {
+  hidePanel();
+  void list();
+}
+
+// --- several at once ----------------------------------------------------------------
+
+const bulk = useBulk(() => users.value, (row) => row.id);
+// Typed once for the whole selection. It survives a batch that partly failed,
+// so the retry is one click rather than a second round of typing.
+const bulkBanReason = ref('');
+
+// The server refuses what must not be done — one's own account, the last
+// administrator — and the bar shows its reason; nothing is pre-filtered here.
+// A row already banned for this same reason is left as it is; every other row
+// takes the reason, whatever it had before.
+function bulkBan(): Promise<void> {
+  const reason = bulkBanReason.value.trim();
+  return bulk.run(
+    (row) => (row.status === 'disabled' && (row.ban_reason ?? '') === reason
+      ? Promise.resolve()
+      : adminApi.updateUser(row.id, { status: 'disabled', ban_reason: reason })),
+    list,
+  ).then(() => { if (!bulk.error.value) bulkBanReason.value = ''; });
+}
+
+function bulkUnban(): Promise<void> {
+  return bulk.run((row) => (row.status === 'active' ? Promise.resolve() : adminApi.updateUser(row.id, { status: 'active' })), list);
+}
+
+function bulkRemove(): Promise<void> {
+  return bulk.run((row) => adminApi.deleteUser(row.id), list);
+}
+
 async function save(): Promise<void> {
-  const row = account.value;
-  if (!row) return;
+  // The baseline, not the displayed account: the form is diffed against the
+  // copy it was loaded from. The displayed account is set before the detail
+  // lands, so a failed detail leaves it on a row the form does not hold.
+  const row = baseline.value;
+  if (!row || !detailReady.value) return;
+  // The form belongs to whichever account was opened last, and that can be
+  // another account while this save is in flight: the requests below await
+  // in between, and opening an account replaces the form. Every value is read
+  // from this copy, taken before the first await, so the save describes the
+  // account it was sent for.
+  const draft = JSON.parse(JSON.stringify(form.value)) as typeof form.value;
+  const sendLimits = limitsEdited;
+  const editsAtStart = limitEdits;
   busy.value = true;
   panelError.value = '';
+  // Whether anything was written before the failure, which decides what the
+  // error has to say: a save that half went through is not a failed save.
+  let saved = false;
   try {
-    const patch: Record<string, unknown> = {
-      nickname: form.value.nickname.trim(),
-      email: form.value.email.trim(),
-      ...(fieldPlan.value.keys.length ? { fields: fieldValues(form.value.fields, fieldPlan.value) } : {}),
-      bio: form.value.bio.trim(),
-      avatar: form.value.avatar.trim(),
-
-      status: form.value.status,
-      ban_reason: form.value.status === 'disabled' ? form.value.banReason.trim() : '',
-    };
-    if (canAdmin('administrators') && form.value.role !== row.role) patch.role = form.value.role;
-    if (canAdmin('administrators') && (form.value.role === 'admin') &&
-      (form.value.role !== row.role || JSON.stringify(form.value.permissions) !== JSON.stringify(row.admin_permissions ?? []))) {
-      patch.admin_permissions = form.value.permissions;
+    // Only what the operator changed is sent. The panel can stay open while
+    // another administrator edits this account, and resending every field would
+    // write this form's older copy of their edit back over it.
+    const patch: AdminUserPatch = {};
+    if (draft.nickname.trim() !== row.nickname) patch.nickname = draft.nickname.trim();
+    if (draft.email.trim() !== row.email) patch.email = draft.email.trim();
+    if (draft.bio.trim() !== row.bio) patch.bio = draft.bio.trim();
+    if (draft.avatar.trim() !== row.avatar) patch.avatar = draft.avatar.trim();
+    if (fieldPlan.value.keys.length) {
+      const next = fieldValues(draft.fields, fieldPlan.value);
+      const was = fieldValues(row.fields ?? {}, fieldPlan.value);
+      const changed = Object.fromEntries(
+        fieldPlan.value.keys.filter((key) => next[key] !== was[key]).map((key) => [key, next[key]!]),
+      );
+      if (Object.keys(changed).length) patch.fields = changed;
+    }
+    if (canAdmin('administrators') && draft.role !== row.role) patch.role = draft.role;
+    if (canAdmin('administrators') && (draft.role === 'admin') &&
+      (draft.role !== row.role || JSON.stringify(draft.permissions) !== JSON.stringify(row.admin_permissions ?? []))) {
+      patch.admin_permissions = draft.permissions;
     }
     // Only send a membership change when the operator edited it. A profile
     // panel left open across expiry must not silently renew the old group.
-    const originalExpiry = row.group_expires_at ? dateTimeLocal(row.group_expires_at) : '';
-    if (form.value.group !== row.group_id || form.value.groupExpiresAt !== originalExpiry) {
-      const expiry = form.value.groupExpiresAt ? new Date(form.value.groupExpiresAt).getTime() : 0;
-      if (form.value.groupExpiresAt && (!Number.isFinite(expiry) || expiry <= Date.now())) {
+    const originalExpiry = row.group_expires_at ? toDateTimeLocal(row.group_expires_at) : '';
+    if (draft.group !== row.group_id || draft.groupExpiresAt !== originalExpiry) {
+      const expiry = draft.groupExpiresAt ? new Date(draft.groupExpiresAt).getTime() : 0;
+      if (draft.groupExpiresAt && (!Number.isFinite(expiry) || expiry <= Date.now())) {
         throw new Error(t('membershipExpiryInvalid'));
       }
-      patch.group_id = form.value.group;
+      patch.group_id = draft.group;
       patch.group_expires_at = expiry;
     }
     if (apiRestrictionTouched.value) {
-      patch.api_restricted = form.value.apiRestricted;
-      patch.api_restriction_hours = form.value.apiRestrictionHours ?? 0;
+      patch.api_restricted = draft.apiRestricted;
+      patch.api_restriction_hours = draft.apiRestrictionHours ?? 0;
     }
+    // Sent even when empty: the server answers that as a no-op, and one path for
+    // every Save keeps the errors it can raise the same whatever was edited.
     const result = await adminApi.updateUser(row.id, patch);
+    // An empty patch writes nothing, so a failure in a later step must not be
+    // reported as one that came after a save.
+    if (Object.keys(patch).length) saved = true;
     if (currentUser.value?.id === row.id) currentUser.value = { ...currentUser.value, ...result.user };
+    // The saved profile is the baseline for the next Save: a retry after a
+    // later step failed sends only what is still different from it. The save
+    // can outlive the panel's account, so the baseline moves only if it is
+    // still this one.
+    if (baseline.value?.id === row.id) baseline.value = { ...baseline.value, ...result.user };
+    applyAccount(row.id, result.user);
 
-    if (form.value.newPassword) {
-      await adminApi.resetPassword(row.id, form.value.newPassword);
+    if (draft.newPassword) {
+      await adminApi.resetPassword(row.id, draft.newPassword);
+      saved = true;
     }
 
-    if (canAdmin('users') || canAdmin('usage')) await adminApi.savePolicy({
-      scope: 'user',
-      scope_id: row.id,
-      rpm: form.value.rpm,
-      tpm: form.value.tpm,
-      windows: Object.fromEntries(WINDOWS.map((kind) => [kind, form.value.windows[kind].override
-        ? {
-            enabled: form.value.windows[kind].enabled,
-            requests: form.value.windows[kind].requests,
-            tokens: form.value.windows[kind].tokens,
-            credits: form.value.windows[kind].credits,
-          }
-        : { enabled: null, requests: null, tokens: null, credits: null }])),
-    });
+    if ((canAdmin('users') || canAdmin('usage')) && sendLimits) {
+      await adminApi.savePolicy({ scope: 'user', scope_id: row.id, ...policyBody(draft) });
+      saved = true;
+      // An edit made after this save took its copy is not in what was written,
+      // so the limits stay marked as edited for the next Save.
+      if (panelShows(row.id)) limitsEdited = limitEdits !== editsAtStart;
+    }
 
-    panelOpen.value = false;
-    view.reload();
+    // Closing the panel is for the account it showed when the save began. If
+    // another one is shown now, its panel stays and the list is refreshed.
+    if (panelShows(row.id)) finish(); else void list();
   } catch (failure) {
+    // The failure belongs to the account that was saved; a panel now showing
+    // another one keeps its own busy state and error, and the failure is
+    // written to the list instead.
+    if (!panelShows(row.id)) { failedForAccount(row, failure); return; }
     busy.value = false;
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    const message = failureText(failure);
+    panelError.value = saved ? t('savedBeforeError', { error: message }) : message;
   }
+}
+
+/** The limits in the shape the policy endpoint takes them. */
+function policyBody(source: typeof form.value) {
+  return {
+    rpm: source.rpm,
+    tpm: source.tpm,
+    // The form has no windows until an account is opened, and the change
+    // watcher reads this before then.
+    windows: Object.fromEntries(WINDOWS.map((kind) => {
+      const limits = source.windows[kind];
+      return [kind, limits?.override
+        ? {
+            enabled: limits.enabled,
+            requests: windowFigure(limits.requests),
+            tokens: windowFigure(limits.tokens),
+            credits: windowFigure(limits.credits),
+          }
+        : { enabled: null, requests: null, tokens: null, credits: null }];
+    })),
+  };
 }
 
 /**
@@ -524,13 +708,67 @@ async function resetTwoFactor(): Promise<void> {
   panelError.value = '';
   try {
     const { user } = await adminApi.resetTwoFactor(row.id);
-    account.value = { ...row, ...user };
-    users.value = users.value.map((entry) => (entry.id === row.id ? { ...entry, ...user } : entry));
-    twoFactorFlash.value = t('twoFactorResetDone');
+    // The row is the account the reset was sent for, but the panel may show
+    // another one by now: applyAccount only touches the panel for this id.
+    applyAccount(row.id, user);
+    if (panelShows(row.id)) twoFactorFlash.value = t('twoFactorResetDone');
   } catch (failure) {
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    panelFailure(row, failure);
   }
 }
+
+/**
+ * Banning and unbanning commit on their own buttons, as two-step reset does.
+ * Neither is a field the form saves, so Save can neither ban an account nor
+ * quietly undo a ban made since the panel was opened.
+ */
+async function ban(): Promise<void> {
+  const row = account.value;
+  if (!row) return;
+  banBusy.value = true;
+  panelError.value = '';
+  try {
+    const { user } = await adminApi.updateUser(row.id, { status: 'disabled', ban_reason: banDraft.value.trim() });
+    applyAccount(row.id, user);
+    if (!panelShows(row.id)) return;
+    banDraft.value = '';
+    // The ban signed every device out in the same transaction, so the devices
+    // the panel shows are none.
+    sessions.value = [];
+  } catch (failure) {
+    panelFailure(row, failure);
+  } finally {
+    banBusy.value = false;
+  }
+}
+
+async function unban(): Promise<void> {
+  const row = account.value;
+  if (!row) return;
+  banBusy.value = true;
+  panelError.value = '';
+  try {
+    const { user } = await adminApi.updateUser(row.id, { status: 'active' });
+    applyAccount(row.id, user);
+  } catch (failure) {
+    panelFailure(row, failure);
+  } finally {
+    banBusy.value = false;
+  }
+}
+
+/** The list row and the open panel both show the account, so both take the change. */
+function applyAccount(id: string, fresh: Account): void {
+  users.value = users.value.map((entry) => (entry.id === id ? { ...entry, ...fresh } : entry));
+  if (account.value?.id === id) account.value = { ...account.value, ...fresh };
+}
+
+/** What the status row says about the reason, or nothing while the account is active. */
+const banSummary = computed<string | undefined>(() => {
+  const row = account.value;
+  if (!row || row.status !== 'disabled') return undefined;
+  return row.ban_reason ? t('banReasonLine', { reason: row.ban_reason }) : t('banNoReason');
+});
 
 async function remove(): Promise<void> {
   const row = account.value;
@@ -538,11 +776,12 @@ async function remove(): Promise<void> {
   busy.value = true;
   try {
     await adminApi.deleteUser(row.id);
-    panelOpen.value = false;
-    view.reload();
+    // As in save(): the panel closes only if it still shows the deleted account.
+    if (panelShows(row.id)) finish(); else void list();
   } catch (failure) {
+    if (!panelShows(row.id)) { failedForAccount(row, failure); return; }
     busy.value = false;
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    panelError.value = failureText(failure);
   }
 }
 
@@ -562,8 +801,37 @@ function fieldSummary(values: Record<string, string> | undefined): string[] {
 const userActions = computed(() => plugins().flatMap((plugin) => plugin.userActions ?? []));
 
 function actionDone(closePanel: boolean): void {
-  if (closePanel) panelOpen.value = false;
-  view.reload();
+  if (closePanel) {
+    finish();
+    return;
+  }
+  // The panel stays, so what it shows is fetched again: the action changed
+  // some of it. The form is not rebuilt from the server, which would throw
+  // away edits nobody has saved yet.
+  void list();
+  if (account.value) void refreshFacts(account.value.id);
+}
+
+/**
+ * Re-reads what a plugin action can change without the operator's form
+ * changing with it: the account's status, role and group, the figures, the
+ * cards and the keys and devices. The account is replaced for display only; Save
+ * compares the form against the baseline, which this does not move, so a field
+ * the operator has not touched is never sent back.
+ */
+async function refreshFacts(id: string): Promise<void> {
+  loadAccess(id);
+  try {
+    const detail = await adminApi.user(id);
+    if (!panelShows(id)) return;
+    account.value = detail.user;
+    usage.value = detail.usage;
+    lifetime.value = detail.lifetime;
+    models.value = detail.models ?? [];
+    cards.value = detail.cards;
+  } catch (failure) {
+    if (panelShows(id)) panelError.value = failureText(failure);
+  }
 }
 
 function actionFailed(message: string): void {
@@ -575,7 +843,21 @@ function actionFailed(message: string): void {
  * changes, because "why does this person have no allowance left" and "give
  * them another" are one thought.
  */
-function grant(): void {
+/**
+ * The date in the field both a grant and a reschedule use, or null with the
+ * panel saying why: a date already past would hand out cards that are spent
+ * before anyone could use them.
+ */
+function chosenExpiry(): number | null {
+  const expiresAt = new Date(grantExpiresAt.value).getTime();
+  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+    panelError.value = t('grantCardExpiryInvalid');
+    return null;
+  }
+  return expiresAt;
+}
+
+async function grant(): Promise<void> {
   const row = account.value;
   if (!row) return;
   if (grantScopePreset.value === 'custom' && grantCustomWindows.value.length === 0) {
@@ -583,27 +865,41 @@ function grant(): void {
     return;
   }
   const count = grantCount.value ?? 1;
-  const expiresAt = new Date(grantExpiresAt.value).getTime();
-  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
-    panelError.value = t('grantCardExpiryInvalid');
-    return;
-  }
-  grantLabel.value = '…';
-  void adminApi.grantCards(row.id, {
-    cards: count,
-    expires_at: expiresAt,
-    name: grantName.value.trim(),
-    windows: grantSelectedWindows(),
-  })
-    .then(async () => {
-      grantLabel.value = t('granted', { count });
-      const detail = await adminApi.user(row.id);
-      cards.value = detail.cards;
-    })
-    .catch((failure: unknown) => {
-      grantLabel.value = '';
-      panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+  const expiresAt = chosenExpiry();
+  if (expiresAt === null) return;
+  granting.value = true;
+  grantLabel.value = '';
+  try {
+    await adminApi.grantCards(row.id, {
+      cards: count,
+      expires_at: expiresAt,
+      name: grantName.value.trim(),
+      windows: grantSelectedWindows(),
     });
+    if (panelShows(row.id)) grantLabel.value = t('granted', { count });
+    await refreshCards(row.id);
+  } catch (failure) {
+    panelFailure(row, failure);
+  } finally {
+    if (panelShows(row.id)) granting.value = false;
+  }
+}
+
+/**
+ * Re-reads the cards after one of them changed. The change has already been
+ * made when this runs, so a failed re-read is not reported as the change
+ * failing: the cards on screen are the last ones read, and the next open reads
+ * them again.
+ */
+async function refreshCards(id: string): Promise<void> {
+  // Once the panel has moved on, no card list on screen can show the answer.
+  if (!panelShows(id)) return;
+  try {
+    const held = await adminApi.userCards(id);
+    if (panelShows(id)) cards.value = held.cards;
+  } catch {
+    // See above: there is nothing for the operator to act on.
+  }
 }
 
 /**
@@ -617,29 +913,26 @@ function grant(): void {
 async function reschedule(cardIDs?: string[]): Promise<void> {
   const row = account.value;
   if (!row) return;
-  const expiresAt = new Date(grantExpiresAt.value).getTime();
-  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
-    panelError.value = t('grantCardExpiryInvalid');
-    return;
-  }
+  const expiresAt = chosenExpiry();
+  if (expiresAt === null) return;
 
-  rescheduling.value = cardIDs?.length ? cardIDs[0]! : 'all';
-  rescheduleLabel.value = '…';
+  rescheduling.value = true;
+  rescheduleLabel.value = '';
   try {
     const result = await adminApi.rescheduleCards(row.id, {
       expires_at: expiresAt,
       ...(cardIDs?.length ? { card_ids: cardIDs } : {}),
     });
-    rescheduleLabel.value = t('cardsMoved', { count: result.moved });
+    if (panelShows(row.id)) rescheduleLabel.value = t('cardsMoved', { count: result.moved });
     // Re-read rather than patch the list in place: a lapsed card that was
     // moved forward is spendable again, and the counts above it move with it.
-    const detail = await adminApi.user(row.id);
-    cards.value = detail.cards;
+    await refreshCards(row.id);
   } catch (failure) {
-    rescheduleLabel.value = '';
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    panelFailure(row, failure);
   } finally {
-    rescheduling.value = '';
+    // A request for an account the panel has left must not clear the flag of
+    // the one running for the account it shows now.
+    if (panelShows(row.id)) rescheduling.value = false;
   }
 }
 
@@ -654,17 +947,17 @@ async function reschedule(cardIDs?: string[]): Promise<void> {
 async function revoke(cardID: string): Promise<void> {
   const row = account.value;
   if (!row) return;
-  rescheduling.value = cardID;
+  rescheduling.value = true;
+  rescheduleLabel.value = '';
   try {
+    // Silent on purpose, like the grant of a card: an operator undoing a
+    // mistake should not be told about it. The list shows what is left.
     await adminApi.revokeCard(row.id, cardID);
-    rescheduleLabel.value = t('cardRevoked');
-    const detail = await adminApi.user(row.id);
-    cards.value = detail.cards;
+    await refreshCards(row.id);
   } catch (failure) {
-    rescheduleLabel.value = '';
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    panelFailure(row, failure);
   } finally {
-    rescheduling.value = '';
+    if (panelShows(row.id)) rescheduling.value = false;
   }
 }
 
@@ -672,9 +965,9 @@ function revokeKey(key: ApiKey): void {
   const row = account.value;
   if (!row) return;
   void adminApi.revokeUserKey(row.id, key.id)
-    .then(() => { keys.value = (keys.value ?? []).filter((entry) => entry.id !== key.id); })
+    .then(() => { if (panelShows(row.id)) keys.value = (keys.value ?? []).filter((entry) => entry.id !== key.id); })
     .catch((failure: unknown) => {
-      panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+      panelFailure(row, failure);
     });
 }
 
@@ -683,9 +976,9 @@ function revokeSession(session: AdminSession): void {
   if (!row) return;
   revokingSession.value = session.id;
   adminApi.revokeUserSession(row.id, session.id)
-    .then(() => { sessions.value = (sessions.value ?? []).filter((entry) => entry.id !== session.id); })
+    .then(() => { if (panelShows(row.id)) sessions.value = (sessions.value ?? []).filter((entry) => entry.id !== session.id); })
     .catch((failure: unknown) => {
-      panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+      panelFailure(row, failure);
     })
     .finally(() => { revokingSession.value = ''; });
 }
@@ -695,9 +988,9 @@ function signOutEverywhere(): void {
   if (!row) return;
   signOutAllBusy.value = true;
   adminApi.revokeAllUserSessions(row.id)
-    .then(() => { sessions.value = []; })
+    .then(() => { if (panelShows(row.id)) sessions.value = []; })
     .catch((failure: unknown) => {
-      panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+      panelFailure(row, failure);
     })
     .finally(() => { signOutAllBusy.value = false; });
 }
@@ -711,11 +1004,15 @@ async function openConversations(): Promise<void> {
   conversations.value = null;
   panelError.value = '';
   try {
-    const result = await adminApi.userConversations(row.id, `?limit=${conversationPage.value.pageSize}&offset=${(conversationPage.value.page - 1) * conversationPage.value.pageSize}`);
+    const result = await adminApi.userConversations(row.id, {
+      limit: conversationPage.value.pageSize,
+      offset: (conversationPage.value.page - 1) * conversationPage.value.pageSize,
+    });
+    if (!panelShows(row.id)) return;
     conversations.value = result.conversations;
     conversationTotal.value = result.total;
   } catch (failure) {
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    if (panelShows(row.id)) panelError.value = failureText(failure);
   }
 }
 
@@ -728,9 +1025,11 @@ async function openTranscript(conversation: Conversation): Promise<void> {
   panelError.value = '';
   try {
     const { messages } = await adminApi.userTranscript(row.id, conversation.id);
-    transcript.value = messages;
+    // An audit view of one person's messages must not sit under another
+    // account's title: the answer is shown only while its account is.
+    if (panelShows(row.id)) transcript.value = messages;
   } catch (failure) {
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    if (panelShows(row.id)) panelError.value = failureText(failure);
   }
 }
 
@@ -752,16 +1051,18 @@ const panelTitle = computed(() => {
 });
 
 async function load(): Promise<void> {
-  error.value = '';
+  // The group names only label rows, so their failure must not stand in for the
+  // whole table. It is reported above the rows, where a list failure goes, and
+  // the rows still load. list() clears listError as it starts, hence the order.
+  let namesFailure = '';
   try {
     ({ groups: groups.value } = await adminApi.groupOptions());
   } catch (failure) {
-    error.value = failure instanceof Error ? failure.message : String(failure);
-    loaded.value = true;
-    return;
+    namesFailure = failureText(failure);
   }
   loaded.value = true;
   await list();
+  if (namesFailure && !listError.value) listError.value = namesFailure;
 }
 
 onMounted(load);
@@ -772,8 +1073,7 @@ const state = { q: '', role: '', status: '', group: '' };
 </script>
 
 <template>
-  <AdminFailure v-if="error" :message="error" @retry="load" />
-  <p v-else-if="!loaded" class="oa-table-empty">{{ t('loading') }}</p>
+  <p v-if="!loaded" class="oa-table-empty">{{ t('loading') }}</p>
 
   <template v-else>
     <div id="usersList" class="oa-filters">
@@ -810,7 +1110,7 @@ const state = { q: '', role: '', status: '', group: '' };
       />
     </div>
 
-    <p v-if="listing" class="oa-table-empty">{{ t('loading') }}</p>
+    <p v-if="listing && !users.length" class="oa-table-empty">{{ t('loading') }}</p>
     <p v-if="listError" class="oa-table-empty">{{ listError }}</p>
     <OaTable
       :pagination="{ ...paging, total }"
@@ -821,6 +1121,9 @@ const state = { q: '', role: '', status: '', group: '' };
       :empty="t('noAccountsMatch')"
       :muted="(row) => row.status === 'disabled'"
       selectable
+      multi
+      v-model:selected="bulk.selected.value"
+      :row-key="(row) => row.id"
       @select="open($event.id)"
     >
       <template #cell-account="{ row }">
@@ -833,21 +1136,54 @@ const state = { q: '', role: '', status: '', group: '' };
         <OaBadgeRow>
           <OaBadge v-if="row.role === 'super_admin'">{{ t('superAdmin') }}</OaBadge>
           <OaBadge v-if="row.role === 'admin'">{{ t('admin') }}</OaBadge>
-          <OaBadge v-if="row.status === 'disabled'" tone="danger" :title="row.ban_reason || undefined">{{ t('disabled') }}</OaBadge>
+          <OaBadge v-if="row.status === 'disabled'" tone="danger" :title="row.ban_reason || undefined">{{ t('statusDisabled') }}</OaBadge>
           <OaBadge v-if="apiRestrictionActive(row)" tone="warning">{{ t('apiRestrictedBadge') }}</OaBadge>
           <OaBadge v-if="row.two_factor_at" tone="muted">{{ t('twoFactorBadge') }}</OaBadge>
         </OaBadgeRow>
       </template>
     </OaTable>
+    <OaBulkBar
+      :count="bulk.selected.value.length"
+      :total="users.length"
+      :busy="bulk.busy.value"
+      :error="bulk.error.value"
+      deletable
+      @all="bulk.selectAll"
+      @clear="bulk.clear"
+      @delete="bulkRemove"
+    >
+      <button type="button" class="oa-btn small" :disabled="bulk.busy.value" @click="bulkUnban">{{ t('unbanAccount') }}</button>
+      <input
+        v-model="bulkBanReason"
+        class="oa-bulk-reason"
+        type="text"
+        maxlength="500"
+        :placeholder="t('banReasonPlaceholder')"
+        :aria-label="t('banReason')"
+        :disabled="bulk.busy.value"
+      >
+      <!-- A ban signs every ticked account out, so it asks twice: the first
+           click arms it, and the armed title names how many it will reach. -->
+      <OaConfirmButton
+        class="oa-btn small oa-btn-danger"
+        :label="t('bulkBan')"
+        :armed-title="t('bulkBanConfirm', { count: bulk.selected.value.length })"
+        :disabled="bulk.busy.value"
+        @confirm="bulkBan"
+      />
+    </OaBulkBar>
   </template>
 
   <OaPanel
     v-if="panelOpen && account"
+    ref="panel"
+    :key="panelKey"
     :title="panelTitle"
     :width="mode === 'transcript' ? 480 : 440"
     :footer="mode === 'account'"
     :cancel-label="mode === 'account' ? undefined : t('close')"
     :confirm-label="t('save')"
+    :confirmable="mode !== 'account' || detailReady || loadingDetail"
     :destructive-label="mode === 'account' && !self ? t('deleteLabel') : undefined"
     :destructive-confirm="mode === 'account' && !self
       ? t('confirmDeleteUser', { name: maskUser(account.username) })
@@ -855,7 +1191,7 @@ const state = { q: '', role: '', status: '', group: '' };
     :back="mode !== 'account'"
     :busy="busy || loadingDetail"
     :error="panelError"
-    @close="panelOpen = false"
+    @close="panelClosed"
     @confirm="save"
     @destructive="remove"
     @back="mode === 'transcript' ? openConversations() : (mode = 'account')"
@@ -864,34 +1200,74 @@ const state = { q: '', role: '', status: '', group: '' };
     <template v-else-if="mode === 'account' && detailReady">
       <OaStatGrid :stats="summaryStats" />
 
-      <div class="oa-facts">
-        <div v-for="[label, value, mono] in identity" :key="label" class="oa-fact">
-          <span class="oa-fact-label">{{ label }}</span>
-          <span class="oa-fact-value" :class="{ mono }">{{ value }}</span>
-        </div>
-      </div>
+      <!-- Every section is a card of rows, the shape the settings screens
+           use: a label and its answer side by side, lists as rows with their
+           action at the end, fields stacked with their own explanation. -->
+      <AdminControlCard :title="t('account')">
+        <OaRow v-for="[label, value, mono] in identity" :key="label" class="oa-fact-row" :title="label">
+          <span class="oa-row-value" :class="{ mono }" :title="String(value)">{{ value }}</span>
+        </OaRow>
+      </AdminControlCard>
+
+      <!-- Banning is an action with a reason, not a field of the form. It sits
+           near the top so it is found without scrolling past the grants, and it
+           commits on its own button. The reason is what the account sees when
+           it tries to sign in. -->
+      <AdminControlCard id="secBanStatus" :title="t('secBanStatus')" :hint="self ? t('cannotBanSelf') : t('banHint')">
+        <OaRow
+          :title="account.status === 'disabled' ? t('statusDisabled') : t('statusActive')"
+          :meta="banSummary"
+        >
+          <button
+            v-if="account.status === 'disabled' && !self"
+            type="button"
+            class="oa-btn small"
+            :disabled="banBusy"
+            @click="unban"
+          >{{ t('unbanAccount') }}</button>
+        </OaRow>
+        <template v-if="account.status !== 'disabled' && !self">
+          <OaTextField
+            v-model="banDraft"
+            :label="t('banReason')"
+            :placeholder="t('banReasonPlaceholder')"
+            :hint="t('banReasonHint')"
+            :max-length="500"
+          />
+          <OaRow>
+            <!-- Never window.confirm: the first click arms it and the second acts,
+                 the same two steps every other destructive button here takes. -->
+            <OaConfirmButton
+              class="oa-btn small oa-btn-danger oa-ban-confirm"
+              :label="t('banAccount')"
+              :armed-label="t('confirmWord')"
+              :armed-title="t('banAccountConfirm', { name: maskUser(account.username) })"
+              :resting-title="t('banAccount')"
+              :disabled="banBusy"
+              @confirm="ban"
+            />
+          </OaRow>
+        </template>
+      </AdminControlCard>
 
       <!-- What the lifetime figures above were spent on. The question after
            "how much" is "on what", and it is cheaper to answer here than to
            send the operator to the usage page to narrow it by hand. -->
-      <template v-if="models.length">
-        <OaFormSection :title="t('boardTheirModels')" :hint="t('boardTheirModelsHint')" />
+      <AdminControlCard v-if="models.length" :title="t('boardTheirModels')" :hint="t('boardTheirModelsHint')">
+        <template v-if="canAdmin('usage') && view.open" #actions>
+          <button type="button" class="oa-btn small" @click="view.open?.('/admin/usage', { user: account.id })">{{ t('viewInUsage') }}</button>
+        </template>
         <UsageBoard
           :rows="models" kind="model" metric="tokens" :limit="4" :reach="false"
           :selectable="canAdmin('usage') && !!view.open" :empty-text="t('nothingYet')"
           @select="view.open?.('/admin/usage', { user: account.id, model: $event })"
         />
-        <button
-          v-if="canAdmin('usage') && view.open" type="button" class="oa-btn small oa-panel-link"
-          @click="view.open?.('/admin/usage', { user: account.id })"
-        >{{ t('viewInUsage') }}</button>
-      </template>
+      </AdminControlCard>
 
       <!-- The same bars the account sees in its own composer, from the same
            summary: an administrator answering "why can this person not send
            anything" should be reading the figure the person is up against. -->
-      <template v-if="usage">
-        <OaFormSection :title="t('secAllowance')" />
+      <AdminControlCard v-if="usage" :title="t('secAllowance')">
         <div class="oa-usage-list">
           <span v-if="unlimited" class="oa-usage-reset">{{ t('quotaUnlimited') }}</span>
           <OaUsageWindow
@@ -902,211 +1278,183 @@ const state = { q: '', role: '', status: '', group: '' };
             :masked="isMasked('billing')"
           />
         </div>
-      </template>
+      </AdminControlCard>
 
       <!-- What they are holding, before the control that adds more: an
            operator is usually here because somebody asked, and "you already
            have two" is the answer more often than a third card is. -->
-      <OaFormSection :title="t('secHeldCards')" />
-      <div v-if="cards">
-        <p v-if="cards.total === 0" class="oa-field-hint">{{ t('cardsNone') }}</p>
+      <AdminControlCard id="secHeldCards" v-if="cards" :title="t('secHeldCards')">
+        <OaRow v-if="cards.total === 0" :meta="t('cardsNone')" />
         <template v-else>
-          <p class="oa-card-count">{{ t('cardsAvailable', { count: cards.available }) }}</p>
           <!-- The three together, because "none left" and "never had any" are
                different answers and the first number cannot tell them apart. -->
-          <p class="oa-field-hint">
-            {{ t('cardsBreakdown', { used: cards.used, expired: cards.expired, total: cards.total }) }}
-          </p>
-          <div v-if="cards.cards.length" class="oa-card-list">
-            <div v-for="card in cards.cards" :key="card.id" class="oa-card-row">
-              <div>
-                <span class="oa-card-title">{{ cardTitle(card) }}</span>
-                <span class="oa-card-sub">{{ cardSubtitle(card) }}</span>
-              </div>
-              <span class="oa-header-spacer" />
-              <!-- Moves this one onto the date below. One card at a time is
-                   the "this one runs out tomorrow" case; the button under the
-                   picker is the one that catches the expired ones too. -->
-              <button
-                type="button"
-                class="oa-btn oa-card-move"
-                :disabled="!!rescheduling"
-                @click="reschedule([card.id])"
-              >{{ t('rescheduleOne') }}</button>
-              <!-- Never window.confirm: it answers false on its own in some
-                   browsers, which would turn this into a button that silently
-                   does nothing. -->
-              <OaConfirmButton
-                class="oa-btn oa-card-move oa-card-drop"
-                :label="t('revokeCard')"
-                :armed-label="t('revokeCardConfirm')"
-                :armed-title="t('revokeCardConfirm')"
-                :resting-title="t('revokeCard')"
-                :disabled="!!rescheduling"
-                @confirm="revoke(card.id)"
-              />
-            </div>
-          </div>
+          <OaRow
+            :title="t('cardsAvailable', { count: cards.available })"
+            :meta="t('cardsBreakdown', { used: cards.used, expired: cards.expired, total: cards.total })"
+          />
+          <OaRow v-for="card in cards.cards" :key="card.id" class="oa-held-card" :title="cardTitle(card)" :meta="cardSubtitle(card)">
+            <!-- Moves this one onto the date in the card below. One card at a
+                 time is the "this one runs out tomorrow" case; the button
+                 under the picker is the one that catches the expired ones too. -->
+            <button
+              type="button"
+              class="oa-btn small oa-card-reschedule"
+              :disabled="rescheduling"
+              @click="reschedule([card.id])"
+            >{{ t('rescheduleOne') }}</button>
+            <!-- Never window.confirm: it answers false on its own in some
+                 browsers, which would turn this into a button that silently
+                 does nothing. -->
+            <OaConfirmButton
+              class="oa-btn small oa-card-drop"
+              :label="t('revokeCard')"
+              :armed-label="t('revokeCardConfirm')"
+              :armed-title="t('revokeCardConfirm')"
+              :resting-title="t('revokeCard')"
+              :disabled="rescheduling"
+              @confirm="revoke(card.id)"
+            />
+          </OaRow>
         </template>
-      </div>
+      </AdminControlCard>
 
-      <OaTextField
-        v-model="grantName"
-        :label="t('cardName')"
-        :placeholder="t('cardNamePlaceholder')"
-        :hint="t('cardNameHint')"
-        :max-length="64"
-      />
-      <OaSelectField
-        v-model="grantScopePreset"
-        :label="t('cardResetScope')"
-        :hint="t('cardResetScopeHint')"
-        :options="[
-          { value: 'full', label: t('cardResetFull') },
-          { value: '5h', label: t('cardReset5H') },
-          { value: '1w', label: t('cardReset1W') },
-          { value: '1m', label: t('cardReset1M') },
-          { value: 'custom', label: t('cardResetCustom') },
-        ]"
-      />
-      <OaCheckList
-        v-if="grantScopePreset === 'custom'"
-        v-model="grantCustomWindows"
-        :label="t('cardResetScope')"
-        :empty-text="t('nothingYet')"
-        :items="[
-          { value: '5h', label: t('cardScopeLabel5H') },
-          { value: '1w', label: t('cardScopeLabel1W') },
-          { value: '1m', label: t('cardScopeLabel1M') },
-        ]"
-      />
-      <OaNumberField
-        v-model="grantCount"
-        :label="t('grantCards')"
-        :min="1"
-        :hint="t('grantCardsHint')"
-      />
-      <OaTextField
-        v-model="grantExpiresAt"
-        :label="t('grantCardExpiry')"
-        :hint="t('grantCardExpiryHint')"
-        type="datetime-local"
-        required
-      />
-      <ExpiryPresets @pick="grantExpiresAt = $event" />
-      <div class="oa-card-actions">
-        <button type="button" class="oa-btn" :disabled="!!grantLabel" @click="grant">
-          {{ grantLabel || t('grantCards') }}
-        </button>
-        <button
-          type="button"
-          class="oa-btn"
-          :disabled="!movableCards || !!rescheduling"
-          @click="reschedule()"
-        >{{ rescheduleLabel || t('rescheduleCards', { count: movableCards }) }}</button>
-      </div>
-      <p class="oa-field-hint">{{ t('rescheduleCardsHint') }}</p>
+      <AdminControlCard :title="t('grantCards')">
+        <OaTextField
+          v-model="grantName"
+          :label="t('cardName')"
+          :placeholder="t('cardNamePlaceholder')"
+          :hint="t('cardNameHint')"
+          :max-length="64"
+        />
+        <OaSelectField
+          v-model="grantScopePreset"
+          :label="t('cardResetScope')"
+          :hint="t('cardResetScopeHint')"
+          :options="scopePresetChoices()"
+        />
+        <OaCheckList
+          v-if="grantScopePreset === 'custom'"
+          v-model="grantCustomWindows"
+          :label="t('cardResetScope')"
+          :empty-text="t('nothingYet')"
+          :items="windowChoices()"
+        />
+        <OaNumberField
+          v-model="grantCount"
+          :label="t('grantCards')"
+          :min="1"
+          :hint="t('grantCardsHint')"
+        />
+        <!-- The date and its shortcuts are one control, so one row. -->
+        <div class="oa-field-with-presets">
+          <OaTextField
+            v-model="grantExpiresAt"
+            :label="t('grantCardExpiry')"
+            :hint="t('grantCardExpiryHint')"
+            type="datetime-local"
+            required
+          />
+          <ExpiryPresets @pick="grantExpiresAt = $event" />
+        </div>
+        <OaRow>
+          <button
+            type="button"
+            class="oa-btn small"
+            :disabled="!movableCards || rescheduling"
+            @click="reschedule()"
+          >{{ t('rescheduleCards', { count: movableCards }) }}</button>
+          <button type="button" class="oa-btn small primary" :disabled="granting" @click="grant">
+            {{ t('grantCards') }}
+          </button>
+        </OaRow>
+        <p v-if="grantLabel" class="oa-group-flash ok" role="status">{{ grantLabel }}</p>
+        <p v-if="rescheduleLabel" class="oa-group-flash ok" role="status">{{ rescheduleLabel }}</p>
+        <p class="oa-field-hint">{{ t('rescheduleCardsHint') }}</p>
+      </AdminControlCard>
 
-      <OaFormSection :title="t('secProfile')" />
-      <!-- Masking these would break editing them, so the value stays real and
-           only its focus state decides whether it can be read: blurred until
-           the operator actually clicks in, same as a screen share would need. -->
-      <OaTextField v-model="form.nickname" :class="{ 'oa-safe-blur': isMasked('users') }" :label="t('nickname')" :max-length="32" />
-      <OaTextField v-model="form.email" :class="{ 'oa-safe-blur': isMasked('users') }" :label="t('email')" type="email" />
-      <OaAccountFields v-model="form.fields" :class="{ 'oa-safe-blur': isMasked('users') }" :plan="fieldPlan" />
-      <OaTextArea v-model="form.bio" :label="t('bio')" :rows="2" />
-      <OaTextField
-        v-model="form.avatar"
-        :class="{ 'oa-safe-blur': isMasked('users') }"
-        :label="t('avatar')"
-        :placeholder="t('avatarPlaceholder')"
-        :hint="t('avatarHint')"
-      />
+      <AdminControlCard id="secProfile" :title="t('secProfile')">
+        <!-- Masking these would break editing them, so the value stays real
+             and only its focus state decides whether it can be read: blurred
+             until the operator actually clicks in, same as a screen share
+             would need. -->
+        <OaTextField v-model="form.nickname" :class="{ 'oa-safe-blur': isMasked('users') }" :label="t('nickname')" :max-length="32" />
+        <OaTextField v-model="form.email" :class="{ 'oa-safe-blur': isMasked('users') }" :label="t('email')" type="email" />
+        <OaAccountFields v-model="form.fields" :class="{ 'oa-safe-blur': isMasked('users') }" :plan="fieldPlan" />
+        <OaTextArea v-model="form.bio" :label="t('bio')" :rows="2" />
+        <OaTextField
+          v-model="form.avatar"
+          :class="{ 'oa-safe-blur': isMasked('users') }"
+          :label="t('avatar')"
+          :placeholder="t('avatarPlaceholder')"
+          :hint="t('avatarHint')"
+        />
+      </AdminControlCard>
 
-      <OaFormSection :title="t('secAccess')" />
-      <OaSelectField
-        v-if="canAdmin('administrators')"
-        v-model="form.role"
-        :label="t('role')"
-        :hint="self ? t('cannotDemoteSelf') : undefined"
-        :options="[
-          { value: 'user', label: t('roleUser') },
-          { value: 'admin', label: t('roleAdmin') },
-          ...(isSuperAdmin ? [{ value: 'super_admin' as const, label: t('superAdmin') }] : []),
-        ]"
-      />
-      <OaCheckList
-        v-if="canAdmin('administrators') && form.role === 'admin'"
-        v-model="form.permissions"
-        :label="t('adminPermissions')"
-        :hint="t('adminPermissionsHint')"
-        :items="ADMIN_PERMISSIONS.filter((entry) => canAdmin(entry.value)).map((entry) => ({ value: entry.value, label: t(entry.label) }))"
-        :empty-text="t('permissionDeniedTitle')"
-      />
-      <OaSelectField
-        v-model="form.status"
-        :label="t('status')"
-        :hint="t('disableHint')"
-        :options="[
-          { value: 'active', label: t('statusActive') },
-          { value: 'disabled', label: t('statusDisabled') },
-        ]"
-      />
-      <OaTextField
-        v-if="form.status === 'disabled'"
-        v-model="form.banReason"
-        :label="t('banReason')"
-        :placeholder="t('banReasonPlaceholder')"
-        :hint="t('banReasonHint')"
-        :max-length="500"
-      />
-      <OaSelectField
-        v-model="form.group"
-        :label="t('group')"
-        :options="groups.map((entry) => ({ value: entry.id, label: entry.name }))"
-        @update:model-value="form.groupExpiresAt = ''"
-      />
-      <OaTextField
-        v-model="form.groupExpiresAt"
-        type="datetime-local"
-        :label="t('membershipExpiry')"
-        :hint="t('membershipExpiryHint')"
-      />
-      <ExpiryPresets permanent @pick="form.groupExpiresAt = $event" />
-      <OaSwitchField
-        v-model="form.apiRestricted"
-        :label="t('apiRestricted')"
-        :hint="t('apiRestrictedHint')"
-        @update:model-value="apiRestrictionTouched = true"
-      />
-      <OaNumberField
-        v-if="form.apiRestricted"
-        v-model="form.apiRestrictionHours"
-        :label="t('apiRestrictionHours')"
-        :hint="t('apiRestrictionHoursHint')"
-        :min="0"
-        :max="8760"
-        @update:model-value="apiRestrictionTouched = true"
-      />
-      <OaTextField
-        v-model="form.newPassword"
-        :label="t('setNewPassword')"
-        type="password"
-        :placeholder="t('keepPassword')"
-        :hint="t('resetPasswordHint')"
-      />
-      <div class="oa-field">
-        <span class="oa-field-label">{{ t('colTwoFactor') }}</span>
-        <div class="oa-2fa-admin-row">
-          <OaBadge :tone="account.two_factor_at ? 'default' : 'muted'">
-            {{ account.two_factor_at ? t('twoFactorOn') : t('twoFactorOff') }}
-          </OaBadge>
-          <span v-if="account.two_factor_at" class="oa-field-hint">
-            {{ t('twoFactorOnSince', { date: absoluteTime(account.two_factor_at) }) }}
-          </span>
+      <AdminControlCard id="secAccess" :title="t('secAccess')">
+        <OaSelectField
+          v-if="canAdmin('administrators')"
+          v-model="form.role"
+          :label="t('role')"
+          :hint="self ? t('cannotDemoteSelf') : undefined"
+          :options="roleChoices"
+        />
+        <OaCheckList
+          v-if="canAdmin('administrators') && form.role === 'admin'"
+          v-model="form.permissions"
+          :label="t('adminPermissions')"
+          :hint="t('adminPermissionsHint')"
+          :items="ADMIN_PERMISSIONS.filter((entry) => canAdmin(entry.value)).map((entry) => ({ value: entry.value, label: t(entry.label) }))"
+          :empty-text="t('permissionDeniedTitle')"
+        />
+        <OaSelectField
+          v-model="form.group"
+          :label="t('group')"
+          :options="groups.map((entry) => ({ value: entry.id, label: entry.name }))"
+          @update:model-value="form.groupExpiresAt = ''"
+        />
+        <div class="oa-field-with-presets">
+          <OaTextField
+            v-model="form.groupExpiresAt"
+            type="datetime-local"
+            :label="t('membershipExpiry')"
+            :hint="t('membershipExpiryHint')"
+          />
+          <ExpiryPresets permanent @pick="form.groupExpiresAt = $event" />
+        </div>
+        <OaSwitchField
+          v-model="form.apiRestricted"
+          :label="t('apiRestricted')"
+          :hint="t('apiRestrictedHint')"
+          @update:model-value="apiRestrictionTouched = true"
+        />
+        <OaNumberField
+          v-if="form.apiRestricted"
+          v-model="form.apiRestrictionHours"
+          :label="t('apiRestrictionHours')"
+          :hint="t('apiRestrictionHoursHint')"
+          :min="0"
+          :max="8760"
+          @update:model-value="apiRestrictionTouched = true"
+        />
+      </AdminControlCard>
+
+      <AdminControlCard :title="t('secSecurity')">
+        <OaTextField
+          v-model="form.newPassword"
+          :label="t('setNewPassword')"
+          type="password"
+          :placeholder="t('keepPassword')"
+          :hint="t('resetPasswordHint')"
+        />
+        <OaRow
+          :title="t('colTwoFactor')"
+          :meta="account.two_factor_at
+            ? t('twoFactorOnSince', { date: absoluteTime(account.two_factor_at) })
+            : t('twoFactorOff')"
+        >
           <OaConfirmButton
             v-if="account.two_factor_at && !self"
-            class="oa-btn"
+            class="oa-btn small"
             :label="t('twoFactorResetLabel')"
             :armed-label="t('confirmWord')"
             :armed-title="t('twoFactorResetConfirm', { name: maskUser(account.username) })"
@@ -1114,135 +1462,125 @@ const state = { q: '', role: '', status: '', group: '' };
             :disabled="busy"
             @confirm="resetTwoFactor"
           />
-        </div>
-        <span v-if="account.two_factor_at && !self" class="oa-field-hint">{{ t('twoFactorResetHint') }}</span>
-        <span v-if="twoFactorFlash" class="oa-field-hint" role="status">{{ twoFactorFlash }}</span>
-      </div>
+          <OaBadge v-else :tone="account.two_factor_at ? 'default' : 'muted'">
+            {{ account.two_factor_at ? t('twoFactorOn') : t('twoFactorOff') }}
+          </OaBadge>
+        </OaRow>
+        <p v-if="account.two_factor_at && !self" class="oa-field-hint">{{ t('twoFactorResetHint') }}</p>
+        <p v-if="twoFactorFlash" class="oa-group-flash ok" role="status">{{ twoFactorFlash }}</p>
+      </AdminControlCard>
 
-      <OaFormSection :title="t('secAllowanceOverride')" :hint="t('allowanceOverrideHint')" />
-      <OaSwitchField
-        v-model="unlimitedQuota"
-        :label="t('unlimitedQuota')"
-        :hint="t('unlimitedQuotaHint')"
-      />
-      <OaNumberField
-        v-model="form.rpm"
-        :label="t('requestsPerMinute')"
-        :placeholder="t('inherit')"
-        :min="0"
-      />
-      <OaNumberField
-        v-model="form.tpm"
-        :label="t('tokensPerMinute')"
-        :placeholder="t('inherit')"
-        :min="0"
-      />
-      <template v-for="kind in WINDOWS" :key="kind">
-        <OaFormSection :title="kind" />
+      <AdminControlCard id="secAllowanceOverride" :title="t('secAllowanceOverride')" :hint="t('allowanceOverrideHint')">
         <OaSwitchField
-          v-model="form.windows[kind].override"
-          :label="t('overrideWindow', { window: kind })"
+          v-model="unlimitedQuota"
+          :label="t('unlimitedQuota')"
+          :hint="t('unlimitedQuotaHint')"
         />
-        <OaSwitchField v-model="form.windows[kind].enabled" :label="t('enforceIt')" />
         <OaNumberField
-          v-model="form.windows[kind].requests"
-          :label="t('limitRequests')"
-          :placeholder="t('noLimit')"
+          v-model="form.rpm"
+          :label="t('requestsPerMinute')"
+          :placeholder="t('inherit')"
           :min="0"
         />
         <OaNumberField
-          v-model="form.windows[kind].tokens"
-          :label="t('limitTokens')"
-          :placeholder="t('noLimit')"
+          v-model="form.tpm"
+          :label="t('tokensPerMinute')"
+          :placeholder="t('inherit')"
           :min="0"
         />
-        <CreditsField v-model="form.windows[kind].credits" />
-      </template>
+        <!-- Each window's numbers only once it is overridden: three windows
+             of four fields each, all showing, buried the switch that decides
+             whether any of them count. -->
+        <template v-for="kind in WINDOWS" :key="kind">
+          <OaSwitchField
+            v-model="form.windows[kind].override"
+            :label="t('overrideWindow', { window: kind })"
+          />
+          <template v-if="form.windows[kind].override">
+            <OaSwitchField v-model="form.windows[kind].enabled" :label="t('enforceIt')" />
+            <OaNumberField
+              v-model="form.windows[kind].requests"
+              :label="t('limitRequests')"
+              :placeholder="t('noLimit')"
+              :min="0"
+            />
+            <OaNumberField
+              v-model="form.windows[kind].tokens"
+              :label="t('limitTokens')"
+              :placeholder="t('noLimit')"
+              :min="0"
+            />
+            <CreditsField v-model="form.windows[kind].credits" />
+          </template>
+        </template>
+      </AdminControlCard>
 
-      <OaFormSection :title="t('apiKeys')" :hint="t('adminKeysHint')" />
-      <div class="oa-keys-list">
-        <p v-if="keys === null" class="oa-menu-empty">{{ t('loading') }}</p>
-        <p v-else-if="!keys.length" class="oa-menu-empty">{{ t('keysEmpty') }}</p>
-        <div v-for="key in keys ?? []" v-else :key="key.id" class="oa-key-row">
-          <div class="oa-key-info">
-            <div class="oa-key-title">
-              <span class="oa-key-name">{{ key.name }}</span>
-              <OaBadge
-                v-if="key.expires_at > 0 && key.expires_at <= Date.now()"
-                tone="danger"
-              >{{ t('keyExpired') }}</OaBadge>
-            </div>
-            <div class="oa-key-meta">
+      <AdminControlCard :title="t('apiKeys')" :hint="t('adminKeysHint')">
+        <OaRow v-if="keysError" :meta="keysError" />
+        <OaRow v-else-if="keys === null" :meta="t('loading')" />
+        <OaRow v-else-if="!keys.length" :meta="t('keysEmpty')" />
+        <OaRow v-for="key in keys ?? []" v-else :key="key.id">
+          <template #text>
+            <span class="oa-group-row-title">
+              {{ key.name }}
+              <OaBadge v-if="key.expires_at > 0 && key.expires_at <= Date.now()" tone="danger">{{ t('keyExpired') }}</OaBadge>
+            </span>
+            <span class="oa-group-row-meta">
               <code class="oa-key-prefix">{{ maskCredential(key.prefix) }}…</code>
-              <span>
-                {{ key.expires_at
-                  ? t('keyExpiresAt', { when: absoluteTime(key.expires_at) })
-                  : t('keyNoExpiry') }}
-              </span>
-              <span>
-                {{ key.last_used_at
-                  ? t('keyLastUsed', { when: relativeTime(key.last_used_at) })
-                  : t('keyNeverUsed') }}
-              </span>
-            </div>
-          </div>
+              · {{ key.expires_at ? t('keyExpiresAt', { when: absoluteTime(key.expires_at) }) : t('keyNoExpiry') }}
+              · {{ key.last_used_at ? t('keyLastUsed', { when: relativeTime(key.last_used_at) }) : t('keyNeverUsed') }}
+            </span>
+          </template>
           <!-- Revoking somebody else's credential asks first, in place, the
                way every other irreversible action in this interface does. -->
-          <div class="oa-key-actions">
-            <OaConfirmButton
-              class="oa-icon-btn danger"
-              :armed-label="t('keyRevokeConfirm')"
-              :armed-title="t('keyRevoke')"
-              :resting-title="t('keyRevoke')"
-              @confirm="revokeKey(key)"
-            >
-              <IconTrash :size="15" />
-            </OaConfirmButton>
-          </div>
-        </div>
-      </div>
+          <OaConfirmButton
+            class="oa-icon-btn danger"
+            :armed-label="t('keyRevokeConfirm')"
+            :armed-title="t('keyRevoke')"
+            :resting-title="t('keyRevoke')"
+            @confirm="revokeKey(key)"
+          >
+            <IconTrash :size="15" />
+          </OaConfirmButton>
+        </OaRow>
+      </AdminControlCard>
 
-      <OaFormSection :title="t('secDevices')" :hint="t('adminSessionsHint')" />
-      <div class="oa-keys-list">
-        <p v-if="sessionsError" class="oa-menu-empty">{{ sessionsError }}</p>
-        <p v-else-if="sessions === null" class="oa-menu-empty">{{ t('loading') }}</p>
-        <p v-else-if="!sessions.length" class="oa-menu-empty">{{ t('devicesEmpty') }}</p>
-        <div v-for="deviceSession in sessions ?? []" v-else :key="deviceSession.id" class="oa-key-row">
-          <div class="oa-key-info">
-            <div class="oa-key-title">
-              <span class="oa-key-name">{{ describeUserAgent(deviceSession.user_agent) }}</span>
-            </div>
-            <div class="oa-key-meta">
-              <span>{{ maskLog(deviceSession.ip) }}</span>
-              <span>{{ t('deviceLastActive', { when: relativeTime(deviceSession.last_seen_at) }) }}</span>
-            </div>
-          </div>
+      <AdminControlCard :title="t('secDevices')" :hint="t('adminSessionsHint')">
+        <OaRow v-if="sessionsError" :meta="sessionsError" />
+        <OaRow v-else-if="sessions === null" :meta="t('loading')" />
+        <OaRow v-else-if="!sessions.length" :meta="t('devicesEmpty')" />
+        <OaRow
+          v-for="deviceSession in sessions ?? []"
+          v-else
+          :key="deviceSession.id"
+          :title="describeUserAgent(deviceSession.user_agent)"
+          :meta="`${maskLog(deviceSession.ip)} · ${t('deviceLastActive', { when: relativeTime(deviceSession.last_seen_at) })}`"
+        >
           <!-- Signing somebody else out asks first, in place, the way every
                other irreversible action in this interface does. -->
-          <div class="oa-key-actions">
-            <OaConfirmButton
-              class="oa-icon-btn danger"
-              :armed-label="t('confirmWord')"
-              :armed-title="t('deviceSignOutConfirm')"
-              :resting-title="t('deviceSignOut')"
-              :disabled="revokingSession === deviceSession.id"
-              @confirm="revokeSession(deviceSession)"
-            >
-              <IconTrash :size="15" />
-            </OaConfirmButton>
-          </div>
-        </div>
-      </div>
-      <OaConfirmButton
-        v-if="sessions && sessions.length > 1"
-        class="oa-btn"
-        :label="t('signOutEverywhere')"
-        :armed-label="t('confirmWord')"
-        :armed-title="t('signOutEverywhereConfirm', { name: maskUser(account.username) })"
-        :resting-title="t('signOutEverywhere')"
-        :disabled="signOutAllBusy"
-        @confirm="signOutEverywhere"
-      />
+          <OaConfirmButton
+            class="oa-icon-btn danger"
+            :armed-label="t('confirmWord')"
+            :armed-title="t('deviceSignOutConfirm')"
+            :resting-title="t('deviceSignOut')"
+            :disabled="revokingSession === deviceSession.id"
+            @confirm="revokeSession(deviceSession)"
+          >
+            <IconTrash :size="15" />
+          </OaConfirmButton>
+        </OaRow>
+        <OaRow v-if="sessions && sessions.length > 1">
+          <OaConfirmButton
+            class="oa-btn small"
+            :label="t('signOutEverywhere')"
+            :armed-label="t('confirmWord')"
+            :armed-title="t('signOutEverywhereConfirm', { name: maskUser(account.username) })"
+            :resting-title="t('signOutEverywhere')"
+            :disabled="signOutAllBusy"
+            @confirm="signOutEverywhere"
+          />
+        </OaRow>
+      </AdminControlCard>
 
       <!-- A plugin's account-ending actions, never offered on oneself: the
            same rule every other one here keeps. -->
@@ -1258,17 +1596,22 @@ const state = { q: '', role: '', status: '', group: '' };
         />
       </template>
 
-      <OaFormSection :title="t('secConversations')" :hint="t('conversationsHint')" />
-      <button type="button" class="oa-btn" @click="openConversations">
-        {{ t('viewConversations') }}
-      </button>
+      <AdminControlCard id="secConversations" :title="t('secConversations')">
+        <OaRow :meta="t('conversationsHint')">
+          <button type="button" class="oa-btn small" @click="openConversations">
+            {{ t('viewConversations') }}
+          </button>
+        </OaRow>
+      </AdminControlCard>
     </template>
 
     <template v-else-if="mode === 'conversations'">
-      <p v-if="conversations === null" class="oa-field-hint">{{ t('loading') }}</p>
-      <p v-else-if="!conversations.length" class="oa-field-hint">{{ t('noConversations') }}</p>
+      <!-- A failed read leaves the list unloaded: neither the loading line nor an
+           empty list is true then, and the error above says what happened. -->
+      <p v-if="conversations === null && !panelError" class="oa-field-hint">{{ t('loading') }}</p>
+      <p v-else-if="conversations && !conversations.length" class="oa-field-hint">{{ t('noConversations') }}</p>
       <OaTable
-        v-else
+        v-else-if="conversations"
         :pagination="{ ...conversationPage, total: conversationTotal }"
         @page="changeConversationPage"
         :columns="conversationColumns"
@@ -1280,13 +1623,20 @@ const state = { q: '', role: '', status: '', group: '' };
     </template>
 
     <template v-else-if="mode === 'transcript'">
-      <p v-if="transcript === null" class="oa-field-hint">{{ t('loading') }}</p>
-      <div v-else class="oa-transcript">
-        <div v-for="message in transcript" :key="message.id" class="oa-transcript-turn">
+      <p v-if="transcript === null && !panelError" class="oa-field-hint">{{ t('loading') }}</p>
+      <div v-else-if="transcript" class="oa-transcript">
+        <div
+          v-for="message in transcript"
+          :key="message.id"
+          class="oa-transcript-turn ai-msg"
+          :class="message.role === 'user' ? 'ai-msg-user' : 'ai-msg-assistant'"
+        >
           <span class="oa-transcript-role">{{ turnLabel(message) }}</span>
-          <!-- Plain text, not markdown: this is an audit view of what was
-               stored, and a renderer would be interpreting it. -->
-          {{ message.error || message.content || t('emptyMessage') }}
+          <div v-if="message.error" class="ai-chat-error">{{ message.error }}</div>
+          <div v-else-if="message.role === 'user'" class="ai-bubble">
+            {{ message.content || t('emptyMessage') }}
+          </div>
+          <OaMarkdown v-else class="ai-answer" :text="message.content || t('emptyMessage')" />
         </div>
       </div>
     </template>

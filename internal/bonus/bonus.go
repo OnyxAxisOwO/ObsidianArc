@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -26,6 +27,8 @@ const (
 	KindBonus Kind = "bonus"
 	// KindReserve is spent only after everything else is, and has no switch.
 	KindReserve Kind = "reserve"
+	// KindShared is a pool: one balance every account draws on. See pool.go.
+	KindShared Kind = "shared"
 )
 
 type Mode string
@@ -37,7 +40,28 @@ const (
 	ModeOn Mode = "on"
 	// ModeOff keeps the bar for when everything else is spent.
 	ModeOff Mode = "off"
+	// ModeOnly is a pool's alone: its models are paid for by the pool and
+	// nothing else, and refused when it cannot.
+	ModeOnly Mode = "only"
 )
+
+// switchedOn is whether an account has a bar switched on. Only ModeUser lets
+// the account choose, falling back to the bar's default until it does. A pool
+// in ModeOnly is not switched on: it is never drawn on in order, only paid for
+// alone, so nothing reads the answer for it. Grants never sit on a pool.
+func switchedOn(mode Mode, defOn bool, enabled *bool) bool {
+	switch mode {
+	case ModeOn:
+		return true
+	case ModeUser:
+		if enabled != nil {
+			return *enabled
+		}
+		return defOn
+	default:
+		return false
+	}
+}
 
 // Bar is the rules; what an account holds in it is Grants.
 type Bar struct {
@@ -55,6 +79,8 @@ type Bar struct {
 	CreatedBy        string `json:"created_by"`
 	CreatedAt        int64  `json:"created_at"`
 	UpdatedAt        int64  `json:"updated_at"`
+	// A shared pool's balance and rules; nil on every other kind.
+	Pool *Pool `json:"pool,omitempty"`
 }
 
 // covers reports whether a request for modelID may spend this bar.
@@ -102,6 +128,21 @@ var (
 	ErrNotChoosable = errors.New("bonus: that bar is not the account's to switch")
 	// ErrInsufficient is a reservation the bar could not cover whole.
 	ErrInsufficient = errors.New("bonus: not enough to cover it")
+	// ErrBarOff is a grant into a bar whose switch is off. It wraps ErrNotFound
+	// because the check-in and plugin paths have always reported a bar that
+	// cannot be granted into as not found; TranslateError checks for it first so
+	// the administrator is told which it was.
+	ErrBarOff = fmt.Errorf("%w: that bar is switched off", ErrNotFound)
+	// ErrNoAccount is a recipient named by a username or ID nobody holds. It
+	// wraps ErrNotFound as the other lookups do; TranslateError checks for it
+	// first, so the administrator hears that the name is wrong and not that the
+	// bonus is missing.
+	ErrNoAccount = fmt.Errorf("%w: no account has that name or ID", ErrNotFound)
+	// ErrModelsUnreadable is a save over a bar whose stored model list does not
+	// parse. It is refused rather than written, so the restriction stays as it is
+	// in the database instead of being replaced by the empty list the screen
+	// shows for it.
+	ErrModelsUnreadable = errors.New("bonus: a bar's stored model list cannot be read")
 )
 
 // Limits on what one grant may be: nothing legitimate is beyond them, and a
@@ -114,7 +155,12 @@ const (
 	maxNote = 200
 )
 
-type Store struct{ db *database.DB }
+type Store struct {
+	db *database.DB
+	// The zone a pool's day, week and month are counted in; nil is UTC. The
+	// wiring sets it to the check-in's, so "a day" means one thing on the site.
+	Location func() *time.Location
+}
 
 func NewStore(db *database.DB) *Store { return &Store{db: db} }
 
@@ -136,20 +182,39 @@ func scanBar(row scanner) (Bar, error) {
 		}
 		return Bar{}, fmt.Errorf("bonus: scan bar: %w", err)
 	}
-	b.ModelIDs = parseModels(models)
+	b.ModelIDs = modelsForScreen(models)
 	return b, nil
 }
 
-func parseModels(raw string) []string {
+// parseModels reads a bar's stored model list. An empty cell is a bar that
+// covers every model. A cell that does not parse is an error and not a bar
+// that covers every model: covers reads an empty list as every model, so a
+// damaged restriction must not come back as no restriction at all.
+func parseModels(raw string) ([]string, error) {
 	out := []string{}
 	if strings.TrimSpace(raw) == "" {
-		return out
+		return out, nil
 	}
-	_ = json.Unmarshal([]byte(raw), &out)
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil, fmt.Errorf("bonus: model list: %w", err)
+	}
 	if out == nil {
-		out = []string{}
+		return nil, errors.New("bonus: model list is null")
 	}
-	return out
+	return out, nil
+}
+
+// modelsForScreen is parseModels for the screens that list bars. A damaged row
+// is logged and shown with no model list, which reads as every model: the
+// screen is wrong about that bar, but failing the whole list over one row is
+// worse. Spending does not use this; candidates refuses such a grant instead.
+func modelsForScreen(raw string) []string {
+	ids, err := parseModels(raw)
+	if err != nil {
+		slog.Error("bonus: a bar's model list cannot be read", "error", err)
+		return []string{}
+	}
+	return ids
 }
 
 func encodeModels(ids []string) string {
@@ -180,13 +245,27 @@ func (b *Bar) normalise() error {
 	if b.ToggleMode == "" {
 		b.ToggleMode = ModeUser
 	}
-	if b.Kind != KindBonus && b.Kind != KindReserve {
+	if b.Kind != KindBonus && b.Kind != KindReserve && b.Kind != KindShared {
 		return ErrInvalidBar
 	}
 	switch b.ToggleMode {
 	case ModeUser, ModeOn, ModeOff:
+	case ModeOnly:
+		if b.Kind != KindShared {
+			return ErrInvalidBar
+		}
 	default:
 		return ErrInvalidBar
+	}
+	if b.Kind == KindShared {
+		if b.Pool == nil {
+			b.Pool = &Pool{}
+		}
+		if err := b.Pool.normalise(); err != nil {
+			return err
+		}
+	} else {
+		b.Pool = nil
 	}
 	if b.Kind == KindReserve {
 		// Nothing to choose: it is the last thing spent, and always.
@@ -210,25 +289,60 @@ func (s *Store) CreateBar(ctx context.Context, bar Bar, createdBy string) (Bar, 
 	if err := bar.normalise(); err != nil {
 		return Bar{}, err
 	}
-	now := time.Now().UnixMilli()
+	at := time.Now()
+	now := at.UnixMilli()
 	bar.ID, bar.CreatedBy, bar.CreatedAt, bar.UpdatedAt = id.New(), createdBy, now, now
 	bar.Active = true
-	if _, err := s.db.Exec(ctx, `INSERT INTO bonus_bars (`+barColumns+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		bar.ID, bar.Name, bar.Description, bar.Kind, bar.ToggleMode, bar.DefaultOn, bar.ShowTotal,
-		encodeModels(bar.ModelIDs), bar.DefaultExpiresAt, bar.Active, bar.CreatedBy, bar.CreatedAt, bar.UpdatedAt); err != nil {
-		return Bar{}, fmt.Errorf("bonus: create bar: %w", err)
+	err := s.db.Tx(ctx, func(tx *database.Tx) error {
+		if _, err := tx.Exec(ctx, `INSERT INTO bonus_bars (`+barColumns+`)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			bar.ID, bar.Name, bar.Description, bar.Kind, bar.ToggleMode, bar.DefaultOn, bar.ShowTotal,
+			encodeModels(bar.ModelIDs), bar.DefaultExpiresAt, bar.Active, bar.CreatedBy, bar.CreatedAt, bar.UpdatedAt); err != nil {
+			return fmt.Errorf("bonus: create bar: %w", err)
+		}
+		if bar.Pool != nil {
+			return s.insertPool(ctx, tx, bar.ID, *bar.Pool, at)
+		}
+		return nil
+	})
+	if err != nil {
+		return Bar{}, err
 	}
 	return s.Bar(ctx, nil, bar.ID)
 }
 
 // UpdateBar replaces a bar's rules. What was granted is untouched: a rule
-// change reaches everyone at once, an amount does not.
-func (s *Store) UpdateBar(ctx context.Context, bar Bar) (Bar, error) {
+// change reaches everyone at once, an amount does not. A caller that read the
+// bar to decide this write passes its transaction, so the read and the write
+// are one unit behind the row lock it took first.
+func (s *Store) UpdateBar(ctx context.Context, q database.Queryer, bar Bar) (Bar, error) {
+	if q == nil {
+		q = s.db
+	}
 	if err := bar.normalise(); err != nil {
 		return Bar{}, err
 	}
-	res, err := s.db.Exec(ctx, `UPDATE bonus_bars SET name = ?, description = ?, kind = ?, toggle_mode = ?,
+	// The stored cell is read as written, not through modelsForScreen. The screen
+	// shows a damaged list as no list, which reads as every model, and the form
+	// sends that back: saving over it would make a restricted bar spendable on
+	// every model. Refusing leaves the damage where the operator can see it.
+	var (
+		raw  string
+		kind Kind
+	)
+	if err := q.QueryRow(ctx, `SELECT model_ids, kind FROM bonus_bars WHERE id = ?`, bar.ID).Scan(&raw, &kind); err != nil {
+		if database.IsNotFound(err) {
+			return Bar{}, ErrNotFound
+		}
+		return Bar{}, fmt.Errorf("bonus: read bar: %w", err)
+	}
+	if _, err := parseModels(raw); err != nil {
+		return Bar{}, fmt.Errorf("%w: %w", ErrModelsUnreadable, err)
+	}
+	if (kind == KindShared) != (bar.Kind == KindShared) {
+		return Bar{}, ErrKindChange
+	}
+	res, err := q.Exec(ctx, `UPDATE bonus_bars SET name = ?, description = ?, kind = ?, toggle_mode = ?,
 		default_on = ?, show_total = ?, model_ids = ?, default_expires_at = ?, active = ?, updated_at = ?
 		WHERE id = ?`,
 		bar.Name, bar.Description, bar.Kind, bar.ToggleMode, bar.DefaultOn, bar.ShowTotal,
@@ -239,12 +353,22 @@ func (s *Store) UpdateBar(ctx context.Context, bar Bar) (Bar, error) {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return Bar{}, ErrNotFound
 	}
-	return s.Bar(ctx, nil, bar.ID)
+	if bar.Pool != nil {
+		if err := s.updatePoolRules(ctx, q, bar.ID, *bar.Pool, time.Now()); err != nil {
+			return Bar{}, err
+		}
+	}
+	return s.Bar(ctx, q, bar.ID)
 }
 
-// DeleteBar removes a bar and every grant in it.
-func (s *Store) DeleteBar(ctx context.Context, barID string) error {
-	res, err := s.db.Exec(ctx, `DELETE FROM bonus_bars WHERE id = ?`, barID)
+// DeleteBar removes a bar and every grant in it. A caller that checked the bar
+// before deleting it passes its transaction, so the check and the delete are
+// one unit under the lock it took first, as UpdateBar's callers do.
+func (s *Store) DeleteBar(ctx context.Context, q database.Queryer, barID string) error {
+	if q == nil {
+		q = s.db
+	}
+	res, err := q.Exec(ctx, `DELETE FROM bonus_bars WHERE id = ?`, barID)
 	if err != nil {
 		return fmt.Errorf("bonus: delete bar: %w", err)
 	}
@@ -258,7 +382,20 @@ func (s *Store) Bar(ctx context.Context, q database.Queryer, barID string) (Bar,
 	if q == nil {
 		q = s.db
 	}
-	return scanBar(q.QueryRow(ctx, `SELECT `+barColumns+` FROM bonus_bars WHERE id = ?`, barID))
+	bar, err := scanBar(q.QueryRow(ctx, `SELECT `+barColumns+` FROM bonus_bars WHERE id = ?`, barID))
+	if err != nil || bar.Kind != KindShared {
+		return bar, err
+	}
+	p, err := s.pool(ctx, q, barID)
+	if errors.Is(err, ErrNotFound) {
+		p, err = Pool{}, nil
+	}
+	if err != nil {
+		return Bar{}, err
+	}
+	p = p.current(time.Now(), s.loc())
+	bar.Pool = &p
+	return bar, nil
 }
 
 // Bars lists every bar, newest first, with how much has been granted and
@@ -284,10 +421,32 @@ func (s *Store) Bars(ctx context.Context) ([]BarSummary, error) {
 			&s.Granted, &s.Used, &s.Holders); err != nil {
 			return nil, fmt.Errorf("bonus: scan bar: %w", err)
 		}
-		s.ModelIDs = parseModels(models)
+		s.ModelIDs = modelsForScreen(models)
 		out = append(out, s)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	// A pool has no grants, so its figures are its balance and how many
+	// accounts drew on it today.
+	pools, err := s.pools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	drawers, err := s.drawersToday(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		if out[i].Kind != KindShared {
+			continue
+		}
+		p := pools[out[i].ID]
+		out[i].Pool = &p
+		out[i].Granted, out[i].Used, out[i].Holders = p.Amount, p.Used, drawers[out[i].ID]
+	}
+	return out, nil
 }
 
 // BarSummary is a bar with its totals, for the administrator's list.

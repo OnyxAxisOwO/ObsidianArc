@@ -3,9 +3,11 @@ package auth
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugingate"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
@@ -16,15 +18,21 @@ import (
 // predate plugins and every build has them; what only some instances run
 // arrives through these instead, so this package never names it.
 
-// The two doors a guard can stand in front of.
+// The doors a guard can stand in front of. Images is the generation lab: a
+// signed-in account spending provider money, which is the door a script
+// holding a stolen cookie goes for once sign-up has a challenge on it.
 const (
 	GuardRegister = "register"
 	GuardLogin    = "login"
+	GuardImages   = "images"
 )
+
+// GuardActions is every door, for the places that have to name them all.
+var GuardActions = []string{GuardRegister, GuardLogin, GuardImages}
 
 // GuardRequest is what a guard judges.
 type GuardRequest struct {
-	// GuardRegister or GuardLogin.
+	// GuardRegister, GuardLogin or GuardImages.
 	Action string
 	// What the browser sent under this guard's name, in the request's
 	// "guards" object. Empty when it sent nothing, which is the guard's to
@@ -69,70 +77,107 @@ type GuardRefusal struct {
 	Reason string
 }
 
-func (r *GuardRefusal) Error() string { return r.Err.Error() }
+// A plugin may leave Err empty, and formatting the refusal (a log line, say)
+// must not panic over it.
+func (r *GuardRefusal) Error() string {
+	switch {
+	case r.Err != nil:
+		return r.Err.Error()
+	case r.Reason != "":
+		return r.Reason
+	default:
+		return "auth: guard refused"
+	}
+}
+
 func (r *GuardRefusal) Unwrap() error { return r.Err }
 
 // AddGuard stands g in front of action. Called from a plugin's Setup, before
 // the server takes its first request; guards run in the order they were
 // added.
+//
+// A guard must name its plugin. The gate is what switches a plugin's guard off,
+// and a guard with no owner would be on for every instance, whatever its plugin
+// state, and could never be removed at runtime.
 func (s *Service) AddGuard(action string, g Guard) {
 	s.extMu.Lock()
 	defer s.extMu.Unlock()
-	switch action {
-	case GuardRegister:
-		s.signupGuards = append(s.signupGuards, g)
-	case GuardLogin:
-		s.loginGuards = append(s.loginGuards, g)
-	default:
+	if !validGuardAction(action) {
 		panic("auth: no such guard action " + action)
 	}
+	if g.Plugin == "" {
+		panic("auth: guard " + g.Name + " for " + action + " has no plugin")
+	}
+	if s.guards == nil {
+		s.guards = map[string][]Guard{}
+	}
+	s.guards[action] = append(s.guards[action], g)
 }
 
-// ReplaceGuards swaps everything plugin stood in front of the two doors for
-// register and login, in one step, so an update of a plugin that guards
+func validGuardAction(action string) bool {
+	for _, known := range GuardActions {
+		if action == known {
+			return true
+		}
+	}
+	return false
+}
+
+// ReplaceGuards swaps everything plugin stood in front of the doors for the
+// guards given, by action, in one step, so an update of a plugin that guards
 // sign-up never leaves the door unguarded between taking the old check away
 // and standing the new one there.
-func (s *Service) ReplaceGuards(plugin string, register, login []Guard) {
+//
+// It holds the guards to the rules AddGuard does, but refuses with an error
+// where AddGuard panics: this runs while the server serves, on an install or an
+// update, and a panic there would skip the caller's undo and leave a plugin
+// half attached. Nothing changes when it refuses. An unknown action would
+// otherwise be dropped without a word, and a guard owned by nobody would be on
+// whatever the gate said and beyond the reach of RemoveGuards.
+func (s *Service) ReplaceGuards(plugin string, added map[string][]Guard) error {
+	if plugin == "" {
+		return errors.New("auth: guards replaced for no plugin")
+	}
+	for action, guards := range added {
+		if !validGuardAction(action) {
+			return errors.New("auth: no such guard action " + action)
+		}
+		for _, g := range guards {
+			if g.Plugin != plugin {
+				return fmt.Errorf("auth: guard %s for %s belongs to %q, not %q", g.Name, action, g.Plugin, plugin)
+			}
+		}
+	}
+	s.replaceGuards(plugin, added)
+	return nil
+}
+
+func (s *Service) replaceGuards(plugin string, added map[string][]Guard) {
 	s.extMu.Lock()
 	defer s.extMu.Unlock()
-	swap := func(current, added []Guard) []Guard {
-		out := make([]Guard, 0, len(current)+len(added))
-		for _, g := range current {
+	next := make(map[string][]Guard, len(GuardActions))
+	for _, action := range GuardActions {
+		out := make([]Guard, 0, len(s.guards[action])+len(added[action]))
+		for _, g := range s.guards[action] {
 			if g.Plugin != plugin {
 				out = append(out, g)
 			}
 		}
-		return append(out, added...)
+		next[action] = append(out, added[action]...)
 	}
-	s.signupGuards, s.loginGuards = swap(s.signupGuards, register), swap(s.loginGuards, login)
+	s.guards = next
 }
 
-// RemoveGuards takes every guard plugin stood in front of either door away,
+// RemoveGuards takes every guard plugin stood in front of any door away,
 // for a plugin that is being removed while the server runs.
-func (s *Service) RemoveGuards(plugin string) {
-	s.extMu.Lock()
-	defer s.extMu.Unlock()
-	drop := func(guards []Guard) []Guard {
-		kept := make([]Guard, 0, len(guards))
-		for _, g := range guards {
-			if g.Plugin != plugin {
-				kept = append(kept, g)
-			}
-		}
-		return kept
-	}
-	s.signupGuards, s.loginGuards = drop(s.signupGuards), drop(s.loginGuards)
-}
+func (s *Service) RemoveGuards(plugin string) { s.replaceGuards(plugin, nil) }
 
 // guardsFor is a copy of the guards in front of action, so a guard can run —
 // and take as long as it likes — without the list being held.
 func (s *Service) guardsFor(action string) []Guard {
 	s.extMu.RLock()
 	defer s.extMu.RUnlock()
-	if action == GuardRegister {
-		return append([]Guard(nil), s.signupGuards...)
-	}
-	return append([]Guard(nil), s.loginGuards...)
+	return append([]Guard(nil), s.guards[action]...)
 }
 
 // SetPluginGate is how the server tells sign-up and sign-in which plugins are
@@ -148,7 +193,7 @@ type GuardInfo struct {
 // GuardsOf lists the guards plugin stood in front of either door.
 func (s *Service) GuardsOf(plugin string) []GuardInfo {
 	var out []GuardInfo
-	for _, action := range []string{GuardRegister, GuardLogin} {
+	for _, action := range GuardActions {
 		for _, g := range s.guardsFor(action) {
 			if g.Plugin == plugin {
 				out = append(out, GuardInfo{Action: action, Name: g.Name})
@@ -157,6 +202,27 @@ func (s *Service) GuardsOf(plugin string) []GuardInfo {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Action > out[j].Action })
 	return out
+}
+
+// CheckGuards is runGuards for a door outside this package — the generation
+// lab asks it before a picture is paid for. Only the refusal matters there:
+// a restriction is a sign-up's middle band and means nothing to an account
+// that already exists.
+func (s *Service) CheckGuards(ctx context.Context, action string, tokens map[string]string, ip, username string) error {
+	_, err := s.runGuards(ctx, action, tokens, ip, username)
+	return err
+}
+
+// CheckSignupGuards asks the plugin guards in front of sign-up whether a
+// sign-up may go ahead, for one that arrives without guard tokens. A provider's
+// redirect carries none, so each guard judges what it can see of the request,
+// and a guard that needs a token refuses.
+//
+// The verdict comes back because a guard can let a sign-up through and still
+// keep the account's API access closed. Register honours that, and so must
+// every other path that opens an account.
+func (s *Service) CheckSignupGuards(ctx context.Context, ip, username string) (Verdict, error) {
+	return s.runGuards(ctx, GuardRegister, nil, ip, username)
 }
 
 // runGuards asks each guard in turn and stops at the first refusal. The
@@ -175,13 +241,13 @@ func (s *Service) runGuards(ctx context.Context, action string, tokens map[strin
 			// the log has always covered: a failed sign-in already has the
 			// attempt limiter watching it, and recording each one would put
 			// every mistyped password's challenge in the operator's feed.
-			if action == GuardRegister && s.OnChallengeFailure != nil {
+			if action == GuardRegister && s.Hooks.OnChallengeFailure != nil {
 				reason := ""
 				var refusal *GuardRefusal
 				if errors.As(err, &refusal) {
 					reason = refusal.Reason
 				}
-				s.OnChallengeFailure(ctx, g.Event, ip, username, reason)
+				s.Hooks.OnChallengeFailure(ctx, g.Event, "plugin:"+g.Plugin, ip, username, reason)
 			}
 			return Verdict{}, err
 		}
@@ -211,14 +277,18 @@ func (h *Handlers) Extend(name string, fn func(firstAccount bool) map[string]any
 }
 
 // Advertise is Extend with nothing to say, and it never replaces a block a
-// plugin has already registered.
+// plugin has already registered. The check and the write share one lock: with
+// two, an Extend landing between them would be overwritten with nil.
 func (h *Handlers) Advertise(name string) {
-	h.extMu.RLock()
-	_, ok := h.extensions[name]
-	h.extMu.RUnlock()
-	if !ok {
-		h.Extend(name, nil)
+	h.extMu.Lock()
+	defer h.extMu.Unlock()
+	if _, ok := h.extensions[name]; ok {
+		return
 	}
+	if h.extensions == nil {
+		h.extensions = map[string]func(bool) map[string]any{}
+	}
+	h.extensions[name] = nil
 }
 
 // Unextend takes a plugin's block away, for one being removed while the
@@ -328,6 +398,25 @@ func (s *Service) checkFields(values map[string]string) error {
 // takenError is the error for a field the availability check found held.
 func takenError(key string) error {
 	return &user.FieldError{Key: key, Reason: user.ErrFieldTaken}
+}
+
+// refuseTaken is the availability check every path that names its own
+// username runs, as the error that check means. One spelling, so the order of
+// the answers — username, then address, then field — cannot differ between a
+// form sign-up and a provisioned one.
+func (s *Service) refuseTaken(ctx context.Context, q database.Queryer, username, email string, fields map[string]string) error {
+	usernameTaken, emailTaken, heldField, err := s.users.Exists(ctx, q, username, email, fields)
+	switch {
+	case err != nil:
+		return err
+	case usernameTaken:
+		return user.ErrUsernameTaken
+	case emailTaken:
+		return user.ErrEmailTaken
+	case heldField != "":
+		return takenError(heldField)
+	}
+	return nil
 }
 
 // FieldHTTPError is the response for a field refusal, coded by the field's

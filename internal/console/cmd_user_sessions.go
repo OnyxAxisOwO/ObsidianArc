@@ -88,12 +88,7 @@ func init() {
 			if _, _, err := rt.Call(http.MethodDelete, path, nil); err != nil {
 				return err
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已完成退出。\n")
-			} else {
-				rt.Printf("signed out.\n")
-			}
-			return nil
+			return rt.confirm(Text{EN: "signed out.", ZH: "已完成退出。"})
 		},
 	})
 }

@@ -42,6 +42,12 @@ func Bootstrap(
 
 func ensureGroup(ctx context.Context, db *database.DB, groups *group.Store) error {
 	return db.Tx(ctx, func(tx *database.Tx) error {
+		// Two instances booting against an empty table would both count zero
+		// and both insert "Default" under Postgres' default isolation. The
+		// settings upsert serialises them, as it does for the administrator.
+		if err := settings.Lock(ctx, tx); err != nil {
+			return err
+		}
 		count, err := groups.Count(ctx, tx)
 		if err != nil {
 			return err
@@ -63,6 +69,14 @@ func ensureGroup(ctx context.Context, db *database.DB, groups *group.Store) erro
 			// clicking, so a new instance offers it the way an upgraded one
 			// does through the column default.
 			AllowTerminal: true,
+			// CreateInput's zero value is the restrictive state, while the
+			// columns default these to true. Leaving one out here would
+			// withhold it from every new member of the default group, so a
+			// new instance matches what an upgraded one already grants.
+			APIAccess:                true,
+			AllowStats:               true,
+			AllowDeleteConversations: true,
+			ShowExpiry:               true,
 		})
 		if err != nil {
 			return fmt.Errorf("bootstrap: create default group: %w", err)
@@ -109,10 +123,9 @@ func ensureAdmin(
 	}
 
 	return db.Tx(ctx, func(tx *database.Tx) error {
-		// The re-check below used to stand on its own, with a comment saying
-		// it stopped two instances starting at once from both seeing an empty
-		// table. It did not: a plain count inside a transaction reads what is
-		// committed and blocks nobody, so under Postgres' default isolation
+		// The lock is what stops two instances starting at once from both
+		// seeing an empty table. A plain count inside a transaction reads what
+		// is committed and blocks nobody, so under Postgres' default isolation
 		// both would still see zero and both would insert.
 		if err := settings.Lock(ctx, tx); err != nil {
 			return err

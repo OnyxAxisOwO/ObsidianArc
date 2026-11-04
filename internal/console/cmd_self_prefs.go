@@ -108,10 +108,7 @@ func init() {
 			body.boolv(rt, "auto-use-reset-card", "auto_use_reset_card")
 
 			if len(body) == 0 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("没有需要修改的内容：请至少给出一个选项")
-				}
-				return rt.Errorf("nothing to change: give at least one flag")
+				return rt.Fail(Text{EN: "nothing to change: give at least one flag", ZH: "没有需要修改的内容：请至少给出一个选项"})
 			}
 
 			data, _, err := rt.Call(http.MethodPatch, "/api/preferences", map[string]any(body))
@@ -142,12 +139,7 @@ func init() {
 			if _, _, err := rt.Call(http.MethodDelete, "/api/preferences/wallpaper", nil); err != nil {
 				return err
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已删除。\n")
-			} else {
-				rt.Printf("deleted.\n")
-			}
-			return nil
+			return rt.confirm(Text{EN: "deleted.", ZH: "已删除。"})
 		},
 	})
 }
@@ -166,12 +158,7 @@ func renderPreferences(rt *Runtime, data any) error {
 	// JSON server-side (internal/user/preferences.go), so table mode reads
 	// it by iterating the map rather than by naming each field twice.
 	if len(prefs) == 0 && !rt.effectiveJSON() {
-		if rt.Session.Lang == "zh" {
-			rt.Printf("尚未保存任何偏好设置，当前均为界面默认值。\n")
-		} else {
-			rt.Printf("no preferences saved yet; interface defaults are in effect.\n")
-		}
-		return nil
+		return rt.confirm(Text{EN: "no preferences saved yet; interface defaults are in effect.", ZH: "尚未保存任何偏好设置，当前均为界面默认值。"})
 	}
 
 	keys := make([]string, 0, len(prefs))

@@ -6,9 +6,8 @@
 // The nesting: /settings, /keys, /usage, /feedback and /about are children of
 // `/`, not pages of their own, because that is what they are on screen — a
 // column that opens beside the conversation, with the chat still behind it.
-// The hand-written router had each of those screens call `renderChatPage` first
-// and open a panel over the row it returned; expressing it as nesting is the
-// same result with the chat mounted once instead of rebuilt four times.
+// Nesting keeps the chat mounted once behind all of them. A screen that drew
+// the chat itself would rebuild it on every move between these panels.
 //
 // The guards: which pages need a session is one readable list rather than a
 // check at the top of each screen. The server enforces the same rules on
@@ -24,9 +23,14 @@
 // will, and its emulator, history and ANSI decoder would otherwise be on the
 // first paint of everyone who only came to chat.
 
-import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router';
+import {
+  createRouter, createWebHistory, type RouteLocationNormalized, type RouteLocationRaw, type RouteRecordRaw,
+} from 'vue-router';
 import { safeNext, serverOwned } from '@/lib/next';
-import { currentUser, isAdmin, canAdmin, pendingSecondFactor, siteInfo } from '@/stores/session';
+import { BACKOFFICE_PANEL_PARAM } from '@/composables/usePanelExit';
+import { primeBackofficeLanguage } from '@/composables/useI18n';
+import { SESSION_LOST } from '@/api/session-ended';
+import { currentUser, pendingSecondFactor, siteInfo } from '@/stores/session';
 import AboutPanel from '@/views/AboutPanel.vue';
 import ArchivePanel from '@/views/ArchivePanel.vue';
 import AuthView from '@/views/AuthView.vue';
@@ -43,7 +47,9 @@ import TwoFactorEnrolView from '@/views/TwoFactorEnrolView.vue';
 import UptimePanel from '@/views/UptimePanel.vue';
 import LeaderboardPanel from '@/views/LeaderboardPanel.vue';
 import UsagePanel from '@/views/UsagePanel.vue';
+import PluginUserPanel from '@/views/PluginUserPanel.vue';
 import VerifyView from '@/views/VerifyView.vue';
+import { panelAllowed, resolveSidePanel } from '@/views/panels';
 
 const routes: RouteRecordRaw[] = [
   { path: '/login', component: AuthView, props: { mode: 'login' } },
@@ -72,7 +78,18 @@ const routes: RouteRecordRaw[] = [
     component: RootView,
     children: [
       { path: '', name: 'chat', component: { render: () => null } },
-      { path: 'settings', component: SettingsPanel, meta: { auth: true } },
+      {
+        path: 'settings',
+        component: SettingsPanel,
+        // The tab is read here rather than by the panel, because the panel is
+        // also drawn over the backoffice, whose own `tab` parameter belongs to
+        // its plugin pages and must not select a settings tab.
+        props: (to) => {
+          const tab = to.query['tab'];
+          return { tab: typeof tab === 'string' ? tab : undefined };
+        },
+        meta: { auth: true },
+      },
       { path: 'archive', component: ArchivePanel, meta: { auth: true } },
       { path: 'keys', component: KeysPanel, meta: { auth: true } },
       { path: 'usage', component: UsagePanel, meta: { auth: true } },
@@ -81,6 +98,9 @@ const routes: RouteRecordRaw[] = [
       { path: 'image-lab', component: ImageLabPanel, meta: { auth: true } },
       { path: 'uptime', component: UptimePanel, meta: { auth: true } },
       { path: 'leaderboard', component: LeaderboardPanel, meta: { auth: true } },
+      // A panel a plugin brings (UserPanelSpec). The slug is resolved when the
+      // panel is drawn, not here: the plugins load after the router is made.
+      { path: 'x/:slug/:entry?', component: PluginUserPanel, props: true, meta: { auth: true } },
       { path: 'terminal', component: () => import('@/views/TerminalPanel.vue'), meta: { auth: true } },
     ],
   },
@@ -94,7 +114,14 @@ const routes: RouteRecordRaw[] = [
   // a round trip for.
   {
     path: '/admin/:section(.*)*',
-    component: () => import('@/views/admin/AdminPage.vue'),
+    //
+    // Its Chinese is a chunk of its own, fetched beside it for a Chinese
+    // reader and awaited before the page resolves, so the first render is
+    // already translated: a reload of /admin/... draws no English first.
+    component: async () => {
+      const [page] = await Promise.all([import('@/views/admin/AdminPage.vue'), primeBackofficeLanguage()]);
+      return page;
+    },
     meta: { auth: true, admin: true },
   },
 
@@ -108,6 +135,79 @@ export const router = createRouter({
   // would fight them.
   scrollBehavior: () => false,
 });
+
+// The session store signs a tab out in memory when its session ends, and that
+// leaves the route alone: the guard above runs on navigation, not on sign-out.
+// Sending the reader to sign-in here, with where they were as `next`, is the
+// same move the account menu makes after an explicit sign-out.
+if (typeof window !== 'undefined') {
+  window.addEventListener(SESSION_LOST, () => {
+    if (router.currentRoute.value.path === '/login') return;
+    void router.replace({ path: '/login', query: { next: router.currentRoute.value.fullPath } });
+  });
+}
+
+// The destination a signed-in visitor is sent to. As a string location the
+// query and hash of a deep link survive (/settings?tab=keys keeps its tab); an
+// object with a path is re-parsed with the query dropped.
+function arrive(next: string): RouteLocationRaw {
+  const target = router.resolve(next || '/');
+  return { path: target.path, query: target.query, hash: target.hash, replace: true };
+}
+
+// Where a gate the visitor has just cleared lets them go on to: the `next`
+// they were stopped on the way to. One copy for every gate, because the
+// server's own pages need a real navigation and a gate that forgot that would
+// draw "no such page" in place of the request another site is waiting on.
+function goOn(to: RouteLocationNormalized): RouteLocationRaw | false {
+  const next = safeNext(to.query['next']);
+  if (next && serverOwned(next)) {
+    window.location.assign(next);
+    return false;
+  }
+  return arrive(next);
+}
+
+// Holds a signed-in account at the page a policy wants it on, remembering
+// where it was going. The chat itself is not worth carrying: it is where
+// goOn lands without a `next` anyway.
+function holdAt(path: string, to: RouteLocationNormalized): RouteLocationRaw {
+  const next = to.path === '/' ? undefined : to.fullPath;
+  return { path, query: next ? { next } : {}, replace: true };
+}
+
+// A page an operator's policy holds a signed-in account at until it is done.
+// Holding and releasing are separate tests rather than one and its negation:
+// the OIDC gate stands aside for an account still owing a factor, but that
+// account has not cleared it, so it is not sent on from /bind-oidc either.
+interface PolicyGate {
+  path: string;
+  hold: (to: RouteLocationNormalized) => boolean;
+  release: () => boolean;
+}
+
+// Checked in this order, each gate's hold before its release: the first gate
+// an account still owes is the one it is held at.
+const POLICY_GATES: readonly PolicyGate[] = [
+  // The operator's policy wants a second step on this account before it does
+  // anything else. The server refuses the rest regardless; this only saves
+  // drawing a screen made of refusals.
+  {
+    path: '/two-factor',
+    hold: (to) => !!currentUser.value?.two_factor_enrol && to.path !== '/two-factor',
+    release: () => !currentUser.value?.two_factor_enrol,
+  },
+  // The operator's OIDC policy wants every account to link an identity
+  // before it does anything else. An account still owing a factor is left to
+  // the two-step redirect above: this one must not claim it, or the two would
+  // send each other back and forth. See oauth.Service.BindingGate for why the
+  // server holds the same order.
+  {
+    path: '/bind-oidc',
+    hold: (to) => !!currentUser.value?.oidc_binding_required && !currentUser.value?.two_factor_enrol && to.path !== '/bind-oidc',
+    release: () => !currentUser.value?.oidc_binding_required,
+  },
+];
 
 router.beforeEach((to) => {
   const signedIn = !!currentUser.value;
@@ -127,37 +227,9 @@ router.beforeEach((to) => {
     return { path: '/login', replace: true };
   }
 
-  // The operator's policy wants a second step on this account before it does
-  // anything else. The server refuses the rest regardless; this only saves
-  // drawing a screen made of refusals.
-  if (signedIn && currentUser.value?.two_factor_enrol && to.path !== '/two-factor') {
-    const next = to.path === '/' ? undefined : to.fullPath;
-    return { path: '/two-factor', query: next ? { next } : {}, replace: true };
-  }
-  if (to.path === '/two-factor' && signedIn && !currentUser.value?.two_factor_enrol) {
-    const next = safeNext(to.query['next']);
-    if (next && serverOwned(next)) {
-      window.location.assign(next);
-      return false;
-    }
-    return { path: next || '/', replace: true };
-  }
-
-  // The operator's OIDC policy wants every account to link an identity
-  // before it does anything else. After the two-step check above, so an
-  // account owing both is sent to enrol its factor first — see oauth.
-  // Service.BindingGate for why the server holds the same order.
-  if (signedIn && currentUser.value?.oidc_binding_required && to.path !== '/bind-oidc') {
-    const next = to.path === '/' ? undefined : to.fullPath;
-    return { path: '/bind-oidc', query: next ? { next } : {}, replace: true };
-  }
-  if (to.path === '/bind-oidc' && signedIn && !currentUser.value?.oidc_binding_required) {
-    const next = safeNext(to.query['next']);
-    if (next && serverOwned(next)) {
-      window.location.assign(next);
-      return false;
-    }
-    return { path: next || '/', replace: true };
+  for (const gate of POLICY_GATES) {
+    if (signedIn && gate.hold(to)) return holdAt(gate.path, to);
+    if (to.path === gate.path && signedIn && gate.release()) return goOn(to);
   }
 
   // The address itself. Signed in it is the chat; signed out it is whatever
@@ -185,8 +257,7 @@ router.beforeEach((to) => {
   // sign-in page was carrying somewhere to go, which is a request somebody
   // made rather than a page they wandered onto.
   if (signedIn && (to.path === '/login' || to.path === '/register')) {
-    const next = safeNext(to.query['next']);
-    return { path: next || '/', replace: true };
+    return goOn(to);
   }
 
   // The terminal is offered by group. The server refuses the account either
@@ -196,25 +267,26 @@ router.beforeEach((to) => {
   }
 
   // Uptime is available to admins, and to readers only if published.
-  if (to.path === '/uptime' && !canAdmin('availability') && !siteInfo.value.health_show_users) {
+  if (to.path === '/uptime' && !panelAllowed('uptime')) {
     return { path: '/', replace: true };
   }
 
   // The leaderboard likewise: its curators may look before it is published.
-  if (to.path === '/leaderboard' && !canAdmin('leaderboard') && !siteInfo.value.leaderboard_show_users) {
+  if (to.path === '/leaderboard' && !panelAllowed('leaderboard')) {
     return { path: '/', replace: true };
+  }
+
+  // A panel drawn over the backoffice is held to the same rule as its chat
+  // address. Only the panel is taken out of the address: the page underneath
+  // is what the reader asked for.
+  if (to.meta['admin']) {
+    const panel = resolveSidePanel(to.query[BACKOFFICE_PANEL_PARAM]);
+    if (panel && !panelAllowed(panel.name)) {
+      const query = { ...to.query };
+      delete query[BACKOFFICE_PANEL_PARAM];
+      return { path: to.path, query, hash: to.hash, replace: true };
+    }
   }
 
   return true;
 });
-
-/**
- * Whether the reader may see the backoffice.
- *
- * Not a redirect: an administrator's link opened by somebody else should say
- * so over the product rather than bounce them silently to the chat, so the
- * refusal is drawn by the admin screen itself.
- */
-export function mayAdminister(): boolean {
-  return isAdmin.value;
-}

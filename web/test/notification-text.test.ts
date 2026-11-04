@@ -36,6 +36,16 @@ describe('describeNotification', () => {
       .toBe('An administrator changed something about your account.');
   });
 
+  // A kind or a field name taken from the wire is looked up among its own keys
+  // only: "constructor" is inherited by every object and used to come out as
+  // the text of a field, and as a two-step wording.
+  it('does not read an inherited name as a known kind, field or wording', () => {
+    expect(describeNotification(note('account_changed', { what: ['constructor'] })).body)
+      .toBe('An administrator changed something about your account.');
+    expect(describeNotification(note('two_factor_changed', { kind: 'constructor' })).body)
+      .toMatch(/Two-step/);
+  });
+
   it('names the bar and the amount of a bonus that arrived, to two places at most', () => {
     const received = describeNotification(note('bonus_granted', { name: 'Launch gift', amount: 2.5 }));
     expect(received.body).toBe('Launch gift: 2.5 credits');

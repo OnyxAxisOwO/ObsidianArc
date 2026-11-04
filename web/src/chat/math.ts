@@ -121,6 +121,16 @@ interface Token {
   cmd?: string;
 }
 
+// Matched by type as well as text. An escaped brace (\{ or \}) is a command
+// token whose text is the brace, and it must not close the group it sits in:
+// \frac{\{a\}}{b} has a numerator that contains braces, not one that ends early.
+// Text inside \text{...} can spell a brace too, so only the token types that
+// are closers in the source count.
+function isStop(token: Token, stopTokens: string[]): boolean {
+  const closer = token.type === 'brace' || token.type === 'op' || token.type === 'amp';
+  return closer && stopTokens.includes(token.value);
+}
+
 class Lexer {
   private pos = 0;
 
@@ -267,8 +277,7 @@ class Parser {
   private parseExpression(stopTokens: string[]): Element {
     const row = m('mrow');
     while (this.peek().type !== 'eof') {
-      const token = this.peek();
-      if (stopTokens.includes(token.value)) break;
+      if (isStop(this.peek(), stopTokens)) break;
       const node = this.parseAtom(stopTokens);
       if (node) row.appendChild(node);
     }
@@ -279,7 +288,7 @@ class Parser {
     if (this.peek().type === 'brace' && this.peek().value === '{') {
       this.consume(); // '{'
       const expr = this.parseExpression(['}']);
-      if (this.peek().value === '}') this.consume(); // '}'
+      if (this.peek().type === 'brace' && this.peek().value === '}') this.consume(); // '}'
       return expr;
     }
     // Single atom as argument, e.g. \frac 1 2 or x^2
@@ -380,14 +389,14 @@ class Parser {
   private parseBaseAtom(stopTokens: string[]): Element | null {
     const token = this.peek();
 
-    if (token.type === 'eof' || stopTokens.includes(token.value)) {
+    if (token.type === 'eof' || isStop(token, stopTokens)) {
       return null;
     }
 
     if (token.type === 'brace' && token.value === '{') {
       this.consume();
       const expr = this.parseExpression(['}']);
-      if (this.peek().value === '}') this.consume();
+      if (this.peek().type === 'brace' && this.peek().value === '}') this.consume();
       return expr;
     }
 
@@ -429,16 +438,16 @@ class Parser {
 
   private handleCommand(cmd: string): Element | null {
     // Greek letters
-    if (cmd in GREEK_LOWER) return m('mi', GREEK_LOWER[cmd]);
-    if (cmd in GREEK_UPPER) return m('mo', GREEK_UPPER[cmd]);
+    if (Object.hasOwn(GREEK_LOWER, cmd)) return m('mi', GREEK_LOWER[cmd]);
+    if (Object.hasOwn(GREEK_UPPER, cmd)) return m('mo', GREEK_UPPER[cmd]);
 
     // Operators and relations
-    if (cmd in BIN_OPS) return m('mo', BIN_OPS[cmd]);
-    if (cmd in REL_OPS) return m('mo', REL_OPS[cmd]);
-    if (cmd in ARROWS) return m('mo', ARROWS[cmd]);
+    if (Object.hasOwn(BIN_OPS, cmd)) return m('mo', BIN_OPS[cmd]);
+    if (Object.hasOwn(REL_OPS, cmd)) return m('mo', REL_OPS[cmd]);
+    if (Object.hasOwn(ARROWS, cmd)) return m('mo', ARROWS[cmd]);
 
     // Big operators
-    if (cmd in BIG_OPS) {
+    if (Object.hasOwn(BIG_OPS, cmd)) {
       const op = m('mo', BIG_OPS[cmd]);
       op.setAttribute('largeop', 'true');
       return op;
@@ -455,10 +464,10 @@ class Parser {
     }
 
     // Misc symbols
-    if (cmd in MISC_SYMBOLS) return m('mo', MISC_SYMBOLS[cmd]);
+    if (Object.hasOwn(MISC_SYMBOLS, cmd)) return m('mo', MISC_SYMBOLS[cmd]);
 
     // Spacing
-    if (cmd in SPACES) {
+    if (Object.hasOwn(SPACES, cmd)) {
       const sp = m('mspace');
       sp.setAttribute('width', SPACES[cmd]!);
       return sp;
@@ -522,7 +531,7 @@ class Parser {
       const inner = this.parseArg();
       if (cmd === 'mathbb') {
         const text = inner.textContent;
-        if (text && text in BLACKBOARD_LETTERS) {
+        if (text && Object.hasOwn(BLACKBOARD_LETTERS, text)) {
           inner.textContent = BLACKBOARD_LETTERS[text]!;
           return inner;
         }
@@ -562,7 +571,7 @@ class Parser {
     }
 
     // Accents
-    if (cmd in ACCENTS) {
+    if (Object.hasOwn(ACCENTS, cmd)) {
       const arg = this.parseArg();
       const isUnder = cmd === 'underline';
       const mover = m(isUnder ? 'munder' : 'mover');
@@ -583,7 +592,7 @@ class Parser {
           return null;
         }
         let sym = next.value;
-        if (sym in DELIMITER_MAP) {
+        if (Object.hasOwn(DELIMITER_MAP, sym)) {
           sym = DELIMITER_MAP[sym]!;
         }
         const mo = m('mo', sym);
@@ -659,7 +668,7 @@ class Parser {
       cases: ['{', ''],
     };
 
-    if (env in fences) {
+    if (Object.hasOwn(fences, env)) {
       const [open, close] = fences[env]!;
       const row = m('mrow');
       if (open) row.appendChild(m('mo', open));
@@ -672,11 +681,34 @@ class Parser {
   }
 }
 
+// A streamed answer is redrawn in full on every frame that brings text, so the
+// formulas in it were lexed and parsed again each time. What is kept is the
+// built tree, and every caller gets a copy of it: a node handed out is attached
+// to the transcript and may be changed there. The limit keeps a long session
+// that writes many different formulas from holding every one of them.
+const MATH_CACHE_LIMIT = 200;
+const built = new Map<string, HTMLElement>();
+
 /**
  * Parses a LaTeX math string into a native MathML DOM element.
  * Safe, zero innerHTML, zero external libraries.
  */
 export function renderMath(latex: string, display = false): HTMLElement {
+  const key = `${display ? 'd' : 'i'}${latex}`;
+  let node = built.get(key);
+  if (!node) {
+    node = buildMath(latex, display);
+    // A Map iterates in insertion order, so the first key is the oldest.
+    if (built.size >= MATH_CACHE_LIMIT) {
+      const oldest = built.keys().next();
+      if (!oldest.done) built.delete(oldest.value);
+    }
+    built.set(key, node);
+  }
+  return node.cloneNode(true) as HTMLElement;
+}
+
+function buildMath(latex: string, display: boolean): HTMLElement {
   const container = document.createElement(display ? 'div' : 'span');
   container.className = display ? 'ai-math ai-math-block' : 'ai-math ai-math-inline';
 
@@ -694,12 +726,4 @@ export function renderMath(latex: string, display = false): HTMLElement {
   }
 
   return container;
-}
-
-export function renderMathInline(latex: string, display = false): HTMLElement {
-  return renderMath(latex, display);
-}
-
-export function renderMathBlock(latex: string): HTMLElement {
-  return renderMath(latex, true);
 }

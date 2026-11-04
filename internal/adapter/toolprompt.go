@@ -73,7 +73,7 @@ func emulatedChat(
 	ctx context.Context, a Adapter, client *http.Client, p Provider,
 	req ChatRequest, sink Sink,
 ) (Result, error) {
-	filter := &toolCallFilter{sink: sink, parse: offersTools(req)}
+	filter := &toolCallFilter{sink: sink, parse: offersTools(req), offered: offeredNames(req.Tools)}
 	result, chatErr := a.Chat(ctx, client, p, rewriteForEmulation(req), filter.event)
 
 	// finish runs whatever happened upstream, and that is not tidiness.
@@ -98,6 +98,16 @@ func emulatedChat(
 // must not have a stray one in its prose promoted to a call.
 func offersTools(req ChatRequest) bool {
 	return len(req.Tools) > 0 && req.ToolChoice.Mode != ToolChoiceNone
+}
+
+// offeredNames is the set of tool names the model was given. A call naming
+// anything outside it is not read as one.
+func offeredNames(tools []Tool) map[string]bool {
+	names := make(map[string]bool, len(tools))
+	for _, tool := range tools {
+		names[tool.Name] = true
+	}
+	return names
 }
 
 // --- the request that leaves ---------------------------------------------------
@@ -204,7 +214,7 @@ func openResponseTag(name string) string {
 	if name == "" {
 		return toolResponseOpen
 	}
-	return "<tool_response tool=" + strconv.Quote(name) + ">"
+	return "<tool_response tool=" + strconv.Quote(neutralizeTags(name)) + ">"
 }
 
 // neutralizeTags breaks the protocol's own tags inside a tool's output.
@@ -218,12 +228,16 @@ func openResponseTag(name string) string {
 // text the model still reads correctly, and it is the difference between
 // remote content being data and being instructions.
 func neutralizeTags(text string) string {
-	return strings.NewReplacer(
-		toolCallOpen, "<\\tool_call>",
-		toolCallClose, "<\\/tool_call>",
-		toolResponseClose, "<\\/tool_response>",
-	).Replace(text)
+	return toolTagEscaper.Replace(text)
 }
+
+// toolTagEscaper is built once: every result of every emulated request is
+// escaped through it, and a Replacer is safe for concurrent use.
+var toolTagEscaper = strings.NewReplacer(
+	toolCallOpen, "<\\tool_call>",
+	toolCallClose, "<\\/tool_call>",
+	toolResponseClose, "<\\/tool_response>",
+)
 
 // serializeEmittedCall writes one past call back the way the model would
 // have written it, so a replayed transcript reads in one voice. Arguments
@@ -234,7 +248,7 @@ func serializeEmittedCall(name, args string) string {
 		args = "{}"
 	}
 	return toolCallOpen + "\n" +
-		`{"name":` + strconv.Quote(name) + `,"arguments":` + args + "}\n" +
+		`{"name":` + strconv.Quote(neutralizeTags(name)) + `,"arguments":` + args + "}\n" +
 		toolCallClose
 }
 
@@ -332,10 +346,16 @@ type toolCallFilter struct {
 	// Whether the model was taught the format at all. False for a request
 	// that only routed here to have its transcript rewritten.
 	parse bool
+	// The names the model was offered. The protocol carries only those tools;
+	// an agent handed a call to one it never had dispatches it by name.
+	offered map[string]bool
 	// How many of calls have already reached the sink. A call is announced
 	// the moment its block closes rather than at the end of the turn, so a
 	// client sees it before the prose the model wrote after it.
 	announced int
+	// Where the search for the closing tag has got to in the block that is
+	// open. Starts over each time a block opens.
+	closing closeSearch
 }
 
 func (f *toolCallFilter) event(event Event) error {
@@ -370,12 +390,38 @@ func (f *toolCallFilter) delta(text string) error {
 			f.pending.Reset()
 			f.pending.WriteString(buffered[open+len(toolCallOpen):])
 			f.inside = true
+			f.closing = closeSearch{}
 			continue
 		}
-		end := indexCloseOutsideString(buffered)
+		// Decided before the close is looked for. A block that cannot be a call
+		// is prose whether or not its close has arrived; deciding it after the
+		// close would read the same bytes differently by where the stream was
+		// cut, and a call after the block would depend on that.
+		if !mayBeACall(buffered) {
+			// Released now rather than held to its close: a sentence that merely
+			// names the tag would otherwise stall the rest of the reply until the
+			// turn ends. It stops at the next opening tag, which may start a call
+			// of its own and is read as one from there. A partial opening tag at
+			// the end may be the start of that call, so it waits for the next
+			// delta rather than being shown as prose.
+			cut := len(buffered)
+			if next := strings.Index(buffered, toolCallOpen); next >= 0 {
+				cut = next
+			} else {
+				cut -= partialTagLen(buffered, toolCallOpen)
+			}
+			if err := f.emit(toolCallOpen + buffered[:cut]); err != nil {
+				return err
+			}
+			f.pending.Reset()
+			f.pending.WriteString(buffered[cut:])
+			f.inside = false
+			continue
+		}
+		end := f.closing.find(buffered)
 		if end < 0 {
-			// Nothing is emitted from inside a block, so there is nothing to
-			// hold back: the whole buffer stays until the tag arrives.
+			// The block could still be a call, and nothing from inside one is
+			// emitted before it is decided: the buffer stays until the tag arrives.
 			return nil
 		}
 		body := buffered[:end]
@@ -402,7 +448,7 @@ func (f *toolCallFilter) take(body string) (ToolCall, bool) {
 		return ToolCall{}, false
 	}
 	call, ok := parseToolCallBody(body)
-	if !ok {
+	if !ok || !f.offered[call.Name] {
 		return ToolCall{}, false
 	}
 	call.ID = fmt.Sprintf("call_%d", len(f.calls)+1)
@@ -425,33 +471,50 @@ func (f *toolCallFilter) announce(call ToolCall) error {
 	return f.sink(Event{Type: EventToolCall, ToolCall: call})
 }
 
-// indexCloseOutsideString finds the closing tag, ignoring one that sits
-// inside a JSON string.
+// closeSearch is the search for the closing tag, kept across the deltas of one
+// block: how far into the block it has read, and the JSON string state at that
+// point.
 //
-// A plain substring search reads the tag in
-// {"content": "write </tool_call> to call a tool"} as the end of the block,
-// truncates the JSON mid-string, fails to parse what is left, and drops a
-// call the model wrote perfectly well — while spilling the raw tags into
-// the answer. Asking a tool to write documentation about this very format
-// is enough to hit it.
+// The tag is only recognised outside a JSON string. A plain substring search
+// reads the tag in {"content": "write </tool_call> to call a tool"} as the end
+// of the block, truncates the JSON mid-string, fails to parse what is left, and
+// drops a call the model wrote perfectly well — while spilling the raw tags into
+// the answer. Asking a tool to write documentation about this very format is
+// enough to hit it.
 //
-// -1 while the scan ends inside an unterminated string, because in a stream
+// It resumes where it stopped rather than rereading the block. A block that is
+// never closed would otherwise cost one full pass per delta, which is quadratic
+// in its length.
+type closeSearch struct {
+	at       int
+	inString bool
+	escaped  bool
+}
+
+// find returns the index of the closing tag in buffered, or -1 while the block
+// has not closed. buffered is the block so far, and each call sees it with more
+// appended, so the position saved from the last call still names the same byte.
+//
+// -1 also while the scan ends inside an unterminated string, because in a stream
 // that means the rest has not arrived yet. finish settles the case where it
 // never does.
-func indexCloseOutsideString(buffered string) int {
-	inString, escaped := false, false
-	for i := 0; i < len(buffered); i++ {
-		c := buffered[i]
+func (s *closeSearch) find(buffered string) int {
+	// A tag is decided only once all of it is here. A position that could start
+	// one but cannot yet hold all of it is left for the next delta, with the
+	// state exactly as it stood before that position.
+	last := len(buffered) - len(toolCallClose)
+	for ; s.at <= last; s.at++ {
+		c := buffered[s.at]
 		switch {
-		case escaped:
-			escaped = false
-		case inString && c == '\\':
-			escaped = true
+		case s.escaped:
+			s.escaped = false
+		case s.inString && c == '\\':
+			s.escaped = true
 		case c == '"':
-			inString = !inString
-		case !inString && c == toolCallClose[0] &&
-			strings.HasPrefix(buffered[i:], toolCallClose):
-			return i
+			s.inString = !s.inString
+		case !s.inString && c == toolCallClose[0] &&
+			strings.HasPrefix(buffered[s.at:], toolCallClose):
+			return s.at
 		}
 	}
 	return -1
@@ -485,20 +548,18 @@ func (f *toolCallFilter) finish(result *Result) error {
 		// closed. Every reading is tried rather than one preferred.
 		//
 		// The last resort is the plain substring search that
-		// indexCloseOutsideString deliberately refuses: no more text is
+		// closeSearch deliberately refuses: no more text is
 		// coming, so an unterminated string is malformed rather than
 		// unfinished, and a block that really did close is better read late
 		// than swallowed whole.
-		body, rest := f.pending.String(), ""
-		if end := strings.Index(body, toolCallClose); end >= 0 {
-			body, rest = body[:end], body[end+len(toolCallClose):]
+		whole := f.pending.String()
+		body, rest, closed := whole, "", false
+		if end := strings.Index(whole, toolCallClose); end >= 0 {
+			body, rest, closed = whole[:end], whole[end+len(toolCallClose):], true
 		}
 		switch call, ok := f.take(body); {
 		case ok:
 			if err := f.announce(call); err != nil {
-				return err
-			}
-			if err := f.emit(rest); err != nil {
 				return err
 			}
 		case startedACall(body):
@@ -512,9 +573,24 @@ func (f *toolCallFilter) finish(result *Result) error {
 			// Not an attempted call — a reply that mentions the format, say.
 			// What the model wrote stays visible; eating it would hide a
 			// reply behind a guess about what it meant.
-			if err := f.emit(toolCallOpen + f.pending.String()); err != nil {
+			shown := toolCallOpen + body
+			if closed {
+				shown += toolCallClose
+			}
+			if err := f.emit(shown); err != nil {
 				return err
 			}
+		}
+		if closed {
+			// The text after a closing tag found this way is read as streamed
+			// text is, so a call in it is taken rather than shown as prose.
+			f.pending.Reset()
+			f.pending.WriteString(rest)
+			f.inside = false
+			if err := f.delta(""); err != nil {
+				return err
+			}
+			return f.finish(result)
 		}
 	} else if err := f.emit(f.pending.String()); err != nil {
 		// The held-back fragment never grew into a tag.
@@ -560,6 +636,19 @@ func startedACall(body string) bool {
 	return strings.HasPrefix(stripCodeFence(strings.TrimSpace(body)), "{")
 }
 
+// mayBeACall is startedACall for text that is still arriving: whether a block
+// can still turn out to be a call. Once the first non-space character is
+// neither the object a call begins with nor the start of a code fence around
+// one, it cannot, and the block is prose from there on. Blank text, and a
+// fence that has only partly arrived, settle nothing yet.
+func mayBeACall(body string) bool {
+	trimmed := strings.TrimSpace(body)
+	if trimmed == "" {
+		return true
+	}
+	return trimmed[0] == '{' || strings.HasPrefix(trimmed, "```") || strings.HasPrefix("```", trimmed)
+}
+
 // partialTagLen reports how many trailing bytes could still grow into tag.
 func partialTagLen(text, tag string) int {
 	for length := len(tag) - 1; length > 0; length-- {
@@ -575,7 +664,8 @@ func partialTagLen(text, tag string) int {
 // "arguments", nests the pair under "function" the way the wire formats it,
 // and sometimes wraps the JSON in a code fence — and rejects anything that
 // does not name a tool, which is what separates a call from prose that
-// mentions the format.
+// mentions the format. It also rejects arguments that are present but are not
+// an object, for the same reason as emulatedArguments.
 func parseToolCallBody(body string) (ToolCall, bool) {
 	body = stripCodeFence(strings.TrimSpace(body))
 	if body == "" {
@@ -606,7 +696,11 @@ func parseToolCallBody(body string) (ToolCall, bool) {
 	if name == "" {
 		return ToolCall{}, false
 	}
-	return ToolCall{Name: name, Arguments: emulatedArguments(arguments)}, true
+	args, ok := emulatedArguments(arguments)
+	if !ok {
+		return ToolCall{}, false
+	}
+	return ToolCall{Name: name, Arguments: args}, true
 }
 
 // firstRawJSON is the first value that carries something. A literal null
@@ -622,22 +716,32 @@ func firstRawJSON(values ...json.RawMessage) json.RawMessage {
 	return nil
 }
 
-// emulatedArguments is the arguments as the wire wants them: JSON text. A
-// model that double-encoded its object — arguments as a JSON string holding
-// JSON — is unwrapped one level, which is the spelling several models learn
-// from examples that had to escape the quotes.
-func emulatedArguments(raw json.RawMessage) string {
+// emulatedArguments is the arguments as the wire wants them: a JSON object as
+// text. A model that double-encoded its object — arguments as a JSON string
+// holding JSON — is unwrapped one level, which is the spelling several models
+// learn from examples that had to escape the quotes.
+//
+// Arguments that are present but are not an object make the block prose, not
+// a call. Replacing them with {} would run the tool with arguments the model
+// never finished writing, and a number or an array would reach the caller's
+// function and fail there, far from the reply that caused it. An empty string
+// is nothing, not a malformed object, and stays {}.
+func emulatedArguments(raw json.RawMessage) (string, bool) {
 	if len(raw) == 0 {
-		return "{}"
+		return "{}", true
 	}
+	text := string(raw)
 	var asString string
 	if err := json.Unmarshal(raw, &asString); err == nil {
-		if json.Valid([]byte(asString)) {
-			return asString
-		}
-		return string(raw)
+		text = asString
 	}
-	return string(raw)
+	if strings.TrimSpace(text) == "" {
+		return "{}", true
+	}
+	if !strings.HasPrefix(strings.TrimSpace(text), "{") || !json.Valid([]byte(text)) {
+		return "", false
+	}
+	return text, true
 }
 
 // stripCodeFence removes the markdown fence a model may have wrapped the

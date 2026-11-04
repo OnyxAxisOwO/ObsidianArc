@@ -224,19 +224,28 @@ func TestManifestsAreHeldToTheirSchema(t *testing.T) {
 		"secret default":       `"settings": [{"key": "demo.a", "secret": true, "default": "x"}]`,
 		"default off enum":     `"settings": [{"key": "demo.a", "default": "z", "enum": ["a"]}]`,
 		"bad setting pattern":  `"settings": [{"key": "demo.a", "pattern": "("}]`,
-		"field key":            `"fields": [{"key": "Bad-Key"}]`,
-		"rule for no field":    `"field_rules": [{"field": "nope", "setting": "demo.mode"}]`,
-		"rule for no setting":  `"field_rules": [{"field": "handle", "setting": "demo.nope"}]`,
-		"guard action":         `"guards": [{"action": "logout", "name": "g", "event": "e"}]`,
-		"guard without event":  `"guards": [{"action": "login", "name": "g"}]`,
-		"route method":         `"routes": [{"pattern": "TRACE /api/x/demo/a", "access": "public"}]`,
-		"route access":         `"routes": [{"pattern": "GET /api/x/demo/a", "access": "root"}]`,
-		"public under admin":   `"routes": [{"pattern": "GET /api/admin/x/demo/a", "access": "public"}]`,
-		"admin outside admin":  `"routes": [{"pattern": "GET /api/x/demo/a", "access": "admin", "permission": "users"}]`,
-		"admin no permission":  `"routes": [{"pattern": "GET /api/admin/x/demo/a", "access": "admin"}]`,
-		"route twice":          `"routes": [{"pattern": "GET /api/x/demo/a", "access": "public"}, {"pattern": "GET /api/x/demo/a", "access": "public"}]`,
-		"console name":         `"console": [{"name": "Bad Name", "summary": {"en": "x"}}]`,
-		"console summary":      `"console": [{"name": "demo run", "summary": {}}]`,
+		// Each compiles on its own and not once it is anchored, which is how
+		// every place that uses a pattern compiles it.
+		"setting pattern broken by anchoring": `"settings": [{"key": "demo.a", "pattern": "\\Qabc"}]`,
+		"field pattern broken by anchoring":   `"fields": [{"key": "handle", "pattern": "\\Qabc"}]`,
+		"binding pattern broken by anchoring": `"oauth_bindings": [{"provider": "oidc", "field": "handle", "pattern": "\\Qabc"}]`,
+		"homepage that runs script":           `"homepage": "javascript:alert(1)"`,
+		"homepage without a scheme":           `"homepage": "//evil.example/x"`,
+		"homepage that is not the web":        `"homepage": "ftp://files.example/x"`,
+		"homepage that is data":               `"homepage": "data:text/html,x"`,
+		"field key":                           `"fields": [{"key": "Bad-Key"}]`,
+		"rule for no field":                   `"field_rules": [{"field": "nope", "setting": "demo.mode"}]`,
+		"rule for no setting":                 `"field_rules": [{"field": "handle", "setting": "demo.nope"}]`,
+		"guard action":                        `"guards": [{"action": "logout", "name": "g", "event": "e"}]`,
+		"guard without event":                 `"guards": [{"action": "login", "name": "g"}]`,
+		"route method":                        `"routes": [{"pattern": "TRACE /api/x/demo/a", "access": "public"}]`,
+		"route access":                        `"routes": [{"pattern": "GET /api/x/demo/a", "access": "root"}]`,
+		"public under admin":                  `"routes": [{"pattern": "GET /api/admin/x/demo/a", "access": "public"}]`,
+		"admin outside admin":                 `"routes": [{"pattern": "GET /api/x/demo/a", "access": "admin", "permission": "users"}]`,
+		"admin no permission":                 `"routes": [{"pattern": "GET /api/admin/x/demo/a", "access": "admin"}]`,
+		"route twice":                         `"routes": [{"pattern": "GET /api/x/demo/a", "access": "public"}, {"pattern": "GET /api/x/demo/a", "access": "public"}]`,
+		"console name":                        `"console": [{"name": "Bad Name", "summary": {"en": "x"}}]`,
+		"console summary":                     `"console": [{"name": "demo run", "summary": {}}]`,
 	}
 	for label, fragment := range bad {
 		_, err := ParseManifest([]byte(withFragment(t, fragment)))
@@ -268,6 +277,45 @@ func withFragment(t *testing.T, fragment string) string {
 		t.Fatal(err)
 	}
 	return string(out)
+}
+
+func TestAWebHomepageIsAccepted(t *testing.T) {
+	for _, address := range []string{"https://example.org/plugin", "http://example.org:8080/x?y=1"} {
+		if _, err := ParseManifest([]byte(withFragment(t, `"homepage": "`+address+`"`))); err != nil {
+			t.Errorf("%s: %v", address, err)
+		}
+	}
+}
+
+// A migration's file name is its version, and every owner's versions share
+// one table: a name that is another owner's is a migration that is skipped, or
+// forgotten with someone else's data.
+func TestMigrationAndPurgeFilesAreNamedForTheirPackage(t *testing.T) {
+	for _, name := range []string{
+		"migrations/evil.sql",
+		"migrations/other_0001_x.sql",
+		"migrations/demo_.sql",
+		"migrations/demo_0001_X.sql",
+		"migrations/demo_0001 x.sql",
+		"migrations/001_demo.sql",
+		"migrations/0001-demo.sql",
+		"purge/core_0001.sql",
+	} {
+		entries := goodEntries()
+		entries[name] = "SELECT 1;"
+		if _, err := Parse(zipOf(t, entries)); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s was accepted: %v", name, err)
+		}
+	}
+	// The package's own prefix, and the numbered name a migration keeps when it
+	// moves out of the core into a plugin.
+	for _, name := range []string{"migrations/demo_0002_more.sql", "migrations/0015_user_demo.sql", "purge/demo_0001_drop.sql", "purge/0001_drop.sql"} {
+		entries := goodEntries()
+		entries[name] = "SELECT 1;"
+		if _, err := Parse(zipOf(t, entries)); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
 }
 
 func TestGuardsRoutesAndCommandsNeedABackend(t *testing.T) {

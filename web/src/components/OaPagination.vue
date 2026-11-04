@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { t } from '@/composables/useI18n';
+import { PAGE_SIZES, rememberPageSize } from '@/lib/page-size';
 import OaSelect from './OaSelect.vue';
 import type { PageState } from './table-types';
 
@@ -9,7 +10,9 @@ const emit = defineEmits<{ (event: 'change', next: PageState): void }>();
 const pages = computed(() => Math.max(1, Math.ceil(props.total / props.pageSize)));
 const current = computed(() => Math.min(pages.value, Math.max(1, props.page)));
 function go(page: number, pageSize = props.pageSize): void {
-  if (!props.busy) emit('change', { page, pageSize });
+  if (props.busy) return;
+  if (pageSize !== props.pageSize) rememberPageSize(pageSize);
+  emit('change', { page, pageSize });
 }
 </script>
 
@@ -30,7 +33,7 @@ function go(page: number, pageSize = props.pageSize): void {
         :model-value="String(pageSize)"
         :disabled="busy"
         :searchable="false"
-        :choices="[10, 20, 50, 100, 200].map((size) => ({ value: String(size), label: String(size) }))"
+        :choices="PAGE_SIZES.map((size) => ({ value: String(size), label: String(size) }))"
         @update:model-value="go(1, Number($event))"
       />
     </div>

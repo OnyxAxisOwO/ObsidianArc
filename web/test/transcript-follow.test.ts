@@ -35,7 +35,6 @@ beforeEach(() => {
 afterEach(() => {
   app?.unmount();
   app = null;
-  document.body.textContent = '';
   busy.value = false;
   messages.value = [];
 });

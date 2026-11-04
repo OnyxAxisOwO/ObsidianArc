@@ -87,8 +87,25 @@ func TestHalfAReportIsCompletedNotReplaced(t *testing.T) {
 	}
 }
 
-// A call that failed is not estimated. What a failed or stopped turn costs is
-// decided elsewhere, and guessing at half an answer here would change it.
+// A gateway that reports reasoning but no output figure still wrote the
+// answer. The output has to be estimated from the text, and the reasoning it
+// reported is kept as reported rather than replaced by an estimate.
+func TestReportedReasoningDoesNotSuppressTheOutputEstimate(t *testing.T) {
+	result := Result{Text: strings.Repeat("wxyz", 500)}
+	got := fillUsage(userSays("hello"), result, Usage{InputTokens: 100, ReasoningTokens: 50})
+	if got.OutputTokens != len(result.Text)/bytesPerToken {
+		t.Errorf("output = %d, want %d estimated from the text", got.OutputTokens, len(result.Text)/bytesPerToken)
+	}
+	if got.ReasoningTokens != 50 {
+		t.Errorf("reasoning = %d, want the reported 50 kept", got.ReasoningTokens)
+	}
+	if !got.Estimated {
+		t.Errorf("usage = %+v, want the estimate marked", got)
+	}
+}
+
+// A call that failed before it wrote anything is not estimated: a provider
+// that refused outright did not bill either.
 func TestAFailedCallIsNotEstimated(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadGateway)
@@ -112,5 +129,25 @@ func TestMergingAnEstimateKeepsTheMark(t *testing.T) {
 	merged := Usage{InputTokens: 10, OutputTokens: 5}.Merge(Usage{InputTokens: 20, OutputTokens: 8, Estimated: true})
 	if !merged.Estimated {
 		t.Error("the mark was lost in the merge")
+	}
+}
+
+// A call stopped part-way is charged for what it wrote. Anthropic reports one
+// output token at the start of a stream, and that running figure used to be
+// the whole bill for an answer stopped just before its final count.
+func TestAStoppedCallIsChargedForWhatItWrote(t *testing.T) {
+	reported := Usage{InputTokens: 120, OutputTokens: 1}
+	got := fillStopped(userSays("hi"), written{text: 4000}, reported)
+	if got.InputTokens != 120 {
+		t.Errorf("input = %d, want the reported 120 kept", got.InputTokens)
+	}
+	if got.OutputTokens != 1000 || !got.Estimated {
+		t.Errorf("usage = %+v, want 1000 output tokens, estimated", got)
+	}
+
+	// A count already above the text is left alone.
+	higher := Usage{InputTokens: 120, OutputTokens: 1500}
+	if got := fillStopped(userSays("hi"), written{text: 4000}, higher); got != higher {
+		t.Errorf("a reported count larger than the text was replaced: %+v", got)
 	}
 }

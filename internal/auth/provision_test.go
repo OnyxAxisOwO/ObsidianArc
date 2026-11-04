@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
@@ -105,7 +106,7 @@ func TestAnAccountWithNoPasswordRefusesTheSignInFormLikeAnyOther(t *testing.T) {
 			t.Fatalf("login with %q = %v, want the same refusal a wrong password gets", attempt, err)
 		}
 	}
-	if _, err := f.auth.VerifyCredential(ctx, account.Username, "a-good-password", ""); !errors.Is(err, ErrInvalidCredentials) {
+	if _, _, err := f.auth.VerifyCredential(ctx, account.Username, "a-good-password", ""); !errors.Is(err, ErrInvalidCredentials) {
 		t.Errorf("console credential check = %v, want the same refusal", err)
 	}
 }
@@ -121,7 +122,7 @@ func TestAPasswordlessAccountCanSetItsFirstPassword(t *testing.T) {
 	if err != nil {
 		t.Fatalf("provision: %v", err)
 	}
-	if err := f.auth.ChangePassword(ctx, account.ID, "", "a-good-password", ""); err != nil {
+	if _, err := f.auth.ChangePassword(ctx, account.ID, "", "a-good-password", sessionFor(t, f, account.ID).ID); err != nil {
 		t.Fatalf("set first password: %v", err)
 	}
 	if _, _, err := f.auth.Login(ctx, LoginInput{
@@ -131,8 +132,69 @@ func TestAPasswordlessAccountCanSetItsFirstPassword(t *testing.T) {
 	}
 	// And from then on it is an ordinary password: the current one is
 	// required again.
-	if err := f.auth.ChangePassword(ctx, account.ID, "", "another-password", ""); !errors.Is(err, ErrCurrentPasswordWrong) {
+	if _, err := f.auth.ChangePassword(ctx, account.ID, "", "another-password", ""); !errors.Is(err, ErrCurrentPasswordWrong) {
 		t.Errorf("second change without the current password = %v, want a refusal", err)
+	}
+}
+
+// The first password is the one thing a passwordless account gives away without
+// proving anything, so it is given only from a session that signed in just now.
+// A cookie copied from an older sign-in, a change that presents no session, and
+// a session that belongs to somebody else are all refused, and none of them
+// writes a password.
+func TestAFirstPasswordNeedsASignInMadeJustNow(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	account, err := provision(t, f, ProvisionInput{Username: "octocat"})
+	if err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	other, err := provision(t, f, ProvisionInput{Username: "mona"})
+	if err != nil {
+		t.Fatalf("provision the other account: %v", err)
+	}
+
+	old := sessionFor(t, f, account.ID)
+	ageSession(t, f, old.ID, 16*time.Minute)
+	if _, err := f.auth.ChangePassword(ctx, account.ID, "", "a-good-password", old.ID); !errors.Is(err, ErrReauthRequired) {
+		t.Errorf("first password from a sign-in made 16 minutes ago = %v, want ErrReauthRequired", err)
+	}
+	if _, err := f.auth.ChangePassword(ctx, account.ID, "", "a-good-password", ""); !errors.Is(err, ErrReauthRequired) {
+		t.Errorf("first password with no session presented = %v, want ErrReauthRequired", err)
+	}
+	if _, err := f.auth.ChangePassword(ctx, account.ID, "", "a-good-password", sessionFor(t, f, other.ID).ID); !errors.Is(err, ErrSessionNotFound) {
+		t.Errorf("first password from another account's session = %v, want it refused", err)
+	}
+	if hash, err := f.users.PasswordHash(ctx, nil, account.ID); err != nil || hash != "" {
+		t.Errorf("a refused first password was written anyway: hash set = %t (%v)", hash != "", err)
+	}
+
+	fresh := sessionFor(t, f, account.ID)
+	if _, err := f.auth.ChangePassword(ctx, account.ID, "", "a-good-password", fresh.ID); err != nil {
+		t.Fatalf("first password from a sign-in made just now: %v", err)
+	}
+}
+
+// sessionFor opens a session for the account the way a sign-in does, and returns
+// the record the password change is made from.
+func sessionFor(t *testing.T, f *fixture, userID string) Session {
+	t.Helper()
+	_, session, err := f.auth.Sessions().Create(context.Background(), userID, time.Hour, "", "")
+	if err != nil {
+		t.Fatalf("open a session: %v", err)
+	}
+	return session
+}
+
+// ageSession moves a session's sign-in time back, the way one opened long ago
+// would look, and leaves its expiry alone.
+func ageSession(t *testing.T, f *fixture, sessionID string, by time.Duration) {
+	t.Helper()
+	if _, err := f.db.Exec(context.Background(),
+		`UPDATE sessions SET created_at = ? WHERE id = ?`,
+		time.Now().Add(-by).UnixMilli(), sessionID); err != nil {
+		t.Fatalf("age session: %v", err)
 	}
 }
 
@@ -406,5 +468,26 @@ func TestParallelProvisionsMakeOneAdministrator(t *testing.T) {
 	}
 	if admins != 1 {
 		t.Errorf("administrators = %d, want exactly one", admins)
+	}
+}
+
+// A password hashed before the transaction opened is the account's password. It
+// is stored as given and the account signs in with it, so the caller can move the
+// slow hash out of the instance lock without changing what gets stored.
+func TestProvisionStoresAPasswordHashedBeforeItsTransaction(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	hash, err := f.auth.HashPassword(ctx, "a-good-password")
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+
+	if _, err := provision(t, f, ProvisionInput{Username: "octocat", PasswordHash: hash}); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	if _, _, err := f.auth.Login(ctx, LoginInput{
+		Identifier: "octocat", Password: "a-good-password",
+	}); err != nil {
+		t.Fatalf("sign in with the password hashed before the transaction: %v", err)
 	}
 }

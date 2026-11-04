@@ -72,6 +72,8 @@ func setupLeaderboardFixture(t *testing.T) (*Handlers, *usage.Store, *database.D
 
 func TestLeaderboardRateLimiterThrottling(t *testing.T) {
 	h, _, _, adminUser := setupLeaderboardFixture(t)
+	// No refill, so a stall between the fifth and sixth request cannot hand the sixth a token.
+	h.Limiter = httpx.NewTokenBucketLimiter(0, 5)
 
 	// Burst is 5: first 5 requests should pass
 	for i := 0; i < 5; i++ {
@@ -195,7 +197,7 @@ func TestLeaderboardTTL30sCache(t *testing.T) {
 
 func TestLeaderboardSingleflightConcurrentAccess(t *testing.T) {
 	h, usageStore, _, adminUser := setupLeaderboardFixture(t)
-	h.Limiter = nil // Focus on singleflight
+	h.Limiter = nil // Focus on the merged build
 
 	ctx := context.Background()
 	_ = usageStore.Write(ctx, usage.Record{

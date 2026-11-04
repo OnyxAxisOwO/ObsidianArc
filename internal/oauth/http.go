@@ -2,15 +2,19 @@ package oauth
 
 import (
 	"crypto/hmac"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/pow"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/turnstile"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
@@ -21,7 +25,9 @@ import (
 // browser leaves for the provider and comes back, and both ends of that trip
 // have to be something a person can land on. So these two answer with a
 // redirect even when they fail — a page that says what went wrong in the
-// reader's own language, rather than a JSON error rendered raw in a tab.
+// reader's own language, rather than a JSON error rendered raw in a tab. The
+// start's post is the one exception in form, not in substance: it answers with
+// the same address as JSON, and the page goes there itself (see leave).
 //
 // The other two are API calls like any other, and answer like them.
 
@@ -67,6 +73,15 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	// Public, and necessarily so: nobody signing in has a session yet, and
 	// the provider sends the browser back with nothing but the code.
 	mux.HandleFunc("GET /api/auth/oauth/start/{provider}", h.start)
+	// The same door as a JSON post, which is how the sign-in page goes through
+	// it when it carries a challenge token or a proof: both are one-use, but in
+	// a query string they are written into proxy logs, history and the Referer.
+	// The post answers with the address to leave for rather than a redirect,
+	// because the shell's CSP says form-action 'self' and Chrome holds a form's
+	// redirects to it, so a form posted here could never reach the provider.
+	// The GET stays for a page still running an older bundle, and for the plain
+	// link.
+	mux.HandleFunc("POST /api/auth/oauth/start/{provider}", h.start)
 	mux.HandleFunc("GET /api/auth/oauth/callback/{provider}", h.callback)
 
 	protected := func(handler httpx.Handler) http.HandlerFunc {
@@ -80,10 +95,79 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/auth/oauth/signup", httpx.Wrap(h.pendingSignup))
 	mux.HandleFunc("POST /api/auth/oauth/signup", httpx.Wrap(h.completeSignup))
 	mux.HandleFunc("GET /api/auth/oauth/connections", protected(h.connections))
+	mux.HandleFunc("POST /api/auth/oauth/connections/{provider}", protected(h.connect))
 	mux.HandleFunc("DELETE /api/auth/oauth/connections/{provider}", protected(h.disconnect))
 }
 
 // --- the browser's round trip -------------------------------------------------
+
+// gateFor is the Turnstile gate in front of one of the two doors a sign-in can
+// come through: the sign-up door when the browser asked for the register page's
+// flow, the login door otherwise. A door with no gate of its own falls back to
+// the general one. start and admission both ask it, so they agree on the
+// Turnstile gate in front of sign-up.
+//
+// Proof of work is not a case in this function, and not because it cannot apply
+// to a provider sign-up: the sign-up door checks it in start (see proofRequired).
+// What decides where a check can run is where the browser's answer can travel.
+// The provider's redirect back carries nothing the browser solved, so the
+// callback has no answer to check. start is the browser's own navigation to this
+// server, so it carries the proof of work in its query, as it carries the
+// Turnstile token, and the pass it records travels in the signed state.
+//
+// So a provider sign-up is covered by the Turnstile gate and the proof of work
+// at the sign-up door, and by the plugin guards the callback asks before it
+// opens an account. The AI sign-up reviewer does not run for it (see
+// docs/admin/sign-in.md).
+func (h *Handlers) gateFor(signingUp bool) turnstile.Gate {
+	gate := h.LoginChallenge
+	if signingUp {
+		gate = h.SignupChallenge
+	}
+	if gate.Enabled == nil && h.Challenge.Enabled != nil {
+		gate = h.Challenge
+	}
+	return gate
+}
+
+// signUpChallenged is whether a sign-up through this server stands behind a
+// challenge at all: the Turnstile gate for sign-up, or the proof of work the
+// registration captcha mode asks for. While it does, a sign-in that opens an
+// account has to have passed the sign-up door it started at (see admission).
+func (h *Handlers) signUpChallenged() bool {
+	gate := h.gateFor(true)
+	return (gate.Enabled != nil && gate.Enabled()) || h.proofRequired()
+}
+
+// proofRequired is whether the sign-up door asks for a proof of work. It reads
+// the captcha mode the way Register does, so both doors ask for the same thing.
+func (h *Handlers) proofRequired() bool {
+	mode := h.service.settings.RegistrationCaptchaMode()
+	return mode == settings.CaptchaModePoW || mode == settings.CaptchaModeBoth
+}
+
+// admission is what the sign-up door says about a sign-in that may open an
+// account. While the sign-up challenge is on, a sign-in gets past it only by
+// having passed it at the door it started at, because the provider's redirect
+// back carries no answer to it.
+func (h *Handlers) admission(passedSignUp bool) Admission {
+	return Admission{SignUpCleared: !h.signUpChallenged() || passedSignUp}
+}
+
+// proofFrom reads the proof-of-work solution a sign-up carried on its start
+// request. A value that is not one is no solution, and the check refuses it the
+// way it refuses a missing one.
+func proofFrom(raw string) *pow.Solution {
+	var solution pow.Solution
+	if err := json.Unmarshal([]byte(raw), &solution); err != nil {
+		return nil
+	}
+	return &solution
+}
+
+// startPostBytes bounds the sign-in post: four short fields, the longest a
+// proof-of-work solution of a few hundred bytes.
+const startPostBytes = 16 * 1024
 
 func (h *Handlers) start(w http.ResponseWriter, r *http.Request) {
 	provider := ByID(r.PathValue("provider"))
@@ -92,68 +176,207 @@ func (h *Handlers) start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Where a failure lands, decided before anything can fail: a person
-	// adding a connection belongs back in their settings, and a person
-	// signing in belongs at the sign-in card.
-	account, signedIn := auth.UserFrom(r.Context())
-	linking := signedIn && r.URL.Query().Get("link") == "1"
+	// A post carries its fields in the body and a navigation in the query;
+	// each reads only its own, so a post cannot be steered by a query string
+	// glued onto its address.
+	param := r.URL.Query().Get
+	if r.Method == http.MethodPost {
+		var body struct {
+			Next      string          `json:"next"`
+			Turnstile string          `json:"turnstile"`
+			PoW       json.RawMessage `json:"pow"`
+			Register  bool            `json:"register"`
+		}
+		if err := httpx.DecodeJSON(w, r, &body, startPostBytes); err != nil {
+			httpx.WriteError(w, r, err)
+			return
+		}
+		fields := map[string]string{
+			"next":      body.Next,
+			"turnstile": body.Turnstile,
+			"pow":       string(body.PoW),
+		}
+		if body.Register {
+			fields["register"] = "1"
+		}
+		param = func(key string) string { return fields[key] }
+	}
 
-	if !h.service.Enabled(provider.ID) {
-		h.fail(w, r, linking, "unavailable")
+	// The link this navigation used to start is retired, and refused rather than
+	// read as a sign-in. A page still running the old bundle asks for it, and a
+	// sign-in here would switch that browser to whichever account the provider
+	// names, or open a new one. A connection is started by connect, which asks for
+	// the account's proof; a navigation has nowhere to carry one.
+	if param("link") == "1" {
+		h.fail(w, r, linkBack(param("next")), "failed")
 		return
 	}
 
-	if !linking {
-		gate := h.LoginChallenge
-		if r.URL.Query().Get("register") == "1" {
-			gate = h.SignupChallenge
+	// Whether this sign-in began on the register page. Every failure before the
+	// provider is reached goes back to the page it was started from, carrying the
+	// page it was meant to reach, as a failure at the callback does: a visitor
+	// refused at the door of a sign-up for a consent request keeps that request.
+	signingUp := param("register") == "1"
+	back := signInBack(signingUp, param("next"))
+
+	if !h.service.Enabled(provider.ID) {
+		h.fail(w, r, back, "unavailable")
+		return
+	}
+
+	// Whether this sign-in passed the sign-up challenge at this door. Only a
+	// pass counts: a sign-up started while the challenge was off is held to it
+	// if the operator turns it on before the provider comes back. Set only once
+	// a check has actually run here: a challenge that is off at this moment
+	// passes nothing.
+	checked := false
+	gate := h.gateFor(signingUp)
+	if gate.Enabled != nil && gate.Enabled() {
+		if err := gate.Check(r.Context(), param("turnstile"), h.address(r)); err != nil {
+			h.fail(w, r, back, "challenge_failed")
+			return
 		}
-		if gate.Enabled == nil && h.Challenge.Enabled != nil {
-			gate = h.Challenge
+		checked = true
+	}
+	if signingUp && h.proofRequired() {
+		proof := proofFrom(param("pow"))
+		if err := h.service.auth.CheckSignupProof(r.Context(), h.address(r), proof); err != nil {
+			h.fail(w, r, back, "challenge_failed")
+			return
 		}
-		if gate.Enabled != nil && gate.Enabled() {
-			if err := gate.Check(r.Context(), r.URL.Query().Get("turnstile"), h.address(r)); err != nil {
-				h.fail(w, r, linking, "challenge_failed")
-				return
-			}
-		}
+		checked = true
+	}
+	passedSignUp := signingUp && checked
+
+	creds, err := h.service.ResolveCredentials(r.Context(), h.Client, provider.ID)
+	if err != nil {
+		h.fail(w, r, back, "unavailable")
+		return
+	}
+
+	target, err := h.begin(w, r, provider, creds, state{
+		Provider: provider.ID,
+		Nonce:    token(),
+		Next:     safeNext(param("next")),
+		SignUp:   passedSignUp,
+		Register: signingUp,
+		Expiry:   time.Now().Add(stateTTL).UnixMilli(),
+	})
+	switch {
+	case errors.Is(err, ErrNotConfigured):
+		h.fail(w, r, back, "unavailable")
+		return
+	case err != nil:
+		h.fail(w, r, back, "failed")
+		return
+	}
+	h.leave(w, r, target)
+}
+
+// leave sends the browser on to target: a 302 for a navigation, and for the
+// page's post an answer naming the address, which the page then navigates to
+// itself. A form post answered with a redirect off this site is blocked by the
+// shell's form-action 'self' in Chrome; a navigation page script makes is not
+// a form's, and nothing in the policy holds it.
+func (h *Handlers) leave(w http.ResponseWriter, r *http.Request, target string) {
+	if r.Method == http.MethodPost {
+		_ = httpx.WriteJSON(w, http.StatusOK, map[string]string{"redirect": target})
+		return
+	}
+	http.Redirect(w, r, target, http.StatusFound)
+}
+
+// connect starts connecting a provider to the account that asks, and answers
+// with the address the browser has to leave for. It is a POST and not a
+// navigation because the connection needs the account's proof, its password or
+// a sign-in made just now, and a navigation has nowhere to carry a password but
+// the address bar, where it would be written into logs and history.
+//
+// Nothing is connected here. The connection is made by the callback, and only
+// when the state this answer hands out comes back with the provider's code.
+func (h *Handlers) connect(w http.ResponseWriter, r *http.Request) error {
+	account := auth.MustUser(r.Context())
+	provider := ByID(r.PathValue("provider"))
+	if provider == nil {
+		return httpx.NotFound("No such sign-in provider.")
+	}
+
+	var body struct {
+		Password string `json:"password"`
+		Next     string `json:"next"`
+	}
+	if err := httpx.DecodeJSON(w, r, &body, 4*1024); err != nil {
+		return err
+	}
+	if !h.service.Enabled(provider.ID) {
+		return httpx.UnavailableCode("unavailable", "This server is not offering that sign-in right now.")
+	}
+
+	// A session that is not on the request proves nothing here: the sign-in
+	// time it would be judged by is read from the session row, and an empty id
+	// has no row.
+	session, _ := auth.SessionFrom(r.Context())
+	if err := h.service.auth.ConfirmNewSignIn(r.Context(), account.ID, body.Password, session.ID); err != nil {
+		return connectError(w, err)
 	}
 
 	creds, err := h.service.ResolveCredentials(r.Context(), h.Client, provider.ID)
 	if err != nil {
-		h.fail(w, r, linking, "unavailable")
-		return
+		return httpx.UnavailableCode("unavailable", "This server is not offering that sign-in right now.")
 	}
-
-	value := state{
+	target, err := h.begin(w, r, provider, creds, state{
 		Provider: provider.ID,
 		Nonce:    token(),
-		Next:     safeNext(r.URL.Query().Get("next")),
+		Next:     safeNext(body.Next),
+		UserID:   account.ID,
 		Expiry:   time.Now().Add(stateTTL).UnixMilli(),
+	})
+	switch {
+	case errors.Is(err, ErrNotConfigured):
+		return httpx.UnavailableCode("unavailable", "This server is not offering that sign-in right now.")
+	case err != nil:
+		return httpx.Internal(err)
 	}
-	if linking {
-		value.UserID = account.ID
-	}
+	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"redirect": target})
+}
+
+// begin issues the state the provider's answer will be checked against, sets
+// its cookie in the browser, and returns the address the browser is sent to for
+// the provider's consent screen. Both halves that leave for a provider use it:
+// a sign-in's navigation and a connection's answer.
+func (h *Handlers) begin(
+	w http.ResponseWriter, r *http.Request, provider *Provider, creds Credentials, value state,
+) (string, error) {
 	challenge := ""
 	if provider.PKCE {
 		value.Verifier = token()
 		challenge = challengeFor(value.Verifier)
 	}
-
 	cookie, err := h.stamp.issue(value)
 	if err != nil {
-		h.fail(w, r, linking, "failed")
-		return
+		return "", err
 	}
 	h.setState(w, cookie)
 
-	target := provider.authorise(creds,
-		h.redirectURI(r, provider.ID), value.Nonce, challenge)
+	target := provider.authorise(creds, h.redirectURI(r, provider.ID), value.Nonce, challenge)
 	if target == "" {
-		h.fail(w, r, linking, "unavailable")
-		return
+		return "", ErrNotConfigured
 	}
-	http.Redirect(w, r, target, http.StatusFound)
+	return target, nil
+}
+
+// connectError words the refusals the proof can make. The rest is the password
+// confirmation's own mapping, which the account screens already use.
+func connectError(w http.ResponseWriter, err error) error {
+	switch {
+	case errors.Is(err, auth.ErrReauthRequired):
+		return httpx.ForbiddenCode("reauth_required", "Sign in again to connect a provider.")
+	case errors.Is(err, auth.ErrSessionNotFound):
+		// Same session code as the other account screens: a page whose session
+		// ended signs itself out instead of showing the sentence on a dead session.
+		return httpx.UnauthorizedCode("session_required", "Sign in to continue.")
+	}
+	return auth.TranslateTwoFactorError(w, err)
 }
 
 func (h *Handlers) callback(w http.ResponseWriter, r *http.Request) {
@@ -165,54 +388,86 @@ func (h *Handlers) callback(w http.ResponseWriter, r *http.Request) {
 
 	// Spent either way. A state that has come back is finished whether the
 	// sign-in worked or not, and leaving it behind would leave a replayable
-	// one in the browser.
-	cookie, err := r.Cookie(stateCookie)
+	// one in the browser. This clears the browser's copy only; the server
+	// keeps its own record of the nonce, written once the state has checked
+	// out, because a copy kept anywhere else is refused by that record alone.
+	cookie, err := r.Cookie(h.cookieName(stateCookie))
 	h.clearState(w)
 	if err != nil {
-		h.fail(w, r, false, "state")
+		h.fail(w, r, "", "state")
 		return
 	}
 	value, err := h.stamp.read(cookie.Value)
 	if err != nil {
-		h.fail(w, r, false, "state")
+		h.fail(w, r, "", "state")
 		return
 	}
 	linking := value.UserID != ""
+	back := ""
+	if linking {
+		back = linkBack(value.Next)
+	} else {
+		back = signInBack(value.Register, value.Next)
+	}
 
 	query := r.URL.Query()
 	// The provider refusing, or the person pressing cancel on the consent
 	// screen. Its own words are not shown: they are English, sometimes
 	// untranslatable, and "you did not authorise this" is the whole of it.
 	if query.Get("error") != "" {
-		h.fail(w, r, linking, "denied")
+		h.fail(w, r, back, "denied")
 		return
 	}
 	if value.Provider != provider.ID ||
 		!hmac.Equal([]byte(query.Get("state")), []byte(value.Nonce)) {
-		h.fail(w, r, linking, "state")
+		h.fail(w, r, back, "state")
 		return
 	}
 	code := query.Get("code")
 	if code == "" {
-		h.fail(w, r, linking, "denied")
+		h.fail(w, r, back, "denied")
 		return
 	}
 	if !h.service.Enabled(provider.ID) {
 		// Switched off while somebody was at the consent screen.
-		h.fail(w, r, linking, "unavailable")
+		h.fail(w, r, back, "unavailable")
+		return
+	}
+
+	// A link belongs to the account that started it. A callback from any other
+	// session is refused here, before the state is spent, so a stranger who
+	// holds a copy of the cookie cannot use up the state the owner still needs.
+	if linking {
+		if account, signedIn := auth.UserFrom(r.Context()); !signedIn || account.ID != value.UserID {
+			h.fail(w, r, back, "state")
+			return
+		}
+	}
+
+	// Spent before anything is asked of the provider, and not after: the
+	// cookie is a ten-minute ticket, and clearing the browser's copy does not
+	// reach a copy somebody else kept. Two callbacks carrying the same state
+	// race on this insert, and only the one that lands goes on to the code.
+	spent, err := h.service.store.SpendState(r.Context(), nil, value.Nonce, value.Expiry)
+	if err != nil {
+		h.fail(w, r, back, "failed")
+		return
+	}
+	if !spent {
+		h.fail(w, r, back, "state")
 		return
 	}
 
 	creds, err := h.service.ResolveCredentials(r.Context(), h.Client, provider.ID)
 	if err != nil {
-		h.fail(w, r, linking, "unavailable")
+		h.fail(w, r, back, "unavailable")
 		return
 	}
 
 	identity, err := provider.Authenticate(r.Context(), h.Client,
 		creds, code, h.redirectURI(r, provider.ID), value.Verifier)
 	if err != nil {
-		h.fail(w, r, linking, providerFailure(err))
+		h.fail(w, r, back, providerFailure(err))
 		return
 	}
 
@@ -221,22 +476,32 @@ func (h *Handlers) callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	account, err := h.service.SignIn(r.Context(), identity, h.address(r), r.UserAgent())
+	// A provider sign-in is a sign-in whichever door it came through, so the
+	// login guards stand in front of it as they stand in front of the sign-in
+	// form. Asked here rather than at start, because the identity the guard
+	// judges is only known once the provider has answered, and before SignIn,
+	// which is where an account may be written.
+	if err := h.service.auth.CheckGuards(r.Context(), auth.GuardLogin, nil, h.address(r), identity.Login); err != nil {
+		h.fail(w, r, back, "login_refused")
+		return
+	}
+
+	account, err := h.service.SignIn(r.Context(), identity, h.admission(value.SignUp), h.address(r), r.UserAgent())
 	if err != nil {
 		// This instance wants something the provider had no way to supply.
 		// Nothing has been written; the person is sent to a form and the
 		// account is opened when it comes back.
 		var more *MoreDetailsNeeded
 		if errors.As(err, &more) {
-			h.askForDetails(w, r, more.Identity, value.Next)
+			h.askForDetails(w, r, more.Identity, value.Next, value.SignUp, back)
 			return
 		}
 		var disabledErr *auth.AccountDisabledError
 		if errors.As(err, &disabledErr) && disabledErr.Reason != "" {
-			h.failWithReason(w, r, false, "disabled", disabledErr.Reason)
+			h.failWithReason(w, r, back, "disabled", disabledErr.Reason)
 			return
 		}
-		h.fail(w, r, false, signInFailure(err))
+		h.fail(w, r, back, signInFailure(err))
 		return
 	}
 	next := value.Next
@@ -255,7 +520,7 @@ func (h *Handlers) callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		h.fail(w, r, false, "failed")
+		h.fail(w, r, back, "failed")
 		return
 	}
 	h.service.auth.SetCookie(w, token)
@@ -266,8 +531,12 @@ func (h *Handlers) callback(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, next, http.StatusFound)
 }
 
-// askForDetails parks the sign-in and sends the browser to the form.
-func (h *Handlers) askForDetails(w http.ResponseWriter, r *http.Request, identity Identity, next string) {
+// askForDetails parks the sign-in and sends the browser to the form. A ticket
+// that cannot be issued fails back to the page the sign-in began from, the same
+// as any other failure at the callback.
+func (h *Handlers) askForDetails(
+	w http.ResponseWriter, r *http.Request, identity Identity, next string, passedSignUp bool, back string,
+) {
 	ticket, err := h.pending.issuePending(pending{
 		Provider: identity.Provider,
 		Subject:  identity.Subject,
@@ -275,10 +544,12 @@ func (h *Handlers) askForDetails(w http.ResponseWriter, r *http.Request, identit
 		Name:     identity.Name,
 		Email:    identity.Email,
 		Next:     safeNext(next),
+		SignUp:   passedSignUp,
+		Nonce:    token(),
 		Expiry:   time.Now().Add(pendingTTL).UnixMilli(),
 	})
 	if err != nil {
-		h.fail(w, r, false, "failed")
+		h.fail(w, r, back, "failed")
 		return
 	}
 	h.setPending(w, ticket)
@@ -302,8 +573,9 @@ func (h *Handlers) pendingSignup(w http.ResponseWriter, r *http.Request) error {
 		name = provider.Name
 	}
 	// A subject bound to an account field has already answered the question
-	// this form exists to ask, so the field arrives filled and only needs
-	// confirming.
+	// this form exists to ask. The field arrives filled with what the provider
+	// proved, and the account opens with that value whatever is typed into the
+	// field, so the form shows it rather than asking for it.
 	suggested := h.service.SuggestedFields(held.Provider, held.Subject)
 	needsPassword := h.service.settings.Bool(settings.OAuthAllowPassword)
 	passwordRequired := h.service.settings.Bool(settings.OAuthRequirePassword)
@@ -334,6 +606,9 @@ func (h *Handlers) completeSignup(w http.ResponseWriter, r *http.Request) error 
 	if err != nil {
 		return err
 	}
+	if held.Nonce == "" {
+		return staleSignup()
+	}
 
 	var body struct {
 		Username string            `json:"username"`
@@ -344,6 +619,16 @@ func (h *Handlers) completeSignup(w http.ResponseWriter, r *http.Request) error 
 	}
 	if err := httpx.DecodeJSON(w, r, &body, 8*1024); err != nil {
 		return err
+	}
+
+	// The callback has asked the login guards already, but this request runs the
+	// sign-in from the top again: an identity connected in another tab while the
+	// form was open lands on an existing account here, and the guards must answer
+	// for that sign-in too. Asked on every completion, because only Complete knows
+	// which account it will land on. Asked before Complete, as the callback asks
+	// before SignIn.
+	if err := h.service.auth.CheckGuards(r.Context(), auth.GuardLogin, nil, h.address(r), held.Login); err != nil {
+		return httpx.ForbiddenCode("login_refused", "This sign-in was refused on this server.")
 	}
 
 	account, err := h.service.Complete(r.Context(), Identity{
@@ -358,9 +643,26 @@ func (h *Handlers) completeSignup(w http.ResponseWriter, r *http.Request) error 
 		Fields:   body.Fields,
 		Email:    body.Email,
 		Invite:   body.Invite,
-	}, h.address(r), r.UserAgent())
+	}, h.admission(held.SignUp), h.address(r), r.UserAgent())
 	if err != nil {
+		// Set here for the same reason as on the sign-up form: the header belongs
+		// to the response, which completionError does not have.
+		var limited *auth.RateLimitError
+		if errors.As(err, &limited) {
+			w.Header().Set("Retry-After", strconv.Itoa(int(limited.RetryAfter.Seconds())+1))
+		}
 		return completionError(err)
+	}
+
+	// Spent by the completion that gets as far as a session, so the same ticket
+	// presented again opens nothing. It is spent here rather than before Complete,
+	// because a form refused for one field has to stay correctable.
+	spent, err := h.service.store.SpendState(r.Context(), nil, "signup:"+held.Nonce, held.Expiry)
+	if err != nil {
+		return httpx.Internal(err)
+	}
+	if !spent {
+		return staleSignup()
 	}
 
 	next := held.Next
@@ -389,18 +691,29 @@ func (h *Handlers) completeSignup(w http.ResponseWriter, r *http.Request) error 
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"redirect": next})
 }
 
+// staleSignup is the answer to a sign-up ticket that cannot be used: one that
+// has expired, was never issued, or has already opened its account.
+func staleSignup() error {
+	return httpx.BadRequest("That sign-in is no longer in progress. Start again from the sign-in page.")
+}
+
 // heldSignup reads the cookie the callback left behind. An absent or expired
 // one is the ordinary case of somebody opening the page later, not an error
 // worth a stack trace.
 func (h *Handlers) heldSignup(r *http.Request) (pending, error) {
-	stale := httpx.BadRequest("That sign-in is no longer in progress. Start again from the sign-in page.")
-	cookie, err := r.Cookie(pendingCookie)
+	cookie, err := r.Cookie(h.cookieName(pendingCookie))
 	if err != nil {
-		return pending{}, stale
+		return pending{}, staleSignup()
 	}
 	held, err := h.pending.readPending(cookie.Value)
 	if err != nil {
-		return pending{}, stale
+		return pending{}, staleSignup()
+	}
+	// The ticket lives for twenty minutes, and an operator who switches the
+	// provider off in that time must not still get an account through it. The
+	// callback checks this too, but only on the way in.
+	if !h.service.Enabled(held.Provider) {
+		return pending{}, httpx.UnavailableCode("unavailable", "This server is not offering that sign-in right now.")
 	}
 	return held, nil
 }
@@ -412,33 +725,32 @@ func (h *Handlers) heldSignup(r *http.Request) (pending, error) {
 // else between the two halves must not hand that somebody else the
 // connection.
 func (h *Handlers) finishLink(w http.ResponseWriter, r *http.Request, value state, identity Identity) {
+	back := linkBack(value.Next)
 	account, signedIn := auth.UserFrom(r.Context())
 	if !signedIn || account.ID != value.UserID {
-		h.fail(w, r, true, "state")
+		h.fail(w, r, back, "state")
 		return
 	}
 	if err := h.service.Connect(r.Context(), account.ID, identity); err != nil {
 		if errors.Is(err, ErrAlreadyLinked) {
-			h.fail(w, r, true, "already_linked")
+			h.fail(w, r, back, "already_linked")
 			return
 		}
-		h.fail(w, r, true, "failed")
+		// The bound value belongs to another account, and the person has to be
+		// told why: a generic failure here leaves them with nothing to act on.
+		if errors.Is(err, ErrAddressTaken) {
+			h.fail(w, r, back, "address_taken")
+			return
+		}
+		h.fail(w, r, back, "failed")
 		return
 	}
-	// Settings by default, the way this flow has always landed — but the
-	// binding gate sends its own start request with next=/bind-oidc's own
-	// destination, and a connection made to satisfy that gate belongs there,
-	// not back at a settings screen the gate would immediately bounce it out
+	// Back where it was started, settings when it named no page: the way this
+	// flow has always landed. The binding gate starts its own link with its
+	// destination as next, so a connection made to satisfy that gate belongs
+	// there, not at a settings screen the gate would immediately bounce it out
 	// of again.
-	page := value.Next
-	if page == "" {
-		page = "/settings"
-	}
-	sep := "?"
-	if strings.Contains(page, "?") {
-		sep = "&"
-	}
-	http.Redirect(w, r, page+sep+"oauth=connected", http.StatusFound)
+	http.Redirect(w, r, withQuery(back, "oauth", "connected"), http.StatusFound)
 }
 
 // fail sends the browser to a page that can say what happened.
@@ -446,22 +758,68 @@ func (h *Handlers) finishLink(w http.ResponseWriter, r *http.Request, value stat
 // A code rather than a sentence, for the reason every other refusal on this
 // path carries one: the server has no idea what language the reader has the
 // interface in.
-func (h *Handlers) fail(w http.ResponseWriter, r *http.Request, linking bool, code string) {
-	h.failWithReason(w, r, linking, code, "")
+//
+// back is the page a link returns to, or the sign-in page it was started from
+// (see signInBack). Empty means nothing about the flow is known yet, as when the
+// state cookie has gone missing: the failure then goes to the login card, or to
+// the register page when the request itself began there (register=1).
+func (h *Handlers) fail(w http.ResponseWriter, r *http.Request, back, code string) {
+	h.failWithReason(w, r, back, code, "")
 }
 
-func (h *Handlers) failWithReason(w http.ResponseWriter, r *http.Request, linking bool, code, reason string) {
+func (h *Handlers) failWithReason(w http.ResponseWriter, r *http.Request, back, code, reason string) {
 	page := "/login"
-	if linking {
-		page = "/settings"
+	if back != "" {
+		page = back
 	} else if r.URL.Query().Get("register") == "1" {
 		page = "/register"
 	}
-	u := page + "?oauth_error=" + url.QueryEscape(code)
+	u := withQuery(page, "oauth_error", code)
 	if reason != "" {
-		u += "&ban_reason=" + url.QueryEscape(reason)
+		u = withQuery(u, "ban_reason", reason)
 	}
-	http.Redirect(w, r, u, http.StatusFound)
+	h.leave(w, r, u)
+}
+
+// signInBack is the page a sign-in that failed returns to: the page it was
+// started from, with the page it was meant to reach carried along, so that the
+// card can take the visitor there once they have tried again. The provider's
+// redirect has no query of its own, so the state is the only record of either.
+func signInBack(register bool, next string) string {
+	page := "/login"
+	if register {
+		page = "/register"
+	}
+	if next = safeNext(next); next != "" {
+		return withQuery(page, "next", next)
+	}
+	return page
+}
+
+// linkBack is the page a link returns to, whether it worked or not: the page it
+// was started from when that is one of this site's, and the settings screen it
+// has always returned to otherwise.
+func linkBack(next string) string {
+	if page := safeNext(next); page != "" {
+		return page
+	}
+	return "/settings"
+}
+
+// withQuery adds one parameter to a page of this site. It goes before the
+// fragment, because a browser reads everything after '#' as the fragment, and a
+// page that already has a query keeps it.
+func withQuery(page, key, value string) string {
+	path, fragment, hasFragment := strings.Cut(page, "#")
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	out := path + sep + key + "=" + url.QueryEscape(value)
+	if hasFragment {
+		out += "#" + fragment
+	}
+	return out
 }
 
 func providerFailure(err error) string {
@@ -485,6 +843,15 @@ func completionError(err error) error {
 			"Too many accounts have been created just now. Try again shortly.").
 			WithDetails(map[string]any{
 				"retry_after_seconds": int(throttled.RetryAfter.Seconds()) + 1,
+			})
+	}
+	// Only a completion that carries an invite code can reach this: the guessing
+	// budget for codes, which the form words the same way as any other limit.
+	var limited *auth.RateLimitError
+	if errors.As(err, &limited) {
+		return httpx.TooManyRequests("too_many_attempts", limited.Error()).
+			WithDetails(map[string]any{
+				"retry_after_seconds": int(limited.RetryAfter.Seconds()) + 1,
 			})
 	}
 	var domain *auth.EmailDomainError
@@ -527,6 +894,11 @@ func completionError(err error) error {
 		return httpx.Conflict("address_taken", "An account here already uses that address.")
 	case errors.Is(err, auth.ErrSignupIPBlocked):
 		return httpx.ForbiddenCode("signup_ip_blocked", "You have been blocked from registering.")
+	case errors.Is(err, ErrSignupChallengeRequired):
+		return httpx.ForbiddenCode("signup_challenge_required",
+			"This server asks for a human check before it opens an account. Start from the register page.")
+	case errors.Is(err, ErrSignupRefused):
+		return httpx.ForbiddenCode("signup_refused", "This sign-up was refused on this server.")
 	case errors.Is(err, auth.ErrPasswordTooShort), errors.Is(err, auth.ErrPasswordTooLong):
 		return httpx.BadRequestCode("invalid_password", "%s", err.Error())
 	case errors.Is(err, ErrPasswordNotAllowed):
@@ -579,6 +951,10 @@ func signInFailure(err error) string {
 		return "disabled"
 	case errors.Is(err, auth.ErrSignupIPBlocked):
 		return "ip_blocked"
+	case errors.Is(err, ErrSignupChallengeRequired):
+		return "signup_challenge_required"
+	case errors.Is(err, ErrSignupRefused):
+		return "signup_refused"
 	case errors.Is(err, auth.ErrEmailRequired):
 		return "email_required"
 	case errors.Is(err, user.ErrFieldRequired):
@@ -664,12 +1040,29 @@ func (h *Handlers) redirectURI(r *http.Request, providerID string) string {
 	return scheme + "://" + r.Host + statePath + "/callback/" + providerID
 }
 
+// address is the caller's address for the per-address limits and the sign-in
+// log. A blank one is exactly what those limits skip, so a blank must never
+// reach them: an unwired resolver, or one that cannot read the request, falls
+// back to the peer the connection came from. Only a request with no peer at all
+// is counted, under one shared key, rather than waved past every limit.
 func (h *Handlers) address(r *http.Request) string {
-	if h.ClientIP == nil {
-		return ""
+	if h.ClientIP != nil {
+		if ip := h.ClientIP(r); strings.TrimSpace(ip) != "" {
+			return ip
+		}
 	}
-	return h.ClientIP(r)
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	if strings.TrimSpace(host) == "" {
+		return unknownAddress
+	}
+	return host
 }
+
+// unknownAddress is the one key a request without any address is counted under.
+const unknownAddress = "unknown"
 
 func nonNil(keys []string) []string {
 	if keys == nil {

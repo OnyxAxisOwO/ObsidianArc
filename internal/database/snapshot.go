@@ -9,12 +9,21 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
 )
 
 var schemaIdentifier = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// quoteIdentifier wraps a table name for a PRAGMA, which takes the name as an
+// identifier rather than as a bound value. The schemaIdentifier check already
+// keeps quotes out of every name that reaches here; escaping anyway means the
+// two PRAGMA call sites cannot disagree about it.
+func quoteIdentifier(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+}
 
 // ReadSnapshot gives a callback one point-in-time view of the database.
 // PostgreSQL pins the view with repeatable read; SQLite reads a VACUUM INTO
@@ -112,7 +121,9 @@ func (db *DB) readSQLiteSnapshot(ctx context.Context, maxBytes int64, fn func(Qu
 // Tables lists tables in the active SQLite database or PostgreSQL search
 // schema. System tables owned by the database engine are omitted.
 func Tables(ctx context.Context, q Queryer) ([]string, error) {
-	query := `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`
+	// The underscore is escaped: unescaped it matches any character, and a
+	// user table named sqlite plus any seventh character would be hidden here.
+	query := `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite\_%' ESCAPE '\' ORDER BY name`
 	if q.Dialect() == Postgres {
 		query = `SELECT table_name FROM information_schema.tables
 			WHERE table_schema = current_schema() AND table_type = 'BASE TABLE'
@@ -180,7 +191,7 @@ func ForeignKeys(ctx context.Context, q Queryer, table string) ([]ForeignKey, er
 	var rows *sql.Rows
 	var err error
 	if q.Dialect() == SQLite {
-		rows, err = q.Query(ctx, `PRAGMA foreign_key_list("`+strings.ReplaceAll(table, `"`, `""`)+`")`)
+		rows, err = q.Query(ctx, `PRAGMA foreign_key_list(`+quoteIdentifier(table)+`)`)
 	} else {
 		rows, err = q.Query(ctx, `SELECT kcu.table_name, kcu.column_name, ccu.table_name, ccu.column_name
 			FROM information_schema.table_constraints AS tc
@@ -226,7 +237,7 @@ func PrimaryKeys(ctx context.Context, q Queryer, table string) ([]string, error)
 	var rows *sql.Rows
 	var err error
 	if q.Dialect() == SQLite {
-		rows, err = q.Query(ctx, `PRAGMA table_info("`+table+`")`)
+		rows, err = q.Query(ctx, `PRAGMA table_info(`+quoteIdentifier(table)+`)`)
 	} else {
 		rows, err = q.Query(ctx, `SELECT kcu.column_name
 			FROM information_schema.table_constraints AS tc
@@ -241,6 +252,14 @@ func PrimaryKeys(ctx context.Context, q Queryer, table string) ([]string, error)
 	defer rows.Close()
 	var columns []string
 	if q.Dialect() == SQLite {
+		// PRAGMA table_info lists columns in declaration order, which is not
+		// the key order when the key is declared (a, b) over columns (b, a).
+		// The pk value is each column's 1-based position in the key.
+		type keyColumn struct {
+			name     string
+			position int
+		}
+		var keyColumns []keyColumn
 		for rows.Next() {
 			var cid, notNull, primary int
 			var name, kind string
@@ -249,8 +268,14 @@ func PrimaryKeys(ctx context.Context, q Queryer, table string) ([]string, error)
 				return nil, fmt.Errorf("database: scan SQLite columns for %s: %w", table, err)
 			}
 			if primary > 0 {
-				columns = append(columns, name)
+				keyColumns = append(keyColumns, keyColumn{name: name, position: primary})
 			}
+		}
+		sort.SliceStable(keyColumns, func(i, j int) bool {
+			return keyColumns[i].position < keyColumns[j].position
+		})
+		for _, column := range keyColumns {
+			columns = append(columns, column.name)
 		}
 	} else {
 		for rows.Next() {

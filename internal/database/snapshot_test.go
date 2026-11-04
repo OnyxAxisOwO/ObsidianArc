@@ -125,6 +125,24 @@ func TestSnapshotSchemaIntrospection(t *testing.T) {
 	}
 }
 
+// The key is declared (a, b) over columns declared (b, a). PRAGMA table_info
+// reports declaration order, so the constraint order only survives if the
+// key position is honoured.
+func TestPrimaryKeysFollowConstraintOrderNotDeclarationOrder(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	if _, err := db.Exec(ctx, `CREATE TABLE ordered_keys (b TEXT NOT NULL, a TEXT NOT NULL, PRIMARY KEY (a, b))`); err != nil {
+		t.Fatal(err)
+	}
+	primary, err := PrimaryKeys(ctx, db, "ordered_keys")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(primary) != 2 || primary[0] != "a" || primary[1] != "b" {
+		t.Fatalf("composite primary key = %#v, want [a b] in constraint order", primary)
+	}
+}
+
 func TestPostgresSnapshotUsesRepeatableReadWhenConfigured(t *testing.T) {
 	cfg := dbtest.Postgres(t, "repeatable-read instance backup snapshots")
 	db, err := Open(context.Background(), cfg)

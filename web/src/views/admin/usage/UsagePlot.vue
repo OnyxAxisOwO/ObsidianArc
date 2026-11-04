@@ -8,13 +8,19 @@
 // ellipse.
 
 import { computed, ref, useId, watch } from 'vue';
-import { currentLanguage } from '@/composables/useI18n';
-import { niceScale, smoothPath, timeTicks } from './scale';
+import { localeTag } from '@/lib/format';
+import { niceScale, smoothPath, tickFormat, timeTicks } from './scale';
 import type { PlotPoint } from './shape';
+import { DAY_MS } from '@/lib/time';
 
 const props = withDefaults(defineProps<{
   points: readonly PlotPoint[];
   bucketMs: number;
+  /**
+   * The offset the series was cut on: what the server's buckets are aligned
+   * to, and so what the axis and the bubble must read the clock by.
+   */
+  offsetMs: number;
   format: (value: number) => string;
   /** Read out for the whole chart, and prefixed to each point for keyboard readers. */
   label: string;
@@ -28,7 +34,7 @@ const emit = defineEmits<{ (event: 'update:active', index: number | null): void 
 const WIDTH = 720;
 const gradient = `oa-plot-fill-${useId()}`;
 const focused = ref(false);
-const locale = computed(() => currentLanguage() === 'zh' ? 'zh-CN' : 'en-US');
+const locale = computed(() => localeTag());
 
 const scale = computed(() => niceScale(Math.max(0, ...props.points.map((point) => point.value))));
 const start = computed(() => props.points[0]?.at ?? 0);
@@ -39,9 +45,12 @@ function xOf(index: number): number {
   if (!point) return 0;
   return span.value > 0 ? (point.at - start.value) / span.value : 0.5;
 }
+function yRatio(value: number): number {
+  return 1 - value / scale.value.max;
+}
 function yOf(index: number): number {
   const point = props.points[index];
-  return point ? 1 - point.value / scale.value.max : 1;
+  return point ? yRatio(point.value) : 1;
 }
 
 const coords = computed(() => props.points.map((_, index) => [xOf(index) * WIDTH, yOf(index) * props.height] as const));
@@ -57,13 +66,14 @@ const area = computed(() => coords.value.length > 1
  */
 const axis = computed(() => {
   if (!props.points.length) return [];
-  const daily = props.bucketMs >= 86_400_000 || span.value > 2 * 86_400_000;
-  return timeTicks(props.points.map((point) => point.at), props.bucketMs).map((index) => {
+  const ticks = timeTicks(props.points.map((point) => point.at), props.bucketMs, props.offsetMs);
+  const format = tickFormat(ticks.step, span.value);
+  return ticks.indices.map((index) => {
     const at = props.points[index]!.at;
     const left = xOf(index) * 100;
-    const text = daily
-      ? new Date(at).toLocaleDateString(locale.value, { month: 'numeric', day: 'numeric' })
-      : new Date(at).toLocaleTimeString(locale.value, { hour: '2-digit', minute: '2-digit' });
+    // Formatted in UTC on the shifted instant: that prints the wall clock the
+    // grid was cut on, whatever the browser's zone says for this instant.
+    const text = new Date(at + props.offsetMs).toLocaleString(locale.value, { ...format, timeZone: 'UTC' });
     return { key: `${index}-${at}`, left, text, edge: left < 4 ? 'start' : left > 96 ? 'end' : '' };
   });
 });
@@ -72,11 +82,13 @@ const selected = computed(() => props.active === null ? null : props.points[prop
 
 /** The bucket as a span of time: "9月16日 18:00 – 24:00", or a day. */
 function describe(at: number): string {
-  if (props.bucketMs >= 86_400_000) {
-    return new Date(at).toLocaleDateString(locale.value, { month: 'short', day: 'numeric', weekday: 'short' });
+  const wall = (instant: number, options: Intl.DateTimeFormatOptions): string =>
+    new Date(instant + props.offsetMs).toLocaleString(locale.value, { ...options, timeZone: 'UTC' });
+  if (props.bucketMs >= DAY_MS) {
+    return wall(at, { month: 'short', day: 'numeric', weekday: 'short' });
   }
-  const from = new Date(at).toLocaleString(locale.value, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-  const to = new Date(at + props.bucketMs).toLocaleTimeString(locale.value, { hour: '2-digit', minute: '2-digit' });
+  const from = wall(at, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  const to = wall(at + props.bucketMs, { hour: '2-digit', minute: '2-digit' });
   return `${from} – ${to}`;
 }
 
@@ -103,14 +115,18 @@ function step(event: KeyboardEvent): void {
   emit('update:active', next);
 }
 
-// A new series is new buckets; an index into the old one points at nothing.
-watch(() => props.points, () => { if (!focused.value) emit('update:active', null); });
+// Watches the buckets, not the array: the page rebuilds the series on every
+// refresh, and a readout the reader is looking at must not be cleared by one
+// that brings the same buckets back. A different set of buckets is the case
+// where an index into the old series points at nothing.
+const buckets = computed(() => props.points.map((point) => point.at).join());
+watch(buckets, () => { if (!focused.value) emit('update:active', null); });
 </script>
 
 <template>
   <div class="oa-plot" :style="{ '--oa-plot-height': `${props.height}px` }">
     <div class="oa-plot-y" aria-hidden="true">
-      <span v-for="tick in scale.ticks" :key="tick" :style="{ top: `${(1 - tick / scale.max) * 100}%` }">{{ props.format(tick) }}</span>
+      <span v-for="tick in scale.ticks" :key="tick" :style="{ top: `${yRatio(tick) * 100}%` }">{{ props.format(tick) }}</span>
     </div>
     <div
       class="oa-plot-area"
@@ -136,7 +152,7 @@ watch(() => props.points, () => { if (!focused.value) emit('update:active', null
         </defs>
         <line
           v-for="tick in scale.ticks" :key="tick" class="oa-plot-grid"
-          x1="0" :x2="WIDTH" :y1="(1 - tick / scale.max) * props.height" :y2="(1 - tick / scale.max) * props.height"
+          x1="0" :x2="WIDTH" :y1="yRatio(tick) * props.height" :y2="yRatio(tick) * props.height"
           vector-effect="non-scaling-stroke"
         />
         <path v-if="area" :d="area" :fill="`url(#${gradient})`" />

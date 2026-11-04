@@ -11,8 +11,12 @@
 
 import { ref, type Ref } from 'vue';
 import { fetchFeedbackUnread } from '@/api/feedback';
+import { onSignOut } from '@/stores/session';
 
 const unread = ref(0);
+// Bumped on sign-out. An answer asked for before then belongs to the account
+// that left, and must not raise the dot for whoever signs in next.
+let generation = 0;
 
 export const feedbackUnread: Ref<number> = unread;
 
@@ -21,20 +25,30 @@ export const feedbackUnread: Ref<number> = unread;
  * an error state, and the panel behind it works either way.
  */
 export async function refreshFeedbackUnread(): Promise<void> {
+  const account = generation;
   try {
     const { unread: count } = await fetchFeedbackUnread();
-    unread.value = count;
+    if (account === generation) unread.value = count;
   } catch {
     // Left at whatever it was. A stale dot is a smaller lie than a wrong one.
   }
 }
 
-/** Set directly when a screen has just learned the answer for itself. */
+/**
+ * Sets the count without a fetch. Nothing in the app calls it today; the
+ * sign-out test uses it to put a count in place before signing out.
+ */
 export function setFeedbackUnread(count: number): void {
   unread.value = Math.max(0, count);
 }
 
 /** Signed out: the next account's dot is not this one's. */
 export function forgetFeedbackUnread(): void {
+  generation += 1;
   unread.value = 0;
 }
+
+// Registered rather than called from the account menu alone: the other sign-out
+// paths (an expired session, a half-enrolled two-step) run forget() too, and
+// would otherwise leave the dot set.
+onSignOut(forgetFeedbackUnread);

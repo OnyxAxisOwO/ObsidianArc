@@ -1,13 +1,95 @@
 package admin
 
 import (
+	"context"
 	"net/http"
 	"runtime"
 	"sync"
 	"time"
 
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/flight"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 )
+
+// The storage totals scan every attachment the instance holds. The page asks
+// again every five seconds per open tab, and nothing shared the answer, so N
+// tabs meant N scans of the same table. The interval matches the page's own
+// polling, so no figure is older than the next poll would have made it, and the
+// scan runs once per interval however many tabs are open.
+const storageCacheTTL = 5 * time.Second
+
+type storageTotals struct {
+	at        time.Time
+	heldCount int64
+	heldBytes int64
+	discarded int64
+	byUser    []conversation.UserStorage
+}
+
+// How long the shared scan may run. It belongs to no one request, so it needs
+// a deadline of its own; a variable so a test can shorten it.
+var storageScanTimeout = 30 * time.Second
+
+// storageState is the last storage scan and the one in flight, if any.
+type storageState struct {
+	mu     sync.Mutex
+	totals *storageTotals
+	flight flight.Group
+}
+
+func (h *Handlers) cachedStorage() (storageTotals, bool) {
+	h.storageCache.mu.Lock()
+	defer h.storageCache.mu.Unlock()
+	if h.storageCache.totals != nil && time.Since(h.storageCache.totals.at) < storageCacheTTL {
+		return *h.storageCache.totals, true
+	}
+	return storageTotals{}, false
+}
+
+// storage returns the cached totals, or reads them. A request arriving while
+// another is scanning waits for that scan instead of starting its own, and
+// stops waiting when its own browser goes away. The scan runs on a context no
+// request owns: bound to the first caller's, it failed for everyone waiting
+// whenever that one tab was closed, and the next caller scanned again.
+func (h *Handlers) storage(ctx context.Context) (storageTotals, error) {
+	if cached, ok := h.cachedStorage(); ok {
+		return cached, nil
+	}
+	result := h.storageCache.flight.DoChan("storage", func() (any, error) {
+		if cached, ok := h.cachedStorage(); ok {
+			return cached, nil
+		}
+		scanCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), storageScanTimeout)
+		defer cancel()
+		// One scan for all three figures: the table has no index on
+		// discarded_at, so each separate read was a full pass over it.
+		totals, err := h.conversations.Storage(scanCtx)
+		if err != nil {
+			return storageTotals{}, err
+		}
+		fresh := storageTotals{
+			at:        time.Now(),
+			heldCount: totals.HeldCount,
+			heldBytes: totals.HeldBytes,
+			discarded: totals.Discarded,
+			byUser:    totals.ByUser,
+		}
+		h.storageCache.mu.Lock()
+		h.storageCache.totals = &fresh
+		h.storageCache.mu.Unlock()
+		return fresh, nil
+	})
+	select {
+	case done := <-result:
+		if done.Err != nil {
+			return storageTotals{}, done.Err
+		}
+		return done.Val.(storageTotals), nil
+	case <-ctx.Done():
+		return storageTotals{}, ctx.Err()
+	}
+}
 
 // What this instance is costing the machine it runs on: the files its users
 // are storing, the memory the process holds, and how busy it has been.
@@ -57,18 +139,18 @@ func (s *cpuSampler) rate(now time.Time, used time.Duration) (percent, window fl
 func (h *Handlers) resources(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 
-	heldCount, heldBytes, err := h.conversations.Held(ctx)
+	// The same budget the usage reads take. Each poll is a full scan of the
+	// attachments table, so a caller polling in a loop should meet the limit
+	// rather than the database.
+	if err := h.allowUsageRead(r); err != nil {
+		return err
+	}
+
+	totals, err := h.storage(ctx)
 	if err != nil {
 		return httpx.Internal(err)
 	}
-	discarded, err := h.conversations.Discarded(ctx)
-	if err != nil {
-		return httpx.Internal(err)
-	}
-	byUser, err := h.conversations.HeldByUser(ctx, 0)
-	if err != nil {
-		return httpx.Internal(err)
-	}
+	heldCount, heldBytes, discarded, byUser := totals.heldCount, totals.heldBytes, totals.discarded, totals.byUser
 
 	// ReadMemStats stops the world for the length of the read. It is
 	// microseconds on a heap this size, and this is the only place that asks.

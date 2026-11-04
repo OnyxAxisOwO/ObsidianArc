@@ -8,21 +8,21 @@
 // registered) and this, and every instance built here carries it — the same
 // way the release binary would.
 //
-// internal/server's own tests keep their own harness. It predates this one,
-// and they build servers with no plugins, which is the other half of the
-// claim: the core works without any of them.
+// internal/server's own tests cannot use this package: it imports server, so a
+// test inside package server that imported it would be an import cycle. They
+// keep their own harness, which builds servers with no plugins at all. Both
+// take their configuration from testconfig, so the two cannot drift apart in
+// what they build.
 package servertest
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"io/fs"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -31,6 +31,8 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin/wasm"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/server"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/server/testconfig"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/server/testrequest"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/totp"
 )
 
@@ -53,6 +55,9 @@ type Instance struct {
 type Session struct {
 	Cookie *http.Cookie
 	UserID string
+	// The password the account signed up or in with, when this harness did
+	// it. Enrolling the second step asks for it, as it would a person.
+	Password string
 }
 
 // New builds a server with every registered plugin installed and enabled.
@@ -111,21 +116,7 @@ func buildWith(t *testing.T, mode install, seed map[string]string, tweak []func(
 	t.Helper()
 	dir := t.TempDir()
 
-	cfg := config.Config{
-		Addr:     ":0",
-		DataDir:  dir,
-		LogLevel: "error",
-		Database: config.Database{
-			Driver: "sqlite", DSN: filepath.Join(dir, "server.db"),
-			MaxOpenConns: 4, MaxIdleConns: 4,
-		},
-		Session: config.Session{TTL: time.Hour, CookieName: "obsidian_session", TouchInterval: time.Hour},
-		// Deliberately cheap: nearly every case hashes a password, and the
-		// cost function is not what is under test.
-		Password:  config.Password{Memory: 8 * 1024, Iterations: 1, Parallelism: 1, SaltLength: 16, KeyLength: 32, MaxParallel: 4},
-		Upstream:  config.Upstream{DialTimeout: time.Second, ResponseHeaderTimeout: 2 * time.Second, MaxIdleConns: 2, IdleConnTimeout: time.Second},
-		SecretKey: []byte("a-test-instance-secret-value-here"),
-	}
+	cfg := testconfig.Config(dir)
 	for _, apply := range tweak {
 		apply(&cfg)
 	}
@@ -166,11 +157,22 @@ func buildWith(t *testing.T, mode install, seed map[string]string, tweak []func(
 	if prepare != nil {
 		prepare(db)
 	}
-	app, err := server.New(ctx, server.Deps{Config: cfg, DB: db, Version: "test", Started: time.Now()})
+	app, err := server.New(ctx, server.Deps{Config: cfg, DB: db, Version: "test", Started: time.Now(), UpdateFeed: noReleaseFeed(t)})
 	if err != nil {
 		t.Fatalf("build server: %v", err)
 	}
 	return &Instance{T: t, Handler: app.Handler(), DB: db, Server: app, config: cfg}
+}
+
+// noReleaseFeed is a release endpoint that always fails, so a test server that
+// consults the update check gets "unknown" and never reaches the internet.
+func noReleaseFeed(t testing.TB) string {
+	t.Helper()
+	feed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "no release feed in tests", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(feed.Close)
+	return feed.URL
 }
 
 // Do issues a request. A session sends its cookie; every unsafe method
@@ -194,35 +196,11 @@ func (in *Instance) DoFrom(ip, method, path string, body any, as *Session) *http
 
 func (in *Instance) do(ip, method, path string, body any, as *Session, header http.Header) *httptest.ResponseRecorder {
 	in.T.Helper()
-
-	var reader io.Reader
-	if body != nil {
-		encoded, err := json.Marshal(body)
-		if err != nil {
-			in.T.Fatalf("encode body: %v", err)
-		}
-		reader = bytes.NewReader(encoded)
-	}
-
-	request := httptest.NewRequest(method, path, reader)
-	if ip != "" {
-		request.RemoteAddr = ip + ":40000"
-	}
-	if body != nil {
-		request.Header.Set("Content-Type", "application/json")
-	}
-	if method != http.MethodGet && method != http.MethodHead {
-		request.Header.Set("Sec-Fetch-Site", "same-origin")
-	}
-	for key, values := range header {
-		for _, value := range values {
-			request.Header.Add(key, value)
-		}
-	}
+	var cookie *http.Cookie
 	if as != nil {
-		request.AddCookie(as.Cookie)
+		cookie = as.Cookie
 	}
-
+	request := testrequest.New(in.T, method, path, body, cookie, ip, header)
 	recorder := httptest.NewRecorder()
 	in.Handler.ServeHTTP(recorder, request)
 	return recorder
@@ -288,7 +266,7 @@ func (in *Instance) Reboot(tweak ...func(*config.Config)) *Instance {
 	for _, apply := range tweak {
 		apply(&cfg)
 	}
-	app, err := server.New(context.Background(), server.Deps{Config: cfg, DB: in.DB, Version: "test", Started: time.Now()})
+	app, err := server.New(context.Background(), server.Deps{Config: cfg, DB: in.DB, Version: "test", Started: time.Now(), UpdateFeed: noReleaseFeed(in.T)})
 	if err != nil {
 		in.T.Fatalf("reboot: %v", err)
 	}
@@ -310,7 +288,9 @@ func (in *Instance) RegisterWith(body map[string]any) *Session {
 	if response.Code != http.StatusCreated {
 		in.T.Fatalf("register %v: %d %s", body["username"], response.Code, response.Body.String())
 	}
-	return in.sessionFrom(response)
+	session := in.sessionFrom(response)
+	session.Password, _ = body["password"].(string)
+	return session
 }
 
 // Login signs in with a password and fails the test unless a session came
@@ -322,7 +302,9 @@ func (in *Instance) Login(identifier, password string) *Session {
 	if response.Code != http.StatusOK {
 		in.T.Fatalf("login %s: %d %s", identifier, response.Code, response.Body.String())
 	}
-	return in.sessionFrom(response)
+	session := in.sessionFrom(response)
+	session.Password = password
+	return session
 }
 
 // SetSettings writes settings as an administrator would, failing the test on
@@ -340,9 +322,13 @@ func (in *Instance) sessionFrom(response *httptest.ResponseRecorder) *Session {
 	var payload struct {
 		User struct{ ID string } `json:"user"`
 	}
-	_ = json.Unmarshal(response.Body.Bytes(), &payload)
+	// A body that is not the JSON this endpoint sends means the response is not
+	// what the test thinks it is. Returning an empty user for it would hide that.
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		in.T.Fatalf("session response %d is not JSON: %v", response.Code, err)
+	}
 	for _, cookie := range response.Result().Cookies() {
-		if cookie.Name == "obsidian_session" && cookie.Value != "" {
+		if cookie.Name == in.config.Session.CookieName && cookie.Value != "" {
 			return &Session{Cookie: cookie, UserID: payload.User.ID}
 		}
 	}
@@ -382,8 +368,12 @@ func (in *Instance) EnrolTwoFactor(as *Session) *TwoFactor {
 		Secret string `json:"secret"`
 	}](in.T, setup).Secret
 	step := totp.Step(time.Now())
-	code, _ := totp.Code(secret, step)
-	enable := in.Do(http.MethodPost, "/api/profile/two-factor/enable", map[string]string{"code": code}, as)
+	code, err := totp.Code(secret, step)
+	if err != nil {
+		in.T.Fatalf("two-factor code for the enrolment: %v", err)
+	}
+	enable := in.Do(http.MethodPost, "/api/profile/two-factor/enable",
+		map[string]string{"code": code, "current_password": as.Password}, as)
 	if enable.Code != http.StatusOK {
 		in.T.Fatalf("two-factor enable: %d %s", enable.Code, enable.Body.String())
 	}

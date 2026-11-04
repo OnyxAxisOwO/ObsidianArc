@@ -46,6 +46,28 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/trial/chat", httpx.Wrap(h.chat))
 }
 
+// The body cap is sized from the character limit, not from typical text. A
+// conversation may hold MaxTotalChars runes, and a rune written as a \u escape
+// (a control or HTML character, which Go's encoder always escapes, or a BMP
+// character a client chose to escape) takes six bytes, so a cap smaller than
+// that refuses legitimate conversations in languages written in multi-byte
+// characters. A supplementary-plane character escaped as a surrogate pair takes
+// twelve: a client that escapes every one of those is refused at the cap rather
+// than the cap being raised for everyone. The browser sends them as raw UTF-8,
+// four bytes. The rest is room for the framing of at most maxTrialMessages
+// messages and the continuation.
+//
+// Validation runs before the budget, so a turn refused for its shape costs no
+// allowance. The price is that a turn the budget refuses has already been read
+// up to this cap.
+const maxTrialBodyBytes = 6*MaxTotalChars + 16<<10
+
+// At the turn cap a conversation holds 2*MaxTrialTurns-1 messages: a question
+// and an answer for each earlier turn, then the last question. The limit allows
+// one extra question and answer beyond the cap, so the framing the body cap
+// leaves room for stays bounded.
+const maxTrialMessages = 2*settings.MaxTrialTurns + 1
+
 type message struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
@@ -67,7 +89,7 @@ func (h *Handlers) chat(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	var body request
-	if err := httpx.DecodeJSON(w, r, &body, 64*1024); err != nil {
+	if err := httpx.DecodeJSON(w, r, &body, maxTrialBodyBytes); err != nil {
 		return err
 	}
 
@@ -76,24 +98,29 @@ func (h *Handlers) chat(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
+	// A bound on open upstream connections rather than on cost, so a burst at
+	// the front door cannot starve the accounts paying for this instance. Taken
+	// with the charge in budget.admit, slot first.
 	address := httpx.ClientIP(r, h.trust)
-	if ok, retryAfter := h.budget.take(address); !ok {
+	done, retryAfter, refused := h.budget.admit(address)
+	switch refused {
+	case refusedBusy:
+		return httpx.TooManyRequests("trial_busy",
+			"The trial is busy right now. Try again in a moment.")
+	case refusedExhausted:
 		w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())+1))
 		return httpx.TooManyRequests("trial_exhausted",
 			"You have used the trial for now. Create an account to keep going.")
 	}
-
-	// A bound on open upstream connections rather than on cost, so a burst at
-	// the front door cannot starve the accounts paying for this instance.
-	done, ok := h.budget.enter()
-	if !ok {
-		return httpx.TooManyRequests("trial_busy",
-			"The trial is busy right now. Try again in a moment.")
-	}
 	defer done()
 
+	// The lookup is a database read, so it runs after the in-memory refusals:
+	// a flood turned away by the budget must not cost a query. A turn with no
+	// model to send it to gives its charge back, since it never reaches the
+	// provider.
 	resolved, err := h.resolveModel(r)
 	if err != nil {
+		h.budget.refund(address)
 		return err
 	}
 
@@ -111,18 +138,19 @@ func (h *Handlers) chat(w http.ResponseWriter, r *http.Request) error {
 
 	sse, err := httpx.NewSSE(w)
 	if err != nil {
+		// Nothing has reached the provider, so the charge goes back, as it does
+		// for a turn with no model.
+		h.budget.refund(address)
 		return httpx.Internal(err)
 	}
 
 	sink := func(event adapter.Event) error {
-		switch event.Type {
-		case adapter.EventDelta:
+		if event.Type == adapter.EventDelta {
 			return sse.Event("delta", map[string]any{"text": event.Text})
-		case adapter.EventReasoning:
-			// Swallowed. A trial is a sample of the answer, and the reasoning
-			// of a model the visitor did not choose is noise.
-			return nil
 		}
+		// Everything else is dropped, reasoning included: a trial is a sample of
+		// the answer, and the reasoning of a model the visitor did not choose is
+		// noise.
 		return nil
 	}
 
@@ -186,7 +214,10 @@ func trialMaxTokens(modelCeiling int) int {
 // not be a way to post a megabyte of prompt.
 func (h *Handlers) validate(body request) (int, error) {
 	if len(body.Messages) == 0 {
-		return 0, httpx.BadRequest("Nothing to send.")
+		return 0, httpx.BadRequestCode("trial_empty", "Nothing to send.")
+	}
+	if len(body.Messages) > maxTrialMessages {
+		return 0, httpx.BadRequestCode("trial_too_long", "That conversation is too long for a trial.")
 	}
 
 	previous, err := h.signer.verify(body.Continuation)
@@ -199,18 +230,18 @@ func (h *Handlers) validate(body request) (int, error) {
 	total := 0
 	for _, entry := range body.Messages {
 		if strings.TrimSpace(entry.Content) == "" {
-			return 0, httpx.BadRequest("Nothing to send.")
+			return 0, httpx.BadRequestCode("trial_empty", "Nothing to send.")
 		}
 		if len([]rune(entry.Content)) > MaxMessageChars {
-			return 0, httpx.BadRequest("Message must be %d characters or fewer.", MaxMessageChars)
+			return 0, httpx.BadRequestCode("trial_message_too_long", "Message must be %d characters or fewer.", MaxMessageChars)
 		}
 		total += len([]rune(entry.Content))
 	}
 	if total > MaxTotalChars {
-		return 0, httpx.BadRequest("That conversation is too long for a trial.")
+		return 0, httpx.BadRequestCode("trial_too_long", "That conversation is too long for a trial.")
 	}
 	if body.Messages[len(body.Messages)-1].Role == string(adapter.RoleAssistant) {
-		return 0, httpx.BadRequest("Nothing to send.")
+		return 0, httpx.BadRequestCode("trial_empty", "Nothing to send.")
 	}
 
 	if turns > h.allowedTurns() {
@@ -239,29 +270,22 @@ func (h *Handlers) remaining(used int) int {
 	return left
 }
 
-// resolveModel picks the model the operator nominated, or the first enabled
-// one if they nominated none.
+// resolveModel picks the model the operator nominated for the front door, and
+// refuses when they nominated none.
 //
 // Authorize is called as an administrator on purpose: there is no account and
 // therefore no group, and the permission that matters was granted when an
-// operator chose this model for the front door. It still enforces that the
-// model and its provider are enabled, and it still resolves routing.
+// operator chose this model for the front door. That is also why there is no
+// "first enabled model" fallback: as an administrator it walks past every
+// group restriction, so a visitor with no account could have been served
+// whichever enabled model happened to be listed first, whatever it costs and
+// whoever it was meant for, merely because nobody had chosen. It still
+// enforces that the model and its provider are enabled, and it still resolves
+// routing.
 func (h *Handlers) resolveModel(r *http.Request) (model.Resolved, error) {
 	modelID := strings.TrimSpace(h.settings.Get(settings.TrialModel))
 	if modelID == "" {
-		records, err := h.models.ListAll(r.Context(), "")
-		if err != nil {
-			return model.Resolved{}, httpx.Internal(err)
-		}
-		for _, record := range records {
-			if record.Enabled {
-				modelID = record.ID
-				break
-			}
-		}
-	}
-	if modelID == "" {
-		return model.Resolved{}, httpx.Unavailable("No model is available right now.")
+		return model.Resolved{}, httpx.UnavailableCode("trial_unavailable", "No model is available right now.")
 	}
 
 	resolved, err := h.models.Authorize(r.Context(), "", modelID, true)

@@ -27,6 +27,7 @@ package idp
 import (
 	"errors"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -42,7 +43,6 @@ var (
 	// unregistered callback is exactly where an attacker wants the code sent.
 	ErrRedirectMismatch = errors.New("idp: that callback is not registered for this application")
 	ErrInvalidRequest   = errors.New("idp: the authorisation request is not valid")
-	ErrUnknownScope     = errors.New("idp: that scope is not one this application may ask for")
 	// The code is unknown, expired, already spent, or belongs to another
 	// application. Same answer to all of them, for the same reason.
 	ErrBadCode  = errors.New("idp: that authorisation code cannot be used")
@@ -57,6 +57,10 @@ var (
 	ErrNoRedirectURI    = errors.New("idp: an application needs at least one callback URL")
 	ErrBadRedirectURI   = errors.New("idp: a callback must be an absolute http(s) URL with no fragment")
 	ErrInsecureRedirect = errors.New("idp: a callback must use https, except on localhost")
+
+	// ErrTooManyApplications is the instance's own ceiling, not a fault: the
+	// operator who reaches it needs to hear that, in a form the screen can say.
+	ErrTooManyApplications = errors.New("idp: this instance already has the maximum number of applications")
 )
 
 // How long each thing lives.
@@ -160,6 +164,23 @@ func Covers(granted, wanted []string) bool {
 	return true
 }
 
+// within keeps the granted scopes that the application may still ask for. An
+// operator who takes a scope away has asked for it to stop arriving, and a token
+// issued before that keeps its own list, so the list that goes out is computed
+// at the moment it is used. The stored list is not rewritten: neither an
+// operator's narrowing nor a later, narrower approval takes anything out of it
+// (see RecordGrant), so restoring the scope gives it back to the tokens that
+// held it.
+func within(granted, allowed []string) []string {
+	out := []string{}
+	for _, scope := range granted {
+		if Covers(allowed, []string{scope}) {
+			out = append(out, scope)
+		}
+	}
+	return out
+}
+
 // App is a registered application. The secret is absent by design: the row
 // holds a digest, and there is no field here for a value that exists once.
 type App struct {
@@ -212,11 +233,23 @@ func checkName(raw string) (string, error) {
 	return name, nil
 }
 
+// callbackBoundary is a comma that begins the next callback. A comma that does
+// not is part of the callback it sits in: a callback may carry its own commas
+// in its query string, and splitting on every comma cut those into fragments
+// that were then refused, with no way to register the callback at all.
+//
+// The scheme is matched case-insensitively because URL schemes are, and
+// checkRedirectURI accepts HTTPS://; a boundary that missed it would fold the
+// second callback into the first one's query string.
+var callbackBoundary = regexp.MustCompile(`(?i),\s*(https?://)`)
+
 // ParseRedirectURIs reads the textarea an operator fills in: one callback per
-// line, or separated by commas, because both are what people type.
+// line, or separated by commas where the next callback begins, because both
+// are what people type.
 func ParseRedirectURIs(raw string) ([]string, error) {
-	fields := strings.FieldsFunc(raw, func(r rune) bool {
-		return r == '\n' || r == '\r' || r == ',' || r == ' ' || r == '\t'
+	normalised := callbackBoundary.ReplaceAllString(raw, "\n${1}")
+	fields := strings.FieldsFunc(normalised, func(r rune) bool {
+		return r == '\n' || r == '\r' || r == ' ' || r == '\t'
 	})
 	out := make([]string, 0, len(fields))
 	seen := map[string]bool{}
@@ -243,6 +276,16 @@ func ParseRedirectURIs(raw string) ([]string, error) {
 func checkRedirectURI(candidate string) error {
 	if len(candidate) > MaxRedirectURIChars {
 		return ErrBadRedirectURI
+	}
+	// ParseRedirectURIs has already split at every comma that begins a callback.
+	// One left before the query string is a second callback whose scheme was
+	// mistyped, such as "localhost:3000/cb" after a comma; url.Parse would keep
+	// it in the path and the join would pass as one callback. A comma in the
+	// query string is a value, and stays.
+	if c := strings.IndexByte(candidate, ','); c >= 0 {
+		if q := strings.IndexByte(candidate, '?'); q < 0 || c < q {
+			return ErrBadRedirectURI
+		}
 	}
 	parsed, err := url.Parse(candidate)
 	if err != nil || parsed.Host == "" || parsed.Fragment != "" || strings.Contains(candidate, "#") {

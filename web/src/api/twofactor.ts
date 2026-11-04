@@ -24,6 +24,10 @@ export interface TwoFactorSetup {
   /** The otpauth link as a QR code, already drawn: the dark modules as one
    *  SVG path in module units, and the side length without the quiet zone. */
   qr: { size: number; path: string };
+  /** Whether confirming asks for the account's password, so the wizard draws
+   *  the field up front. False for an account that only signs in through a
+   *  provider. */
+  password_required?: boolean;
 }
 
 export function fetchTwoFactor(): Promise<TwoFactorStatus> {
@@ -34,8 +38,16 @@ export function beginTwoFactor(): Promise<TwoFactorSetup> {
   return api.post<TwoFactorSetup>('/api/profile/two-factor/setup');
 }
 
-export function enableTwoFactor(code: string): Promise<{ recovery_codes: string[]; user: Account }> {
-  return api.post<{ recovery_codes: string[]; user: Account }>('/api/profile/two-factor/enable', { code });
+/** Enabling signs every other device out, so the server wants the password
+ *  as well as the code — a session alone is what a stolen cookie is. */
+export function enableTwoFactor(
+  code: string,
+  currentPassword?: string,
+): Promise<{ recovery_codes: string[]; user: Account }> {
+  return api.post<{ recovery_codes: string[]; user: Account }>('/api/profile/two-factor/enable', {
+    code,
+    ...(currentPassword ? { current_password: currentPassword } : {}),
+  });
 }
 
 export function disableTwoFactor(code: string): Promise<{ user: Account }> {

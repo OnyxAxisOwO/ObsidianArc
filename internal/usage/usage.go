@@ -9,6 +9,7 @@ package usage
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,6 +25,10 @@ const (
 	StatusAborted  Status = "aborted"
 	StatusRejected Status = "rejected"
 )
+
+// hourMillis is an hour in the epoch milliseconds every timestamp here is
+// stored in: the width of a rollup bucket and of one cell of the week grid.
+const hourMillis = int64(time.Hour / time.Millisecond)
 
 // Record is one request. The group, provider and model names are snapshots
 // rather than joins: what something was called at the time is part of the
@@ -100,7 +105,7 @@ func (s *Store) Write(ctx context.Context, record Record) error {
 			return err
 		}
 
-		hourTS := record.StartedAt - (record.StartedAt % 3600000)
+		hourTS := record.StartedAt - (record.StartedAt % hourMillis)
 		var errors int64
 		if record.Status == StatusError {
 			errors = 1
@@ -258,11 +263,16 @@ type Filter struct {
 	Offset     int
 }
 
-// usesRollup reports whether the filter spans at least one hour and should
-// query usage_rollup_hourly rather than the raw ledger.
+// usesRollup reports whether the filter should query usage_rollup_hourly rather
+// than the raw ledger: a window of at least one hour, or one account's whole
+// history. The rollup is written in the same transaction as each turn and
+// backfilled by its migration, so both agree; an account's all-time figures are
+// read on every visit to its usage page, and the rollup's account index keeps
+// that to the account's own hours. Unbounded filters across every account keep
+// the ledger path, so the admin's all-time figures do not change with this.
 func (f Filter) usesRollup() bool {
 	if f.Since <= 0 {
-		return false
+		return f.UserID != "" && f.Until <= 0
 	}
 	var span int64
 	if f.Until > 0 {
@@ -270,53 +280,27 @@ func (f Filter) usesRollup() bool {
 	} else {
 		span = time.Now().UnixMilli() - f.Since
 	}
-	return span >= 3600_000
+	return span >= hourMillis
 }
 
-// where builds the filter clause. The prefix qualifies every column, which
-// matters for the one query that joins another table: `users` also has
-// `status` and `group_id`, and an unqualified reference to either is
+// where builds the filter clause for usage_records. The prefix qualifies every
+// column, which matters for the one query that joins another table: `users`
+// also has `status` and `group_id`, and an unqualified reference to either is
 // ambiguous rather than merely wrong.
 func (f Filter) where(prefix string) (string, []any) {
-	conditions := []string{}
-	args := []any{}
-
-	add := func(column string, value any) {
-		conditions = append(conditions, prefix+column+" = ?")
-		args = append(args, value)
-	}
-	if f.UserID != "" {
-		add("user_id", f.UserID)
-	}
-	if f.GroupID != "" {
-		add("group_id", f.GroupID)
-	}
-	if f.ModelID != "" {
-		add("model_id", f.ModelID)
-	}
-	if f.ProviderID != "" {
-		add("provider_id", f.ProviderID)
-	}
-	if f.Status != "" {
-		add("status", f.Status)
-	}
-	if f.Since > 0 {
-		conditions = append(conditions, prefix+"started_at >= ?")
-		args = append(args, f.Since)
-	}
-	if f.Until > 0 {
-		conditions = append(conditions, prefix+"started_at < ?")
-		args = append(args, f.Until)
-	}
-	if len(conditions) == 0 {
-		return "", nil
-	}
-	return " WHERE " + strings.Join(conditions, " AND "), args
+	return f.clause(prefix, "started_at", false)
 }
 
 // whereRollup builds the filter clause for usage_rollup_hourly, where timestamps
 // are rounded to UTC hour_ts.
 func (f Filter) whereRollup(prefix string) (string, []any) {
+	return f.clause(prefix, "hour_ts", true)
+}
+
+// clause is the filter for either table. The two share every equality column
+// and differ in the timestamp column. The rollup keeps only the hour a turn
+// started in, so its lower bound is rounded down to that hour.
+func (f Filter) clause(prefix, timeCol string, hourly bool) (string, []any) {
 	conditions := []string{}
 	args := []any{}
 
@@ -340,17 +324,33 @@ func (f Filter) whereRollup(prefix string) (string, []any) {
 		add("status", f.Status)
 	}
 	if f.Since > 0 {
-		conditions = append(conditions, prefix+"hour_ts >= ?")
-		args = append(args, f.Since-(f.Since%3600_000))
+		since := f.Since
+		if hourly {
+			since -= since % hourMillis
+		}
+		conditions = append(conditions, prefix+timeCol+" >= ?")
+		args = append(args, since)
 	}
 	if f.Until > 0 {
-		conditions = append(conditions, prefix+"hour_ts < ?")
+		conditions = append(conditions, prefix+timeCol+" < ?")
 		args = append(args, f.Until)
 	}
 	if len(conditions) == 0 {
 		return "", nil
 	}
 	return " WHERE " + strings.Join(conditions, " AND "), args
+}
+
+// source is what a grouped query reads for the filter: the hourly rollup when
+// the window is long enough for it, the ledger otherwise. The clause is the
+// filter's for that table.
+func (f Filter) source() (table, partial, where string, args []any) {
+	if f.usesRollup() {
+		where, args = f.whereRollup("")
+		return "usage_rollup_hourly", partialRollup, where, args
+	}
+	where, args = f.where("")
+	return "usage_records", partialRecords, where, args
 }
 
 // withTimeoutTx runs fn within a transaction on PostgreSQL to apply a 5s
@@ -373,48 +373,20 @@ func (s *Store) Totals(ctx context.Context, filter Filter) (Totals, error) {
 	err := s.withTimeoutTx(ctx, func(q database.Queryer) error {
 		if filter.usesRollup() {
 			where, args := filter.whereRollup("")
-			query := `SELECT
-				COALESCE(SUM(requests), 0),
-				COALESCE(SUM(input_tokens), 0),
-				COALESCE(SUM(output_tokens), 0),
-				COALESCE(SUM(reasoning_tokens), 0),
-				COALESCE(SUM(total_tokens), 0),
-				COALESCE(SUM(credits), 0),
-				COALESCE(SUM(errors), 0),
-				COUNT(DISTINCT user_id),
-				COUNT(DISTINCT NULLIF(model_id, '')),
-				COALESCE(SUM(duration_ms), 0)
-				FROM usage_rollup_hourly` + where
+			// The rollup is one row per hour, account, model, provider, group and status,
+			// a few thousand rows a month. Its distinct counts run over those rows
+			// directly; the folding pass the ledger needs is for raw turns. The alias
+			// lets the one list of aggregates read it as well.
+			query := `SELECT ` + aggregates + ` FROM usage_rollup_hourly AS t` + where
 			return q.QueryRow(ctx, query, args...).Scan(totals.targets()...)
 		}
 
+		// The distinct counts run over the folded rows, not the ledger, as
+		// the two-pass comment above requires: a DISTINCT straight over the
+		// ledger is the sort that comment exists to avoid.
 		where, args := filter.where("")
-		modelWhere := where
-		if modelWhere == "" {
-			modelWhere = " WHERE model_id != ''"
-		} else {
-			modelWhere += " AND model_id != ''"
-		}
-
-		query := `SELECT
-			COUNT(*),
-			COALESCE(SUM(input_tokens), 0),
-			COALESCE(SUM(output_tokens), 0),
-			COALESCE(SUM(reasoning_tokens), 0),
-			COALESCE(SUM(total_tokens), 0),
-			COALESCE(SUM(credits), 0),
-			COALESCE(SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END), 0),
-			(SELECT COUNT(*) FROM (SELECT DISTINCT user_id FROM usage_records` + where + `) sub_u),
-			(SELECT COUNT(*) FROM (SELECT DISTINCT model_id FROM usage_records` + modelWhere + `) sub_m),
-			COALESCE(SUM(duration_ms), 0)
-			FROM usage_records` + where
-
-		queryArgs := make([]any, 0, len(args)*3)
-		queryArgs = append(queryArgs, args...)
-		queryArgs = append(queryArgs, args...)
-		queryArgs = append(queryArgs, args...)
-
-		return q.QueryRow(ctx, query, queryArgs...).Scan(totals.targets()...)
+		query := `SELECT ` + aggregates + ` FROM ` + folded("usage_records", partialRecords, nil, where)
+		return q.QueryRow(ctx, query, args...).Scan(totals.targets()...)
 	})
 	if err != nil {
 		return Totals{}, fmt.Errorf("usage: totals: %w", err)
@@ -482,7 +454,10 @@ func rankBy(metric string) string {
 	}
 }
 
-// GroupBy totals the ledger along one dimension, ranked by one metric.
+// GroupBy totals usage along one dimension, ranked by one metric. A window of an
+// hour or more, and an account's whole history, are read from the hourly rollup,
+// which keeps no time finer than the hour: on those paths last_at is the start
+// of the newest hour a row was active in, not the start of its newest turn.
 //
 // The column and label are chosen from a fixed set rather than interpolated
 // from a caller's string, so no request parameter reaches the query text.
@@ -521,19 +496,7 @@ func (s *Store) GroupBy(ctx context.Context, dimension, metric string, filter Fi
 		return nil, fmt.Errorf("usage: unknown dimension %q", dimension)
 	}
 
-	var (
-		table   = "usage_records"
-		partial = partialRecords
-		where   string
-		args    []any
-	)
-	if filter.usesRollup() {
-		table = "usage_rollup_hourly"
-		partial = partialRollup
-		where, args = filter.whereRollup("")
-	} else {
-		where, args = filter.where("")
-	}
+	table, partial, where, args := filter.source()
 
 	query := `SELECT t.k0, ` + labelExpr + `, ` + detailExpr + `,
 		COALESCE(MAX(t.last_at), 0), ` + aggregates + `
@@ -606,22 +569,10 @@ func (s *Store) Cross(ctx context.Context, rows, cols string, rowKeys, colKeys [
 		return []Cell{}, nil
 	}
 
-	var (
-		table   = "usage_records"
-		partial = partialRecords
-		where   string
-		args    []any
-	)
-	if filter.usesRollup() {
-		table = "usage_rollup_hourly"
-		partial = partialRollup
-		where, args = filter.whereRollup("")
-	} else {
-		where, args = filter.where("")
-	}
+	table, partial, where, args := filter.source()
 
-	keys := rowColumn + " IN (" + placeholders(len(rowKeys)) + ") AND " +
-		colColumn + " IN (" + placeholders(len(colKeys)) + ")"
+	keys := rowColumn + " IN (" + database.Placeholders(len(rowKeys)) + ") AND " +
+		colColumn + " IN (" + database.Placeholders(len(colKeys)) + ")"
 	if where == "" {
 		where = " WHERE " + keys
 	} else {
@@ -661,11 +612,8 @@ func (s *Store) Cross(ctx context.Context, rows, cols string, rowKeys, colKeys [
 
 // placeholders is n bound parameters for an IN list: the keys are values, and
 // values are never spliced into the text of a query.
-func placeholders(n int) string {
-	return strings.TrimSuffix(strings.Repeat("?, ", n), ", ")
-}
-
-// List returns individual records, newest first — the admin audit view.
+// List returns individual records, newest first — the admin audit view, which
+// pages and so needs how many rows the filter matches.
 func (s *Store) List(ctx context.Context, filter Filter) ([]Record, int64, error) {
 	where, args := filter.where("")
 
@@ -673,7 +621,26 @@ func (s *Store) List(ctx context.Context, filter Filter) ([]Record, int64, error
 	if err := s.db.QueryRow(ctx, `SELECT COUNT(*) FROM usage_records`+where, args...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("usage: count: %w", err)
 	}
+	out, err := s.page(ctx, filter)
+	return out, total, err
+}
 
+// Newest returns the latest records without counting the ledger. The count is
+// a scan of every turn the instance has ever recorded, and a caller that shows
+// a handful of rows does not need it.
+func (s *Store) Newest(ctx context.Context, limit int) ([]Record, error) {
+	return s.page(ctx, Filter{Limit: limit})
+}
+
+// Recent is Newest for a filter: the latest records it matches, without the
+// count of how many there are. A page polled every few seconds should not pay
+// for a count the caller discards.
+func (s *Store) Recent(ctx context.Context, filter Filter) ([]Record, error) {
+	return s.page(ctx, filter)
+}
+
+// page is one page of the newest records the filter matches.
+func (s *Store) page(ctx context.Context, filter Filter) ([]Record, error) {
 	// The listing joins `users` for a display name, so its filter has to be
 	// qualified.
 	joinedWhere, joinedArgs := filter.where("r.")
@@ -693,7 +660,7 @@ func (s *Store) List(ctx context.Context, filter Filter) ([]Record, int64, error
 
 	rows, err := s.db.Query(ctx, query, append(append([]any{}, joinedArgs...), limit, max(0, filter.Offset))...)
 	if err != nil {
-		return nil, 0, fmt.Errorf("usage: list: %w", err)
+		return nil, fmt.Errorf("usage: list: %w", err)
 	}
 	defer rows.Close()
 
@@ -707,11 +674,11 @@ func (s *Store) List(ctx context.Context, filter Filter) ([]Record, int64, error
 			&record.TotalTokens, &record.Credits, &record.Estimated,
 			&record.Status, &record.ErrorCode, &record.StartedAt, &record.FinishedAt,
 			&record.DurationMS); err != nil {
-			return nil, 0, fmt.Errorf("usage: list scan: %w", err)
+			return nil, fmt.Errorf("usage: list scan: %w", err)
 		}
 		out = append(out, record)
 	}
-	return out, total, rows.Err()
+	return out, rows.Err()
 }
 
 // Point is one bucket of a time series.
@@ -751,7 +718,10 @@ func (s *Store) Series(ctx context.Context, filter Filter, bucket, offset time.D
 		where      string
 		filterArgs []any
 	)
-	if filter.usesRollup() && bucket >= time.Hour && bucket%time.Hour == 0 {
+	// The rollup has only the hour a turn started in. Shifting that hour by a
+	// zone with a half or quarter-hour offset lands the bucket boundary at the
+	// wrong minute, so those readers stay on the ledger.
+	if filter.usesRollup() && bucket >= time.Hour && bucket%time.Hour == 0 && offset%time.Hour == 0 {
 		table = "usage_rollup_hourly"
 		partial = partialRollup
 		timeCol = "hour_ts"
@@ -800,37 +770,36 @@ type Slot struct {
 	TotalTokens int64 `json:"total_tokens"`
 }
 
-// Heatmap folds the ledger onto one week: every turn counted against the
-// weekday and hour it started in, offset from UTC the way Series is.
+// Heatmap folds usage onto one week: every turn counted against the weekday
+// and hour it started in, offset from UTC the way Series is. It reads the
+// hourly rollup for the filters Totals does when the offset is a whole number
+// of hours, and the ledger otherwise.
 //
 // Integer arithmetic, for the reason Series gives: started_at is epoch
 // milliseconds, so the day and the hour are a division and a remainder, and
 // neither engine's date functions — spelled differently, and in disagreement
 // about time zones — are needed. The epoch fell on a Thursday, which is the 4.
 func (s *Store) Heatmap(ctx context.Context, filter Filter, offset time.Duration) ([]Slot, error) {
-	var (
-		query string
-		args  []any
-	)
-	if filter.usesRollup() {
-		where, filterArgs := filter.whereRollup("")
-		args = append([]any{offset.Milliseconds()}, filterArgs...)
-		query = `SELECT (t.h / 24 + 4) % 7, t.h % 24, SUM(t.requests), COALESCE(SUM(t.total_tokens), 0)
-		 FROM (SELECT (hour_ts + ?) / 3600000 AS h, SUM(requests) AS requests, SUM(total_tokens) AS total_tokens
-		       FROM usage_rollup_hourly` + where + `
-		       GROUP BY 1) t
-		 GROUP BY 1, 2
-		 ORDER BY 1, 2`
+	// A rollup hour is the turn's hour only when the offset is a whole number of
+	// hours, the same reason Series gives. The two sources differ in table, time
+	// column and in what a request is counted as: the rollup keeps a count, the
+	// ledger has a row per turn.
+	table, timeCol, requests := "usage_records", "started_at", "COUNT(*)"
+	var where string
+	var filterArgs []any
+	if filter.usesRollup() && offset%time.Hour == 0 {
+		table, timeCol, requests = "usage_rollup_hourly", "hour_ts", "SUM(requests)"
+		where, filterArgs = filter.whereRollup("")
 	} else {
-		where, filterArgs := filter.where("")
-		args = append([]any{offset.Milliseconds()}, filterArgs...)
-		query = `SELECT (t.h / 24 + 4) % 7, t.h % 24, SUM(t.requests), COALESCE(SUM(t.total_tokens), 0)
-		 FROM (SELECT (started_at + ?) / 3600000 AS h, COUNT(*) AS requests, SUM(total_tokens) AS total_tokens
-		       FROM usage_records` + where + `
+		where, filterArgs = filter.where("")
+	}
+	args := append([]any{offset.Milliseconds()}, filterArgs...)
+	query := `SELECT (t.h / 24 + 4) % 7, t.h % 24, SUM(t.requests), COALESCE(SUM(t.total_tokens), 0)
+		 FROM (SELECT (` + timeCol + ` + ?) / ` + strconv.FormatInt(hourMillis, 10) + ` AS h, ` + requests + ` AS requests, SUM(total_tokens) AS total_tokens
+		       FROM ` + table + where + `
 		       GROUP BY 1) t
 		 GROUP BY 1, 2
 		 ORDER BY 1, 2`
-	}
 
 	// Folded to hours first, then the hours onto the week: a few thousand
 	// hours are cheaper to fold twice than every turn is to sort once, which

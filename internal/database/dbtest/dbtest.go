@@ -17,6 +17,8 @@ package dbtest
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"hash/fnv"
 	"net/url"
 	"os"
 	"strings"
@@ -45,7 +47,7 @@ func Postgres(t *testing.T, why string) config.Database {
 		t.Skipf("set %s — %s", DSNVariable, why)
 	}
 
-	schema := schemaName(t)
+	schema := schemaName(t, packageDir(t))
 
 	admin := connect(t, dsn)
 	// Dropped first as well as last: a test killed part way through leaves
@@ -83,8 +85,11 @@ func Either(t *testing.T, sqlitePath string) config.Database {
 }
 
 // schemaName is derived from the test's own name so a schema left behind by a
-// crash says which test left it.
-func schemaName(t *testing.T) string {
+// crash says which test left it. The package directory is part of it as well:
+// `go test ./...` runs package binaries in parallel against the one database,
+// and two packages that each have a test of the same name would otherwise
+// share a schema and drop each other's tables.
+func schemaName(t *testing.T, packageDir string) string {
 	safe := strings.Map(func(r rune) rune {
 		switch {
 		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '_':
@@ -96,14 +101,29 @@ func schemaName(t *testing.T) string {
 		}
 	}, t.Name())
 
+	sum := fnv.New32a()
+	_, _ = sum.Write([]byte(packageDir))
+	tag := fmt.Sprintf("%08x", sum.Sum32())
+
 	// Postgres truncates an identifier at 63 bytes, and a truncated one could
 	// collide with another test's; the tail is what differs between subtests,
 	// so it is the end that is kept.
-	const room = 56
+	room := 63 - len("oa_") - len(tag) - len("_")
 	if len(safe) > room {
 		safe = safe[len(safe)-room:]
 	}
-	return "oa_" + safe
+	return "oa_" + tag + "_" + safe
+}
+
+// packageDir is the directory a test runs in, which is its package's directory:
+// go test starts each package's test binary there.
+func packageDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("find the package directory: %v", err)
+	}
+	return dir
 }
 
 // withSearchPath points a DSN at one schema, in whichever of the two shapes

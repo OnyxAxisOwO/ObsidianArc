@@ -1,6 +1,9 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { currentModel, loadModels, models, selectModel, selectedID } from '../src/chat/useModels';
+import { currentModel, loadModels, models, modelsListed, selectModel, selectedID } from '../src/chat/useModels';
+import { forget } from '../src/stores/session';
 import type { AvailableModel } from '../src/chat/useModels';
 
 // Being able to generate in the image lab and being able to hold a
@@ -116,10 +119,84 @@ describe('worstCase and priciest calculations', () => {
     expect(priciest([deepseek, claude, small])?.id).toBe('claude');
   });
 
+  // The same table internal/model's TestWorstCaseMatchesTheSharedTable reads,
+  // so the estimate here cannot drift from what the server reserves.
+  it('reserves what the server reserves', async () => {
+    const { worstCase } = await import('../src/views/admin/shared');
+    const table = JSON.parse(readFileSync(resolve(__dirname, '../../internal/model/testdata/worst_case.json'), 'utf8')) as {
+      max_output_tokens: number; request_weight: number; output_token_weight: number; credits: number;
+    }[];
+    expect(table.length).toBeGreaterThan(0);
+    for (const row of table) {
+      const entry = adminModel('m', row.request_weight, row.output_token_weight, row.max_output_tokens);
+      expect(worstCase(entry)).toBeCloseTo(row.credits, 9);
+    }
+  });
+
   it('lists the dearest few, dearest first', async () => {
     const { priciestFew } = await import('../src/views/admin/shared');
     const models = [adminModel('a', 0, 1, 0), adminModel('b', 0, 3, 0), adminModel('c', 0, 2, 0)];
     expect(priciestFew(models, 2).map((m) => m.id)).toEqual(['b', 'c']);
     expect(models.map((m) => m.id)).toEqual(['a', 'b', 'c']);
+  });
+});
+
+describe('the price list the allowance forms read', () => {
+  // The empty answer of a failed lookup is shown as "no price" and it used to
+  // stay that way until sign-out; the next form asks again instead.
+  it('asks again after a failed lookup, and keeps a good answer', async () => {
+    const { adminApi } = await import('../src/admin/api');
+    const { pricedModels } = await import('../src/views/admin/shared');
+    const lookup = vi.spyOn(adminApi, 'models')
+      .mockRejectedValueOnce(new Error('upstream down'))
+      .mockResolvedValueOnce({ models: [{ id: 'm1', enabled: true }, { id: 'off', enabled: false }] } as never);
+    try {
+      expect(await pricedModels()).toEqual([]);
+      expect((await pricedModels()).map((entry) => entry.id)).toEqual(['m1']);
+      expect(await pricedModels()).toHaveLength(1);
+      expect(lookup).toHaveBeenCalledTimes(2);
+    } finally {
+      lookup.mockRestore();
+    }
+  });
+});
+
+describe('whether the list has answered yet', () => {
+  // The flag is module state, and sign-out is the only thing that clears it.
+  beforeEach(() => {
+    forget();
+  });
+
+  it('is not known while the list is still on its way', async () => {
+    let answer: (response: Response) => void = () => {};
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => { answer = resolve; })));
+    expect(modelsListed.value).toBe(false);
+
+    const pending = loadModels();
+    expect(modelsListed.value).toBe(false);
+
+    answer(new Response(JSON.stringify({ models: [TALKER] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    await pending;
+    expect(modelsListed.value).toBe(true);
+  });
+
+  it('counts a list that failed as an answer, so the setup card still shows', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new TypeError('offline');
+    }));
+    await expect(loadModels()).rejects.toThrow();
+    expect(modelsListed.value).toBe(true);
+  });
+
+  it('starts over for the next account', async () => {
+    answerWith([TALKER]);
+    await loadModels();
+    expect(modelsListed.value).toBe(true);
+
+    forget();
+    expect(modelsListed.value).toBe(false);
   });
 });

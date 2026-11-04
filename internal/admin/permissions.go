@@ -19,6 +19,12 @@ func hasPermission(account user.User, permissions string) bool {
 	if permissions == "" {
 		return account.IsAdmin()
 	}
+	// The spelling Protect already understands. Without this a setting or a
+	// plugin's key marked super_admin would be refused to everybody, because
+	// it is not a grant CanAdmin knows and delegation can never hand it out.
+	if permissions == "super_admin" {
+		return account.IsSuperAdmin()
+	}
 	for _, permission := range strings.Split(permissions, ",") {
 		if account.CanAdmin(permission) {
 			return true
@@ -31,23 +37,81 @@ func hasPermission(account user.User, permissions string) bool {
 // them, that may read and write one setting. The shared settings route lets
 // in any of them; which keys each one then sees and saves is decided here,
 // key by key, so a grant reaches its own page's settings and nobody else's.
-func settingPermission(key string) string {
-	if d, ok := settings.Lookup(key); ok && d.Permission != "" {
+//
+// It asks the service rather than the process-wide registry, because the service
+// also knows the keys of plugins installed while the server runs. The registry
+// alone judged such a key by the default grant instead of the one its package
+// declared.
+func settingPermission(s *settings.Service, key string) string {
+	d, ok := s.LookupDefinition(key)
+	if ok && d.Permission != "" {
 		return d.Permission
 	}
-	return corePermission(key)
+	core := corePermission(key)
+	// A package installed at run time may name a key with a core prefix, such as
+	// health., and the prefix would hand it to a core grant that was never meant
+	// to reach a package's settings. Without a declared grant it is the super
+	// administrator's. Compiled-in plugins keep the prefix rule their definitions
+	// are documented to follow.
+	if ok && core != "settings" && !compiledIn(key) {
+		return "super_admin"
+	}
+	return core
 }
 
-// settingPermission is the same answer for this server, whose plugins may
-// have been installed after it started.
-func (h *Handlers) settingPermission(key string) string {
-	if d, ok := h.settings.LookupDefinition(key); ok && d.Permission != "" {
-		return d.Permission
+// compiledIn reports whether key was defined by a plugin compiled into the
+// binary, as opposed to one installed while the server runs.
+func compiledIn(key string) bool {
+	for _, d := range settings.AllDefinitions() {
+		if d.Key == key {
+			return true
+		}
 	}
-	return corePermission(key)
+	return false
+}
+
+// CanWriteSetting is whether account may read and write one setting, by the
+// grant the shared settings route asks for. It takes the same service the route
+// uses, so a key is judged here as the route judges it, compiled in or installed.
+func CanWriteSetting(s *settings.Service, account user.User, key string) bool {
+	return hasPermission(account, settingPermission(s, key))
+}
+
+// settingPermission is the answer for this server's own service, whose plugins
+// may have been installed after it started.
+func (h *Handlers) settingPermission(key string) string {
+	return settingPermission(h.settings, key)
+}
+
+// superAdminSettings are the provider settings that decide whose word an
+// account is opened on. A delegated security grant used to cover them, and
+// with them an issuer of its holder's own choosing could vouch for anybody's
+// address — so they were one sign-in from anybody's account — and the
+// stored client secret would be posted to wherever the token URL pointed.
+//
+// The GitHub and Google client credentials are here for the same reason as the
+// OIDC ones: a delegate who could swap them in signs people in to an OAuth app
+// the delegate owns. Their endpoints are fixed in code, so only the identity
+// of the app is at stake, which is why they are not listed with the URLs.
+var superAdminSettings = map[string]bool{
+	settings.OAuthOIDCIssuer:       true,
+	settings.OAuthOIDCClientID:     true,
+	settings.OAuthOIDCClientSecret: true,
+	settings.OAuthOIDCAuthURL:      true,
+	settings.OAuthOIDCTokenURL:     true,
+	settings.OAuthOIDCUserInfoURL:  true,
+	settings.OAuthOIDCTrustEmail:   true,
+	settings.OAuthLinkByEmail:      true,
+	settings.OAuthGitHubID:         true,
+	settings.OAuthGitHubSecret:     true,
+	settings.OAuthGoogleID:         true,
+	settings.OAuthGoogleSecret:     true,
 }
 
 func corePermission(key string) string {
+	if superAdminSettings[key] || strings.HasPrefix(key, "audit.") {
+		return "super_admin"
+	}
 	switch {
 	case strings.HasPrefix(key, "health."):
 		return "availability"
@@ -133,9 +197,12 @@ func (h *Handlers) references(w http.ResponseWriter, r *http.Request) error {
 
 func (h *Handlers) listMemberOptions(w http.ResponseWriter, r *http.Request) error {
 	query := r.URL.Query()
+	// The groups grant alone searches names. The email address is the users
+	// grant's to read, so an actor without it matches on the name only.
 	accounts, total, err := h.users.List(r.Context(), user.ListFilter{
 		Search: query.Get("q"), GroupID: query.Get("group_id"),
-		Limit: intParam(query.Get("limit"), 20), Offset: intParam(query.Get("offset"), 0),
+		NameOnly: !auth.MustUser(r.Context()).CanAdmin("users"),
+		Limit:    intParam(query.Get("limit"), 20), Offset: intParam(query.Get("offset"), 0),
 	})
 	if err != nil {
 		return httpx.Internal(err)

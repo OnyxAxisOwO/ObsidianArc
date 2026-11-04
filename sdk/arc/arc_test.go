@@ -4,8 +4,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 // serve runs one request through the same entry point the wasm build uses,
@@ -80,9 +82,15 @@ func TestAGuardAllowsRestrictsOrRefuses(t *testing.T) {
 			return GuardResult{Restrict: true, Reason: "score"}, nil
 		case "boom":
 			return GuardResult{}, errors.New("upstream down")
+		case "wrapped":
+			return GuardResult{}, fmt.Errorf("checking the grey band: %w", &Refusal{Status: 403, Code: "challenge_failed", Message: "nope"})
 		}
 		return GuardResult{}, nil
 	})
+	// A refusal a guard wrapped is still the refusal: it must not become a 500.
+	if res, e := serve(t, "guard", map[string]any{"name": "demo", "action": "register", "token": "wrapped", "ip": "203.0.113.9"}); e != nil || !strings.Contains(string(res), `"verdict":"refuse"`) {
+		t.Errorf("a wrapped refusal answered %s %v", res, e)
+	}
 	for token, want := range map[string]string{
 		"": `"verdict":"allow"`, "grey": `"verdict":"restrict"`, "bad": `"code":"challenge_failed"`,
 	} {
@@ -156,6 +164,19 @@ func TestAPanicInAHandlerIsAnErrorNotACrash(t *testing.T) {
 	_, e := serve(t, "http", map[string]any{"route": "GET /api/x/demo/bug"})
 	if e == nil || e.Status != 500 || e.Code != "panic" {
 		t.Fatalf("e = %+v", e)
+	}
+}
+
+// A handler that adds context to an *Error with %w has still failed with that
+// error: the status and code reach the client, not a hidden 500.
+func TestAWrappedErrorKeepsItsStatusAndCode(t *testing.T) {
+	reset(t)
+	Route("GET /api/x/demo/thing", func(*Ctx, *Request) (*Response, error) {
+		return nil, fmt.Errorf("loading the thing: %w", Err(404, "no_such_thing", "There is no such thing."))
+	})
+	_, e := serve(t, "http", map[string]any{"route": "GET /api/x/demo/thing"})
+	if e == nil || e.Status != 404 || e.Code != "no_such_thing" || e.Internal {
+		t.Fatalf("a wrapped *Error lost its status and code: %+v", e)
 	}
 }
 
@@ -349,6 +370,26 @@ func TestAHostRefusalIsRecognisable(t *testing.T) {
 	if !IsDenied(err) {
 		t.Fatalf("err = %v", err)
 	}
+	if !IsDenied(fmt.Errorf("fetching the upstream: %w", err)) {
+		t.Fatal("a wrapped refusal was not recognised")
+	}
+}
+
+// Fetch answers a transaction it cannot serve with the refusal the server
+// would give, without asking the server: the wait for a remote answer must not
+// happen while the transaction holds its connection.
+func TestFetchIsRefusedInsideATransactionWithoutAsking(t *testing.T) {
+	reset(t)
+	host := useHost(t, map[string]any{"http.fetch": map[string]any{"status": 200, "body": ""}})
+	c := &Ctx{inTx: true}
+	_, err := c.Fetch(FetchRequest{Method: "GET", URL: "https://x.example"})
+	var he *HostError
+	if !errors.As(err, &he) || he.Code != "tx_open" {
+		t.Fatalf("err = %v, want tx_open", err)
+	}
+	if len(host.calls) != 0 {
+		t.Fatalf("the server was asked: %v", host.calls)
+	}
 }
 
 func TestBytesTravelTagged(t *testing.T) {
@@ -356,5 +397,41 @@ func TestBytesTravelTagged(t *testing.T) {
 	raw, _ := json.Marshal(got)
 	if string(raw) != `["a",1,{"$b64":"aGk="},null]` {
 		t.Fatalf("args encoded as %s", raw)
+	}
+}
+
+// A typed nil slice is NULL, not an empty blob: an empty blob would fail
+// IS NULL. A time is epoch milliseconds, so it sorts with the BIGINT columns
+// the core keeps its timestamps in, not as text.
+func TestNilBytesBindNullAndTimesBindMilliseconds(t *testing.T) {
+	at := time.UnixMilli(1700000000123)
+	got := encodeArgs([]any{[]byte(nil), at})
+	raw, _ := json.Marshal(got)
+	if string(raw) != `[null,1700000000123]` {
+		t.Fatalf("args encoded as %s", raw)
+	}
+}
+
+// Each of these used to come back as a plausible wrong value with no error:
+// the BLOB as the text of its Go map, the text as its leading digits, the
+// fraction truncated, and a tagged bytes object without its text as empty
+// bytes.
+func TestScanRefusesValuesThatAreNotWhatTheColumnHolds(t *testing.T) {
+	reset(t)
+	for name, tc := range map[string]struct {
+		value any
+		dest  any
+	}{
+		"a BLOB into a string":          {map[string]string{"$b64": "aGk="}, new(string)},
+		"text with a tail into integer": {"12abc", new(int64)},
+		"a fraction into integer":       {json.Number("2.5"), new(int64)},
+		"a bytes object with no text":   {map[string]any{}, new([]byte)},
+	} {
+		useHost(t, map[string]any{
+			"db.query": map[string]any{"columns": []string{"v"}, "rows": [][]any{{tc.value}}},
+		})
+		if err := (&Ctx{}).QueryRow("SELECT v").Scan(tc.dest); err == nil {
+			t.Errorf("%s was accepted as %v", name, tc.dest)
+		}
 	}
 }

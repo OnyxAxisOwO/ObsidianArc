@@ -16,16 +16,16 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/checkin"
 	"net/http"
 	"strings"
-	"sync"
 	"sync/atomic"
-
-	"golang.org/x/sync/singleflight"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/announcement"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/apikey"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/audit"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/card"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/chat"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/console"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/feedback"
@@ -45,6 +45,7 @@ import (
 	securityevents "github.com/OnyxAxisOwO/ObsidianArc/internal/security"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/systembackup"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/update"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/usage"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/usercheck"
@@ -71,6 +72,10 @@ type Handlers struct {
 	feedback      *feedback.Store
 	apps          *idp.Store
 	invites       *invite.Store
+	// The assistant uses the same model accounting and command catalogue as
+	// the chat and terminal; it never owns a second privileged dispatcher.
+	AssistantChat    *chat.Service
+	AssistantConsole *console.Console
 	// Mail owns the database override and the live sender. Set by server
 	// wiring so environment fallbacks and administrator saves share one path.
 	Mail *mail.Manager
@@ -94,19 +99,39 @@ type Handlers struct {
 	Notify *notify.Store
 	// The bonus bars; nil on a server built without them, which answers 404.
 	Bonus *bonus.Store
+	// The administrators' audit trail. Set by the wiring; nil records
+	// nothing and leaves the trail's own routes unmounted.
+	Audit *audit.Store
 	// The check-in rewards, edited from the backoffice.
 	Checkin *checkin.Service
 	// SystemBackup covers the complete instance and is restricted to the
 	// single super administrator rather than delegated settings operators.
 	SystemBackup *systembackup.Service
+	// The release check behind GET /api/admin/update. Nil answers "unknown"
+	// and nothing is asked of GitHub.
+	Updates *update.Checker
+	// Whether a trusted proxy has sent Cloudflare headers this instance was
+	// not told to expect. Set by the wiring, which owns the proxy settings.
+	CloudflareUnclaimed func() bool
 
+	// The budget every ledger read shares; see allowUsageRead. Built by
+	// NewHandlers, so a handler never has to ask whether there is one.
 	UsageLimiter *httpx.TokenBucketLimiter
 
-	usageCacheMu        sync.RWMutex
-	usageSummaryCache   map[string]*cachedUsageSummary
-	usageBreakdownCache map[string]*cachedUsageBreakdown
-	usageSummarySF      singleflight.Group
-	usageBreakdownSF    singleflight.Group
+	// Paid calls to upstream models, one budget per instance. Each sign-up
+	// review and each model probe spends provider credit whatever its caller,
+	// so the budget is not per caller. Refusing rather than queueing matches
+	// the test-send cooldowns. It lives in memory, so a second instance keeps
+	// its own budget, the same trade the usage limiter makes. Built by
+	// NewHandlers, like UsageLimiter.
+	reviewBudget *httpx.TokenBucketLimiter
+	probeBudget  *httpx.TokenBucketLimiter
+
+	usageCache usageCache
+
+	// The resources page's storage totals, read at most once per
+	// storageCacheTTL; see resources.go.
+	storageCache storageState
 
 	// Not injected: it is two fields of state that only the resources page
 	// has any use for, and it is meaningless before the first request.
@@ -115,6 +140,9 @@ type Handlers struct {
 	// Endpoints a plugin brought, mounted by Routes behind the same wrapper
 	// as the table there.
 	extra []Route
+	// Set once Routes has read extra. A route mounted after that would be
+	// accepted and then never served, with no error anywhere.
+	routed bool
 	// Which plugins are on. A switched-off plugin's routes answer 404, the
 	// same as a build without it.
 	gate plugingate.Gate
@@ -123,8 +151,10 @@ type Handlers struct {
 	fallback atomic.Pointer[func(w http.ResponseWriter, r *http.Request) bool]
 }
 
-// SetPluginGate is how the server says which plugins are on. Set before
-// Routes.
+// SetPluginGate is how the server says which plugins are on. Routes reads it
+// on each request rather than at mount time, so a gate set late still applies
+// from then on. Until it is set, a nil gate lets every plugin route through
+// (see plugingate), so the server sets it before it starts serving.
 func (h *Handlers) SetPluginGate(g plugingate.Gate) { h.gate = g }
 
 // PluginRoutes lists the endpoints plugin mounted, for its manifest.
@@ -155,65 +185,78 @@ func (h *Handlers) Mount(route Route) {
 	if !strings.Contains(route.Pattern, " /api/admin/") {
 		panic("admin: a plugin route must live under /api/admin/: " + route.Pattern)
 	}
+	// Refused loudly: a route accepted here after Routes ran would be silently
+	// absent from the table, and nothing would ever say so.
+	if h.routed {
+		panic("admin: a plugin route mounted after Routes would never be served: " + route.Pattern)
+	}
 	h.extra = append(h.extra, route)
 }
 
-func NewHandlers(
-	db *database.DB,
-	users *user.Store,
-	groups *group.Store,
-	providers *provider.Store,
-	models *model.Store,
-	set *settings.Service,
-	registry *adapter.Registry,
-	authService *auth.Service,
-	usageStore *usage.Store,
-	quotaService *quota.Service,
-	conversations *conversation.Store,
-	announcements *announcement.Store,
-	keys *apikey.Store,
-	requests *reqlog.Store,
-	securityLog *securityevents.Store,
-	cards *card.Store,
-	healthStore *health.Store,
-	feedbackStore *feedback.Store,
-	apps *idp.Store,
-	invites *invite.Store,
-) *Handlers {
+// Deps is what the backoffice cannot run without, named rather than passed by
+// position: twenty stores in a row is a call where swapping two of the same
+// shape compiles and is wrong. The optional hooks stay fields on Handlers,
+// set by the wiring after NewHandlers, because each of them has an answer for
+// being absent.
+type Deps struct {
+	DB            *database.DB
+	Users         *user.Store
+	Groups        *group.Store
+	Providers     *provider.Store
+	Models        *model.Store
+	Settings      *settings.Service
+	Registry      *adapter.Registry
+	Auth          *auth.Service
+	Usage         *usage.Store
+	Quota         *quota.Service
+	Conversations *conversation.Store
+	Announcements *announcement.Store
+	Keys          *apikey.Store
+	Requests      *reqlog.Store
+	Security      *securityevents.Store
+	Cards         *card.Store
+	Health        *health.Store
+	Feedback      *feedback.Store
+	Apps          *idp.Store
+	Invites       *invite.Store
+}
+
+func NewHandlers(d Deps) *Handlers {
 	return &Handlers{
-		db:                  db,
-		users:               users,
-		groups:              groups,
-		providers:           providers,
-		models:              models,
-		settings:            set,
-		registry:            registry,
-		auth:                authService,
-		usage:               usageStore,
-		quota:               quotaService,
-		conversations:       conversations,
-		announcements:       announcements,
-		keys:                keys,
-		requests:            requests,
-		security:            securityLog,
-		cards:               cards,
-		health:              healthStore,
-		feedback:            feedbackStore,
-		apps:                apps,
-		invites:             invites,
-		UsageLimiter:        httpx.NewTokenBucketLimiter(5, 10),
-		usageSummaryCache:   make(map[string]*cachedUsageSummary),
-		usageBreakdownCache: make(map[string]*cachedUsageBreakdown),
+		db:            d.DB,
+		users:         d.Users,
+		groups:        d.Groups,
+		providers:     d.Providers,
+		models:        d.Models,
+		settings:      d.Settings,
+		registry:      d.Registry,
+		auth:          d.Auth,
+		usage:         d.Usage,
+		quota:         d.Quota,
+		conversations: d.Conversations,
+		announcements: d.Announcements,
+		keys:          d.Keys,
+		requests:      d.Requests,
+		security:      d.Security,
+		cards:         d.Cards,
+		health:        d.Health,
+		feedback:      d.Feedback,
+		apps:          d.Apps,
+		invites:       d.Invites,
+		UsageLimiter:  httpx.NewTokenBucketLimiter(5, 10),
+		reviewBudget:  httpx.NewTokenBucketLimiter(1.0/10, 3),
+		probeBudget:   httpx.NewTokenBucketLimiter(1.0/30, 1),
 	}
 }
 
 // Protect wraps handler in the backoffice's checks: a signed-in administrator,
 // the two-step policy, and permission — a grant list as the table in Routes
-// spells it, or "super_admin". Routes applies it to every endpoint it
-// mounts, and it is exported for the plugins that are installed while the
+// spells it, or "super_admin". Every write it is asked for, done or refused,
+// goes into the audit trail on the way. Routes applies it to every endpoint
+// it mounts, and it is exported for the plugins that are installed while the
 // server runs, whose routes cannot be in that table.
 func (h *Handlers) Protect(permission string, handler httpx.Handler) http.Handler {
-	return auth.RequireAdmin(httpx.Wrap(func(w http.ResponseWriter, r *http.Request) error {
+	return auth.RequireAdmin(h.audited(httpx.Wrap(func(w http.ResponseWriter, r *http.Request) error {
 		actor := auth.MustUser(r.Context())
 		if h.auth.BackofficeNeedsTwoFactor(actor) {
 			return backofficeNeedsTwoFactor()
@@ -230,7 +273,7 @@ func (h *Handlers) Protect(permission string, handler httpx.Handler) http.Handle
 		}
 		h.auth.KeepBackofficeOpen(r.Context(), actor)
 		return handler(w, r)
-	}))
+	})))
 }
 
 // SetFallback installs the answer to "does a plugin installed while the
@@ -251,8 +294,10 @@ func (h *Handlers) SetFallback(fn func(w http.ResponseWriter, r *http.Request) b
 // around.
 func (h *Handlers) Routes(mux *http.ServeMux) {
 	protected := h.Protect
+	h.routed = true
 
 	mux.Handle("GET /api/admin/dashboard", protected("dashboard", h.dashboard))
+	mux.Handle("POST /api/admin/assistant", protected("", h.assistant))
 	mux.Handle("GET /api/admin/resources", protected("resources", h.resources))
 	mux.Handle("GET /api/admin/health", protected("availability", h.modelHealth))
 	mux.Handle("POST /api/admin/health/probe", protected("availability", h.probeAllHealth))
@@ -329,19 +374,31 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /api/admin/usage/records", protected("usage", h.usageRecords))
 	mux.Handle("GET /api/admin/usage/allowances", protected("usage", h.usageAllowances))
 	mux.Handle("POST /api/admin/usage/reset", protected("usage", h.resetQuota))
-	mux.Handle("GET /api/admin/checkin", protected("usage", h.checkinSettings))
-	mux.Handle("PUT /api/admin/checkin", protected("usage", h.saveCheckinSettings))
-	mux.Handle("GET /api/admin/bonus/bars", protected("usage", h.bonusBars))
-	mux.Handle("POST /api/admin/bonus/bars", protected("usage", h.createBonusBar))
-	mux.Handle("PUT /api/admin/bonus/bars/{id}", protected("usage", h.updateBonusBar))
-	mux.Handle("DELETE /api/admin/bonus/bars/{id}", protected("usage", h.deleteBonusBar))
-	mux.Handle("POST /api/admin/bonus/bars/{id}/grants", protected("usage", h.grantBonus))
-	mux.Handle("GET /api/admin/bonus/bars/{id}/grants", protected("usage", h.bonusGrants))
-	mux.Handle("DELETE /api/admin/bonus/grants/{id}", protected("usage", h.revokeBonusGrant))
+	// Like the bonus routes below, mounted only with the service behind them: the
+	// handlers call straight into it, so without one the request would panic
+	// rather than answer 404.
+	if h.Checkin != nil {
+		mux.Handle("GET /api/admin/checkin", protected("usage", h.checkinSettings))
+		mux.Handle("PUT /api/admin/checkin", protected("usage", h.saveCheckinSettings))
+	}
+	// Without a bonus store these routes are not mounted, so the mux answers
+	// 404 as the Bonus field promises. The handlers would otherwise
+	// dereference the nil store.
+	if h.Bonus != nil {
+		mux.Handle("GET /api/admin/bonus/bars", protected("usage", h.bonusBars))
+		mux.Handle("POST /api/admin/bonus/bars", protected("usage", h.createBonusBar))
+		mux.Handle("PUT /api/admin/bonus/bars/{id}", protected("usage", h.updateBonusBar))
+		mux.Handle("DELETE /api/admin/bonus/bars/{id}", protected("usage", h.deleteBonusBar))
+		mux.Handle("POST /api/admin/bonus/bars/{id}/grants", protected("usage", h.grantBonus))
+		mux.Handle("GET /api/admin/bonus/bars/{id}/grants", protected("usage", h.bonusGrants))
+		mux.Handle("DELETE /api/admin/bonus/grants/{id}", protected("usage", h.revokeBonusGrant))
+		mux.Handle("POST /api/admin/bonus/bars/{id}/pool", protected("usage", h.adjustBonusPool))
+	}
 	mux.Handle("GET /api/admin/codes", protected("codes", h.listCodes))
 	mux.Handle("POST /api/admin/codes", protected("codes", h.createCode))
 	mux.Handle("GET /api/admin/codes/{id}/redemptions", protected("codes", h.codeRedemptions))
 	mux.Handle("DELETE /api/admin/codes/{id}", protected("codes", h.deleteCode))
+	mux.Handle("GET /api/admin/users/{id}/cards", protected("users", h.userCards))
 	mux.Handle("POST /api/admin/users/{id}/cards", protected("users", h.grantCards))
 	mux.Handle("PATCH /api/admin/users/{id}/cards", protected("users", h.rescheduleCards))
 	mux.Handle("DELETE /api/admin/users/{id}/cards/{card}", protected("users", h.revokeCard))
@@ -375,6 +432,13 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.Handle("PUT /api/admin/backup", protected("super_admin", h.saveSystemBackup))
 	mux.Handle("POST /api/admin/backup/test", protected("super_admin", h.testSystemBackup))
 	mux.Handle("POST /api/admin/backup/run", protected("super_admin", h.runSystemBackup))
+	mux.Handle("GET /api/admin/update", protected("super_admin", h.updateStatus))
+	// Read-only on purpose: nothing deletes from the trail but the retention.
+	if h.Audit != nil {
+		mux.Handle("GET /api/admin/audit", protected("audit", h.listAudit))
+		mux.Handle("GET /api/admin/audit/facets", protected("audit", h.auditFacets))
+		mux.Handle("GET /api/admin/audit/{id}", protected("audit", h.showAudit))
+	}
 
 	for _, route := range h.extra {
 		inner := protected(route.Permission, route.Handler)
@@ -427,7 +491,7 @@ func (h *Handlers) meta(w http.ResponseWriter, _ *http.Request) error {
 func pathID(r *http.Request, name string) (string, error) {
 	value := r.PathValue(name)
 	if !id.Valid(value) {
-		return "", httpx.BadRequest("Malformed identifier.")
+		return "", httpx.BadRequestCode("malformed_identifier", "Malformed identifier.")
 	}
 	return value, nil
 }
@@ -435,49 +499,72 @@ func pathID(r *http.Request, name string) (string, error) {
 func translateProviderError(err error) error {
 	switch {
 	case errors.Is(err, provider.ErrNotFound):
-		return httpx.NotFound("No such provider.")
+		return httpx.NotFoundCode("provider_not_found", "No such provider.")
 	case errors.Is(err, provider.ErrNameTaken):
 		return httpx.Conflict("provider_exists", "A provider with that name already exists.")
 	case errors.Is(err, provider.ErrInvalidName):
-		return httpx.BadRequest("Name must be 1-60 characters.")
+		return httpx.BadRequestCode("provider_name_length", "Name must be 1-60 characters.")
 	case errors.Is(err, provider.ErrInvalidKind):
-		return httpx.BadRequest("Provider type must be openai or anthropic.")
+		return httpx.BadRequestCode("provider_kind_invalid", "Provider type must be openai or anthropic.")
 	case errors.Is(err, provider.ErrInvalidStyle):
-		return httpx.BadRequest("Unknown reasoning style.")
+		return httpx.BadRequestCode("reasoning_style_unknown", "Unknown reasoning style.")
+	case errors.Is(err, provider.ErrRouted):
+		return httpx.Conflict("provider_routed", "Models on other providers route into this one. Clear those routes first.")
 	case errors.Is(err, provider.ErrKeyRequired):
-		return httpx.BadRequest("An API key is required.")
+		return httpx.BadRequestCode("api_key_required", "An API key is required.")
+	case errors.Is(err, provider.ErrKeyNeededForMove):
+		return httpx.BadRequestCode("provider_key_needed", "A new base URL needs the API key entered again.")
+	case errors.Is(err, provider.ErrBaseURLNeedsSuperAdmin):
+		return httpx.ForbiddenCode("super_admin_required", "Only a super administrator can set or change a provider's base URL.")
 	case errors.Is(err, provider.ErrTooManyHeaders):
-		return httpx.BadRequest("At most 20 extra headers.")
+		return httpx.BadRequestCode("too_many_headers", "At most 20 extra headers.")
+	case errors.Is(err, provider.ErrHiddenHeader):
+		return httpx.BadRequestCode("header_hidden", "A header value shown as a hint cannot be saved. Enter the value again.")
+	case errors.Is(err, provider.ErrInvalidHeaderName):
+		// sanitizeHeaders wraps the sentinel with the refused name; the person
+		// needs it to find the row, since the same save fails until it is fixed.
+		// The name also travels as a detail so the page can word the refusal in
+		// its own language with the name in place.
+		name := headerNameFrom(err, provider.ErrInvalidHeaderName)
+		return httpx.BadRequestCode("header_name_invalid", "Header name %s is not valid. A header name may use only letters, digits and !#$%%&'*+-.^_`|~.", name).
+			WithDetails(map[string]any{"name": name})
+	case errors.Is(err, provider.ErrDuplicateHeader):
+		// Named for the same reason as the invalid name: two rows collide, and
+		// the person has to know which one to look for.
+		name := headerNameFrom(err, provider.ErrDuplicateHeader)
+		return httpx.BadRequestCode("header_duplicate", "Header name %s matches another header once spaces are trimmed and letter case is ignored. Keep one of them.", name).
+			WithDetails(map[string]any{"name": name})
+	case errors.Is(err, provider.ErrTooManyKeys):
+		return httpx.BadRequestCode("too_many_api_keys", "At most %d API keys.", provider.MaxAPIKeys).
+			WithDetails(map[string]any{"max": provider.MaxAPIKeys})
+	case errors.Is(err, provider.ErrKeyTooLong):
+		return httpx.BadRequestCode("api_key_too_long", "An API key is at most %d characters.", provider.MaxAPIKeyChars).
+			WithDetails(map[string]any{"max": provider.MaxAPIKeyChars})
+	case errors.Is(err, provider.ErrInvalidRotation):
+		return httpx.BadRequestCode("key_rotation_invalid", "Key rotation must be sequential or random.")
+	case errors.Is(err, provider.ErrKeysChanged):
+		return httpx.Conflict("provider_keys_changed", "The API keys were changed meanwhile. Open the provider again.")
+	case errors.Is(err, provider.ErrInvalidBaseURL):
+		return httpx.BadRequest("%s", trimPackagePrefix(err.Error(), "provider: "))
 	default:
-		// A base-URL rejection is a validation message written for a person,
-		// so it is passed through rather than swallowed into a 500.
+		// Adapter diagnostics may contain credentials even when their kind
+		// describes bad input; only the classification crosses this boundary.
 		var adapterErr *adapter.Error
 		if errors.As(err, &adapterErr) {
-			return httpx.BadRequest("%s", adapterErr.Message)
-		}
-		if isValidationMessage(err) {
-			return httpx.BadRequest("%s", strings.TrimPrefix(err.Error(), "provider: "))
+			return httpx.BadRequest("%s", adapterErr.PublicMessage())
 		}
 		return httpx.Internal(err)
 	}
 }
 
-// The provider store's validation failures are sentences written for a
-// person ("base URL must use https…"), wrapped rather than enumerated as
-// sentinels. Recognising them keeps a typo in a form from being reported as
-// a server fault.
-func isValidationMessage(err error) bool {
-	message := strings.ToLower(err.Error())
-	for _, marker := range []string{"base url", "credentials", "https"} {
-		if strings.Contains(message, marker) {
-			return true
-		}
+// headerNameFrom returns the name sanitizeHeaders appended to a header refusal,
+// or "" when there is none. It matches the sentinel's own text instead of
+// trimming blindly, so a refusal that carries no name cannot have its whole
+// sentence shown as one.
+func headerNameFrom(err error, sentinel error) string {
+	name, ok := strings.CutPrefix(err.Error(), sentinel.Error()+": ")
+	if !ok {
+		return ""
 	}
-	return false
-}
-
-// asAdapter is errors.As with the adapter error type, named so the call sites
-// above read as a question rather than as plumbing.
-func asAdapter(err error, target **adapter.Error) bool {
-	return errors.As(err, target)
+	return name
 }

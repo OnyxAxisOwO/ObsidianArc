@@ -105,10 +105,7 @@ func TestExportCarriesConversationsAndPreferences(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	document, err := f.service.Export(ctx, f.account)
-	if err != nil {
-		t.Fatalf("export: %v", err)
-	}
+	_, document := f.export(t, f.account)
 
 	if document.Format != Format {
 		t.Errorf("format = %d, want %d", document.Format, Format)
@@ -131,17 +128,12 @@ func TestExportCarriesConversationsAndPreferences(t *testing.T) {
 // The one property that makes this safe to expose: an export is the caller's
 // own data and nobody else's.
 func TestExportIsScopedToOneAccount(t *testing.T) {
-	ctx := context.Background()
 	f := newFixture(t)
 
 	f.write(t, f.account, "Mine", "a secret of mine")
 	f.write(t, f.stranger, "Theirs", "a secret of theirs")
 
-	document, err := f.service.Export(ctx, f.account)
-	if err != nil {
-		t.Fatal(err)
-	}
-	encoded, _ := json.Marshal(document)
+	encoded, _ := f.export(t, f.account)
 	if strings.Contains(string(encoded), "Theirs") || strings.Contains(string(encoded), "theirs") {
 		t.Errorf("the export carried another account's conversation: %s", encoded)
 	}
@@ -152,10 +144,7 @@ func TestRoundTripRestoresTheConversation(t *testing.T) {
 	f := newFixture(t)
 
 	f.write(t, f.account, "About lamps", "what is a lamp", "a source of light")
-	document, err := f.service.Export(ctx, f.account)
-	if err != nil {
-		t.Fatal(err)
-	}
+	_, document := f.export(t, f.account)
 
 	result, err := f.service.Import(ctx, f.stranger, document)
 	if err != nil {
@@ -165,7 +154,8 @@ func TestRoundTripRestoresTheConversation(t *testing.T) {
 		t.Fatalf("result = %+v", result)
 	}
 
-	threads, err := f.conversations.List(ctx, f.stranger.ID, 50)
+	archived := false
+	threads, err := f.conversations.ListWithFilter(ctx, f.stranger.ID, conversation.ListFilter{Limit: 50, Archived: &archived})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +190,8 @@ func TestImportDoesNotReplaceWhatIsAlreadyThere(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	threads, err := f.conversations.List(ctx, f.account.ID, 50)
+	archived := false
+	threads, err := f.conversations.ListWithFilter(ctx, f.account.ID, conversation.ListFilter{Limit: 50, Archived: &archived})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +255,8 @@ func TestImportSkipsWhatItCannotUse(t *testing.T) {
 		t.Errorf("skipped = %d, want 3", result.Skipped)
 	}
 
-	threads, _ := f.conversations.List(ctx, f.account.ID, 50)
+	archived := false
+	threads, _ := f.conversations.ListWithFilter(ctx, f.account.ID, conversation.ListFilter{Limit: 50, Archived: &archived})
 	if len(threads) != 1 || threads[0].Title != "real" {
 		t.Errorf("wrote %+v", threads)
 	}
@@ -279,7 +271,8 @@ func TestOversizedImportIsRefusedBeforeWriting(t *testing.T) {
 		t.Fatal("accepted more conversations than the limit")
 	}
 
-	threads, _ := f.conversations.List(ctx, f.account.ID, 50)
+	archived := false
+	threads, _ := f.conversations.ListWithFilter(ctx, f.account.ID, conversation.ListFilter{Limit: 50, Archived: &archived})
 	if len(threads) != 0 {
 		t.Errorf("a refused import still wrote %d conversations", len(threads))
 	}
@@ -425,10 +418,7 @@ func TestExportCarriesEveryConversationNotJustOnePage(t *testing.T) {
 		f.write(t, f.account, fmt.Sprintf("Thread %02d", i), "hello")
 	}
 
-	document, err := f.service.Export(ctx, f.account)
-	if err != nil {
-		t.Fatalf("export: %v", err)
-	}
+	_, document := f.export(t, f.account)
 	if len(document.Conversations) != total {
 		t.Fatalf("exported %d conversations, want all %d",
 			len(document.Conversations), total)
@@ -438,7 +428,8 @@ func TestExportCarriesEveryConversationNotJustOnePage(t *testing.T) {
 	// query rather than the cap having been lifted for everybody. The clamp
 	// catches a request above MaxListLimit, which is exactly the one the
 	// export used to make.
-	page, err := f.conversations.List(ctx, f.account.ID, 500)
+	archived := false
+	page, err := f.conversations.ListWithFilter(ctx, f.account.ID, conversation.ListFilter{Limit: 500, Archived: &archived})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -448,11 +439,168 @@ func TestExportCarriesEveryConversationNotJustOnePage(t *testing.T) {
 	}
 
 	// The export's own reader returns every one of them at that same request.
-	every, err := f.conversations.ListForExport(ctx, f.account.ID, 500)
+	every, err := f.conversations.ListForExport(ctx, f.account.ID, "", 500)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(every) != total {
 		t.Errorf("ListForExport returned %d, want all %d", len(every), total)
+	}
+}
+
+// The store keeps reasoning up to a ceiling above the content one, so an export
+// carries reasoning longer than the content limit. The import used to cut that
+// reasoning at the content limit, which lost the middle of a long trace and
+// reported nothing.
+func TestRoundTripKeepsReasoningLongerThanTheContentLimit(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+
+	const reasoningChars = 40000
+	id := f.write(t, f.account, "Long trace", "why is the sky blue?")
+	if _, err := f.conversations.Append(ctx, nil, conversation.AppendInput{
+		ConversationID: id, UserID: f.account.ID, Role: conversation.RoleAssistant,
+		Content: "Rayleigh scattering.", Reasoning: strings.Repeat("r", reasoningChars),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, document := f.export(t, f.account)
+
+	if _, err := f.service.Import(ctx, f.stranger, document); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	archived := false
+	threads, err := f.conversations.ListWithFilter(ctx, f.stranger.ID, conversation.ListFilter{Limit: 50, Archived: &archived})
+	if err != nil || len(threads) != 1 {
+		t.Fatalf("restored %d conversations (%v), want 1", len(threads), err)
+	}
+	messages, err := f.conversations.Messages(ctx, nil, f.stranger.ID, threads[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("restored %d messages, want 2", len(messages))
+	}
+	if got := len([]rune(messages[1].Reasoning)); got != reasoningChars {
+		t.Errorf("restored %d characters of reasoning, want all %d", got, reasoningChars)
+	}
+}
+
+// A stopped answer that produced only reasoning is stored with no content, and
+// an image sent on its own is stored with no text. Both are turns the server
+// keeps, so an export carries them and an import keeps them: the reasoning-only
+// answer is written as it was, and the image-only question comes back as an
+// empty question so the answer after it still has one in front of it. The image
+// check below and usableTurn say why the question is kept.
+func TestRoundTripKeepsTurnsWithoutContent(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+
+	id := f.write(t, f.account, "Stopped early", "why is the sky blue?")
+	if _, err := f.conversations.Append(ctx, nil, conversation.AppendInput{
+		ConversationID: id, UserID: f.account.ID, Role: conversation.RoleAssistant,
+		Reasoning: "weighing scattering against absorption",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, document := f.export(t, f.account)
+
+	result, err := f.service.Import(ctx, f.stranger, document)
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if result.Conversations != 1 || result.Messages != 2 {
+		t.Fatalf("result = %+v, want the conversation with both of its turns", result)
+	}
+	archived := false
+	threads, err := f.conversations.ListWithFilter(ctx, f.stranger.ID, conversation.ListFilter{Limit: 50, Archived: &archived})
+	if err != nil || len(threads) != 1 {
+		t.Fatalf("restored %d conversations (%v), want 1", len(threads), err)
+	}
+	messages, err := f.conversations.Messages(ctx, nil, f.stranger.ID, threads[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 2 || messages[1].Content != "" || messages[1].Reasoning != "weighing scattering against absorption" {
+		t.Errorf("restored %+v, want the reasoning-only answer as it was", messages)
+	}
+
+	// An image sent alone comes back as an empty question. Import attaches no
+	// images, but the answer after it must still have its question in front.
+	picture := Document{Format: Format, Conversations: []Thread{{Messages: []Turn{
+		{Role: "user", Images: 1},
+		{Role: "assistant", Content: "a lamp on a desk"},
+	}}}}
+	result, err = f.service.Import(ctx, f.stranger, picture)
+	if err != nil {
+		t.Fatalf("import of an image-only turn: %v", err)
+	}
+	if result.Conversations != 1 || result.Messages != 2 || result.Skipped != 0 {
+		t.Fatalf("image-only turn: result = %+v, want the empty question and its answer", result)
+	}
+}
+
+// An image-only question must come back as an empty question on every
+// generation. If the first import dropped it, or a re-export dropped the empty
+// question it wrote, the answer would lose its question one generation later.
+func TestImageOnlyTurnDoesNotDriftAcrossRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+
+	picture := Document{Format: Format, Conversations: []Thread{{Title: "Picture", Messages: []Turn{
+		{Role: "user", Images: 1},
+		{Role: "assistant", Content: "a lamp on a desk"},
+	}}}}
+
+	dest := f.account
+	doc := picture
+	for generation := 1; generation <= 3; generation++ {
+		result, err := f.service.Import(ctx, dest, doc)
+		if err != nil {
+			t.Fatalf("generation %d import: %v", generation, err)
+		}
+		if result.Conversations != 1 || result.Messages != 2 || result.Skipped != 0 {
+			t.Fatalf("generation %d: result = %+v, want the empty question and its answer", generation, result)
+		}
+		_, doc = f.export(t, dest)
+		if len(doc.Conversations) != 1 || len(doc.Conversations[0].Messages) != 2 {
+			t.Fatalf("generation %d exported %+v, want one thread with two turns", generation, doc.Conversations)
+		}
+		if first := doc.Conversations[0].Messages[0]; first.Role != "user" || first.Content != "" {
+			t.Fatalf("generation %d exported the question as %+v, want an empty user turn", generation, first)
+		}
+		dest = f.freshAccount(t, fmt.Sprintf("fresh-%d", generation))
+	}
+}
+
+// freshAccount is a new account in the fixture's group, for an import that
+// must not share a conversation list with the one before it.
+func (f *fixture) freshAccount(t *testing.T, username string) user.User {
+	t.Helper()
+	account, err := user.NewStore(f.service.db).Create(context.Background(), nil, user.CreateInput{
+		Username: username, PasswordHash: "x", GroupID: f.account.GroupID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return account
+}
+
+// An export promises the account's preferences. A read that fails is a failure
+// to export, not a file that quietly lacks them.
+func TestExportRefusesWhenPreferencesCannotBeRead(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	f.write(t, f.account, "Still readable", "a question", "an answer")
+	if _, err := f.service.db.Exec(ctx, `DROP TABLE user_preferences`); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := f.service.openExport(ctx, f.account)
+	if err == nil {
+		t.Fatal("export succeeded without the account's preferences")
+	}
+	if !strings.Contains(err.Error(), "preferences") {
+		t.Errorf("the export failed for another reason: %v", err)
 	}
 }

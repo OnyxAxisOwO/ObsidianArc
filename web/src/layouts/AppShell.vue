@@ -10,17 +10,18 @@
 // five components deep open one without being handed an element to put it in.
 
 import { ref, type HTMLAttributes } from 'vue';
-import { useRouter } from 'vue-router';
 import AnnounceBell from '@/announce/AnnounceBell.vue';
+import OaIconButton from '@/components/OaIconButton.vue';
 import OaThemeToggle from '@/components/OaThemeToggle.vue';
 import OaToastStack from '@/components/OaToastStack.vue';
+import { usePanelExit } from '@/composables/usePanelExit';
 import { providePanelHost } from '@/composables/usePanelHost';
 import { t } from '@/composables/useI18n';
 import { IconImage } from '@/icons';
 import { currentUser, siteInfo } from '@/stores/session';
 import AccountMenu from './AccountMenu.vue';
 
-const router = useRouter();
+const panels = usePanelExit();
 
 const props = defineProps<{
   /** What the row is: `ai-chat ai-chat-wide` for the chat, `oa-admin` for the backoffice. */
@@ -74,20 +75,25 @@ defineExpose({ body });
       </a>
       <span class="oa-header-spacer" />
       <span class="oa-header-slot"><slot name="header" /></span>
-      <!-- Only for somebody who has an account to have announcements read
-           against; the sign-in page has its own corner. -->
-      <AnnounceBell v-if="currentUser" />
-      <button
-        v-if="currentUser"
-        type="button"
-        class="oa-icon-btn"
-        :title="t('imageLab')"
-        :aria-label="t('imageLab')"
-        @click="router.push('/image-lab')"
-      >
-        <IconImage :size="16" />
-      </button>
-      <OaThemeToggle />
+      <!-- One pill for the three utilities, so they read as a single
+           instrument beside the account rather than three loose glyphs. A
+           theme the instance fixes and a page with nobody signed in can leave
+           it empty, and the stylesheet drops an empty one rather than draw a
+           pill around nothing. -->
+      <div class="oa-header-tools">
+        <!-- Only for somebody who has an account to have announcements read
+             against; the sign-in page has its own corner. -->
+        <AnnounceBell v-if="currentUser" />
+        <OaIconButton
+          v-if="currentUser"
+          class="oa-icon-btn"
+          :label="t('imageLab')"
+          @click="panels.open('/image-lab')"
+        >
+          <IconImage :size="16" />
+        </OaIconButton>
+        <OaThemeToggle />
+      </div>
       <AccountMenu v-if="currentUser" :account="currentUser" />
     </div>
 

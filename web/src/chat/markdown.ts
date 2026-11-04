@@ -19,9 +19,15 @@
 //     data:, bare relative paths that mean nothing here — renders as its own
 //     literal text.
 
-import { t } from '../i18n';
+import { t } from '@/composables/useI18n';
+import { copyToClipboard } from '@/lib/clipboard';
+import { safeHref } from '@/lib/safe-href';
 import { IconCheck, IconCopy, IconDownload, iconElement, type OaIcon } from '../icons';
 import { describeCode, type CodeLanguage } from './code';
+
+// Re-exported because the transcript and the settings screens have always
+// imported them from here, and their tests spy on this module's copy.
+export { copyToClipboard, safeHref };
 
 // The LaTeX renderer is a fifth of this file's weight and most conversations
 // never contain a formula, so it arrives as a chunk of its own, requested by
@@ -51,8 +57,15 @@ function mathRenderer(): MathRenderer | null {
     // A chunk that did not arrive leaves the formula as its own source text,
     // which is readable. Clearing the handle either way is what lets the next
     // formula ask again, instead of one failed fetch deciding for the rest of
-    // the page's life.
-    .catch(() => undefined)
+    // the page's life. Elements still in the document stay recorded, because a
+    // later attempt that succeeds is what repaints them; only detached ones are
+    // let go, so their message subtrees are not kept alive for the life of the
+    // page.
+    .catch(() => {
+      for (const element of [...awaitingMath.keys()]) {
+        if (!element.isConnected) awaitingMath.delete(element);
+      }
+    })
     .finally(() => {
       arriving = null;
     });
@@ -72,7 +85,6 @@ const MATH_BLOCK_FENCE = /^ {0,3}(?:\$\$|\\\[)[ \t]*$/;
 const MATH_BLOCK_CLOSE = /^ {0,3}(?:\$\$|\\\])[ \t]*$/;
 const MATH_SINGLE_RE = /^ {0,3}(?:\$\$([^\n]+?)\$\$|\\\[([^\n]+?)\\\])[ \t]*$/;
 const HR_RE = /^ {0,3}([-*_])[ \t]*(?:\1[ \t]*){2,}$/;
-const HEADING_RE = /^ {0,3}(#{1,6})[ \t]+(.*?)[ \t]*#*[ \t]*$/;
 const QUOTE_RE = /^ {0,3}> ?(.*)$/;
 const ITEM_RE = /^(\s*)([-*+]|\d{1,9}[.)])[ \t]+(.*)$/;
 const TABLE_DIVIDER_RE = /^ {0,3}\|?[ \t]*:?-+:?[ \t]*(\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$/;
@@ -98,13 +110,6 @@ type Block =
 
 // --- inline ------------------------------------------------------------------
 
-export function safeHref(value: string): string | null {
-  const href = String(value ?? '').trim();
-  // Anything with a scheme that is not one of these two, and anything with no
-  // scheme at all, is not something this interface can usefully open.
-  return /^(?:https?:\/\/|mailto:)[^\s]+$/i.test(href) ? href : null;
-}
-
 function matchLink(text: string): { length: number; node: Inline } | null {
   const match = /^(!?)\[((?:[^[\]\\]|\\.)*)\]\([ \t]*<?([^\s<>)]*)>?(?:[ \t]+"[^"]*")?[ \t]*\)/.exec(text);
   if (!match) return null;
@@ -126,11 +131,103 @@ function isWordChar(char: string | undefined): boolean {
   return !!char && /[\w一-鿿]/.test(char);
 }
 
+interface CodeSpan {
+  value: string;
+  end: number;
+}
+
+// Where a code span closes, without rescanning the paragraph for each opener.
+//
+// An opener of k backticks closes at the first later run of exactly k, and
+// the longest opener that finds one wins. That is what the span regex this
+// replaces, /^(`+)([\s\S]*?[^`])\1(?!`)/, chose. It was retried from every
+// backtick, each attempt scanning to the end of the paragraph, so an unclosed
+// run of r backticks cost about r² times the paragraph length. Here every run
+// is looked at once, from the right.
+function codeSpanFinder(source: string): (index: number) => CodeSpan | null {
+  const starts: number[] = [];
+  const lengths: number[] = [];
+  for (let at = source.indexOf('`'); at !== -1; ) {
+    let end = at + 1;
+    while (source[end] === '`') end += 1;
+    starts.push(at);
+    lengths.push(end - at);
+    at = source.indexOf('`', end);
+  }
+
+  // closers[run][r - 1]: for an opener with r backticks from its position to
+  // the end of its run, the run it closes at, or -1. Working right to left,
+  // leftmost[k] is the closest run of length k so far, which is the first one
+  // an opener to the left meets.
+  let longest = 0;
+  for (const length of lengths) longest = Math.max(longest, length);
+  const leftmost: number[] = new Array<number>(longest + 1).fill(-1);
+  const closers: number[][] = new Array<number[]>(starts.length);
+  for (let run = starts.length - 1; run >= 0; run -= 1) {
+    const length = lengths[run]!;
+    const row: number[] = new Array<number>(length);
+    let best = -1;
+    for (let r = 1; r <= length; r += 1) {
+      // The longest closer no longer than r: r itself when some run has it,
+      // otherwise whatever the next shorter count found.
+      if (leftmost[r] !== -1) best = leftmost[r]!;
+      row[r - 1] = best;
+    }
+    closers[run] = row;
+    leftmost[length] = run;
+  }
+
+  // Openers only ever move right, so the run they sit in only moves right too.
+  let cursor = 0;
+  return (index) => {
+    while (cursor < starts.length && starts[cursor]! + lengths[cursor]! <= index) cursor += 1;
+    const row = closers[cursor];
+    if (!row) return null;
+    const left = starts[cursor]! + lengths[cursor]! - index;
+    const closer = row[left - 1];
+    if (closer === undefined || closer < 0) return null;
+    const closeAt = starts[closer]!;
+    const k = lengths[closer]!;
+    return {
+      value: source.slice(index + k, closeAt).replace(/^ ([\s\S]*) $/, '$1'),
+      end: closeAt + k,
+    };
+  };
+}
+
+type Marker = '~~' | '**' | '__' | '*' | '_';
+
+// Compiled once rather than on every marker: an answer about globs or
+// pointers has hundreds of them in a paragraph. None is global, so a nested
+// call reusing one inside a match leaves no lastIndex behind.
+const DEL = /^~~(?=\S)([\s\S]*?\S)~~/;
+const STRONG = {
+  '*': /^\*\*(?=\S)([\s\S]*?\S)\*\*/,
+  _: /^__(?=\S)([\s\S]*?\S)__/,
+};
+const EM = {
+  '*': /^\*(?=\S)([\s\S]*?\S)\*(?!\*)/,
+  _: /^_(?=\S)([\s\S]*?\S)_(?!_)/,
+};
+
 export function parseInline(text: string): Inline[] {
   const source = String(text ?? '');
   const nodes: Inline[] = [];
   let buffer = '';
   let index = 0;
+  // Built on the first backtick, so a paragraph without code pays nothing.
+  let findCode: ((at: number) => CodeSpan | null) | null = null;
+  // Markers known to have no closing anywhere after the current position. A
+  // closing is judged by its own position alone, so a later opener's possible
+  // closings are a subset of an earlier one's: once an opener has scanned to
+  // the end and found none, every later opener of that kind would too, and
+  // each would scan to the end again — quadratic in a paragraph of unclosed
+  // `*`. Set only when the scan itself failed, not when the opener was
+  // refused at its first character, which says nothing about what follows.
+  const unclosed: Partial<Record<Marker, true>> = {};
+  const noteUnclosed = (marker: Marker, width: number) => {
+    if (!/\s/.test(source[index + width] ?? '')) unclosed[marker] = true;
+  };
 
   const flush = () => {
     if (buffer) {
@@ -156,8 +253,12 @@ export function parseInline(text: string): Inline[] {
       }
     }
 
-    if (char === '\\' && ESCAPABLE.includes(source[index + 1] ?? '')) {
-      buffer += source[index + 1];
+    // A backslash at the very end of a block has nothing after it to escape.
+    // An undefined next character must not reach ESCAPABLE.includes, which is
+    // true for the empty string, or the branch appends `undefined` to the text.
+    const escaped = source[index + 1];
+    if (char === '\\' && escaped !== undefined && ESCAPABLE.includes(escaped)) {
+      buffer += escaped;
       index += 2;
       continue;
     }
@@ -170,10 +271,11 @@ export function parseInline(text: string): Inline[] {
 
     if (char === '`') {
       // The longest run of backticks opens the span, so `` ` `` works.
-      const code = /^(`+)([\s\S]*?[^`])\1(?!`)/.exec(rest);
-      if (code) {
-        push({ type: 'codespan', value: (code[2] ?? '').replace(/^ ([\s\S]*) $/, '$1') });
-        index += code[0].length;
+      findCode ??= codeSpanFinder(source);
+      const span = findCode(index);
+      if (span) {
+        push({ type: 'codespan', value: span.value });
+        index = span.end;
         continue;
       }
     }
@@ -197,30 +299,37 @@ export function parseInline(text: string): Inline[] {
       }
     }
 
-    if (char === '~' && source[index + 1] === '~') {
-      const del = /^~~(?=\S)([\s\S]*?\S)~~/.exec(rest);
+    if (char === '~' && source[index + 1] === '~' && !unclosed['~~']) {
+      const del = DEL.exec(rest);
       if (del) {
         push({ type: 'del', children: parseInline(del[1] ?? '') });
         index += del[0].length;
         continue;
       }
+      noteUnclosed('~~', 2);
     }
 
     // An underscore inside a word is snake_case, not emphasis — the single
     // most common false positive when a model talks about code or CSS.
     if ((char === '*' || char === '_') && !(char === '_' && isWordChar(source[index - 1]))) {
-      const marker = char === '*' ? '\\*' : '_';
-      const strong = new RegExp(`^${marker}${marker}(?=\\S)([\\s\\S]*?\\S)${marker}${marker}`).exec(rest);
-      if (strong) {
-        push({ type: 'strong', children: parseInline(strong[1] ?? '') });
-        index += strong[0].length;
-        continue;
+      const double = char === '*' ? '**' : '__';
+      if (!unclosed[double]) {
+        const strong = STRONG[char].exec(rest);
+        if (strong) {
+          push({ type: 'strong', children: parseInline(strong[1] ?? '') });
+          index += strong[0].length;
+          continue;
+        }
+        if (source[index + 1] === char) noteUnclosed(double, 2);
       }
-      const em = new RegExp(`^${marker}(?=\\S)([\\s\\S]*?\\S)${marker}(?!${marker})`).exec(rest);
-      if (em && !(char === '_' && isWordChar(source[index + em[0].length]))) {
-        push({ type: 'em', children: parseInline(em[1] ?? '') });
-        index += em[0].length;
-        continue;
+      if (!unclosed[char]) {
+        const em = EM[char].exec(rest);
+        if (em && !(char === '_' && isWordChar(source[index + em[0].length]))) {
+          push({ type: 'em', children: parseInline(em[1] ?? '') });
+          index += em[0].length;
+          continue;
+        }
+        if (!em) noteUnclosed(char, 1);
       }
     }
 
@@ -252,6 +361,51 @@ export function parseInline(text: string): Inline[] {
 
 // --- blocks -------------------------------------------------------------------
 
+// An ATX heading: up to three spaces, one to six hashes, a space or tab, then
+// the text. Closing hashes, and the spaces around them, are not part of it.
+//
+// Scanned by hand rather than matched with
+//   /^ {0,3}(#{1,6})[ \t]+(.*?)[ \t]*#*[ \t]*$/
+// because that pattern backtracks about cubically on a long run of spaces
+// inside the line: the lazy text group, the spaces after it and the closing
+// hashes can each take the same run in many ways before the line is refused.
+// Feedback and model output both reach this parser unbounded.
+function atxHeading(line: string): { level: number; text: string } | null {
+  // The pattern's `.` never matched a line or paragraph separator, so a line
+  // carrying one was never a heading.
+  if (/[\n\r\u2028\u2029]/.test(line)) return null;
+
+  let start = 0;
+  while (start < 3 && line[start] === ' ') start += 1;
+  let end = start;
+  while (line[end] === '#') end += 1;
+  const level = end - start;
+  if (level < 1 || level > 6 || (line[end] !== ' ' && line[end] !== '\t')) return null;
+
+  let textStart = end;
+  while (line[textStart] === ' ' || line[textStart] === '\t') textStart += 1;
+
+  // The closing sequence is spaces, then one run of hashes, then spaces, and
+  // it runs to the end of the line. Scanning back from the end finds where it
+  // starts. Once the hashes have been passed, another hash beyond a gap of
+  // spaces cannot belong to the sequence, so the text stops there.
+  let cut = line.length;
+  let phase = 0; // 0: trailing spaces, 1: in the hashes, 2: spaces before them
+  for (let i = line.length - 1; i >= textStart; i -= 1) {
+    const char = line[i];
+    if (char === ' ' || char === '\t') {
+      if (phase === 1) phase = 2;
+    } else if (char === '#') {
+      if (phase === 2) break;
+      phase = 1;
+    } else {
+      break;
+    }
+    cut = i;
+  }
+  return { level, text: line.slice(textStart, cut) };
+}
+
 function splitRow(line: string): string[] {
   return line
     .trim()
@@ -271,6 +425,53 @@ function columnAlign(cell: string): string {
 }
 
 export function parse(text: string): Block[] {
+  return parseBlocks(text, 0);
+}
+
+// A quote or a list item holds whole blocks, so the parser recurses once per
+// level of nesting. Past this depth the rest of the run is kept as paragraph
+// text: an unbounded run of '>' overflowed the call stack, and renderInto had
+// already emptied the element, so the whole message rendered blank.
+const MAX_NESTING = 16;
+
+function nested(body: string, depth: number): Block[] {
+  if (depth >= MAX_NESTING) return [{ type: 'paragraph', children: parseInline(body) }];
+  return parseBlocks(body, depth + 1);
+}
+
+/**
+ * The lines after an opening fence up to its closing one, and the index past
+ * it. An unclosed fence runs to the end of the input, as a code block that is
+ * still being streamed does.
+ */
+function collectUntil(lines: string[], index: number, closing: RegExp): { body: string[]; next: number } {
+  const body: string[] = [];
+  while (index < lines.length && !closing.test(lines[index]!)) {
+    body.push(lines[index]!);
+    index += 1;
+  }
+  return { body, next: index + 1 };
+}
+
+/**
+ * Whether a line opens a block of its own, and so ends the paragraph above it.
+ * Kept beside the dispatch in parseBlocks: a block type added there and not
+ * here is swallowed by any paragraph it follows.
+ *
+ * A table is not here. Whether a line starts one depends on the line after
+ * it, and a paragraph whose text happens to contain pipes keeps them.
+ */
+function startsBlock(line: string): boolean {
+  return FENCE_RE.test(line) ||
+    MATH_SINGLE_RE.test(line) ||
+    MATH_BLOCK_FENCE.test(line) ||
+    HR_RE.test(line) ||
+    !!atxHeading(line) ||
+    QUOTE_RE.test(line) ||
+    ITEM_RE.test(line);
+}
+
+function parseBlocks(text: string, depth: number): Block[] {
   const lines = String(text ?? '').replace(/\r\n?/g, '\n').split('\n');
   const blocks: Block[] = [];
   let index = 0;
@@ -287,13 +488,8 @@ export function parse(text: string): Block[] {
     if (fence) {
       const marker = fence[1]![0] === '`' ? '`' : '~';
       const closing = new RegExp(`^ {0,3}${marker}{${fence[1]!.length},}[ \\t]*$`);
-      const body: string[] = [];
-      index += 1;
-      while (index < lines.length && !closing.test(lines[index]!)) {
-        body.push(lines[index]!);
-        index += 1;
-      }
-      index += 1; // the closing fence, or the end of the input
+      const { body, next } = collectUntil(lines, index + 1, closing);
+      index = next;
       blocks.push({ type: 'code', lang: fence[2] ?? '', text: body.join('\n') });
       continue;
     }
@@ -307,13 +503,8 @@ export function parse(text: string): Block[] {
     }
 
     if (MATH_BLOCK_FENCE.test(line)) {
-      const body: string[] = [];
-      index += 1;
-      while (index < lines.length && !MATH_BLOCK_CLOSE.test(lines[index]!)) {
-        body.push(lines[index]!);
-        index += 1;
-      }
-      index += 1; // the closing fence, or the end of the input
+      const { body, next } = collectUntil(lines, index + 1, MATH_BLOCK_CLOSE);
+      index = next;
       blocks.push({ type: 'math', text: body.join('\n') });
       continue;
     }
@@ -324,9 +515,9 @@ export function parse(text: string): Block[] {
       continue;
     }
 
-    const heading = HEADING_RE.exec(line);
+    const heading = atxHeading(line);
     if (heading) {
-      blocks.push({ type: 'heading', level: heading[1]!.length, children: parseInline(heading[2] ?? '') });
+      blocks.push({ type: 'heading', level: heading.level, children: parseInline(heading.text) });
       index += 1;
       continue;
     }
@@ -338,7 +529,7 @@ export function parse(text: string): Block[] {
         body.push(quoted ? quoted[1]! : lines[index]!);
         index += 1;
       }
-      blocks.push({ type: 'blockquote', children: parse(body.join('\n')) });
+      blocks.push({ type: 'blockquote', children: nested(body.join('\n'), depth) });
       continue;
     }
 
@@ -378,31 +569,23 @@ export function parse(text: string): Block[] {
         index += 1;
         // Continuation lines: the item's own wrapped text, plus anything
         // indented under its marker — which is how a nested list stays nested
-        // instead of flattening into its parent.
+        // instead of flattening into its parent. Narrower than startsBlock on
+        // purpose: a heading, quote or rule written under an item belongs to
+        // it, and nested() parses it inside the item rather than ending the list.
         while (index < lines.length && lines[index]!.trim() && !FENCE_RE.test(lines[index]!)) {
-          const nested = ITEM_RE.exec(lines[index]!);
-          if (nested && nested[1]!.length <= baseIndent + 1) break;
+          const sibling = ITEM_RE.exec(lines[index]!);
+          if (sibling && sibling[1]!.length <= baseIndent + 1) break;
           body.push(lines[index]!.replace(/^ {1,4}/, ''));
           index += 1;
         }
-        items.push(parse(body.join('\n')));
+        items.push(nested(body.join('\n'), depth));
       }
       blocks.push({ type: 'list', ordered, start, items });
       continue;
     }
 
     const paragraph: string[] = [];
-    while (
-      index < lines.length &&
-      lines[index]!.trim() &&
-      !FENCE_RE.test(lines[index]!) &&
-      !MATH_SINGLE_RE.test(lines[index]!) &&
-      !MATH_BLOCK_FENCE.test(lines[index]!) &&
-      !HR_RE.test(lines[index]!) &&
-      !HEADING_RE.test(lines[index]!) &&
-      !QUOTE_RE.test(lines[index]!) &&
-      !ITEM_RE.test(lines[index]!)
-    ) {
+    while (index < lines.length && lines[index]!.trim() && !startsBlock(lines[index]!)) {
       paragraph.push(lines[index]!.trim());
       index += 1;
     }
@@ -432,7 +615,7 @@ function renderInline(nodes: Inline[], parent: Node): void {
       case 'math': {
         const renderer = mathRenderer();
         parent.appendChild(renderer
-          ? renderer.renderMathInline(node.value, node.display)
+          ? renderer.renderMath(node.value, node.display)
           : mathSource(node.value, node.display));
         break;
       }
@@ -457,45 +640,6 @@ function renderInline(nodes: Inline[], parent: Node): void {
 // Long enough for the word to be read, short enough that a reader copying two
 // blocks in a row is not left wondering which one the label belongs to.
 const COPIED_SHOWN_MS = 1500;
-
-/**
- * Writes text to the clipboard, reporting whether it landed.
- *
- * It lives here, next to the code block that needed it first, rather than in
- * a file of its own: the transcript's own copy buttons call it too, and one
- * implementation that both share is the point — two would drift apart on the
- * fallback, which is the half nobody exercises.
- */
-export async function copyToClipboard(text: string): Promise<boolean> {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    // navigator.clipboard does not exist on a plain-http origin and its
-    // permission can be refused outright, so without the path below the copy
-    // control would silently do nothing on exactly the deployments that have
-    // no TLS in front of them.
-  }
-
-  const staging = document.createElement('textarea');
-  staging.value = text;
-  staging.readOnly = true;
-  // Off-screen rather than hidden: execCommand copies a selection, and an
-  // element that is not rendered cannot hold one. Fixed positioning keeps the
-  // page from scrolling to it.
-  staging.style.position = 'fixed';
-  staging.style.top = '-1000px';
-  staging.style.opacity = '0';
-  document.body.appendChild(staging);
-  try {
-    staging.select();
-    return document.execCommand('copy');
-  } catch {
-    return false;
-  } finally {
-    staging.remove();
-  }
-}
 
 /** A round icon button for the header above a code block. */
 function codeControl(icon: OaIcon, label: string, onClick: () => void): HTMLButtonElement {
@@ -591,7 +735,7 @@ function renderBlock(block: Block): Node {
 
     case 'math': {
       const renderer = mathRenderer();
-      return renderer ? renderer.renderMathBlock(block.text) : mathSource(block.text, true);
+      return renderer ? renderer.renderMath(block.text, true) : mathSource(block.text, true);
     }
 
     case 'heading': {
@@ -652,26 +796,14 @@ function renderBlock(block: Block): Node {
       const table = document.createElement('table');
       const thead = document.createElement('thead');
       const headRow = document.createElement('tr');
-      block.header.forEach((cell, column) => {
-        const th = document.createElement('th');
-        const align = block.align[column];
-        if (align) th.style.textAlign = align;
-        renderInline(cell, th);
-        headRow.appendChild(th);
-      });
+      block.header.forEach((cell, column) => headRow.appendChild(renderCell('th', cell, block.align[column])));
       thead.appendChild(headRow);
       table.appendChild(thead);
 
       const tbody = document.createElement('tbody');
       for (const row of block.rows) {
         const tr = document.createElement('tr');
-        row.forEach((cell, column) => {
-          const td = document.createElement('td');
-          const align = block.align[column];
-          if (align) td.style.textAlign = align;
-          renderInline(cell, td);
-          tr.appendChild(td);
-        });
+        row.forEach((cell, column) => tr.appendChild(renderCell('td', cell, block.align[column])));
         tbody.appendChild(tr);
       }
       table.appendChild(tbody);
@@ -684,6 +816,13 @@ function renderBlock(block: Block): Node {
       return paragraph;
     }
   }
+}
+
+function renderCell(tag: 'th' | 'td', cell: Inline[], align: string | undefined): HTMLTableCellElement {
+  const element = document.createElement(tag);
+  if (align) element.style.textAlign = align;
+  renderInline(cell, element);
+  return element;
 }
 
 export function render(text: string): DocumentFragment {
@@ -703,4 +842,10 @@ export function renderInto(element: Element, text: string): Element {
   if (drewPlaceholder) awaitingMath.set(element, text);
   else awaitingMath.delete(element);
   return element;
+}
+
+// Read by the tests: once a load attempt has settled, nothing should still be
+// held waiting for it.
+export function pendingMathCount(): number {
+  return awaitingMath.size;
 }

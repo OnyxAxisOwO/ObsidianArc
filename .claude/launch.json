@@ -27,6 +27,15 @@
         "D=$(mktemp -d) && PW=$(openssl rand -hex 8) && echo \"demo admin: admin / $PW\" && go run ./cmd/arcpack build sdk/examples/demo -o $D/demo-1.0.0.arcx && OBSIDIAN_DATA_DIR=$D/data OBSIDIAN_PLUGIN_DIR=$D OBSIDIAN_ADDR=127.0.0.1:18088 OBSIDIAN_COOKIE_SECURE=false OBSIDIAN_ADMIN_USER=admin OBSIDIAN_ADMIN_PASSWORD=$PW OBSIDIAN_DEV=0 exec go run ./cmd/server"
       ],
       "port": 18088
+    },
+    {
+      "name": "obsidian-arc-theme-demo",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "D=$(mktemp -d) && PW=$(openssl rand -hex 8) && echo \"demo admin: admin / $PW\" && OBSIDIAN_DATA_DIR=$D/data OBSIDIAN_ADDR=127.0.0.1:18089 OBSIDIAN_COOKIE_SECURE=false OBSIDIAN_ADMIN_USER=admin OBSIDIAN_ADMIN_PASSWORD=$PW OBSIDIAN_DEV=0 exec go run ./cmd/server"
+      ],
+      "port": 18089
     }
   ]
 }

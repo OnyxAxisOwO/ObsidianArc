@@ -3,8 +3,11 @@
 //
 // Everything above it — the chat gateway, the usage ledger, the handlers —
 // speaks one request shape and consumes one event stream. There is no
-// `if kind == "openai"` outside this package, and adding a third protocol is
-// a new file here plus a row in the registry, not a change anywhere else.
+// `if kind == "openai"` outside this package. Inside it, the choices that
+// differ by protocol (endpoints, auth headers, list pagination, the reasoning
+// default) are branches in wire.go and adapter.go rather than methods on
+// Adapter, so a third protocol touches those branches as well as its own file
+// and its registry row. Nothing above this package changes.
 //
 // The shapes below are deliberately smaller than what either provider can
 // express: text, images and tool calls in, text, reasoning and tool calls
@@ -365,7 +368,6 @@ type ImageResult struct {
 }
 
 type Adapter interface {
-	Kind() Kind
 	Chat(ctx context.Context, client *http.Client, p Provider, req ChatRequest, sink Sink) (Result, error)
 	ListModels(ctx context.Context, client *http.Client, p Provider) ([]RemoteModel, error)
 	GenerateImage(ctx context.Context, client *http.Client, p Provider, req ImageRequest) (ImageResult, error)
@@ -386,6 +388,10 @@ func NewRegistry(cfg config.Upstream) *Registry {
 		DialContext: (&net.Dialer{
 			Timeout:   cfg.DialTimeout,
 			KeepAlive: 30 * time.Second,
+			// Judged on the address actually connected to, in dial.go: the base
+			// URL is checked once at save time, and a name can resolve somewhere
+			// else afterwards.
+			Control: refuseDestination,
 		}).DialContext,
 		MaxIdleConns: cfg.MaxIdleConns,
 		// Per-host equals the whole pool because an instance usually talks to
@@ -415,9 +421,10 @@ func NewRegistry(cfg config.Upstream) *Registry {
 			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
-			// No client-level Timeout: it would cut a long streamed answer
-			// off mid-sentence. The request context is the deadline, and it
-			// is cancelled when the browser goes away.
+			// Timeout is an operator's explicit choice (UPSTREAM_REQUEST_TIMEOUT,
+			// zero by default). Set, it cuts a long streamed answer off
+			// mid-sentence, so by default the request context is the only
+			// deadline, and it is cancelled when the browser goes away.
 			Timeout: cfg.RequestTimeout,
 		},
 		adapters: map[Kind]Adapter{
@@ -431,9 +438,11 @@ func NewRegistry(cfg config.Upstream) *Registry {
 //
 // This is also the one place a missing token count is filled in, so every
 // caller — the transcript and all three API shapes — gets the same answer
-// without each re-deciding it. Only a call that succeeded is estimated: one
-// that failed or was stopped part-way has its own accounting, and guessing
-// at a half-finished answer would change what a cancelled turn costs.
+// without each re-deciding it. A call that failed or was stopped part-way is
+// estimated from what it streamed before it ended. The provider's own figures
+// are not used for that: a provider that sends its count last has sent nothing
+// by then, and one that sends it first has sent a single output token, so
+// stopping just before the end would make almost any answer free.
 func (r *Registry) Chat(ctx context.Context, p Provider, req ChatRequest, sink Sink) (Result, error) {
 	adapter, ok := r.adapters[p.Kind]
 	if !ok {
@@ -443,10 +452,22 @@ func (r *Registry) Chat(ctx context.Context, p Provider, req ChatRequest, sink S
 	// Watched rather than read off the result afterwards: an adapter can
 	// report through events alone, and an estimate written over counts it
 	// already streamed would replace a real number with a guess.
-	var reported Usage
+	var (
+		reported Usage
+		streamed written
+	)
 	watched := func(event Event) error {
-		if event.Type == EventUsage {
+		switch event.Type {
+		case EventUsage:
 			reported = reported.Merge(event.Usage)
+		// Counted for a call that ends early, which returns no result to
+		// estimate from: what reached the reader is what it is charged for.
+		case EventDelta:
+			streamed.text += len(event.Text)
+		case EventReasoning:
+			streamed.reasoning += len(event.Text)
+		case EventToolCall:
+			streamed.calls += perToolCallTax*bytesPerToken + len(event.ToolCall.Name) + len(event.ToolCall.Arguments)
 		}
 		return sink(event)
 	}
@@ -464,6 +485,8 @@ func (r *Registry) Chat(ctx context.Context, p Provider, req ChatRequest, sink S
 		if filled := fillUsage(req, result, reported.Merge(result.Usage)); filled.Estimated {
 			result.Usage = filled
 		}
+	} else if filled := fillStopped(req, streamed, reported.Merge(result.Usage)); filled.Estimated {
+		result.Usage = filled
 	}
 	return result, err
 }
@@ -483,8 +506,6 @@ func (r *Registry) GenerateImage(ctx context.Context, p Provider, req ImageReque
 	}
 	return adapter.GenerateImage(ctx, r.client, p, req)
 }
-
-func (r *Registry) Client() *http.Client { return r.client }
 
 func (r *Registry) Kinds() []Kind { return []Kind{KindOpenAI, KindAnthropic} }
 

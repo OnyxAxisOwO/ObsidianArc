@@ -10,6 +10,7 @@
 
 import { computed, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import { ApiError } from '@/api/client';
 import { completeSignup, fetchPendingSignup, type PendingSignup } from '@/api/oauth';
 import OaAccountFields from '@/components/OaAccountFields.vue';
 import OaField from '@/components/OaField.vue';
@@ -17,15 +18,17 @@ import { fieldProblem, fieldValues, type FieldPlan } from '@/lib/account-fields'
 import { fieldSpec } from '@/plugins/registry';
 import OaThemeToggle from '@/components/OaThemeToggle.vue';
 import { t } from '@/composables/useI18n';
-import { IconGithub, IconGoogle, IconKey, IconSpark, type OaIcon } from '@/icons';
+import { IconSpark, type OaIcon } from '@/icons';
+import { providerMark } from '@/lib/provider-marks';
 import { refusalText } from '@/lib/refusal';
 import { siteInfo } from '@/stores/session';
 import { useLoginBackground } from '@/composables/useLoginBackground';
+import OaBackdrop from '@/components/OaBackdrop.vue';
 
 const router = useRouter();
 const route = useRoute();
 const site = computed(() => siteInfo.value);
-const { loginBgUrl } = useLoginBackground();
+const { loginBg, loginBgUrl, loginBgFrame } = useLoginBackground();
 
 // Same rule the sign-up form uses: a code is asked for here too, because this
 // screen is the other door an account gets created through.
@@ -54,8 +57,7 @@ const fieldPlan = computed<FieldPlan>(() => {
 const showPassword = computed(() => pending.value?.needs_password !== false);
 const passwordRequired = computed(() => !!pending.value?.password_required);
 
-const MARKS: Record<string, OaIcon> = { github: IconGithub, google: IconGoogle };
-const mark = computed<OaIcon>(() => MARKS[pending.value?.provider ?? ''] ?? IconKey);
+const mark = computed<OaIcon>(() => providerMark(pending.value?.provider ?? ''));
 
 const domains = computed(() => pending.value?.email_domains ?? []);
 
@@ -67,7 +69,12 @@ const emailHint = computed(() => {
   return parts.length ? parts.join(' ') : undefined;
 });
 
-onMounted(() => {
+// The sign-in is loaded again on a retry, so a page that could not reach the
+// server is not left on a screen that can never finish.
+const loadError = ref('');
+
+function loadPending(): void {
+  loadError.value = '';
   void fetchPendingSignup()
     .then((result) => {
       pending.value = result;
@@ -80,7 +87,19 @@ onMounted(() => {
         username.value = result.login;
       }
     })
-    .catch(() => { gone.value = t('signupCompleteGone'); });
+    .catch((failure: unknown) => {
+      // Only the server's answer for a cookie that has run out says the sign-in
+      // is over. Anything else says nothing about it, so the reader can try again.
+      if (failure instanceof ApiError && failure.status === 400) {
+        gone.value = t('signupCompleteGone');
+        return;
+      }
+      loadError.value = refusalText(failure);
+    });
+}
+
+onMounted(() => {
+  loadPending();
   const invite = route.query['invite'];
   if (typeof invite === 'string' && invite) {
     inviteCode.value = invite;
@@ -159,11 +178,12 @@ async function submit(): Promise<void> {
   <div
     class="oa-auth"
     :class="[
-      { 'has-login-bg': !!loginBgUrl },
+      { 'has-login-bg': !!loginBg },
       `position-${site.auth_card_position || 'center'}`,
     ]"
     :style="loginBgUrl ? { backgroundImage: `url(${loginBgUrl})` } : undefined"
   >
+    <OaBackdrop v-if="loginBgFrame" :key="loginBgFrame" :url="loginBgFrame" />
     <form class="oa-auth-card" novalidate @submit.prevent="submit">
       <div class="oa-auth-brand">
         <img v-if="site.logo_url" :src="site.logo_url" class="oa-auth-brand-logo" alt="">
@@ -180,7 +200,11 @@ async function submit(): Promise<void> {
       </template>
 
       <template v-else-if="!pending">
-        <p class="oa-auth-sub">{{ t('loading') }}</p>
+        <template v-if="loadError">
+          <p class="oa-auth-error" role="alert">{{ loadError }}</p>
+          <button type="button" class="oa-btn oa-btn-block" @click="loadPending">{{ t('retry') }}</button>
+        </template>
+        <p v-else class="oa-auth-sub">{{ t('loading') }}</p>
       </template>
 
       <template v-else>

@@ -164,8 +164,10 @@ func TestLeaderboardFindsTheReaderBelowTheCut(t *testing.T) {
 	if len(board.Accounts) != 2 {
 		t.Fatalf("shown %d places, want the configured 2", len(board.Accounts))
 	}
-	if board.Me.Rank != 4 || board.Me.Value != 50 || board.Me.Gap != 750 || board.Me.Participants != 4 {
-		t.Fatalf("standing = %+v, want fourth of 4, 750 behind third", board.Me)
+	// No gap: third place is not on a board of two, and the gap would be that
+	// unlisted account's total less the reader's own, which is not published.
+	if board.Me.Rank != 4 || board.Me.Value != 50 || board.Me.Gap != 0 || board.Me.Participants != 4 {
+		t.Fatalf("standing = %+v, want fourth of 4, with no gap to a place that is not shown", board.Me)
 	}
 
 	quiet := in.register("quiet", "a-good-password")

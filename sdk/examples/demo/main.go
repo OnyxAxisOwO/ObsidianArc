@@ -3,6 +3,7 @@
 package main
 
 import (
+	"crypto/subtle"
 	"errors"
 	"net/url"
 	"strconv"
@@ -20,6 +21,8 @@ func init() {
 	arc.Route("POST /api/admin/x/demo/things", addThing)
 	arc.Route("POST /api/admin/x/demo/disable/{id}", disableAccount)
 	arc.Route("POST /api/admin/x/demo/retire/{id}", retire)
+	arc.Route("POST /api/admin/x/demo/reward/{id}", reward)
+	arc.Route("POST /api/x/demo/challenged", challenged)
 	arc.Route("POST /api/x/demo/hook", hook)
 	arc.Route("GET /api/x/demo/upstream", upstream)
 	arc.Route("GET /api/x/demo/echo", echo)
@@ -27,8 +30,57 @@ func init() {
 	arc.Route("POST /api/admin/x/demo/explode", explode)
 	arc.OnDescribe(describe)
 	arc.OnDecorateInvitees(decorate)
+	arc.OnSweep(sweep)
 	arc.Command("demo things", things)
 	arc.Command("demo add", add)
+}
+
+// maxNameBytes bounds a thing's name: it is drawn in a table and in a console
+// line, and the request cap alone would let one be four megabytes long.
+const maxNameBytes = 200
+
+// sweep leaves a thing called "swept" each time the server gives it a turn,
+// so a test can see the turn came — and that it did not while switched off.
+// It is one row, updated in place: a sweep every ten minutes that inserted a
+// row would grow the table by about fifty thousand a year, with nothing to
+// remove them.
+func sweep(c *arc.Ctx) error {
+	_, err := c.Exec(`INSERT INTO demo_things (id, name, created_at) VALUES ('swept', 'swept', ?)
+		ON CONFLICT (id) DO UPDATE SET created_at = excluded.created_at`, time.Now().UnixMilli())
+	return err
+}
+
+// cleanName is the name both writers store: trimmed, present and bounded.
+func cleanName(raw string) (string, error) {
+	name := strings.TrimSpace(raw)
+	if name == "" {
+		return "", arc.Err(400, "name_required", "A name is required.")
+	}
+	if len(name) > maxNameBytes {
+		return "", arc.Err(400, "name_too_long", "A name may be at most 200 bytes.")
+	}
+	return name, nil
+}
+
+// refusal turns a refusal from the core, which reaches the plugin as a
+// HostError, into the answer a client should get. The server shows an
+// *arc.Error as written and hides anything else behind a 500, so a refusal the
+// operator should read has to become an *arc.Error here. Anything else is
+// returned as it was.
+func refusal(err error) error {
+	var he *arc.HostError
+	if !errors.As(err, &he) {
+		return err
+	}
+	switch he.Code {
+	case "admin_account":
+		return arc.Err(403, he.Code, he.Message)
+	case "last_admin", "bonus_bar_expired":
+		return arc.Err(409, he.Code, he.Message)
+	case "bad_argument":
+		return arc.Err(400, he.Code, he.Message)
+	}
+	return err
 }
 
 // guard is the sign-up and sign-in check: a token of "block" is refused,
@@ -86,9 +138,9 @@ func addThing(c *arc.Ctx, r *arc.Request) (*arc.Response, error) {
 	if err := r.JSON(&body); err != nil {
 		return nil, err
 	}
-	name := strings.TrimSpace(body.Name)
-	if name == "" {
-		return nil, arc.Err(400, "name_required", "A name is required.")
+	name, err := cleanName(body.Name)
+	if err != nil {
+		return nil, err
 	}
 	id, err := c.NewID()
 	if err != nil {
@@ -118,12 +170,18 @@ func disableAccount(c *arc.Ctx, r *arc.Request) (*arc.Response, error) {
 	}
 	_ = r.JSON(&body)
 	err := c.Tx(func() error {
-		n, err := c.Exec(`UPDATE users SET status = 'disabled' WHERE id = ?`, id)
-		if err != nil {
+		var found string
+		if err := c.QueryRow(`SELECT id FROM users WHERE id = ?`, id).Scan(&found); err != nil {
+			if errors.Is(err, arc.ErrNoRows) {
+				return arc.Err(404, "no_such_account", "No such account.")
+			}
 			return err
 		}
-		if n == 0 {
-			return arc.Err(404, "no_such_account", "No such account.")
+		// SetStatus rather than a statement of the plugin's own: the host refuses
+		// to suspend an administrator's account unless the actor is a super
+		// administrator, and the last active one, which a raw UPDATE skips.
+		if err := c.SetStatus(id, "disabled"); err != nil {
+			return err
 		}
 		if err := c.RevokeSessions(id); err != nil {
 			return err
@@ -140,7 +198,7 @@ func disableAccount(c *arc.Ctx, r *arc.Request) (*arc.Response, error) {
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, refusal(err)
 	}
 	return arc.JSON(200, map[string]any{"disabled": id})
 }
@@ -161,7 +219,11 @@ func retire(c *arc.Ctx, r *arc.Request) (*arc.Response, error) {
 	err := c.Tx(func() error {
 		var role string
 		if err := c.QueryRow(`SELECT role FROM users WHERE id = ?`, id).Scan(&role); err != nil {
-			return arc.Err(404, "no_such_account", "No such account.")
+			// Only a missing row is a 404; a failed query is a fault to report.
+			if errors.Is(err, arc.ErrNoRows) {
+				return arc.Err(404, "no_such_account", "No such account.")
+			}
+			return err
 		}
 		if role == "super_admin" {
 			others, err := c.CountActiveAdmins(id)
@@ -186,9 +248,85 @@ func retire(c *arc.Ctx, r *arc.Request) (*arc.Response, error) {
 		return c.RevokeSessions(id)
 	})
 	if err != nil {
-		return nil, err
+		return nil, refusal(err)
 	}
 	return arc.JSON(200, map[string]any{"revoked": revoked})
+}
+
+// reward pays an account in the core's own currencies, inside a transaction
+// with a row of the plugin's, so the two stand or fall together.
+func reward(c *arc.Ctx, r *arc.Request) (*arc.Response, error) {
+	id := r.Params["id"]
+	var body struct {
+		BarID  string  `json:"bar_id"`
+		Amount float64 `json:"amount"`
+		Cards  int     `json:"cards"`
+		Days   int     `json:"days"`
+		Fail   bool    `json:"fail"`
+	}
+	if err := r.JSON(&body); err != nil {
+		return nil, err
+	}
+	// The core refuses a zero amount and a negative lifetime too, but as a
+	// refusal the client cannot read; a request that asks for either is wrong.
+	if body.Days < 0 || (body.BarID != "" && body.Amount <= 0) {
+		return nil, arc.Err(400, "bad_argument", "The amount must be positive, and days may not be negative.")
+	}
+	var expires int64
+	err := c.Tx(func() error {
+		if body.BarID != "" {
+			at, err := c.GrantBonus(arc.BonusGrant{BarID: body.BarID, UserID: id, Amount: body.Amount, ValidDays: body.Days, Note: "demo"})
+			if err != nil {
+				var he *arc.HostError
+				if errors.As(err, &he) && he.Code == "bonus_bar_not_found" {
+					return arc.Err(404, "demo_no_bar", "No such bonus bar.")
+				}
+				return err
+			}
+			expires = at
+		}
+		if body.Cards > 0 {
+			if err := c.GrantCards(id, body.Cards, body.Days, "demo"); err != nil {
+				return err
+			}
+		}
+		if body.Fail {
+			return arc.Err(409, "demo_failed", "Taken back.")
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, refusal(err)
+	}
+	return arc.JSON(200, map[string]any{"expires_at": expires})
+}
+
+// challenged is a form behind the instance's own human check: it says what
+// the check asks for, and passes only a proof of it.
+func challenged(c *arc.Ctx, r *arc.Request) (*arc.Response, error) {
+	kinds, err := c.Challenge()
+	if err != nil {
+		return nil, err
+	}
+	var proof arc.ChallengeProof
+	if err := r.JSON(&proof); err != nil {
+		return nil, err
+	}
+	if err := c.VerifyChallenge(proof); err != nil {
+		var he *arc.HostError
+		if errors.As(err, &he) {
+			switch he.Code {
+			case "challenge_failed":
+				return nil, arc.Err(400, he.Code, he.Message)
+			// The check's service is down, which is not the reader's fault: a 503
+			// tells the client to try again later.
+			case "challenge_unavailable":
+				return nil, arc.Err(503, he.Code, he.Message)
+			}
+		}
+		return nil, err
+	}
+	return arc.JSON(200, kinds)
 }
 
 // hook is a public endpoint that authenticates itself, the way a bot's
@@ -202,18 +340,24 @@ func hook(c *arc.Ctx, r *arc.Request) (*arc.Response, error) {
 	if secret == "" {
 		return nil, arc.Err(404, "not_found", "No such endpoint.")
 	}
-	if r.Header["Authorization"] != "Bearer "+secret {
+	// Constant time: a comparison that stops at the first differing byte tells
+	// the caller how much of the token was right. Bot webhooks copy this route.
+	if subtle.ConstantTimeCompare([]byte(r.Header["Authorization"]), []byte("Bearer "+secret)) != 1 {
 		return nil, arc.Err(401, "unauthorized", "Bad token.")
 	}
 	var body struct{ Name string }
 	if err := r.JSON(&body); err != nil {
 		return nil, err
 	}
+	name, err := cleanName(body.Name)
+	if err != nil {
+		return nil, err
+	}
 	id, err := c.NewID()
 	if err != nil {
 		return nil, err
 	}
-	if _, err := c.Exec(`INSERT INTO demo_things (id, name, created_at) VALUES (?, ?, ?)`, id, body.Name, time.Now().UnixMilli()); err != nil {
+	if _, err := c.Exec(`INSERT INTO demo_things (id, name, created_at) VALUES (?, ?, ?)`, id, name, time.Now().UnixMilli()); err != nil {
 		return nil, err
 	}
 	return arc.JSON(200, map[string]string{"id": id})
@@ -221,7 +365,10 @@ func hook(c *arc.Ctx, r *arc.Request) (*arc.Response, error) {
 
 func upstream(c *arc.Ctx, _ *arc.Request) (*arc.Response, error) {
 	target, err := c.Setting("demo.upstream")
-	if err != nil || target == "" {
+	if err != nil {
+		return nil, err
+	}
+	if target == "" {
 		return nil, arc.Err(404, "not_configured", "No upstream configured.")
 	}
 	res, err := c.Fetch(arc.FetchRequest{Method: "GET", URL: target + "/ping", Header: map[string]string{"X-Demo": "1"}})

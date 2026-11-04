@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { renderMath, renderMathInline, renderMathBlock } from '../src/chat/math';
+import { renderMath } from '../src/chat/math';
 
 describe('LaTeX MathML renderer', () => {
   describe('malformed LaTeX fault tolerance', () => {
@@ -79,10 +79,10 @@ describe('LaTeX MathML renderer', () => {
     });
 
     it('sets display mode correctly for inline vs block rendering', () => {
-      const inlineEl = renderMathInline('x');
+      const inlineEl = renderMath('x');
       expect(inlineEl.querySelector('math')?.getAttribute('display')).toBe('inline');
 
-      const blockEl = renderMathBlock('x');
+      const blockEl = renderMath('x', true);
       expect(blockEl.querySelector('math')?.getAttribute('display')).toBe('block');
     });
   });
@@ -116,6 +116,30 @@ describe('LaTeX MathML renderer', () => {
         const el = renderMath(formula);
         expect(el).toBeInstanceOf(HTMLElement);
       }).not.toThrow();
+    });
+  });
+
+  describe('escaped braces inside an argument', () => {
+    it('keeps an escaped brace in a fraction numerator as content, not as the closing brace', () => {
+      const frac = renderMath('\\frac{\\{a\\}}{b}').querySelector('mfrac');
+      expect(frac?.children.length).toBe(2);
+      expect(frac?.children[0]?.textContent).toBe('{a}');
+      expect(frac?.children[1]?.textContent).toBe('b');
+    });
+  });
+
+  describe('command names that are properties of every object', () => {
+    // The lookup tables are object literals, so `'constructor' in TABLE` is
+    // true for them too, and the output became the source of a built-in
+    // function. An unknown command falls back to its own literal text.
+    for (const cmd of ['constructor', 'toString', 'valueOf', 'hasOwnProperty']) {
+      it(`renders \\${cmd} as its literal text`, () => {
+        expect(renderMath(`\\${cmd}`).textContent).toBe(`\\${cmd}`);
+      });
+    }
+
+    it('does not replace a blackboard argument with a built-in function', () => {
+      expect(renderMath('\\mathbb{constructor}').textContent).toBe('constructor');
     });
   });
 });

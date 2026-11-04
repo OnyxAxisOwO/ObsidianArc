@@ -1,9 +1,13 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"path/filepath"
+	"reflect"
+	"slices"
+	"sync"
 	"testing"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
@@ -53,12 +57,12 @@ func TestPlainHTTPNeedsThatProvidersOptIn(t *testing.T) {
 		APIKey:  "sk-test-key-1234",
 		Enabled: true,
 	}
-	if _, err := store.Create(ctx, in); err == nil {
+	if _, err := store.Create(ctx, in, true); err == nil {
 		t.Fatal("Create accepted plain http to a public host with no opt-in")
 	}
 
 	in.AllowInsecure = true
-	record, err := store.Create(ctx, in)
+	record, err := store.Create(ctx, in, true)
 	if err != nil {
 		t.Fatalf("create with the opt-in: %v", err)
 	}
@@ -75,7 +79,7 @@ func TestPlainHTTPNeedsThatProvidersOptIn(t *testing.T) {
 	}
 
 	timeout := 300
-	updated, err := store.Update(ctx, record.ID, Update{TimeoutSeconds: &timeout})
+	updated, err := store.Update(ctx, record.ID, Update{TimeoutSeconds: &timeout}, false)
 	if err != nil {
 		t.Fatalf("edit an unrelated field: %v", err)
 	}
@@ -86,7 +90,7 @@ func TestPlainHTTPNeedsThatProvidersOptIn(t *testing.T) {
 	// Clearing it is a real change of mind, and the address it was granted
 	// for stops being acceptable at the same moment.
 	off := false
-	if _, err := store.Update(ctx, record.ID, Update{AllowInsecure: &off}); err == nil {
+	if _, err := store.Update(ctx, record.ID, Update{AllowInsecure: &off}, false); err == nil {
 		t.Error("Update cleared the opt-in and kept the http address")
 	}
 
@@ -97,7 +101,7 @@ func TestPlainHTTPNeedsThatProvidersOptIn(t *testing.T) {
 		BaseURL: insecureURL,
 		APIKey:  "sk-test-key-5678",
 		Enabled: true,
-	})
+	}, true)
 	if err == nil {
 		t.Error("a second provider inherited the first one's opt-in")
 	}
@@ -116,7 +120,7 @@ func TestACopyCarriesTheKeyWithoutEverUnsealingIt(t *testing.T) {
 		BaseURL: "https://api.example.com/v1", APIKey: "sk-the-real-secret-value",
 		Headers: map[string]string{"X-Title": "Arc"},
 		Enabled: true,
-	})
+	}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,17 +129,17 @@ func TestACopyCarriesTheKeyWithoutEverUnsealingIt(t *testing.T) {
 	// form carried, no key, and the row to take one from.
 	copied, err := store.Create(ctx, CreateInput{
 		Name: "Primary 2", Kind: source.Kind,
-		BaseURL: "https://backup.example.com/v1", CopyKeyFrom: source.ID,
-		Headers: source.Headers, Enabled: true,
-	})
+		BaseURL: "https://api.example.com/v1", CopyKeyFrom: source.ID,
+		Headers: map[string]string{"X-Title": "Arc backup"}, Enabled: true,
+	}, true)
 	if err != nil {
 		t.Fatalf("duplicate: %v", err)
 	}
 	if copied.ID == source.ID {
 		t.Fatal("the copy reused the source's id")
 	}
-	if copied.BaseURL != "https://backup.example.com/v1" {
-		t.Errorf("the copy took the source's base URL: %q", copied.BaseURL)
+	if copied.Headers["X-Title"] != "Arc backup" {
+		t.Errorf("the copy took the source's headers: %v", copied.Headers)
 	}
 	// The hint travels with the key, so the form can say which key this is
 	// rather than showing an empty field beside a working provider.
@@ -166,7 +170,7 @@ func TestCopyingFromAProviderThatIsGoneIsRefused(t *testing.T) {
 		Name: "Orphan", Kind: adapter.KindOpenAI,
 		BaseURL: "https://api.example.com/v1", CopyKeyFrom: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
 		Enabled: true,
-	})
+	}, true)
 	if err == nil {
 		t.Fatal("a copy of nothing was created")
 	}
@@ -188,8 +192,462 @@ func TestAProviderStillNeedsAKeyFromSomewhere(t *testing.T) {
 	_, err := store.Create(context.Background(), CreateInput{
 		Name: "Keyless", Kind: adapter.KindOpenAI,
 		BaseURL: "https://api.example.com/v1", Enabled: true,
-	})
+	}, true)
 	if !errors.Is(err, ErrKeyRequired) {
 		t.Errorf("gave %v, want ErrKeyRequired", err)
+	}
+}
+
+// The key goes wherever the base URL points, and nobody can read it back, so
+// it is only ever sent to a new address by somebody who typed it again. A
+// super administrator is the one who may choose that address at all, so the
+// key check is asked of them; it is not what stops a delegate.
+func TestTheKeyOnlyGoesSomewhereNewWhenTypedAgain(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+
+	source, err := store.Create(ctx, CreateInput{
+		Name: "Primary", Kind: adapter.KindOpenAI,
+		BaseURL: "https://api.example.com/v1", APIKey: "sk-the-real-secret-value", Enabled: true,
+	}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	moved := "https://collector.example.net/v1"
+	if _, err := store.Update(ctx, source.ID, Update{BaseURL: &moved}, true); !errors.Is(err, ErrKeyNeededForMove) {
+		t.Errorf("repointing without the key = %v, want ErrKeyNeededForMove", err)
+	}
+	if _, err := store.Create(ctx, CreateInput{
+		Name: "Copy", Kind: adapter.KindOpenAI, BaseURL: moved, CopyKeyFrom: source.ID, Enabled: true,
+	}, true); !errors.Is(err, ErrKeyNeededForMove) {
+		t.Errorf("copying the key to a new address = %v, want ErrKeyNeededForMove", err)
+	}
+	if resolved, _ := store.Resolve(ctx, source.ID); resolved.BaseURL != source.BaseURL {
+		t.Errorf("the refused edit moved the provider to %q", resolved.BaseURL)
+	}
+
+	// With the key typed again it moves, and so does an edit that leaves the
+	// address where it was.
+	key := "sk-a-new-key-value"
+	if _, err := store.Update(ctx, source.ID, Update{BaseURL: &moved, APIKey: &key}, true); err != nil {
+		t.Errorf("repointing with the key: %v", err)
+	}
+	name := "Renamed"
+	if _, err := store.Update(ctx, source.ID, Update{Name: &name}, false); err != nil {
+		t.Errorf("an edit that does not move the provider: %v", err)
+	}
+}
+
+// Every chat on a provider is sent to its base URL, prompts and attachments
+// included, so the address is the super administrator's to move, as the public
+// URL is. Holding the providers grant is not enough, and typing a key of one's
+// own does not change that: the refused edit stores neither the address nor
+// the key. Saving the address as it is stored, spelled the way it is stored, is
+// not a move and stays open to the grant.
+func TestOnlyASuperAdministratorMovesTheBaseURL(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+
+	source, err := store.Create(ctx, CreateInput{
+		Name: "Primary", Kind: adapter.KindOpenAI,
+		BaseURL: "https://api.example.com/v1", APIKey: "sk-the-real-secret-value", Enabled: true,
+	}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	moved := "https://collector.example.net/v1"
+	typed := "sk-typed-by-a-delegate"
+	if _, err := store.Update(ctx, source.ID, Update{BaseURL: &moved, APIKey: &typed}, false); !errors.Is(err, ErrBaseURLNeedsSuperAdmin) {
+		t.Fatalf("a delegate moved the base URL with a key of their own: %v, want ErrBaseURLNeedsSuperAdmin", err)
+	}
+	after, err := store.ByID(ctx, source.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.BaseURL != source.BaseURL || after.APIKeyHint != source.APIKeyHint {
+		t.Errorf("the refused move changed the provider: address %q, key hint %q", after.BaseURL, after.APIKeyHint)
+	}
+
+	// Validation normalises the address before the comparison, so the stored
+	// address written with a trailing slash is the same address.
+	respelled := "https://api.example.com/v1/"
+	if _, err := store.Update(ctx, source.ID, Update{BaseURL: &respelled}, false); err != nil {
+		t.Errorf("a delegate saving the stored address respelled: %v", err)
+	}
+
+	if _, err := store.Update(ctx, source.ID, Update{BaseURL: &moved}, true); !errors.Is(err, ErrKeyNeededForMove) {
+		t.Errorf("the super administrator moving the address without the key = %v, want ErrKeyNeededForMove", err)
+	}
+	if _, err := store.Update(ctx, source.ID, Update{BaseURL: &moved, APIKey: &typed}, true); err != nil {
+		t.Fatalf("the super administrator moving the address with the key: %v", err)
+	}
+	if current, err := store.ByID(ctx, source.ID); err != nil || current.BaseURL != moved {
+		t.Errorf("after the super administrator's move the address is %q, %v", current.BaseURL, err)
+	}
+}
+
+// Creating a provider chooses its address, so a delegate's create is refused
+// the way a delegate's move is. The one exception is a duplicate at the address
+// the source already has: its key is copied inside the database and goes
+// nowhere new. A typed key is refused at every address, including one a
+// provider already has, because typing a key is choosing where it is sent.
+func TestADelegateCanOnlyDuplicateAProviderAtItsOwnAddress(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+
+	source, err := store.Create(ctx, CreateInput{
+		Name: "Primary", Kind: adapter.KindOpenAI,
+		BaseURL: "https://api.example.com/v1", APIKey: "sk-the-real-secret-value", Enabled: true,
+	}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, base := range []string{"https://collector.example.net/v1", "https://api.example.com/v1"} {
+		if _, err := store.Create(ctx, CreateInput{
+			Name: "Typed", Kind: adapter.KindOpenAI,
+			BaseURL: base, APIKey: "sk-typed-by-a-delegate", Enabled: true,
+		}, false); !errors.Is(err, ErrBaseURLNeedsSuperAdmin) {
+			t.Errorf("a delegate typing a key for %s = %v, want ErrBaseURLNeedsSuperAdmin", base, err)
+		}
+	}
+	if _, err := store.Create(ctx, CreateInput{
+		Name: "Copy", Kind: adapter.KindOpenAI, BaseURL: "https://collector.example.net/v1",
+		CopyKeyFrom: source.ID, Enabled: true,
+	}, false); !errors.Is(err, ErrBaseURLNeedsSuperAdmin) {
+		t.Errorf("a delegate copying the key to a new address = %v, want ErrBaseURLNeedsSuperAdmin", err)
+	}
+
+	copied, err := store.Create(ctx, CreateInput{
+		Name: "Primary 2", Kind: adapter.KindOpenAI,
+		BaseURL: "https://api.example.com/v1", CopyKeyFrom: source.ID, Enabled: true,
+	}, false)
+	if err != nil {
+		t.Fatalf("a delegate duplicating at the same address: %v", err)
+	}
+	if resolved, err := store.Resolve(ctx, copied.ID); err != nil || resolved.APIKey != "sk-the-real-secret-value" {
+		t.Errorf("the duplicate's key opened as %q, %v", resolved.APIKey, err)
+	}
+
+	listed, err := store.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 2 {
+		t.Errorf("the refused creates left %d providers, want the source and its copy", len(listed))
+	}
+}
+
+func newKeyed(t *testing.T, store *Store, keys string, rotation KeyRotation) Provider {
+	t.Helper()
+	record, err := store.Create(context.Background(), CreateInput{
+		Name: "Pool", Kind: adapter.KindOpenAI, BaseURL: "https://api.example.com/v1",
+		APIKey: keys, KeyRotation: rotation, Enabled: true,
+	}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return record
+}
+
+func resolvedKeys(t *testing.T, store *Store, providerID string, calls int) map[string]int {
+	t.Helper()
+	seen := map[string]int{}
+	for range calls {
+		resolved, err := store.Resolve(context.Background(), providerID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen[resolved.APIKey]++
+	}
+	return seen
+}
+
+// Keys pasted one per line become that many keys, trimmed and without the
+// repeat, and sequential rotation takes them in turn.
+func TestSeveralKeysAreTakenInTurn(t *testing.T) {
+	store := newStore(t)
+	record := newKeyed(t, store, "sk-test-key-first-1111\n  sk-test-key-second-2222 \r\n\nsk-test-key-third-3333\nsk-test-key-first-1111", RotateSequential)
+
+	if want := []string{"••••1111", "••••2222", "••••3333"}; !slices.Equal(record.APIKeyHints, want) {
+		t.Fatalf("hints = %v, want %v", record.APIKeyHints, want)
+	}
+	reloaded, err := store.ByID(context.Background(), record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(reloaded.APIKeyHints, record.APIKeyHints) || reloaded.APIKeyHint != "••••1111" {
+		t.Fatalf("read back hints = %v (%q)", reloaded.APIKeyHints, reloaded.APIKeyHint)
+	}
+
+	var order []string
+	for range 6 {
+		resolved, err := store.Resolve(context.Background(), record.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		order = append(order, resolved.APIKey)
+	}
+	want := []string{"sk-test-key-first-1111", "sk-test-key-second-2222", "sk-test-key-third-3333", "sk-test-key-first-1111", "sk-test-key-second-2222", "sk-test-key-third-3333"}
+	if !slices.Equal(order, want) {
+		t.Fatalf("keys taken = %v, want %v", order, want)
+	}
+}
+
+// The turn counter is shared by every request at once: each key is taken
+// exactly as often as the others, however the calls interleave.
+func TestSequentialRotationIsEvenUnderConcurrentCalls(t *testing.T) {
+	store := newStore(t)
+	record := newKeyed(t, store, "sk-test-key-a-1111\nsk-test-key-b-2222\nsk-test-key-c-3333", RotateSequential)
+	sealed := sealedOf(t, store, record.ID)
+
+	var (
+		mu   sync.Mutex
+		seen = map[string]int{}
+		wg   sync.WaitGroup
+	)
+	for range 30 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 10 {
+				resolved, err := store.ResolveFrom(record, sealed)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				mu.Lock()
+				seen[resolved.APIKey]++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	for _, key := range []string{"sk-test-key-a-1111", "sk-test-key-b-2222", "sk-test-key-c-3333"} {
+		if seen[key] != 100 {
+			t.Fatalf("calls per key = %v, want 100 each", seen)
+		}
+	}
+}
+
+func sealedOf(t *testing.T, store *Store, providerID string) []byte {
+	t.Helper()
+	var sealed []byte
+	if err := store.db.QueryRow(context.Background(),
+		`SELECT api_key_enc FROM providers WHERE id = ?`, providerID).Scan(&sealed); err != nil {
+		t.Fatal(err)
+	}
+	return sealed
+}
+
+func TestRandomRotationOnlyDrawsStoredKeys(t *testing.T) {
+	store := newStore(t)
+	record := newKeyed(t, store, "sk-test-key-a-1111\nsk-test-key-b-2222", RotateRandom)
+	seen := resolvedKeys(t, store, record.ID, 200)
+	if len(seen) != 2 || seen["sk-test-key-a-1111"] == 0 || seen["sk-test-key-b-2222"] == 0 {
+		t.Fatalf("random draws = %v", seen)
+	}
+}
+
+// A form keeps keys by position and adds its own; the positions are honoured
+// only against the hints it was drawn from.
+func TestAnEditKeepsSomeKeysAndAddsOthers(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+	record := newKeyed(t, store, "sk-test-key-a-1111\nsk-test-key-b-2222\nsk-test-key-c-3333", RotateSequential)
+
+	positions := []int{0, 2}
+	updated, err := store.Update(ctx, record.ID, Update{
+		KeepKeys: &positions, SeenKeyHints: record.APIKeyHints, AddKeys: []string{"sk-test-key-d-4444"},
+	}, false)
+	if err != nil {
+		t.Fatalf("keep two, add one: %v", err)
+	}
+	if want := []string{"••••1111", "••••3333", "••••4444"}; !slices.Equal(updated.APIKeyHints, want) {
+		t.Fatalf("hints = %v, want %v", updated.APIKeyHints, want)
+	}
+	seen := resolvedKeys(t, store, record.ID, 3)
+	if len(seen) != 3 || seen["sk-test-key-b-2222"] != 0 {
+		t.Fatalf("keys in use = %v", seen)
+	}
+
+	// The same form again: its hints are the old list, so position 2 would
+	// now be a key it never showed.
+	if _, err := store.Update(ctx, record.ID, Update{
+		KeepKeys: &positions, SeenKeyHints: record.APIKeyHints,
+	}, false); !errors.Is(err, ErrKeysChanged) {
+		t.Fatalf("stale positions: err = %v, want ErrKeysChanged", err)
+	}
+
+	none := []int{}
+	if _, err := store.Update(ctx, record.ID, Update{
+		KeepKeys: &none, SeenKeyHints: updated.APIKeyHints,
+	}, false); !errors.Is(err, ErrKeyRequired) {
+		t.Fatalf("removing every key: err = %v, want ErrKeyRequired", err)
+	}
+
+	// Adding with no keep list keeps every key there is.
+	added, err := store.Update(ctx, record.ID, Update{AddKeys: []string{"sk-test-key-e-5555"}}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(added.APIKeyHints) != 4 {
+		t.Fatalf("hints after an add = %v", added.APIKeyHints)
+	}
+
+	random := RotateRandom
+	rotated, err := store.Update(ctx, record.ID, Update{KeyRotation: &random}, false)
+	if err != nil || rotated.KeyRotation != RotateRandom || len(rotated.APIKeyHints) != 4 {
+		t.Fatalf("rotation change = %+v, %v", rotated, err)
+	}
+	bad := KeyRotation("weighted")
+	if _, err := store.Update(ctx, record.ID, Update{KeyRotation: &bad}, false); !errors.Is(err, ErrInvalidRotation) {
+		t.Fatalf("unknown rotation: err = %v", err)
+	}
+}
+
+// A key kept from before never follows a new base URL: only a list typed in
+// the same request does.
+func TestKeptKeysDoNotFollowANewBaseURL(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+	record := newKeyed(t, store, "sk-test-key-a-1111\nsk-test-key-b-2222", RotateSequential)
+
+	moved := "https://elsewhere.example.com/v1"
+	first := []int{0}
+	if _, err := store.Update(ctx, record.ID, Update{
+		BaseURL: &moved, KeepKeys: &first, SeenKeyHints: record.APIKeyHints, AddKeys: []string{"sk-test-key-new-9999"},
+	}, true); !errors.Is(err, ErrKeyNeededForMove) {
+		t.Fatalf("move keeping a key: err = %v, want ErrKeyNeededForMove", err)
+	}
+	if _, err := store.Update(ctx, record.ID, Update{BaseURL: &moved, AddKeys: []string{"sk-test-key-new-9999"}}, true); !errors.Is(err, ErrKeyNeededForMove) {
+		t.Fatalf("move keeping every key: err = %v, want ErrKeyNeededForMove", err)
+	}
+
+	none := []int{}
+	updated, err := store.Update(ctx, record.ID, Update{
+		BaseURL: &moved, KeepKeys: &none, SeenKeyHints: record.APIKeyHints, AddKeys: []string{"sk-test-key-new-9999"},
+	}, true)
+	if err != nil {
+		t.Fatalf("move with only typed keys: %v", err)
+	}
+	if !slices.Equal(updated.APIKeyHints, []string{"••••9999"}) {
+		t.Fatalf("hints after the move = %v", updated.APIKeyHints)
+	}
+}
+
+// A duplicate that keeps only some of the source's keys takes those, and one
+// that keeps them all still moves the ciphertext untouched.
+func TestADuplicateTakesTheKeysItKept(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+	source := newKeyed(t, store, "sk-test-key-a-1111\nsk-test-key-b-2222\nsk-test-key-c-3333", RotateRandom)
+
+	second := []int{1}
+	copied, err := store.Create(ctx, CreateInput{
+		Name: "Pool 2", Kind: source.Kind, BaseURL: source.BaseURL, Enabled: true,
+		CopyKeyFrom: source.ID, KeepKeys: &second, SeenKeyHints: source.APIKeyHints,
+	}, false)
+	if err != nil {
+		t.Fatalf("duplicate keeping one key: %v", err)
+	}
+	if seen := resolvedKeys(t, store, copied.ID, 3); seen["sk-test-key-b-2222"] != 3 {
+		t.Fatalf("the duplicate resolved %v", seen)
+	}
+
+	whole, err := store.Create(ctx, CreateInput{
+		Name: "Pool 3", Kind: source.Kind, BaseURL: source.BaseURL, Enabled: true,
+		CopyKeyFrom: source.ID, KeyRotation: RotateRandom,
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(sealedOf(t, store, whole.ID), sealedOf(t, store, source.ID)) {
+		t.Fatal("a whole copy re-sealed the keys instead of moving the ciphertext")
+	}
+	if !slices.Equal(whole.APIKeyHints, source.APIKeyHints) || whole.KeyRotation != RotateRandom {
+		t.Fatalf("whole copy = %v %q", whole.APIKeyHints, whole.KeyRotation)
+	}
+}
+
+// An operator's extra headers ride on every call, so a connection-level one
+// would change how the transport reads the answer, and a credential one would
+// reach the provider. Both are dropped, and the rest are kept.
+func TestConnectionLevelHeadersAreNotForwarded(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+
+	record, err := store.Create(ctx, CreateInput{
+		Name: "Headers", Kind: adapter.KindOpenAI,
+		BaseURL: "https://api.example.com/v1", APIKey: "sk-headers-test",
+		Headers: map[string]string{
+			"X-Title":             "Arc",
+			"Connection":          "upgrade",
+			"Upgrade":             "websocket",
+			"Proxy-Authorization": "Basic b3BlcmF0b3I6c2VjcmV0",
+			"Transfer-Encoding":   "chunked",
+			"Keep-Alive":          "timeout=5",
+			"TE":                  "trailers",
+		},
+		Enabled: true,
+	}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := map[string]string{"X-Title": "Arc"}
+	if !reflect.DeepEqual(record.Headers, want) {
+		t.Fatalf("stored headers = %v, want %v", record.Headers, want)
+	}
+}
+
+// A row saved before a header was reserved still holds it, and the call must
+// not send it: the filter on the way in cannot reach a row already written.
+func TestAStoredConnectionLevelHeaderIsNotSentAfterAll(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+
+	record, err := store.Create(ctx, CreateInput{
+		Name: "Legacy", Kind: adapter.KindAnthropic,
+		BaseURL: "https://api.example.com/v1", APIKey: "sk-legacy-test",
+		Headers: map[string]string{"X-Title": "Arc"},
+		Enabled: true,
+	}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(ctx, `UPDATE providers SET headers_json = ? WHERE id = ?`,
+		`{"X-Title":"Arc","Upgrade":"websocket","Proxy-Authorization":"Basic x"}`, record.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	resolved, err := store.Resolve(ctx, record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"X-Title": "Arc"}
+	if !reflect.DeepEqual(resolved.Headers, want) {
+		t.Fatalf("headers sent = %v, want %v", resolved.Headers, want)
+	}
+}
+
+// The adapter's base-URL sentences are the only validation failures the admin
+// layer shows as they are, so the store has to mark them, and only them.
+func TestABaseURLRefusalIsMarkedAsOne(t *testing.T) {
+	store := newStore(t)
+	_, err := store.Create(context.Background(), CreateInput{
+		Name:    "plain",
+		Kind:    adapter.KindOpenAI,
+		BaseURL: "http://198.51.100.7:8000/v1",
+		APIKey:  "sk-test-key-1234",
+		Enabled: true,
+	}, true)
+	if !errors.Is(err, ErrInvalidBaseURL) {
+		t.Fatalf("plain http to a public address: %v, want ErrInvalidBaseURL", err)
+	}
+	if got := err.Error(); got != "provider: base URL must use https (plain http needs the provider's own opt-in, and is always allowed for localhost)" {
+		t.Errorf("the message changed: %q", got)
 	}
 }

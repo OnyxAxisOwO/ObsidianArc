@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	securityevents "github.com/OnyxAxisOwO/ObsidianArc/internal/security"
 )
 
@@ -27,15 +28,16 @@ func (h *Handlers) listSecurityEvents(w http.ResponseWriter, r *http.Request) er
 	}
 	filter.Offset = max(0, filter.Offset)
 	if value := strings.TrimSpace(query.Get("user_id")); value != "" {
-		if !isValidID(value) {
-			return httpx.BadRequest("Malformed user id.")
+		if !id.Valid(value) {
+			return httpx.BadRequestCode("malformed_user_id", "Malformed user id.")
 		}
 		filter.UserID = value
 	}
 	if value := strings.TrimSpace(query.Get("since")); value != "" {
 		since, err := strconv.ParseInt(value, 10, 64)
 		if err != nil || since < 0 {
-			return httpx.BadRequest("Since must be a timestamp in milliseconds.")
+			return httpx.BadRequestCode("timestamp_invalid", "Since must be a timestamp in milliseconds.").
+				WithDetails(map[string]any{"param": "Since"})
 		}
 		filter.Since = since
 	}

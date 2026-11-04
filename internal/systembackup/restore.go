@@ -20,22 +20,11 @@ import (
 // VerifyArchiveKey lets the offline command reject a missing or wrong master
 // key before it creates or migrates a destination database.
 func VerifyArchiveKey(path string, masterKey []byte) error {
-	file, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("system backup: open restore file: %w", err)
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return fmt.Errorf("system backup: inspect restore file: %w", err)
-	}
-	if info.Size() < 1 || info.Size() > MaxArchiveBytes {
-		return fmt.Errorf("system backup: archive must be between 1 byte and %d bytes", MaxArchiveBytes)
-	}
-	_, manifest, err := readManifest(file, info.Size())
+	file, _, manifest, err := openArchive(path)
 	if err != nil {
 		return err
 	}
+	defer file.Close()
 	return verifyKeyCheck(manifest, masterKey)
 }
 
@@ -51,22 +40,11 @@ func VerifyArchiveKey(path string, masterKey []byte) error {
 // instance that removed a plugin's data or never installed it does not get its
 // tables back and fail the schema check on them.
 func PrepareRestore(ctx context.Context, db *database.DB, path string, masterKey []byte, extra ...fs.FS) error {
-	file, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("system backup: open restore file: %w", err)
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return fmt.Errorf("system backup: inspect restore file: %w", err)
-	}
-	if info.Size() < 1 || info.Size() > MaxArchiveBytes {
-		return fmt.Errorf("system backup: archive must be between 1 byte and %d bytes", MaxArchiveBytes)
-	}
-	archive, manifest, err := readManifest(file, info.Size())
+	file, archive, manifest, err := openArchive(path)
 	if err != nil {
 		return err
 	}
+	defer file.Close()
 	if manifest.Dialect != db.Dialect() {
 		return fmt.Errorf("system backup: archive uses %s but destination uses %s; restore with the same database engine", manifest.Dialect, db.Dialect())
 	}
@@ -76,6 +54,11 @@ func PrepareRestore(ctx context.Context, db *database.DB, path string, masterKey
 	}
 	carried, err := archivedPackages(ctx, archive, manifest)
 	if err != nil {
+		return err
+	}
+	// Refused before the first migration runs. Migrating a populated database
+	// would change its schema, and only then would RestoreArchive refuse it.
+	if err := db.Tx(ctx, func(tx *database.Tx) error { return requireEmptyDatabase(ctx, tx) }); err != nil {
 		return err
 	}
 	_, err = db.MigrateFor(ctx, manifest.Migration, append(carried, extra...)...)
@@ -127,22 +110,11 @@ func archivedPackages(ctx context.Context, archive *zip.Reader, manifest archive
 // archive. The caller owns the offline requirement; this function still
 // rechecks emptiness inside the same transaction as the imports.
 func RestoreArchive(ctx context.Context, db *database.DB, path string, masterKey []byte) error {
-	file, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("system backup: open restore file: %w", err)
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return fmt.Errorf("system backup: inspect restore file: %w", err)
-	}
-	if info.Size() < 1 || info.Size() > MaxArchiveBytes {
-		return fmt.Errorf("system backup: archive must be between 1 byte and %d bytes", MaxArchiveBytes)
-	}
-	archive, manifest, err := readManifest(file, info.Size())
+	file, archive, manifest, err := openArchive(path)
 	if err != nil {
 		return err
 	}
+	defer file.Close()
 	if manifest.Dialect != db.Dialect() {
 		return fmt.Errorf("system backup: archive uses %s but destination uses %s; restore with the same database engine", manifest.Dialect, db.Dialect())
 	}
@@ -198,15 +170,49 @@ func RestoreArchive(ctx context.Context, db *database.DB, path string, masterKey
 		}
 		// The instance lock row is coordination state, not an operator setting.
 		// Releasing the database row lock still waits until commit, but removing
-		// its marker keeps it out of the restored settings table.
-		if _, err := tx.Exec(ctx, `DELETE FROM settings WHERE key = ?`, schedulerLockKey); err != nil {
+		// its marker keeps it out of the restored settings table. The failure count
+		// goes with it: it describes the destination's scheduler, not the archive's.
+		if _, err := tx.Exec(ctx, `DELETE FROM settings WHERE key IN (?, ?)`, schedulerLockKey, failureCountKey); err != nil {
 			return fmt.Errorf("system backup: release restore marker: %w", err)
 		}
 		return nil
 	})
 }
 
+// openArchive is the front door every restore entry shares, so the size
+// ceiling and the manifest checks cannot be tightened on one path and missed
+// on another. The caller closes the file once it is done with the reader,
+// which reads from it lazily.
+func openArchive(path string) (*os.File, *zip.Reader, archiveManifest, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, nil, archiveManifest{}, fmt.Errorf("system backup: open restore file: %w", err)
+	}
+	info, err := file.Stat()
+	if err != nil {
+		file.Close()
+		return nil, nil, archiveManifest{}, fmt.Errorf("system backup: inspect restore file: %w", err)
+	}
+	if info.Size() < 1 || info.Size() > MaxArchiveBytes {
+		file.Close()
+		return nil, nil, archiveManifest{}, fmt.Errorf("system backup: archive must be between 1 byte and %d bytes", MaxArchiveBytes)
+	}
+	archive, manifest, err := readManifest(file, info.Size())
+	if err != nil {
+		file.Close()
+		return nil, nil, archiveManifest{}, err
+	}
+	return file, archive, manifest, nil
+}
+
+// A nil key means the operator has declared the original lost and chosen to
+// restore without it: everything the key sealed (stored provider credentials,
+// second-factor secrets) stays unreadable and has to be entered again, but the
+// rest of the archive is plain data and is worth more than refusing.
 func verifyKeyCheck(manifest archiveManifest, masterKey []byte) error {
+	if masterKey == nil {
+		return nil
+	}
 	if manifest.KeyCheck == "" {
 		return errors.New("system backup: archive has no instance-key check; it may be from an unsupported format")
 	}
@@ -229,11 +235,16 @@ func base64Decode(value string) ([]byte, error) {
 	return base64.StdEncoding.DecodeString(value)
 }
 
+// maxArchiveEntries is a ceiling that does not depend on the table list. The
+// count check above already pins the entries to the schema, so this is only a
+// second bound on what a hostile archive can make the restore process.
+const maxArchiveEntries = 10001
+
 func validateArchiveEntries(archive *zip.Reader, tables []string) error {
 	if len(archive.File) != len(tables)+1 {
 		return errors.New("system backup: archive has missing or unexpected entries")
 	}
-	if uint64(len(archive.File)) > 10001 {
+	if uint64(len(archive.File)) > maxArchiveEntries {
 		return errors.New("system backup: archive contains too many entries")
 	}
 	expected := map[string]bool{manifestEntryName: true}
@@ -302,7 +313,7 @@ func validateDestination(ctx context.Context, tx database.Queryer, manifest arch
 	}
 	sort.Strings(currentDataTables)
 	if !equalStrings(currentDataTables, tables) {
-		return errors.New("system backup: destination schema has a different table set")
+		return fmt.Errorf("system backup: destination schema has a different table set (destination has %v, archive has %v)", currentDataTables, tables)
 	}
 	for _, table := range manifest.Tables {
 		columns, err := database.Columns(ctx, tx, table.Name)
@@ -329,8 +340,8 @@ func requireEmptyDatabase(ctx context.Context, tx database.Queryer) error {
 		query := `SELECT COUNT(*) FROM "` + table + `"`
 		var args []any
 		if table == "settings" {
-			query += ` WHERE key <> ?`
-			args = append(args, schedulerLockKey)
+			query += ` WHERE key NOT IN (?, ?)`
+			args = append(args, schedulerLockKey, failureCountKey)
 		}
 		if err := tx.QueryRow(ctx, query, args...).Scan(&count); err != nil {
 			return fmt.Errorf("system backup: inspect destination table %s: %w", table, err)

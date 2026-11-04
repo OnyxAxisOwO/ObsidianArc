@@ -64,7 +64,7 @@ export function regenerateProfileInvite(): Promise<ProfileInvites> {
   return api.post<ProfileInvites>('/api/profile/invites/regenerate', {});
 }
 
-export interface ClaimResult {
+interface ClaimResult {
   group_id: string;
   group_name: string;
   /** Days the claim added — what the success message names, alongside the
@@ -79,7 +79,7 @@ export interface ClaimResult {
  * account's row for the whole check-then-write, same as registration; every
  * refusal collapses to a handful of codes an already-signed-in reader can act
  * on (`invite_invalid`, `invite_claimed`, `invite_group_conflict`,
- * `too_many_attempts`).
+ * `invite_own_code`, `too_many_attempts`).
  */
 export function claimInviteCode(code: string): Promise<ClaimResult> {
   return api.post<ClaimResult>('/api/profile/invites/claim', { code });

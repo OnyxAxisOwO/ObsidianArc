@@ -95,6 +95,28 @@ func TestPaidLookupRejectsDisposableAndSkipsExemptDomains(t *testing.T) {
 	}
 }
 
+func TestEmptyExemptListStaysAnEmptyListForTheBackoffice(t *testing.T) {
+	ctx := context.Background()
+	db := usercheckDatabase(t)
+	m, err := NewManager(ctx, db, []byte("master-key"), nil)
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	if err := m.Save(ctx, Config{Enabled: false, ExemptDomains: []string{}, FailureMode: FailureReject}, "", false); err != nil {
+		t.Fatalf("save empty list: %v", err)
+	}
+	if got := m.Config().ExemptDomains; got == nil {
+		t.Fatal("live configuration returned a nil list; it marshals as null")
+	}
+	reloaded, err := NewManager(ctx, db, []byte("master-key"), nil)
+	if err != nil {
+		t.Fatalf("reload manager: %v", err)
+	}
+	if got := reloaded.Config().ExemptDomains; got == nil || len(got) != 0 {
+		t.Fatalf("reloaded exemptions = %#v, want an empty non-nil list", got)
+	}
+}
+
 func TestAPIKeyIsSealedAndBlankSavePreservesIt(t *testing.T) {
 	ctx := context.Background()
 	db := usercheckDatabase(t)
@@ -220,6 +242,95 @@ func TestConcurrentManagerSavesKeepRotatedAPIKey(t *testing.T) {
 	}
 }
 
+// A key sealed under a master secret this process no longer has is what a
+// key-lost restore leaves behind. The server must still boot, the settings
+// screen must still be able to enter or clear the key, and screening stays on
+// so the failure policy decides, rather than being switched off silently.
+func TestUnreadableStoredKeyDoesNotBlockBootOrRecovery(t *testing.T) {
+	ctx := context.Background()
+	db := usercheckDatabase(t)
+	cfg := Config{Enabled: true, ExemptDomains: []string{}, FailureMode: FailureReject}
+	first, err := NewManager(ctx, db, []byte("master-a"), nil)
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	if err := first.Save(ctx, cfg, "sealed-under-a", false); err != nil {
+		t.Fatalf("save key: %v", err)
+	}
+
+	recovered, err := NewManager(ctx, db, []byte("master-b"), nil)
+	if err != nil {
+		t.Fatalf("boot with an unreadable key: %v", err)
+	}
+	if recovered.Config().APIKeySet || !recovered.Config().Enabled {
+		t.Fatalf("unreadable key config = %+v, want enabled without a key", recovered.Config())
+	}
+	if err := recovered.Check(ctx, "person@other.example"); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("enabled without a readable key in reject mode = %v", err)
+	}
+	if err := recovered.Save(ctx, cfg, "", false); !errors.Is(err, ErrKeyUnreadable) || !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("blank save over an unreadable key = %v, want ErrKeyUnreadable", err)
+	}
+	if err := recovered.Save(ctx, cfg, "entered-again", false); err != nil {
+		t.Fatalf("entering a new key over an unreadable one: %v", err)
+	}
+	if got := readStoredUserCheckKey(t, db, []byte("master-b")); got != "entered-again" {
+		t.Fatalf("stored key = %q, want the entered key", got)
+	}
+	reloaded, err := NewManager(ctx, db, []byte("master-b"), nil)
+	if err != nil || !reloaded.Config().APIKeySet {
+		t.Fatalf("reload after repair: %v, %+v", err, reloaded.Config())
+	}
+
+	// Clearing must not need to read the row either.
+	cleared, err := NewManager(ctx, db, []byte("master-c"), nil)
+	if err != nil {
+		t.Fatalf("boot under a third secret: %v", err)
+	}
+	disabled := Config{Enabled: false, ExemptDomains: []string{}, FailureMode: FailureReject}
+	if err := cleared.Save(ctx, disabled, "", true); err != nil {
+		t.Fatalf("clear over an unreadable key: %v", err)
+	}
+	if got := readStoredUserCheckKey(t, db, []byte("master-b")); got != "" {
+		t.Fatalf("cleared key = %q", got)
+	}
+}
+
+// Switching screening off needs no key, so it must not be refused over a key
+// this process cannot open: the operator would otherwise have to tick clear
+// just to turn the check off.
+func TestSwitchingOffOverUnreadableStoredKeySucceeds(t *testing.T) {
+	ctx := context.Background()
+	db := usercheckDatabase(t)
+	cfg := Config{Enabled: true, ExemptDomains: []string{}, FailureMode: FailureReject}
+	first, err := NewManager(ctx, db, []byte("master-a"), nil)
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	if err := first.Save(ctx, cfg, "sealed-under-a", false); err != nil {
+		t.Fatalf("save key: %v", err)
+	}
+
+	recovered, err := NewManager(ctx, db, []byte("master-b"), nil)
+	if err != nil {
+		t.Fatalf("boot with an unreadable key: %v", err)
+	}
+	off := Config{Enabled: false, ExemptDomains: []string{"example.com"}, FailureMode: FailureAllow}
+	if err := recovered.Save(ctx, off, "", false); err != nil {
+		t.Fatalf("switching off over an unreadable key: %v", err)
+	}
+	if got := recovered.Config(); got.Enabled || got.APIKeySet || got.FailureMode != FailureAllow {
+		t.Fatalf("config after switching off = %+v", got)
+	}
+	if got := readStoredUserCheckKey(t, db, []byte("master-b")); got != "" {
+		t.Fatalf("unreadable key was kept while screening is off: %q", got)
+	}
+	reloaded, err := NewManager(ctx, db, []byte("master-b"), nil)
+	if err != nil || reloaded.Config().Enabled || len(reloaded.Config().ExemptDomains) != 1 {
+		t.Fatalf("reload after switching off: %v, %+v", err, reloaded.Config())
+	}
+}
+
 func readStoredUserCheckKey(t *testing.T, db *database.DB, master []byte) string {
 	t.Helper()
 	var sealed []byte
@@ -279,6 +390,51 @@ func TestFailurePolicyIsAppliedToUnavailableAndMalformedResponses(t *testing.T) 
 	}
 	if err := m.Check(ctx, "person@other.example"); err != nil {
 		t.Fatalf("allow mode did not continue on provider failure: %v", err)
+	}
+}
+
+// A wrong or revoked key is an operator's mistake to fix, not an outage to
+// wait out, so it must not be reported as the same error a 503 is.
+func TestRefusedKeyIsNotReportedAsAnOutage(t *testing.T) {
+	ctx := context.Background()
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		client := clientFor(t, func(*http.Request) (*http.Response, error) {
+			return response(status, `{"error":"Unauthorized"}`), nil
+		})
+		m, err := NewManager(ctx, usercheckDatabase(t), []byte("master-key"), client)
+		if err != nil {
+			t.Fatalf("new manager: %v", err)
+		}
+		if err := m.Save(ctx, Config{Enabled: true, FailureMode: FailureReject}, "revoked-key", false); err != nil {
+			t.Fatalf("save key: %v", err)
+		}
+		if _, err := m.Test(ctx, "someone@other.example"); !errors.Is(err, ErrKeyRefused) || errors.Is(err, ErrUnavailable) {
+			t.Fatalf("HTTP %d from the provider = %v, want ErrKeyRefused alone", status, err)
+		}
+	}
+}
+
+func TestReleasingATestClaimOnlyResetsTheClaimItMade(t *testing.T) {
+	ctx := context.Background()
+	m, err := NewManager(ctx, usercheckDatabase(t), []byte("master-key"), nil)
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	now := time.UnixMilli(1_800_000_000_000)
+	if allowed, err := m.ClaimTest(ctx, now); err != nil || !allowed {
+		t.Fatalf("first claim = %v, %v", allowed, err)
+	}
+	if err := m.ReleaseTest(ctx, now.Add(time.Second)); err != nil {
+		t.Fatalf("release of another claim: %v", err)
+	}
+	if allowed, _ := m.ClaimTest(ctx, now.Add(time.Minute)); allowed {
+		t.Fatal("releasing a claim it did not make reopened the cooldown")
+	}
+	if err := m.ReleaseTest(ctx, now); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if allowed, err := m.ClaimTest(ctx, now.Add(time.Minute)); err != nil || !allowed {
+		t.Fatalf("claim after release = %v, %v", allowed, err)
 	}
 }
 

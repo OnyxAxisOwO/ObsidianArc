@@ -5,17 +5,16 @@
 // typed once is granted once.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, shallowRef, type App } from 'vue';
 import AdminBonus from '../src/views/admin/AdminBonus.vue';
 import {
   adminApi, type AdminModel, type BonusBarRow, type BonusGrantRow, type CheckinSettings, type Group,
 } from '../src/admin/api';
 import { ApiError } from '../src/api/client';
-import { provideAdminView } from '../src/views/admin/adminView';
-import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
+import { MASK_PLACEHOLDER, safeModeCategories, safeModeEnabled } from '../src/admin/safeMode';
+import { adminShell, mountComponent, settle, button } from './helpers';
 
-let app: App | undefined;
+let unmount: (() => void) | undefined;
 let host: HTMLElement;
 let panels: HTMLElement;
 let actions: HTMLElement;
@@ -29,31 +28,14 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  app?.unmount();
-  app = undefined;
-  document.body.textContent = '';
+  unmount?.();
+  unmount = undefined;
   vi.restoreAllMocks();
 });
 
-async function settle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await nextTick();
-}
 
 async function mount(): Promise<void> {
-  app = createApp({ setup() {
-    providePanelHost(shallowRef(panels));
-    provideAdminView({ actionsHost: actions, setTitle: () => {}, reload: () => {}, params: [] });
-    return () => h(AdminBonus);
-  } });
-  app.mount(host);
-  await settle();
-}
-
-function button(root: ParentNode, label: string): HTMLButtonElement {
-  const found = [...root.querySelectorAll<HTMLButtonElement>('button')].find((node) => node.textContent?.trim() === label);
-  if (!found) throw new Error(`Button not found: ${label}`);
-  return found;
+  unmount = await mountComponent(AdminBonus, {}, { host, panels, adminView: adminShell(actions) });
 }
 
 function fieldFor(root: ParentNode, label: string): HTMLElement {
@@ -435,6 +417,26 @@ describe('granting', () => {
     expect(panels.querySelector('.oa-panel-title')?.textContent).toBe(t('bonusGrantTitle', { name: 'Launch gift' }));
   });
 
+  it('does not report a grant as failed when only the read-back after it fails', async () => {
+    stub();
+    vi.spyOn(adminApi, 'grantBonus').mockResolvedValue({ granted: 40, amount: 5, expires_at: 0 });
+    // Mount reads the bars once; the read-back after the grant is the second read.
+    vi.spyOn(adminApi, 'bonusBars')
+      .mockResolvedValueOnce({ bars: [bar()] })
+      .mockRejectedValueOnce(new Error('offline'));
+    await mount();
+
+    await openGrant();
+    await choose(fieldFor(panels, t('bonusGrantTo')), t('bonusGrantEveryone'));
+    type(inputOf(panels, t('bonusGrantAmount')), '5');
+    await settle();
+    button(panels, t('bonusGrantAction')).click();
+    await settle();
+
+    expect(panels.textContent).toContain(t('bonusGrantedOther', { count: 40 }));
+    expect(panels.textContent).not.toContain('offline');
+  });
+
   it('goes back to the bar with the back arrow', async () => {
     stub();
     await mount();
@@ -489,13 +491,39 @@ describe('what is granted', () => {
     rows()[0]!.click();
     await settle();
     list.mockClear();
+    // The first press only arms it: credits are taken back on a second one.
     button(panels, t('bonusRevoke')).click();
+    await settle();
+    expect(revoke).not.toHaveBeenCalled();
+    button(panels, t('bonusRevokeConfirm', { amount: '6' })).click();
     await settle();
 
     expect(revoke).toHaveBeenCalledWith('g-1');
     expect(panels.textContent).toContain(t('bonusRevoked', { amount: '6' }));
     expect(list).toHaveBeenCalledWith('bar-1', 0);
     expect(adminApi.bonusBars).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not put a failed read-back after a revoke beside the grant that was taken back', async () => {
+    stub();
+    vi.spyOn(adminApi, 'bonusGrants').mockResolvedValue({ grants: [grant()], total: 1 });
+    vi.spyOn(adminApi, 'revokeBonusGrant').mockResolvedValue({ revoked: 6 });
+    // Mount reads the bars once; the read-back after the revoke is the second read.
+    vi.spyOn(adminApi, 'bonusBars')
+      .mockResolvedValueOnce({ bars: [bar()] })
+      .mockRejectedValueOnce(new Error('offline'));
+    await mount();
+
+    rows()[0]!.click();
+    await settle();
+    button(panels, t('bonusRevoke')).click();
+    await settle();
+    button(panels, t('bonusRevokeConfirm', { amount: '6' })).click();
+    await settle();
+
+    expect(panels.textContent).toContain(t('bonusRevoked', { amount: '6' }));
+    expect(panels.textContent).not.toContain('offline');
+    expect(host.textContent).toContain('offline');
   });
 
   it('pages: the next twenty are added to the ones shown, not swapped for them', async () => {
@@ -516,6 +544,47 @@ describe('what is granted', () => {
     expect(panels.textContent).toContain('second-page');
     // Everything is shown, so the button is gone.
     expect([...panels.querySelectorAll('button')].some((node) => node.textContent?.trim() === t('bonusLoadMore'))).toBe(false);
+  });
+
+  it('asks for a page once when Load more is pressed twice, so no row is shown twice', async () => {
+    stub();
+    let finish: () => void = () => {};
+    const list = vi.spyOn(adminApi, 'bonusGrants').mockImplementation(async (_id, offset = 0) => {
+      if (offset) await new Promise<void>((resolve) => { finish = resolve; });
+      return { grants: [grant({ id: `g-${offset}`, username: offset ? 'second-page' : 'first-page' })], total: 2 };
+    });
+    await mount();
+    rows()[0]!.click();
+    await settle();
+
+    button(panels, t('bonusLoadMore')).click();
+    button(panels, t('bonusLoadMore')).click();
+    await settle();
+    expect(list.mock.calls.filter(([, offset]) => offset === 1)).toHaveLength(1);
+
+    finish();
+    await settle();
+    expect(panels.textContent!.split('second-page')).toHaveLength(2);
+  });
+
+  it('masks the names of grant holders while safe mode hides users', async () => {
+    stub();
+    vi.spyOn(adminApi, 'bonusGrants').mockResolvedValue({ grants: [grant({ username: 'alice' })], total: 1 });
+    const categories = safeModeCategories.value.users;
+    safeModeEnabled.value = true;
+    safeModeCategories.value.users = true;
+    try {
+      await mount();
+      rows()[0]!.click();
+      await settle();
+
+      const row = panels.querySelector<HTMLElement>('.oa-card-row')!;
+      expect(row.textContent).not.toContain('alice');
+      expect(row.textContent).toContain(MASK_PLACEHOLDER);
+    } finally {
+      safeModeEnabled.value = false;
+      safeModeCategories.value.users = categories;
+    }
   });
 });
 
@@ -654,5 +723,130 @@ describe('the reward editor', () => {
     // Menus of the selects used before stay mounted; the bars are the ones naming a bar.
     const menu = [...document.querySelectorAll<HTMLElement>('.oa-select-menu')].find((node) => node.textContent?.includes('Live'))!;
     expect([...menu.querySelectorAll('[role="option"]')].map((node) => node.textContent?.trim())).toEqual(['Live']);
+  });
+});
+
+describe('a part of the page that fails', () => {
+  it('keeps the bars up when the check-in read fails, and shuts the check-in save', async () => {
+    stub();
+    vi.spyOn(adminApi, 'checkinSettings').mockRejectedValue(new ApiError(500, 'internal', 'Check-in unreadable.'));
+    const save = vi.spyOn(adminApi, 'saveCheckinSettings');
+    await mount();
+
+    expect(rows()).toHaveLength(1);
+    expect(host.textContent).toContain('Check-in unreadable.');
+    expect(button(host, t('checkinSave')).disabled).toBe(true);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('says on the page when the bars cannot be read again after a save has closed its panel', async () => {
+    stub();
+    vi.spyOn(adminApi, 'bonusBars')
+      .mockResolvedValueOnce({ bars: [bar()] })
+      .mockRejectedValueOnce(new ApiError(503, 'unavailable', 'Bars did not reload.'));
+    vi.spyOn(adminApi, 'saveBonusBar').mockResolvedValue({ bar: bar() });
+    await mount();
+
+    rows()[0]!.click();
+    await settle();
+    button(panels, t('save')).click();
+    await settle();
+
+    expect(host.textContent).toContain('Bars did not reload.');
+  });
+
+  it('masks the provider names in the model picker while safe mode hides providers', async () => {
+    stub();
+    vi.spyOn(adminApi, 'models').mockResolvedValue({ models: [{ ...model('m1', 'Alpha'), provider_name: 'Upstream Co' }] });
+    const categories = safeModeCategories.value.providers;
+    safeModeEnabled.value = true;
+    safeModeCategories.value.providers = true;
+    try {
+      await mount();
+      rows()[0]!.click();
+      await settle();
+
+      expect(panels.textContent).not.toContain('Upstream Co');
+      expect(panels.textContent).toContain(MASK_PLACEHOLDER);
+    } finally {
+      safeModeEnabled.value = false;
+      safeModeCategories.value.providers = categories;
+    }
+  });
+});
+
+describe('a shared pool', () => {
+  const pool = (over: Partial<BonusBarRow> = {}): BonusBarRow => bar({
+    id: 'p-1', name: 'Everyone', kind: 'shared', toggle_mode: 'only', granted: 500, used: 120, holders: 7,
+    pool: { amount: 500, used: 120, reset_period: 'day', reset_amount: 500, period_start: 1, per_user_daily: 20 },
+    ...over,
+  });
+
+  it('is made with its refill and daily share, and the switch only a pool has', async () => {
+    stub([]);
+    const save = vi.spyOn(adminApi, 'saveBonusBar').mockResolvedValue({ bar: pool() });
+    await mount();
+    button(actions, t('addBonusBar')).click();
+    await settle();
+
+    await choose(fieldFor(panels, t('bonusKind')), t('bonusKindShared'));
+    // A pool has no grants, so no expiry for them.
+    expect(panels.textContent).not.toContain(t('bonusDefaultExpiry'));
+    await choose(fieldFor(panels, t('bonusMode')), t('poolModeOnly'));
+    await choose(fieldFor(panels, t('poolReset')), t('poolResetDay'));
+    type(inputOf(panels, t('bonusName')), 'Everyone');
+    type(inputOf(panels, t('poolResetAmount')), '500');
+    type(inputOf(panels, t('poolDailyLimit')), '20');
+    await settle();
+    button(panels, t('save')).click();
+    await settle();
+
+    expect(save).toHaveBeenCalledWith(null, expect.objectContaining({
+      kind: 'shared', toggle_mode: 'only', name: 'Everyone',
+      pool: { reset_period: 'day', reset_amount: 500, per_user_daily: 20, amount: 0 },
+    }));
+  });
+
+  it('shows its balance instead of grants, and tops it up', async () => {
+    stub([pool()]);
+    const adjust = vi.spyOn(adminApi, 'adjustBonusPool').mockResolvedValue({
+      pool: { amount: 600, used: 120, reset_period: 'day', reset_amount: 500, period_start: 1, per_user_daily: 20 },
+    });
+    await mount();
+    expect(rows()[0]!.textContent).toContain(t('bonusKindShared'));
+    expect(rows()[0]!.textContent).toContain(t('poolModeOnly'));
+    rows()[0]!.click();
+    await settle();
+
+    expect(adminApi.bonusGrants).not.toHaveBeenCalled();
+    expect(panels.textContent).not.toContain(t('bonusGrantAction'));
+    expect(panels.textContent).toContain(t('poolBalance', { left: '380', total: '500', count: 7 }));
+    // A pool cannot be turned into a bar, so it is not offered.
+    fieldFor(panels, t('bonusKind')).querySelector<HTMLButtonElement>('.oa-select')!.click();
+    await settle();
+    expect([...document.querySelectorAll('[role="option"]')].map((n) => n.textContent?.trim())).toEqual([t('bonusKindShared')]);
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    await settle();
+
+    type(inputOf(panels, t('poolAdjustAmount')), '100');
+    await settle();
+    button(panels, t('poolAdjust')).click();
+    await settle();
+    expect(adjust).toHaveBeenCalledWith('p-1', 'add', 100);
+    expect(panels.textContent).toContain(t('poolAdjusted', { left: '480' }));
+  });
+
+  it('is not offered as somewhere a check-in reward could pay into', async () => {
+    stub([pool(), bar({ id: 'b', name: 'Gift' })], {
+      ...emptyCheckin, daily: { kind: 'bonus', bar_id: 'b', amount: 1, valid_days: 7 },
+    });
+    await mount();
+    const field = [...host.querySelectorAll<HTMLElement>('#secCheckinAdmin .oa-field')]
+      .find((node) => node.textContent?.includes('Gift'));
+    field!.querySelector<HTMLButtonElement>('.oa-select')!.click();
+    await settle();
+    const options = [...document.querySelectorAll('[role="option"]')].map((n) => n.textContent?.trim());
+    expect(options).toContain('Gift');
+    expect(options).not.toContain('Everyone');
   });
 });

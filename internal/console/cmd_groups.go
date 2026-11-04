@@ -9,18 +9,26 @@ import (
 	"strings"
 )
 
-// parseGrants turns "model-a:use,model-b:view" into the
-// []{model_id,access} shape POST/PATCH /api/admin/groups and
-// /api/admin/models both take for model_grants, resolving each left-hand
-// side through resolveModelRef so a name works as well as an id.
+// parseGrants turns "model-a:use,model-b:view" into the []{model_id,access} rows
+// a group's model_grants takes, resolving each left-hand side through
+// resolveModelRef so a name works as well as an id.
 func parseGrants(rt *Runtime, raw string) ([]map[string]any, error) {
-	var out []map[string]any
+	return parseGrantList(rt, raw, "model_id", resolveModelRef)
+}
+
+// parseGrantList reads "name:access,name:access" into the rows a grant list takes.
+// key is the id field the server reads ("model_id" or "group_id") and resolve
+// turns each name into that id. The result is never nil: nil marshals as null,
+// which the server reads as "not given", so an empty value would report success
+// and keep every grant. An empty list is what clears them.
+func parseGrantList(rt *Runtime, raw, key string, resolve func(*Runtime, string) (string, error)) ([]map[string]any, error) {
+	out := []map[string]any{}
 	for _, entry := range splitCSV(raw) {
 		ref, access, ok := strings.Cut(entry, ":")
 		if !ok {
 			access = "use"
 		}
-		mid, err := resolveModelRef(rt, strings.TrimSpace(ref))
+		target, err := resolve(rt, strings.TrimSpace(ref))
 		if err != nil {
 			return nil, err
 		}
@@ -28,7 +36,7 @@ func parseGrants(rt *Runtime, raw string) ([]map[string]any, error) {
 		if access == "" {
 			access = "use"
 		}
-		out = append(out, map[string]any{"model_id": mid, "access": access})
+		out = append(out, map[string]any{key: target, "access": access})
 	}
 	return out, nil
 }
@@ -51,9 +59,9 @@ func init() {
 			for _, raw := range asSlice(asMap(data)["groups"]) {
 				g := asMap(raw)
 				rows = append(rows, []string{
-					asStr(g["id"]), asStr(g["name"]), fmt.Sprint(asNum(g["members"])),
+					asStr(g["id"]), asStr(g["name"]), formatNumber(asNum(g["members"])),
 					yesNo(asBoolVal(g["is_default"])), yesNo(asBoolVal(g["allow_all_models"])),
-					yesNo(asBoolVal(g["api_access"])), fmt.Sprint(asNum(g["sort_order"])),
+					yesNo(asBoolVal(g["api_access"])), formatNumber(asNum(g["sort_order"])),
 				})
 			}
 			return rt.Table([]string{"id", "name", "members", "default", "all_models", "api_access", "sort"}, rows)
@@ -90,19 +98,16 @@ func init() {
 				}
 			}
 			if g == nil {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("没有这个分组。")
-				}
-				return rt.Errorf("no such group.")
+				return rt.Fail(Text{EN: "no such group.", ZH: "没有这个分组。"})
 			}
 			jsonMode := rt.effectiveJSON()
-			if err := rt.Fields([][2]string{
+			if err := rt.FieldsOf(g, [][2]string{
 				{"id", asStr(g["id"])}, {"name", asStr(g["name"])}, {"description", asStr(g["description"])},
 				{"is_default", yesNo(asBoolVal(g["is_default"]))}, {"allow_all_models", yesNo(asBoolVal(g["allow_all_models"]))},
 				{"api_access", yesNo(asBoolVal(g["api_access"]))}, {"allow_stats", yesNo(asBoolVal(g["allow_stats"]))},
 				{"allow_delete_conversations", yesNo(asBoolVal(g["allow_delete_conversations"]))},
 				{"allow_terminal", yesNo(asBoolVal(g["allow_terminal"]))},
-				{"sort_order", fmt.Sprint(asNum(g["sort_order"]))}, {"members", fmt.Sprint(asNum(g["members"]))},
+				{"sort_order", formatNumber(asNum(g["sort_order"]))}, {"members", formatNumber(asNum(g["members"]))},
 				{"created_at", formatMS(g["created_at"])}, {"updated_at", formatMS(g["updated_at"])},
 			}); err != nil {
 				return err
@@ -130,6 +135,11 @@ func init() {
 				mrows = append(mrows, []string{asStr(u["id"]), asStr(u["username"]), asStr(u["nickname"]), formatMS(u["group_expires_at"])})
 			}
 			RenderTable(rt.Out, rt.Session.Width, rt.Session.Colour, []string{"id", "username", "nickname", "expires"}, mrows)
+			// The page holds 200 rows and the group can hold more. Saying so keeps the
+			// table from reading as the whole membership under a larger count above.
+			if total := int(asNum(asMap(members)["total"])); total > len(mrows) {
+				rt.Say(Text{EN: fmt.Sprintf("showing %d of %d members.\n", len(mrows), total), ZH: fmt.Sprintf("仅显示前 %d 位，共 %d 位成员。\n", len(mrows), total)})
+			}
 			return nil
 		},
 	})
@@ -158,10 +168,7 @@ func init() {
 		Endpoints:  []string{"POST /api/admin/groups"},
 		Run: func(_ context.Context, rt *Runtime) error {
 			if !rt.Present("name") || rt.String("name") == "" {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("需要 --name")
-				}
-				return rt.Errorf("--name is required")
+				return rt.Fail(Text{EN: "--name is required", ZH: "需要 --name"})
 			}
 			body := bodyBuilder{}
 			body["name"] = rt.String("name")
@@ -255,7 +262,7 @@ func init() {
 				}
 				body["model_grants"] = grants
 			} else if rt.Present("models") {
-				var ids []string
+				ids := []string{}
 				for _, r := range splitCSV(rt.String("models")) {
 					mid, err := resolveModelRef(rt, r)
 					if err != nil {
@@ -267,10 +274,7 @@ func init() {
 			}
 
 			if len(body) == 0 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("没有需要修改的内容：请至少给出一个选项")
-				}
-				return rt.Errorf("nothing to change: give at least one flag")
+				return rt.Fail(Text{EN: "nothing to change: give at least one flag", ZH: "没有需要修改的内容：请至少给出一个选项"})
 			}
 
 			data, _, err := rt.Call(http.MethodPatch, "/api/admin/groups/"+url.PathEscape(gid), map[string]any(body))
@@ -310,11 +314,10 @@ func init() {
 				return err
 			}
 			movedTo := asStr(asMap(data)["moved_to"])
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已删除，成员已移入分组 %s。\n", movedTo)
-			} else {
-				rt.Printf("deleted; members moved to group %s.\n", movedTo)
+			if rt.effectiveJSON() {
+				return rt.Fields(nil)
 			}
+			rt.Say(Text{EN: fmt.Sprintf("deleted; members moved to group %s.\n", movedTo), ZH: fmt.Sprintf("已删除，成员已移入分组 %s。\n", movedTo)})
 			return nil
 		},
 	})
@@ -394,10 +397,7 @@ func init() {
 			}
 			refs := splitCSV(rt.String("users"))
 			if len(refs) == 0 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("需要 --users，至少一个账户")
-				}
-				return rt.Errorf("--users is required, at least one account")
+				return rt.Fail(Text{EN: "--users is required, at least one account", ZH: "需要 --users，至少一个账户"})
 			}
 			var ids []string
 			for _, r := range refs {
@@ -413,11 +413,14 @@ func init() {
 			if err != nil {
 				return err
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已更新 %v 个账户。\n", asNum(asMap(data)["updated"]))
-			} else {
-				rt.Printf("updated %v accounts.\n", asNum(asMap(data)["updated"]))
+			if rt.effectiveJSON() {
+				return rt.Fields(nil)
 			}
+			updated := formatNumber(asNum(asMap(data)["updated"]))
+			rt.Say(Text{
+				EN: fmt.Sprintf("updated %v accounts.\n", updated),
+				ZH: fmt.Sprintf("已更新 %v 个账户。\n", updated),
+			})
 			return nil
 		},
 	})

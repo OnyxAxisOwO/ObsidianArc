@@ -13,6 +13,9 @@
 import { computed, onMounted, ref } from 'vue';
 import type { Account } from '@/api/auth';
 import { ApiError } from '@/api/client';
+import { useLatestTimeout } from '@/composables/useLatestTimeout';
+import { useLeaveWarning } from '@/composables/useLeaveWarning';
+import { apiErrorText } from '@/lib/api-error';
 import { fetchSessions, revokeOtherSessions, revokeSession, type DeviceSession } from '@/api/sessions';
 import {
   disableTwoFactor, fetchTwoFactor, regenerateRecovery, type TwoFactorStatus,
@@ -25,10 +28,18 @@ import { IconAuto, IconCheck, IconCopy, IconShield } from '@/icons';
 import { absoluteTime, relativeTime } from '@/lib/format';
 import { describeUserAgent } from '@/lib/ua';
 import { adopt, currentPreferences } from '@/stores/session';
+import { pendingRecovery } from './recovery';
 import { matchesSettings } from './search';
 import TwoFactorWizard from './TwoFactorWizard.vue';
 
 const props = withDefaults(defineProps<{ query?: string }>(), { query: '' });
+
+// Once per change of the query or the language, not per group per render;
+// see AccountSection for why it stays a computed.
+const shown = computed(() => ({
+  twofactor: matchesSettings(props.query, 'twofactor'),
+  devices: matchesSettings(props.query, 'devices'),
+}));
 
 const status = ref<TwoFactorStatus | null>(null);
 const flash = ref('');
@@ -39,7 +50,15 @@ const wizard = ref(false);
 const action = ref<'' | 'disable' | 'recovery'>('');
 const code = ref('');
 const busy = ref(false);
-const fresh = ref<string[]>([]);
+// The codes a regeneration just returned, held in recovery.ts so that they
+// survive this section being unmounted. Cleared by Finish, after the reader has
+// said they are saved, or by turning two-step verification off, since the codes
+// are then of no use.
+const fresh = computed<string[]>(() => pendingRecovery.value?.codes ?? []);
+const savedCodes = computed({
+  get: (): boolean => pendingRecovery.value?.saved ?? false,
+  set: (saved: boolean) => { if (pendingRecovery.value) pendingRecovery.value.saved = saved; },
+});
 const copied = ref(false);
 
 /** Few enough left that running out is a real prospect. */
@@ -49,7 +68,7 @@ async function load(): Promise<void> {
   try {
     status.value = await fetchTwoFactor();
   } catch (failure) {
-    flash.value = failure instanceof ApiError ? failure.message : String(failure);
+    flash.value = apiErrorText(failure);
   }
 }
 
@@ -66,15 +85,19 @@ function open(next: 'disable' | 'recovery'): void {
   action.value = action.value === next ? '' : next;
   code.value = '';
   flash.value = '';
-  fresh.value = [];
+}
+
+function finishFresh(): void {
+  pendingRecovery.value = null;
+  action.value = '';
 }
 
 function refusal(failure: unknown): string {
-  if (!(failure instanceof ApiError)) return String(failure);
+  if (!(failure instanceof ApiError)) return apiErrorText(failure);
   switch (failure.code) {
     case 'two_factor_code': return t('twoFactorCodeWrong');
     case 'two_factor_mandatory': return t('twoFactorMandatoryNote');
-    default: return failure.message;
+    default: return apiErrorText(failure);
   }
 }
 
@@ -88,9 +111,12 @@ async function confirm(): Promise<void> {
       const { user } = await disableTwoFactor(code.value.trim());
       adopt(user, currentPreferences.value);
       notice.value = t('twoFactorTurnedOff');
+      // Codes from before this setup are of no use to a later one, and would
+      // show again when it is switched back on.
+      pendingRecovery.value = null;
     } else {
       const { recovery_codes: codes } = await regenerateRecovery(code.value.trim());
-      fresh.value = codes;
+      pendingRecovery.value = { codes, saved: false };
     }
     action.value = action.value === 'recovery' ? 'recovery' : '';
     code.value = '';
@@ -102,13 +128,24 @@ async function confirm(): Promise<void> {
   }
 }
 
+// The codes are copied as one block, and the confirmation says so for a moment.
+const COPY_FLASH_MS = 1500;
+const copiedLater = useLatestTimeout();
+
 function copyFresh(): void {
   void copyToClipboard(fresh.value.join('\n')).then((ok) => {
     if (!ok) return;
     copied.value = true;
-    window.setTimeout(() => { copied.value = false; }, 1500);
+    copiedLater(() => { copied.value = false; }, COPY_FLASH_MS);
   });
 }
+
+// Closing or reloading the tab while regenerated codes are on screen leaves
+// two-step verification on with codes nobody has seen, and the server keeps
+// only their digests, so they cannot be shown again. The browser is asked
+// before that happens. Leaving this page inside the app asks nothing: the codes
+// stay in memory (see recovery.ts), so coming back shows them again.
+useLeaveWarning(() => !!fresh.value.length && !savedCodes.value);
 
 // --- signed-in devices --------------------------------------------------------
 //
@@ -128,7 +165,7 @@ async function loadDevices(): Promise<void> {
     const { sessions } = await fetchSessions();
     devices.value = sessions;
   } catch (failure) {
-    devicesFlash.value = failure instanceof ApiError ? failure.message : String(failure);
+    devicesFlash.value = apiErrorText(failure);
   }
 }
 
@@ -142,7 +179,7 @@ async function signOutDevice(id: string): Promise<void> {
     await revokeSession(id);
     devices.value = (devices.value ?? []).filter((entry) => entry.id !== id);
   } catch (failure) {
-    devicesFlash.value = failure instanceof ApiError ? failure.message : String(failure);
+    devicesFlash.value = apiErrorText(failure);
   } finally {
     revokingID.value = '';
   }
@@ -157,7 +194,7 @@ async function signOutOthers(): Promise<void> {
     devices.value = (devices.value ?? []).filter((entry) => entry.current);
     devicesNotice.value = t('deviceSignOutOthersDone');
   } catch (failure) {
-    devicesFlash.value = failure instanceof ApiError ? failure.message : String(failure);
+    devicesFlash.value = apiErrorText(failure);
   } finally {
     revokingOthers.value = false;
   }
@@ -165,7 +202,7 @@ async function signOutOthers(): Promise<void> {
 </script>
 
 <template>
-  <div v-show="matchesSettings(props.query, 'twofactor')" class="oa-settings-panel">
+  <div v-show="shown.twofactor" class="oa-settings-panel">
     <h2 class="oa-admin-section-title">{{ t('secTwoFactor') }}</h2>
 
     <section v-if="status" class="oa-2fa-panel">
@@ -240,13 +277,17 @@ async function signOutOthers(): Promise<void> {
             <ol class="oa-2fa-codes">
               <li v-for="entry in fresh" :key="entry">{{ entry }}</li>
             </ol>
+            <label class="oa-checkbox-field">
+              <input v-model="savedCodes" type="checkbox">
+              <span>{{ t('twoFactorSavedConfirm') }}</span>
+            </label>
             <div class="oa-2fa-codes-actions">
               <button type="button" class="oa-btn" @click="copyFresh">
                 <IconCheck v-if="copied" :size="14" />
                 <IconCopy v-else :size="14" />
                 {{ copied ? t('copied') : t('copy') }}
               </button>
-              <button type="button" class="oa-btn primary" @click="fresh = []; action = ''">
+              <button type="button" class="oa-btn primary" :disabled="!savedCodes" @click="finishFresh">
                 {{ t('twoFactorFinish') }}
               </button>
             </div>
@@ -289,7 +330,7 @@ async function signOutOthers(): Promise<void> {
     <p v-else-if="flash" class="oa-drawer-flash visible" role="alert">{{ flash }}</p>
   </div>
 
-  <div v-show="matchesSettings(props.query, 'devices')" class="oa-settings-panel">
+  <div v-show="shown.devices" class="oa-settings-panel">
     <h2 class="oa-admin-section-title">{{ t('secDevices') }}</h2>
 
     <section class="oa-2fa-panel">

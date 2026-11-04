@@ -22,6 +22,9 @@ var badgeRE = regexp.MustCompile(`^[1-9][0-9]{4,14}$`)
 func init() {
 	user.DefineField(user.Field{
 		Key: badge, Unique: true,
+		// An owner is required; the test binary has no plugin manager, so a
+		// nil gate lets this one through.
+		Plugin: "test-badge",
 		Validate: func(v string) error {
 			if !badgeRE.MatchString(v) {
 				return errors.New("five to fifteen digits")

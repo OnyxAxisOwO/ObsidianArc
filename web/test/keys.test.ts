@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, ref, type App } from 'vue';
+import { nextTick } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
 import KeysPanel from '../src/views/KeysPanel.vue';
 import { ApiError, api } from '../src/api/client';
 import * as keysAPI from '../src/api/keys';
 import type { AvailableModel } from '../src/chat/useModels';
-import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import * as ccSwitch from '../src/lib/cc-switch';
+import { mountComponent, settle } from './helpers';
 
 const KEY: keysAPI.ApiKey = {
   id: 'key-1', name: 'My laptop', prefix: 'sk-test', disabled: false,
@@ -21,27 +21,18 @@ const MODEL: AvailableModel = {
   supports_image_gen: false, supports_chat_image_gen: false,
   context_window: 0, max_output_tokens: 0,
 };
-let app: App;
+let unmount: (() => void) | undefined;
 let host: HTMLElement;
 let panelHost: HTMLElement;
 
-async function settle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await nextTick();
-}
 
 async function mount(): Promise<void> {
+  // The keys panel is the route itself here rather than a screen beside a
+  // catch-all, so it gets a router of its own.
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: KeysPanel }] });
   await router.push('/');
   await router.isReady();
-  app = createApp({
-    setup() {
-      providePanelHost(ref(panelHost));
-      return () => h(KeysPanel);
-    },
-  });
-  app.use(router).mount(host);
-  await settle();
+  unmount = await mountComponent(KeysPanel, {}, { host, panels: panelHost, router });
 }
 
 async function create(): Promise<void> {
@@ -75,7 +66,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  app?.unmount();
+  unmount?.();
   host.remove();
   panelHost.remove();
   vi.restoreAllMocks();
@@ -192,7 +183,7 @@ describe('API key CC Switch import', () => {
     await choose(0, t('keyCCSwitchCodex'));
     await choose(1, 'Second model');
     panelHost.querySelector<HTMLButtonElement>('.oa-key-import-btn')!.click();
-    expect(ccSwitch.openCCSwitch).toHaveBeenCalledWith(expect.objectContaining({ app: 'c' + 'odex', model: 'model-2' }));
+    expect(ccSwitch.openCCSwitch).toHaveBeenCalledWith(expect.objectContaining({ app: 'codex', model: 'model-2' }));
   });
 
   it.each([['model_ids', ['model-2']], ['model_id', 'model-2']] as const)(
@@ -251,9 +242,40 @@ describe('API key CC Switch import', () => {
   it('does not retain the token after unmounting and remounting the panel', async () => {
     await mount();
     await create();
-    app.unmount();
+    unmount!();
     await mount();
     expect(panelHost.querySelector('.oa-key-import')).toBeNull();
     expect(panelHost.querySelector('.oa-key-token-input')).toBeNull();
+  });
+});
+
+describe('the key panel keeps to its own data', () => {
+  it('reads the model catalogue once when it opens, not again after each change', async () => {
+    const get = vi.spyOn(api, 'get');
+    await mount();
+    await create();
+
+    expect(get.mock.calls.filter((call: unknown[]) => call[0] === '/api/models')).toHaveLength(1);
+    expect(keysAPI.listKeys).toHaveBeenCalledTimes(2);
+  });
+
+  it('asks for the model catalogue again on the next refresh after it failed to load', async () => {
+    const get = vi.spyOn(api, 'get').mockRejectedValueOnce(new Error('network down'));
+    await mount();
+    await create();
+
+    expect(get.mock.calls.filter((call: unknown[]) => call[0] === '/api/models')).toHaveLength(2);
+  });
+
+  it('clears a revoke that is still armed when the panel is left', async () => {
+    await mount();
+    const timers = vi.spyOn(window, 'setTimeout');
+    panelHost.querySelector<HTMLButtonElement>('button[aria-label="Revoke"]')!.click();
+    const armed = timers.mock.results.at(-1)!.value;
+    const clear = vi.spyOn(window, 'clearTimeout');
+
+    unmount!();
+
+    expect(clear).toHaveBeenCalledWith(armed);
   });
 });

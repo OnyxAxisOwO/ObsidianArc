@@ -1,0 +1,135 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createApp, h, shallowRef, type App } from 'vue';
+import { createMemoryHistory, createRouter, type Router } from 'vue-router';
+import AdminLogs from '../src/views/admin/AdminLogs.vue';
+import { adminApi, adminQueryParams, type LogEntry, type LogFacets } from '../src/admin/api';
+import { ApiError } from '../src/api/client';
+import { providePanelHost } from '../src/composables/usePanelHost';
+import { changeLanguage, t } from '../src/composables/useI18n';
+import { provideAdminView } from '../src/views/admin/adminView';
+import { settle } from './helpers';
+import { queriesSent } from './admin-query';
+
+let app: App | undefined;
+let host: HTMLElement;
+let panels: HTMLElement;
+let actions: HTMLElement;
+
+const noFacets: LogFacets = {
+  users: [], models: [], error_codes: [], statuses: [], total: 0, dropped: 0, oldest: 0,
+} as unknown as LogFacets;
+
+beforeEach(async () => {
+  await changeLanguage('en');
+  host = document.createElement('div');
+  panels = document.createElement('div');
+  actions = document.createElement('div');
+  document.body.append(host, panels, actions);
+  vi.spyOn(adminApi, 'logFacets').mockResolvedValue(noFacets);
+  vi.spyOn(adminApi, 'logs').mockResolvedValue({ entries: [], total: 0, limit: 20, offset: 0 });
+});
+
+afterEach(() => {
+  app?.unmount();
+  app = undefined;
+  vi.restoreAllMocks();
+});
+
+
+/** Opens the page on an address, the way the model panel's error-history link does. */
+async function mountAt(address: string): Promise<Router> {
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [{ path: '/:pathMatch(.*)*', component: { render: () => null } }],
+  });
+  await router.push(address);
+  await router.isReady();
+  app = createApp({ setup() {
+    providePanelHost(shallowRef(panels));
+    provideAdminView({ actionsHost: actions, setTitle: () => {}, reload: () => {}, params: [] });
+    return () => h(AdminLogs);
+  } });
+  app.use(router);
+  app.mount(host);
+  await settle();
+  return router;
+}
+
+describe('AdminLogs, clearing the filters', () => {
+  // Clear used to drop the window from the address, so the route watch read
+  // it back as the 24-hour default. The window is a choice, not a filter, so
+  // Clear must leave it where the operator put it.
+  it('keeps the chosen window when the filters are cleared', async () => {
+    await mountAt('/admin/logs?model_id=m1&window=168');
+    expect(queriesSent(vi.mocked(adminApi.logs)).at(-1)).toContain('model_id=m1');
+
+    const clear = [...host.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent?.trim() === t('logClear'))!;
+    clear.click();
+    await settle();
+
+    const last = adminQueryParams(vi.mocked(adminApi.logs).mock.lastCall![0]);
+    expect(last.has('model_id')).toBe(false);
+    const since = Number(last.get('since'));
+    const weekAgo = Date.now() - 168 * 60 * 60 * 1000;
+    expect(Math.abs(since - weekAgo)).toBeLessThan(60_000);
+  });
+});
+
+describe('AdminLogs, the facets of the window on screen', () => {
+  // Each window change asks for its own facets, and the two answers can come
+  // back in either order. The answer for an earlier window that lands last
+  // must not replace the one the operator is looking at.
+  it('drops a facets answer that lands after a newer window was asked for', async () => {
+    const waiting: Array<(facets: LogFacets) => void> = [];
+    vi.mocked(adminApi.logFacets).mockImplementation(() => new Promise<LogFacets>((resolve) => {
+      waiting.push(resolve);
+    }));
+    const router = await mountAt('/admin/logs?window=24');
+    waiting.shift()!({ ...noFacets, total: 1 });
+    await settle();
+
+    await router.push('/admin/logs?window=1');
+    await router.push('/admin/logs?window=720');
+    await settle();
+    expect(waiting).toHaveLength(2);
+
+    const [older, newer] = waiting;
+    newer!({ ...noFacets, total: 300 });
+    await settle();
+    older!({ ...noFacets, total: 100 });
+    await settle();
+
+    expect(host.textContent).toContain(t('logHolding', { count: 300 }));
+    expect(host.textContent).not.toContain(t('logHolding', { count: 100 }));
+  });
+});
+
+describe('AdminLogs, the facets and the list', () => {
+  const row = {
+    id: 'r1', at: Date.now(), method: 'POST', path: '/api/chat', status: 200, duration_ms: 12,
+    username: 'alice', model_name: 'm', error_code: '', bytes: 0, channel: 'web', ip: '', user_agent: '',
+    request_id: '', outcome: 'ok',
+  } as unknown as LogEntry;
+
+  // The list does not read the facets, so it must not wait for them: the rows
+  // were held back by a whole round trip for nothing.
+  it('asks for the list while the facets are still on their way', async () => {
+    vi.mocked(adminApi.logFacets).mockImplementation(() => new Promise<LogFacets>(() => {}));
+    await mountAt('/admin/logs?window=24');
+
+    expect(adminApi.logs).toHaveBeenCalled();
+  });
+
+  // A failed facets answer used to replace the whole page, the rows with it.
+  // The filter controls are the only part that needs the facets.
+  it('keeps the rows on screen when the facets fail, and shows the failure where the filters are', async () => {
+    vi.mocked(adminApi.logFacets).mockRejectedValue(new ApiError(500, 'internal', 'facets went away'));
+    vi.mocked(adminApi.logs).mockResolvedValue({ entries: [row], total: 1, limit: 50, offset: 0 });
+    await mountAt('/admin/logs?window=24');
+
+    expect(host.querySelector('.oa-log-row')).not.toBeNull();
+    expect(host.querySelector('#logsFilter')).toBeNull();
+    expect(host.textContent).toContain(t('couldNotLoad'));
+  });
+});

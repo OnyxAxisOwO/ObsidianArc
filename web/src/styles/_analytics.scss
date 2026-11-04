@@ -1,10 +1,15 @@
+@use 'mixins' as *;
 /* The usage report and the chart vocabulary it shares with the overview:
-   cards, segmented switches, figures with a direction, a curve over a grid,
-   a week folded onto a clock, a table of who uses what, ranked boards.
+   cards, figures with a direction, a curve over a grid, a week folded onto
+   a clock, a table of who uses what, ranked boards. The segmented switch
+   began here too; the leaderboard draws it, so it is _segment.scss now and
+   loads with every first paint, where this file loads with the backoffice.
 
    Nothing here brings a colour of its own. Every fill is the accent mixed
    into a surface, so a chart is drawn in whatever colour the reader picked
    and reads the same way on a light scheme, a dark one and a wallpaper. */
+
+@use 'mixins';
 
 /* --- small shared pieces --------------------------------------------------- */
 
@@ -20,54 +25,14 @@
 }
 
 /* The line above a card's title: what the card is about, in the ordinary
-   secondary voice rather than capitals, which Chinese does not have. */
-.oa-kicker {
+   secondary voice rather than capitals, which Chinese does not have. The
+   overview's kicker is the same line. */
+.oa-kicker,
+.oa-dashboard-kicker {
   display: block;
   color: var(--ai-text-secondary);
   font-size: 11px;
   line-height: 1.5;
-}
-
-/* A few mutually exclusive choices as one pill. The track is the field fill
-   so it reads both on a card and on the page behind one; the height matches
-   a button's, so a switch and a button beside it share one line. */
-.oa-segment {
-  display: inline-flex;
-  flex-shrink: 0;
-  gap: 2px;
-  padding: 3px;
-  border-radius: 999px;
-  background: var(--ai-field-bg);
-}
-
-.oa-segment button {
-  height: 28px;
-  padding: 0 12px;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--ai-text-secondary);
-  font: inherit;
-  font-size: 11.5px;
-  font-weight: 500;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: background-color 0.15s ease, color 0.15s ease;
-}
-
-.oa-segment button:hover:not([aria-pressed='true']) {
-  background: var(--ai-state-hover);
-  color: var(--ai-text);
-}
-
-.oa-segment button[aria-pressed='true'] {
-  background: var(--ai-primary);
-  color: var(--ai-primary-text);
-}
-
-.oa-segment button:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
 }
 
 /* A control that is only words: "clear filters". It has the height of the
@@ -92,8 +57,7 @@
 }
 
 .oa-text-btn:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+  @include mixins.focus-ring;
 }
 
 /* Quick picks under a field — "a week", "a month" — which used to be buttons
@@ -125,15 +89,7 @@
 }
 
 .oa-chip-btn:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
-}
-
-/* A way out of a panel to the section that says more — "open in usage". It
-   stays the width of its words: a panel body stretches its children, and a
-   full-width pill reads as the panel's main action, which this is not. */
-.oa-panel-link {
-  align-self: flex-start;
+  @include mixins.focus-ring;
 }
 
 /* --- cards ------------------------------------------------------------------ */
@@ -159,7 +115,8 @@
   min-width: 0;
 }
 
-.oa-viz-head h2 {
+.oa-viz-head h2,
+.oa-dashboard-section-head h2 {
   margin: 3px 0 0;
   font-size: 15px;
   font-weight: 650;
@@ -190,31 +147,16 @@
 }
 
 .oa-viz-foot {
-  display: flex;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 18px;
-  padding-top: 14px;
-  border-top: 1px solid var(--ai-border);
-  color: var(--ai-text-secondary);
-  font-size: 11px;
+  @include chart-foot(8px);
 }
 
-.oa-viz-foot > span:first-child {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.oa-viz-foot .oa-dashboard-dot {
-  color: var(--ai-primary);
-}
-
+/* As tall as the curve it stands in for — the usage report's 190px plot,
+   its 10px row gap and its 14px axis — so a period with no requests does
+   not shorten the card under the reader. */
 .oa-viz-empty {
   display: grid;
   place-items: center;
-  min-height: 180px;
+  min-height: 214px;
   margin: 0;
   color: var(--ai-text-secondary);
   font-size: 12px;
@@ -281,7 +223,11 @@
   white-space: nowrap;
 }
 
-.oa-kpi-foot {
+/* Wraps rather than squeezes: the arrow and the note beside it are two
+   things, and a narrow card should put the note under the arrow, not cut it.
+   The overview's figure cards end the same way. */
+.oa-kpi-foot,
+.oa-dashboard-metric-note {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -370,8 +316,7 @@
 }
 
 .oa-plot-area:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+  @include mixins.focus-ring;
 }
 
 .oa-plot-area svg {
@@ -559,8 +504,7 @@
 }
 
 .oa-matrix-wrap:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+  @include mixins.focus-ring;
   border-radius: 12px;
 }
 
@@ -579,7 +523,6 @@
 
 .oa-matrix thead th {
   min-width: 78px;
-  max-width: 128px;
   padding: 0 0 4px;
   vertical-align: bottom;
 }
@@ -604,9 +547,13 @@
   transition: background-color 0.15s ease;
 }
 
+/* The cap belongs here rather than on the header cell: browsers ignore max-width
+   on a table cell, and without a cap the nowrap name sets the column's width,
+   so the ellipsis below never has anything to cut. */
 .oa-matrix-head {
   flex-direction: column;
   gap: 1px;
+  max-width: 128px;
   padding: 5px 7px;
   border-radius: 9px;
 }
@@ -614,9 +561,7 @@
 .oa-matrix-head span,
 .oa-matrix-head small,
 .oa-matrix-user > span:last-child {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  @include ellipsis;
 }
 
 .oa-matrix-head span {
@@ -655,8 +600,7 @@
 
 .oa-matrix-head:focus-visible,
 .oa-matrix-user:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+  @include mixins.focus-ring;
 }
 
 .oa-matrix tbody th {
@@ -711,7 +655,18 @@
   list-style: none;
 }
 
-.oa-board-row {
+/* The leaderboards reuse the row, rank, main, name, value and track class names,
+   and _surfaces.scss (which loads first) defines their rows. Every rule that
+   shares a name with it is scoped under .oa-board-frame, which the usage report
+   always wraps, so these win on their own specificity rather than on file
+   order. The usage report's boards keep the 64px rows, transparent fill, 0 10px
+   padding and surface-container track they had at HEAD. The leaderboard panel
+   and the admin preview sit outside the frame and take _surfaces.scss's rows
+   instead: no fixed height, a surface-container-low fill and 9px 12px padding
+   where HEAD gave them 64px transparent rows with 0 10px padding, and a
+   field-background track with a full-strength fill, where HEAD gave a
+   surface-container track with the fill dimmed to 70%. */
+.oa-board-frame .oa-board-row {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -727,21 +682,24 @@
   text-align: left;
 }
 
-button.oa-board-row {
+.oa-board-frame button.oa-board-row {
   cursor: pointer;
   transition: background-color 0.15s ease;
 }
 
-button.oa-board-row:hover {
+/* The allowance list below is the same kind of clickable row, so it takes
+   its hover and focus from these two rules instead of a copy of them. */
+.oa-board-frame button.oa-board-row:hover,
+.oa-allow-row:hover {
   background: var(--ai-state-hover);
 }
 
-button.oa-board-row:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+.oa-board-frame button.oa-board-row:focus-visible,
+.oa-allow-row:focus-visible {
+  @include mixins.focus-ring;
 }
 
-.oa-board-rank {
+.oa-board-frame .oa-board-rank {
   width: 18px;
   flex-shrink: 0;
   color: var(--ai-text-secondary);
@@ -768,13 +726,16 @@ button.oa-board-row:focus-visible {
   user-select: none;
 }
 
-.oa-board-user .oa-board-mark {
+/* Every allowance row is a person, so its mark is the user board's round
+   badge without the list having to say kind=user. */
+.oa-board-user .oa-board-mark,
+.oa-allow-mark {
   border-radius: 50%;
   background: var(--ai-badge-bg);
   color: var(--ai-badge-text);
 }
 
-.oa-board-main {
+.oa-board-frame .oa-board-main {
   display: flex;
   flex: 1;
   flex-direction: column;
@@ -790,19 +751,21 @@ button.oa-board-row:focus-visible {
   min-width: 0;
 }
 
-.oa-board-name,
-.oa-board-notes {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.oa-board-frame .oa-board-name,
+.oa-board-frame .oa-board-notes {
+  @include ellipsis;
 }
 
-.oa-board-name {
+/* The base rule makes the name a flex container, so a plain-text name becomes
+   an anonymous flex item that will not shrink and ellipsis has no line box to
+   apply to. Block lets the ellipsis draw. */
+.oa-board-frame .oa-board-name {
+  display: block;
   font-size: 12.5px;
   font-weight: 600;
 }
 
-.oa-board-value {
+.oa-board-frame .oa-board-value {
   flex-shrink: 0;
   font-size: 12.5px;
   font-weight: 600;
@@ -820,7 +783,7 @@ button.oa-board-row:focus-visible {
   font-variant-numeric: tabular-nums;
 }
 
-.oa-board-track {
+.oa-board-frame .oa-board-track {
   display: block;
   height: 3px;
   overflow: hidden;
@@ -828,7 +791,12 @@ button.oa-board-row:focus-visible {
   background: var(--ai-surface-container);
 }
 
-.oa-board-track > span {
+/* The overview's ranking draws the same share-of-total bar as this report, so
+   the fill is one rule for both; only the track's height is each one's own
+   (4px on the overview, 3px here). The leaderboard's bar is a share of the
+   leader, not of the total, and keeps its own fill in _surfaces.scss. */
+.oa-dashboard-rank-track > span,
+.oa-board-frame .oa-board-track > span {
   display: block;
   height: 100%;
   border-radius: inherit;
@@ -836,6 +804,7 @@ button.oa-board-row:focus-visible {
   opacity: 0.7;
 }
 
+.oa-dashboard-rank-list li:first-child .oa-dashboard-rank-track > span,
 .oa-board li:first-child .oa-board-track > span {
   opacity: 1;
 }
@@ -864,11 +833,7 @@ button.oa-board-row:focus-visible {
   scrollbar-width: none;
   -ms-overflow-style: none;
 
-  &::-webkit-scrollbar {
-    display: none;
-    width: 0;
-    height: 0;
-  }
+  @include hidden-scrollbar;
 
   --fade-top: 0px;
   --fade-bottom: 0px;
@@ -885,6 +850,18 @@ button.oa-board-row:focus-visible {
   &.fade-bottom {
     mask-image: linear-gradient(to bottom, transparent, #000 var(--fade-top), #000 calc(100% - var(--fade-bottom)), transparent);
   }
+}
+
+/* A board takes focus only when its rows cannot (see UsageBoard). The ring sits
+   on the wrapper because the scroller's own fade mask would hide an outset
+   shadow drawn past its edge. */
+.oa-board-scroll:focus-visible {
+  outline: none;
+}
+
+.oa-board-wrap:has(> .oa-board-scroll:focus-visible) {
+  border-radius: 12px;
+  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
 }
 
 /* One account per row: who, then its three windows side by side. The height is
@@ -915,21 +892,6 @@ button.oa-board-row:focus-visible {
   text-align: left;
   cursor: pointer;
   transition: background-color 0.15s ease;
-
-  &:hover {
-    background: var(--ai-state-hover);
-  }
-
-  &:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 3px var(--ai-focus-shadow);
-  }
-}
-
-.oa-allow-mark {
-  border-radius: 50%;
-  background: var(--ai-badge-bg);
-  color: var(--ai-badge-text);
 }
 
 .oa-allow-who {
@@ -939,14 +901,6 @@ button.oa-board-row:focus-visible {
   min-width: 0;
 }
 
-.oa-allow-sub {
-  overflow: hidden;
-  color: var(--ai-text-secondary);
-  font-size: 10.5px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .oa-allow-windows {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -954,12 +908,53 @@ button.oa-board-row:focus-visible {
   min-width: 0;
 }
 
+/* Narrow — a phone, or the list beside an open panel. The three windows no
+   longer fit beside the name, and squeezed into what was left they wrapped a
+   character at a time and spilled out of their row into the next. Under the
+   name instead, each with its label above its figure, in a row tall enough
+   to hold them. Sized by the card rather than the viewport: the panel narrows
+   it on a desktop too. */
+#secAllowances {
+  container: allow / inline-size;
+}
+
+/* Declared before the narrow-width block below: both rules have the same
+   specificity, so the later one wins, and the narrow gap has to be the later. */
 .oa-allow-none {
   display: flex;
   justify-content: space-between;
   gap: 8px;
   color: var(--ai-text-secondary);
   font-size: 11.5px;
+}
+
+@container allow (max-width: 560px) {
+  .oa-allow-frame {
+    --board-row: 128px;
+  }
+
+  .oa-allow-row {
+    grid-template-columns: 32px minmax(0, 1fr);
+    grid-template-rows: auto auto;
+    align-content: center;
+    row-gap: 10px;
+  }
+
+  .oa-allow-windows {
+    grid-column: 1 / -1;
+    gap: 12px;
+  }
+
+  .oa-allow-windows .oa-usage-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1px;
+  }
+
+  .oa-allow-none {
+    flex-direction: column;
+    gap: 1px;
+  }
 }
 
 .oa-board-wrap .oa-overlay-track {
@@ -975,10 +970,10 @@ button.oa-board-row:focus-visible {
   text-align: center;
 }
 
+/* Its colour is the shared empty line's, in _chat.scss. */
 .oa-board-empty {
   margin: 0;
   padding: 40px 8px;
-  color: var(--ai-text-secondary);
   font-size: 12px;
   text-align: center;
 }
@@ -986,11 +981,7 @@ button.oa-board-row:focus-visible {
 /* --- the report page ------------------------------------------------------------------- */
 
 .oa-report {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  max-width: 1480px;
-  margin: 0 auto;
+  @include page-column;
   container: report / inline-size;
 }
 
@@ -1027,6 +1018,8 @@ button.oa-board-row:focus-visible {
 }
 
 .oa-live-dot {
+  --dot-rest: 1;
+  --dot-peak: 0.3;
   width: 7px;
   height: 7px;
   border-radius: 50%;
@@ -1035,13 +1028,11 @@ button.oa-board-row:focus-visible {
 
 @media (prefers-reduced-motion: no-preference) {
   .oa-live-dot {
-    animation: oaLivePulse 2s ease-in-out infinite;
+    animation: oaDotPulse 2s ease-in-out infinite;
   }
 }
 
-@keyframes oaLivePulse {
-  50% { opacity: 0.3; }
-}
+@include dot-pulse-keyframes;
 
 .oa-report-focus {
   display: flex;
@@ -1117,7 +1108,7 @@ button.oa-board-row:focus-visible {
 .oa-report-loading {
   display: grid;
   gap: 16px;
-  max-width: 1480px;
+  max-width: $page-width;
   margin: 0 auto;
 }
 

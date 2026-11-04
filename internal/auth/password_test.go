@@ -153,3 +153,61 @@ func TestPasswordLengthRules(t *testing.T) {
 		t.Errorf("a minimum-length password was rejected: %v", err)
 	}
 }
+
+// The minimum and maximum count characters, as the messages say. A three-character
+// Chinese password is nine bytes and must fail the eight-character minimum, and a
+// ninety-character one is well inside the maximum.
+func TestPasswordLengthIsCountedInCharacters(t *testing.T) {
+	if err := ValidatePassword("中文密"); err == nil {
+		t.Error("a three-character password passed the eight-character minimum")
+	}
+	if err := ValidatePassword(strings.Repeat("中", MinPasswordChars)); err != nil {
+		t.Errorf("an eight-character password was rejected: %v", err)
+	}
+	if err := ValidatePassword(strings.Repeat("中", 90)); err != nil {
+		t.Errorf("a ninety-character password was rejected: %v", err)
+	}
+	if err := ValidatePassword(strings.Repeat("中", MaxPasswordChars)); err != nil {
+		t.Errorf("a %d-character password was rejected: %v", MaxPasswordChars, err)
+	}
+	if err := ValidatePassword(strings.Repeat("中", MaxPasswordChars+1)); err == nil {
+		t.Error("a password one character over the maximum was accepted")
+	}
+}
+
+// A password at the character maximum is more than 256 bytes when it is CJK.
+// Verify once counted bytes, so an account that Hash and ValidatePassword had
+// accepted could never sign in again. The byte guard below makes the test
+// discriminate: a byte-counting Verify refuses this password, so only the
+// character rule lets it through.
+func TestVerifyAcceptsAMaximumLengthPasswordThatIsLongerInBytes(t *testing.T) {
+	hasher := NewHasher(testParams())
+	ctx := context.Background()
+	password := strings.Repeat("中", MaxPasswordChars)
+	if len(password) <= MaxPasswordChars {
+		t.Fatalf("test password is %d bytes; it must exceed the byte cap to test anything", len(password))
+	}
+	encoded, err := hasher.Hash(ctx, password)
+	if err != nil {
+		t.Fatalf("Hash: %v", err)
+	}
+	ok, _, err := hasher.Verify(ctx, encoded, password)
+	if !ok || err != nil {
+		t.Errorf("Verify of a %d-character password: ok=%v err=%v, want true and nil", MaxPasswordChars, ok, err)
+	}
+}
+
+// Verify applies the same upper bound before any hashing, so an over-long guess
+// is refused without spending Argon2 work on it.
+func TestVerifyRefusesAnOverlongPasswordByCharacters(t *testing.T) {
+	hasher := NewHasher(testParams())
+	ctx := context.Background()
+	encoded, err := hasher.Hash(ctx, strings.Repeat("中", MinPasswordChars))
+	if err != nil {
+		t.Fatalf("Hash: %v", err)
+	}
+	ok, _, err := hasher.Verify(ctx, encoded, strings.Repeat("中", MaxPasswordChars+1))
+	if ok || err != nil {
+		t.Errorf("Verify of an over-long password: ok=%v err=%v, want false and nil", ok, err)
+	}
+}

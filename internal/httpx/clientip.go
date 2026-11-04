@@ -1,11 +1,15 @@
 package httpx
 
 import (
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
 	"strings"
+	"sync"
+	"sync/atomic"
 )
 
 // Resolving who is calling.
@@ -22,9 +26,20 @@ import (
 // until it reaches one you do not. That entry is the earliest address in the
 // chain that a proxy of yours actually observed.
 
+// warnUnclaimedCloudflare fires once per process: every request through
+// that proxy would otherwise repeat it, and one line is all an operator
+// needs to notice a topology they have not told the server about.
+var warnUnclaimedCloudflare sync.Once
+
 // ProxyTrust is the set of peers whose forwarded headers are believed.
 type ProxyTrust struct {
-	prefixes []netip.Prefix
+	prefixes   []netip.Prefix
+	cloudflare bool
+	// A pointer, because ProxyTrust is copied by value into every caller: the
+	// flag has to be one thing across all of them, or the backoffice would be
+	// told about a header the limiter never saw. Nil where no proxy is
+	// trusted, and nothing is recorded there.
+	cfUnclaimed *atomic.Bool
 }
 
 // The networks a reverse proxy sits on in almost every deployment: the same
@@ -75,11 +90,29 @@ func NewProxyTrust(enabled bool, cidrs []string) (ProxyTrust, error) {
 		}
 		prefixes = append(prefixes, netip.PrefixFrom(address, address.BitLen()))
 	}
-	return ProxyTrust{prefixes: prefixes}, nil
+	return ProxyTrust{prefixes: prefixes, cfUnclaimed: new(atomic.Bool)}, nil
 }
 
 // Enabled reports whether any forwarded header will ever be believed.
 func (p ProxyTrust) Enabled() bool { return len(p.prefixes) > 0 }
+
+// WithCloudflare marks the operator's claim that Cloudflare sits in front
+// of this deployment. CF-Connecting-IP is one any client can put on a
+// wire: Cloudflare overwrites it on its own edge, but a plain Caddy or
+// nginx passes a caller-supplied one straight through. Only the operator
+// knows which world this is, so only they can switch it on.
+func (p ProxyTrust) WithCloudflare() ProxyTrust {
+	p.cloudflare = true
+	return p
+}
+
+// CloudflareUnclaimed reports whether a trusted proxy has forwarded a
+// parseable CF-Connecting-IP since this process started, without the operator
+// having claimed Cloudflare. The backoffice shows it as a warning: requests
+// through that proxy are keyed on the forwarding chain, not on the visitor.
+func (p ProxyTrust) CloudflareUnclaimed() bool {
+	return p.cfUnclaimed != nil && p.cfUnclaimed.Load()
+}
 
 func (p ProxyTrust) trusts(address netip.Addr) bool {
 	if !address.IsValid() {
@@ -105,12 +138,31 @@ func ClientIP(r *http.Request, trust ProxyTrust) string {
 		return addrString(peer, r.RemoteAddr)
 	}
 
-	// Cloudflare sets CF-Connecting-IP to the visitor's authentic address.
-	// When arriving through a trusted proxy (such as Caddy or a local reverse proxy),
-	// this header holds the actual client address that Cloudflare observed.
+	// CF-Connecting-IP has no chain behind it, only a bare value, so the
+	// walk's discipline cannot vet it the way it vets X-Forwarded-For.
+	// Believing it rests entirely on the operator's word that Cloudflare is
+	// the outermost hop; without that word, a caller behind any other proxy
+	// names whatever address they like and every limit keyed on it follows.
 	if cf := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cf != "" {
 		if address, err := netip.ParseAddr(stripPort(cf)); err == nil {
-			return address.Unmap().String()
+			if trust.cloudflare {
+				return address.Unmap().String()
+			}
+			// The peer is trusted and the header parses, yet no claim was
+			// made: either this deployment sits behind Cloudflare and the
+			// operator has not said so — in which case every address-keyed
+			// limit is about to key on the forwarding chain instead — or a
+			// client is sending the header for noise. Both are worth a line.
+			// The flag outlives the line: the Once prints one warning per
+			// process, and the backoffice has to keep saying so until the
+			// operator acts on it.
+			if trust.cfUnclaimed != nil {
+				trust.cfUnclaimed.Store(true)
+			}
+			warnUnclaimedCloudflare.Do(func() {
+				slog.Warn("a trusted proxy forwarded CF-Connecting-IP while OBSIDIAN_TRUST_CLOUDFLARE is off; " +
+					"claim Cloudflare if this deployment sits behind it, or the address walk will key on the chain")
+			})
 		}
 	}
 
@@ -133,7 +185,9 @@ func ClientIP(r *http.Request, trust ProxyTrust) string {
 		if err != nil {
 			// An unparseable entry is a forged or broken chain. Everything to
 			// its left is unusable, so stop here rather than reading past it.
-			break
+			// X-Real-Ip is no way out either: it is read only when every hop
+			// was a trusted proxy, and this chain is not.
+			return addrString(peer, r.RemoteAddr)
 		}
 		if !trust.trusts(candidate) {
 			return candidate.Unmap().String()
@@ -176,6 +230,77 @@ func ClientScheme(r *http.Request, trust ProxyTrust) string {
 		return "https"
 	}
 	return "http"
+}
+
+// PlainHTTPRedirect answers a page load that Cloudflare reports as plain http
+// with a redirect to the operator's public address, which is https.
+//
+// Only Cloudflare's own account of the visitor's scheme is believed, and only
+// under the operator's claim. X-Forwarded-Proto is not read here. Behind
+// Cloudflare's Flexible mode the leg from Cloudflare to this server is http for
+// every visitor, so that header says http for a visitor who is on https too,
+// and a redirect keyed on it would send that visitor round forever. The
+// deployment notes describe the same for any proxy whose own upstream leg is in
+// the clear.
+//
+// The target is the configured public address rather than the request's host,
+// because a tunnel can rewrite Host and send the visitor to a name that is not
+// this site. With no https address configured there is nowhere correct to send
+// anyone, so the request goes on unchanged, as it did before this existed.
+//
+// Only page loads are redirected. A client that does not follow redirects
+// would read a 308 under /api/ or /v1/ as a failure, and the health probe is
+// one of those paths.
+//
+// The visitor's first request has already travelled in the clear by the time
+// this answers. What the redirect buys is every request after it.
+func PlainHTTPRedirect(trust ProxyTrust, publicURL func() string) Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !pageLoad(r) || !cloudflareReportsPlainHTTP(r, trust) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			base := strings.TrimRight(strings.TrimSpace(publicURL()), "/")
+			if !strings.HasPrefix(strings.ToLower(base), "https://") {
+				next.ServeHTTP(w, r)
+				return
+			}
+			// A permanent redirect is one browsers may remember indefinitely. Were
+			// this server later to answer plain http again, a remembered 308 would
+			// keep sending those visitors to https.
+			w.Header().Set("Cache-Control", "no-store")
+			http.Redirect(w, r, base+r.URL.RequestURI(), http.StatusPermanentRedirect)
+		})
+	}
+}
+
+// pageLoad is what PlainHTTPRedirect applies to: a read of something that is
+// not an API. A write is never redirected. Its body has already gone in the
+// clear, and the client would only have to send it again.
+func pageLoad(r *http.Request) bool {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	return !isAPIPath(r.URL.Path)
+}
+
+// cloudflareReportsPlainHTTP reports whether a request from a trusted peer
+// carries Cloudflare's account of the visitor's scheme and that account is
+// http. The claim is required for the same reason it is for CF-Connecting-IP:
+// nothing a request can prove by arriving from a proxy shows that Cloudflare is
+// the hop in front of it.
+func cloudflareReportsPlainHTTP(r *http.Request, trust ProxyTrust) bool {
+	if !trust.cloudflare || !trust.trusts(peerAddr(r)) {
+		return false
+	}
+	var visitor struct {
+		Scheme string `json:"scheme"`
+	}
+	if err := json.Unmarshal([]byte(r.Header.Get("CF-Visitor")), &visitor); err != nil {
+		return false
+	}
+	return strings.EqualFold(visitor.Scheme, "http")
 }
 
 // PublicOrigin is the address a browser reaches this instance at, as a

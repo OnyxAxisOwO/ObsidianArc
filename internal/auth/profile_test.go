@@ -52,7 +52,7 @@ func TestAnAddressChangedInTheProfileIsHeldToTheAllowlist(t *testing.T) {
 
 	_, err = f.auth.UpdateProfile(ctx, account.ID, user.ProfileUpdate{
 		Email: ptr("member@elsewhere.test"),
-	})
+	}, "a-good-password")
 	var domain *EmailDomainError
 	if !errors.As(err, &domain) {
 		t.Fatalf("err = %v, want the domain refusal", err)
@@ -86,7 +86,7 @@ func TestAnAddressThatDidNotMoveIsNotRecheckedAgainstTheAllowlist(t *testing.T) 
 
 	updated, err := f.auth.UpdateProfile(ctx, account.ID, user.ProfileUpdate{
 		Nickname: ptr("Founder"), Email: ptr("founder@old.test"),
-	})
+	}, "a-good-password")
 	if err != nil {
 		t.Fatalf("resubmitting an unchanged address: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestChangingAnAddressWithdrawsItsConfirmation(t *testing.T) {
 
 	updated, err := f.auth.UpdateProfile(ctx, account.ID, user.ProfileUpdate{
 		Email: ptr("someone-else@example.com"),
-	})
+	}, "a-good-password")
 	if err != nil {
 		t.Fatalf("change address: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestALinkDoesNotSurviveTheAddressItWasIssuedFor(t *testing.T) {
 
 	if _, err := f.auth.UpdateProfile(ctx, account.ID, user.ProfileUpdate{
 		Email: ptr("second@example.com"),
-	}); err != nil {
+	}, "a-good-password"); err != nil {
 		t.Fatalf("change address: %v", err)
 	}
 
@@ -253,7 +253,7 @@ func TestClearingARequiredFieldIsHeldToTheRegistrationRequirement(t *testing.T) 
 
 	if _, err := f.auth.UpdateProfile(ctx, account.ID, user.ProfileUpdate{
 		Fields: badgeOf(""),
-	}); !errors.Is(err, user.ErrFieldRequired) {
+	}, "a-good-password"); !errors.Is(err, user.ErrFieldRequired) {
 		t.Fatalf("err = %v, want user.ErrFieldRequired", err)
 	}
 }

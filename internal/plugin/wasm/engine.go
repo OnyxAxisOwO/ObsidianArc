@@ -43,6 +43,7 @@ import (
 	"io"
 	"log/slog"
 	"runtime/debug"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -69,16 +70,37 @@ type Limits struct {
 	// seconds a 5 MB module takes an ordinary server core. Empty keeps none.
 	// Nothing in it is anything but a cache: it can be deleted at any time.
 	CacheDir string
+	// How many calls may be inside backends at once, across the whole engine.
+	// Each is a fresh instance with a memory ceiling of its own, and a public
+	// route or a sign-up guard is reachable by anyone, so without a bound the
+	// number of instances is whatever a flood of requests makes it. A call that
+	// finds the engine full fails at once with ErrBusy rather than queueing:
+	// a queue is the same flood, held in memory. Negative means no bound.
+	MaxConcurrent int
 }
 
-// DefaultLimits are 64 MiB, 15 seconds, 8 MiB, and three minutes of idleness.
+// DefaultLimits are 64 MiB, 15 seconds, 8 MiB, three minutes of idleness and
+// 32 calls at a time.
 func DefaultLimits() Limits {
-	return Limits{MemoryPages: 1024, CallTimeout: 15 * time.Second, MaxMessage: 8 << 20, IdleEvict: 3 * time.Minute}
+	return Limits{MemoryPages: 1024, CallTimeout: 15 * time.Second, MaxMessage: 8 << 20, IdleEvict: 3 * time.Minute, MaxConcurrent: 32}
 }
+
+// ErrBusy is a call that was not started because the engine is already running
+// as many as it allows. Nothing was run; the caller decides what that means —
+// a route answers 503, and a guard, which must not let anyone through for want
+// of an answer, refuses.
+var ErrBusy = errors.New("wasm: too many calls are running; try again shortly")
 
 // Engine compiles backends.
 type Engine struct {
 	limits Limits
+	// One token per call in flight; nil when the engine is unbounded.
+	slots chan struct{}
+	// The share of slots a call other than a guard may hold. A guard answers a
+	// sign-in or a sign-up and is refused when it cannot run, so it keeps the
+	// rest: a flood of anonymous requests to a public route fills this share,
+	// and the sign-in gate still has room.
+	general chan struct{}
 }
 
 // shared is the compiled code kept across backends, keyed by the module's
@@ -100,20 +122,74 @@ func ptrTo[T any](v T) *T { return &v }
 // NewEngine returns an engine with limits; a zero field takes its default.
 func NewEngine(limits Limits) *Engine {
 	d := DefaultLimits()
-	if limits.MemoryPages == 0 {
-		limits.MemoryPages = d.MemoryPages
+	limits.MemoryPages = orDefault(limits.MemoryPages, d.MemoryPages)
+	limits.CallTimeout = orDefault(limits.CallTimeout, d.CallTimeout)
+	limits.MaxMessage = orDefault(limits.MaxMessage, d.MaxMessage)
+	limits.IdleEvict = orDefault(limits.IdleEvict, d.IdleEvict)
+	limits.MaxConcurrent = orDefault(limits.MaxConcurrent, d.MaxConcurrent)
+	e := &Engine{limits: limits}
+	if limits.MaxConcurrent > 0 {
+		e.slots = make(chan struct{}, limits.MaxConcurrent)
+		e.general = make(chan struct{}, limits.MaxConcurrent-guardReserve(limits.MaxConcurrent))
 	}
-	if limits.CallTimeout == 0 {
-		limits.CallTimeout = d.CallTimeout
-	}
-	if limits.MaxMessage == 0 {
-		limits.MaxMessage = d.MaxMessage
-	}
-	if limits.IdleEvict == 0 {
-		limits.IdleEvict = d.IdleEvict
-	}
-	return &Engine{limits: limits}
+	return e
 }
+
+// orDefault is v, or def when v is zero. Every Limits field follows that rule,
+// so zero is never a limit of its own; a negative value is a setting, not zero,
+// and is kept (IdleEvict and MaxConcurrent both use it to mean "never" and "no
+// bound").
+func orDefault[T comparable](v, def T) T {
+	var zero T
+	if v == zero {
+		return def
+	}
+	return v
+}
+
+// guardReserve is how many of n slots only guards may take: a quarter of them,
+// once there are enough to spare.
+func guardReserve(n int) int {
+	if n < 4 {
+		return 0
+	}
+	return n / 4
+}
+
+// admit takes what a call of kind needs, or reports that the engine is full.
+// Every call takes one of the engine's slots; a call that is not a guard also
+// takes one of the general slots, which leave guardReserve slots for guards.
+func (e *Engine) admit(kind string) (release func(), ok bool) {
+	if e.slots == nil {
+		return func() {}, true
+	}
+	guard := kind == "guard"
+	if !guard {
+		select {
+		case e.general <- struct{}{}:
+		default:
+			return nil, false
+		}
+	}
+	select {
+	case e.slots <- struct{}{}:
+	default:
+		if !guard {
+			<-e.general
+		}
+		return nil, false
+	}
+	return func() {
+		<-e.slots
+		if !guard {
+			<-e.general
+		}
+	}, true
+}
+
+// MaxMessage is the largest message either side reads. A host operation that
+// builds a reply sizes it against this, because the guest will not read more.
+func (e *Engine) MaxMessage() int { return e.limits.MaxMessage }
 
 // Actor is the account a call is made on behalf of, when there is one.
 type Actor struct {
@@ -184,6 +260,11 @@ func (e *GuestError) Error() string {
 // past its limit. What it printed on the way down is in the message.
 var ErrTrap = errors.New("wasm: the plugin's backend crashed")
 
+// ErrResponseTooLarge is a reply longer than MaxMessage. The reply carries any
+// body base64-encoded in its JSON, so the largest body that fits is about three
+// quarters of it: a caller that serves bodies should expect this, not a crash.
+var ErrResponseTooLarge = errors.New("wasm: the response is too large")
+
 // Backend is one plugin's backend: its WebAssembly, and — while it is in use —
 // the native code compiled from it.
 //
@@ -204,7 +285,7 @@ type Backend struct {
 	warm      *warm         // the compiled code, nil while there is none
 	compiling chan struct{} // closed when the compile in progress is over
 	err       error         // a module that does not compile does not start to
-	users     int           // calls inside warm, which is not taken from under them
+	users     int           // calls inside warm; eviction waits for them, Close does not (see Close)
 	idle      *time.Timer
 	closed    bool
 }
@@ -229,8 +310,13 @@ func (e *Engine) Load(name string, wasm []byte, host HostFunc) *Backend {
 	return &Backend{name: name, engine: e, host: host, wasm: wasm}
 }
 
-// build compiles the module. It holds no lock: it takes most of a second.
-func (b *Backend) build() (*warm, error) {
+// build compiles module. It holds no lock: it takes most of a second, and the
+// bytes are the caller's copy, since Close may clear the field meanwhile.
+//
+// Whatever is made before a failure is closed here, panics included: nothing
+// holds the runtime until a warm exists to hold it, and Close cannot reach one
+// that was never returned.
+func (b *Backend) build(module []byte) (w *warm, err error) {
 	ctx := context.Background()
 	// The host's real clocks (read-only) and real randomness are given to each
 	// call's instance below; what is configured here is the runtime.
@@ -249,33 +335,88 @@ func (b *Backend) build() (*warm, error) {
 		}
 	}
 	rt := wazero.NewRuntimeWithConfig(ctx, cfg)
-	fail := func(err error) (*warm, error) {
-		_ = rt.Close(ctx)
-		if dirCache != nil {
-			_ = dirCache.Close(ctx)
+	defer func() {
+		if w == nil {
+			_ = rt.Close(ctx)
+			if dirCache != nil {
+				_ = dirCache.Close(ctx)
+			}
 		}
-		return nil, err
+	}()
+	if runtimeHook != nil {
+		runtimeHook(rt)
 	}
 	if _, err := wasi_snapshot_preview1.Instantiate(ctx, rt); err != nil {
-		return fail(fmt.Errorf("wasm: %w", err))
+		return nil, fmt.Errorf("wasm: %w", err)
 	}
 	if _, err := rt.NewHostModuleBuilder("arc").
 		NewFunctionBuilder().WithFunc(b.hostCall).Export("host").
 		NewFunctionBuilder().WithFunc(b.hostRead).Export("host_read").
 		Instantiate(ctx); err != nil {
-		return fail(fmt.Errorf("wasm: %w", err))
+		return nil, fmt.Errorf("wasm: %w", err)
 	}
-	compiled, err := rt.CompileModule(ctx, b.wasm)
+	compiled, err := rt.CompileModule(ctx, module)
 	if err != nil {
-		return fail(fmt.Errorf("wasm: the backend does not compile: %w", err))
+		return nil, fmt.Errorf("wasm: the backend does not compile: %w", err)
 	}
 	exports := compiled.ExportedFunctions()
 	for _, name := range []string{"_initialize", "arc_alloc", "arc_call"} {
 		if _, ok := exports[name]; !ok {
-			return fail(fmt.Errorf("wasm: the backend does not export %s — it is not built against the plugin SDK", name))
+			return nil, fmt.Errorf("wasm: the backend does not export %s — it is not built against the plugin SDK", name)
 		}
 	}
+	// Checked here rather than per call: Invoke reads the guest's memory and the
+	// results of these functions without a nil or length check, so a module that
+	// lacks them would panic there, outside any recover. The check cannot sit at
+	// the call either: wazero's Memory() returns a typed nil for a module with no
+	// memory, so a nil comparison at the call would never fire.
+	if _, ok := compiled.ExportedMemories()["memory"]; !ok {
+		return nil, errors.New("wasm: the backend does not export its memory — it is not built against the plugin SDK")
+	}
+	if !hasSignature(exports["_initialize"], nil, nil) ||
+		!hasSignature(exports["arc_alloc"], []api.ValueType{api.ValueTypeI32}, []api.ValueType{api.ValueTypeI32}) ||
+		!hasSignature(exports["arc_call"], []api.ValueType{api.ValueTypeI32, api.ValueTypeI32}, []api.ValueType{api.ValueTypeI64}) {
+		return nil, errors.New("wasm: the backend's exports do not have the plugin SDK's signatures — it is not built against the plugin SDK")
+	}
 	return &warm{rt: rt, compiled: compiled, cache: dirCache}, nil
+}
+
+// hasSignature is whether f takes params and returns results of exactly these
+// types. Invoke reads results[0] and passes raw i32 pointers, so a wrong shape
+// is a panic or a misread, not an error.
+func hasSignature(f api.FunctionDefinition, params, results []api.ValueType) bool {
+	return slices.Equal(f.ParamTypes(), params) && slices.Equal(f.ResultTypes(), results)
+}
+
+// compileHook, set only by tests, runs at the start of every compile so a test
+// can make the compiler fail on purpose.
+var compileHook func()
+
+// runtimeHook, set only by tests, runs as soon as build has made the runtime,
+// so a test can make the compile panic while the runtime is in hand and check
+// that it was closed anyway.
+var runtimeHook func(wazero.Runtime)
+
+// buildRecovering is build with a panic turned into the compile's failure. Left
+// to unwind, it would skip the handoff in acquire: every caller waiting on this
+// compile would wait until its own context ended.
+//
+// A panicking compile is recorded as the backend's failure, the same as a module
+// that does not compile, so the backend refuses calls until it is closed and
+// loaded again. A panic is probably deterministic, so retrying would hit it
+// again. The panic's value is logged and not returned: it can carry anything the
+// compiler or the module put in it, and the error reaches the install dialog.
+func (b *Backend) buildRecovering(module []byte) (w *warm, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("plugin backend compile panicked", "plugin", b.name, "panic", r)
+			w, err = nil, errors.New("wasm: the backend's compile panicked; the server log has the detail")
+		}
+	}()
+	if compileHook != nil {
+		compileHook()
+	}
+	return b.build(module)
 }
 
 // acquire returns the compiled code, compiling it first if there is none, and
@@ -312,8 +453,11 @@ func (b *Backend) acquire(ctx context.Context) (*warm, error) {
 		default:
 			done := make(chan struct{})
 			b.compiling = done
+			// Read under the lock: Close clears the field, and this compile runs
+			// without it.
+			module := b.wasm
 			b.mu.Unlock()
-			w, err := b.build()
+			w, err := b.buildRecovering(module)
 			b.mu.Lock()
 			b.compiling = nil
 			close(done)
@@ -436,6 +580,13 @@ type reply struct {
 // guest, and unmarshals what comes back into out (nil to ignore it). state is
 // what host functions find in Call.State.
 func (b *Backend) Invoke(ctx context.Context, info CallInfo, kind string, arg, out, state any) error {
+	// Before the compile as well as the instance: callers waiting on a compile
+	// are in flight too, and each is holding its request.
+	release, ok := b.engine.admit(kind)
+	if !ok {
+		return ErrBusy
+	}
+	defer release()
 	w, err := b.acquire(ctx)
 	if err != nil {
 		return err
@@ -491,7 +642,7 @@ func (b *Backend) Invoke(ctx context.Context, info CallInfo, kind string, arg, o
 	}
 	respPtr, respLen := uint32(res[0]>>32), uint32(res[0])
 	if int64(respLen) > int64(b.engine.limits.MaxMessage) {
-		return errors.New("wasm: the response is too large")
+		return ErrResponseTooLarge
 	}
 	body, ok := mod.Memory().Read(respPtr, respLen)
 	if !ok {

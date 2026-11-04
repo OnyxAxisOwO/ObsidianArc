@@ -4,9 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
+	"log/slog"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/console"
@@ -45,11 +46,17 @@ func ptr[T any](v T) *T { return &v }
 
 // attach makes every seam of l's manifest live behind the plugin's gate. It
 // changes nothing on failure — what was done is undone — so the caller only
-// has to say what it was doing when it goes wrong. Without a host there is
-// nothing to attach to; Attach calls it again when the host arrives.
+// has to say what it was doing when it goes wrong. Without a host only the
+// console commands can be attached; Attach calls it again when the host
+// arrives and the rest follow.
 func (m *Manager) attach(l *loaded) (err error) {
 	h := m.host
 	if h == nil {
+		// detach takes console commands away with or without a host, so an update
+		// or a restore that runs while there is none must put them back the same way.
+		if m.console != nil {
+			return m.console.AddCommands(l.name, m.commandsOf(l))
+		}
 		return nil
 	}
 	man := l.pkg.Manifest
@@ -82,9 +89,10 @@ func (m *Manager) attach(l *loaded) (err error) {
 	}
 
 	for _, b := range man.OAuthBindings {
-		re := regexp.MustCompile(`^(?:` + b.Pattern + `)$`)
-		// Its own binding first: an update replaces it. Somebody else's is
-		// the answer "no".
+		re := arcx.MustWhole(b.Pattern)
+		// Its own binding first: an update replaces it. An install has already
+		// refused a field another package holds (checkPackage), so what this
+		// clears is this package's own binding from an earlier version.
 		h.OAuth.UnbindSubject(b.Field)
 		if err = h.OAuth.TryBindSubject(oauth.SubjectBinding{Provider: b.Provider, Field: b.Field, Matches: re.MatchString}); err != nil {
 			return err
@@ -93,20 +101,26 @@ func (m *Manager) attach(l *loaded) (err error) {
 		undo = append(undo, func() { h.OAuth.UnbindSubject(field) })
 	}
 
-	register, login := m.guardsOf(l)
-	h.Auth.ReplaceGuards(name, register, login)
+	if err = h.Auth.ReplaceGuards(name, m.guardsOf(l)); err != nil {
+		return err
+	}
 	undo = append(undo, func() { h.Auth.RemoveGuards(name) })
 
 	h.AuthHandlers.Extend(name, m.siteBlock(l))
 	undo = append(undo, func() { h.AuthHandlers.Unextend(name) })
 
+	// Removed whether or not the new version declares the hook: a decorator an
+	// update dropped would keep calling the old backend, which closeLater closes,
+	// and every invitee page would then fail until the next restart.
+	h.InviteHandlers.RemoveDecorators(name)
 	if l.has(arcx.HookDecorateInvitees) {
-		h.InviteHandlers.RemoveDecorators(name)
 		h.InviteHandlers.DecorateInvitees(name, m.decorator(l))
 		undo = append(undo, func() { h.InviteHandlers.RemoveDecorators(name) })
 	}
 
-	if m.console != nil && len(man.Console) > 0 {
+	// An empty list is still a list: AddCommands replaces what the plugin
+	// registered before, so a command an update no longer declares goes away.
+	if m.console != nil {
 		if err = m.console.AddCommands(name, m.commandsOf(l)); err != nil {
 			return err
 		}
@@ -119,9 +133,51 @@ func (m *Manager) attach(l *loaded) (err error) {
 	return nil
 }
 
+// dropRetiredSeams takes away what an update's old version attached and the
+// new one no longer names. attach replaces what the new manifest names, so an
+// OAuth binding or field rule it dropped would stay live until the next
+// restart. An uninstall only walks the installed manifest, so it would not
+// take those away either: the stale binding would outlive the plugin.
+func (m *Manager) dropRetiredSeams(old, next *arcx.Manifest) {
+	h := m.host
+	if h == nil {
+		return
+	}
+	bound := map[string]bool{}
+	for _, b := range next.OAuthBindings {
+		bound[b.Field] = true
+	}
+	for _, b := range old.OAuthBindings {
+		if !bound[b.Field] {
+			h.OAuth.UnbindSubject(b.Field)
+		}
+	}
+	ruled := map[string]bool{}
+	for _, r := range next.FieldRules {
+		ruled[r.Field] = true
+	}
+	for _, r := range old.FieldRules {
+		if !ruled[r.Field] {
+			h.Auth.RemoveFieldRule(r.Field)
+		}
+	}
+}
+
 // detach takes everything l attached away. It is what an uninstall and a
 // failed update do, and it never fails: there is nothing to say no to.
-func (m *Manager) detach(l *loaded) {
+func (m *Manager) detach(l *loaded) { m.detachSeams(l, false) }
+
+// detachSeams is detach, leaving the plugin's guards where they are when
+// keepGuards says so: a rollback that is about to put another version's guards
+// in their place replaces them in one step instead, because a door whose check
+// is missing for a moment is open for that moment.
+func (m *Manager) detachSeams(l *loaded, keepGuards bool) {
+	// Console commands are added by AttachConsole whether or not a host is
+	// there, so they come off on the same terms; otherwise a package removed
+	// before the host arrives keeps its commands and the backend they close over.
+	if m.console != nil {
+		m.console.RemoveCommands(l.name)
+	}
 	h := m.host
 	if h != nil {
 		man := l.pkg.Manifest
@@ -133,12 +189,11 @@ func (m *Manager) detach(l *loaded) {
 		for _, b := range man.OAuthBindings {
 			h.OAuth.UnbindSubject(b.Field)
 		}
-		h.Auth.RemoveGuards(l.name)
+		if !keepGuards {
+			h.Auth.RemoveGuards(l.name)
+		}
 		h.AuthHandlers.Unextend(l.name)
 		h.InviteHandlers.RemoveDecorators(l.name)
-		if m.console != nil {
-			m.console.RemoveCommands(l.name)
-		}
 	}
 }
 
@@ -152,10 +207,17 @@ func (m *Manager) detachPackage(l *loaded) {
 }
 
 // closeGrace is how long a backend that has been replaced or removed is kept
-// running for the calls already inside it. A call is over in at most the
-// engine's call timeout, and closing under one would fail a request that had
-// done nothing wrong.
+// running for the calls already inside it. A call inside the backend is over
+// within the engine's call timeout, and closing under one would fail a request
+// that had done nothing wrong. A call still waiting for the backend to compile
+// is not bounded by that timeout, because the compile is not counted in it; one
+// that outlives the grace is refused cleanly, as a removed backend's calls are.
 var closeGrace = 30 * time.Second
+
+// decorateTimeout bounds one plugin's look at an invite list. The list is what
+// the page waits on, so a decorator that is slow is skipped rather than waited
+// for.
+const decorateTimeout = 10 * time.Second
 
 func closeLater(l *loaded) {
 	if l == nil || l.backend == nil {
@@ -174,38 +236,65 @@ func (m *Manager) swapPackages(fn func(map[string]*loaded)) {
 	m.pkgs.Store(&next)
 }
 
-// guardsOf is the guards the manifest lists, each asking the backend.
-func (m *Manager) guardsOf(l *loaded) (register, login []auth.Guard) {
+// commandState is what one run of a console command shares with the host: the
+// endpoints it declared, and whether the package was built before those bound
+// what console.call may reach.
+func commandState(rt *console.Runtime, man *arcx.Manifest, c arcx.ConsoleCommand) *callState {
+	return &callState{
+		console: rt, endpoints: c.Endpoints,
+		legacyCall: man.Requires.API < arcx.DeclaredEndpointsAPI,
+	}
+}
+
+// guardEvent is the event a guard's refusal is filed under. A manifest may name
+// any event, and a refusal filed under one the server writes itself would read
+// as the server's own entry, so such a name is filed under the package's.
+func guardEvent(plugin, event string) string {
+	if name := strings.TrimSpace(event); coreEvents[name] {
+		return "plugin:" + plugin + ":" + name
+	}
+	return event
+}
+
+// guardsOf is the guards the manifest lists, by the door each stands in front
+// of, each asking the backend.
+func (m *Manager) guardsOf(l *loaded) map[string][]auth.Guard {
+	out := map[string][]auth.Guard{}
 	for _, g := range l.pkg.Manifest.Guards {
 		g := g
-		guard := auth.Guard{
-			Name: g.Name, Plugin: l.name, Event: g.Event,
+		out[g.Action] = append(out[g.Action], auth.Guard{
+			Name: g.Name, Plugin: l.name, Event: guardEvent(l.name, g.Event),
 			Check: func(ctx context.Context, req auth.GuardRequest) (auth.Verdict, error) {
 				return m.judge(ctx, l, g.Name, req)
 			},
-		}
-		if g.Action == arcxRegister {
-			register = append(register, guard)
-		} else {
-			login = append(login, guard)
-		}
+		})
 	}
-	return register, login
+	return out
 }
 
-const arcxRegister = "register"
+// refusingGuards is the guards the manifests list, each refusing. They stand in
+// for guards that could not be put back: a door whose check is missing is open,
+// so the check stays and refuses, as a backend that cannot answer does.
+func refusingGuards(name string, manifests ...*arcx.Manifest) map[string][]auth.Guard {
+	out := map[string][]auth.Guard{}
+	for _, man := range manifests {
+		for _, g := range man.Guards {
+			out[g.Action] = append(out[g.Action], auth.Guard{
+				Name: g.Name, Plugin: name, Event: guardEvent(name, g.Event),
+				Check: func(context.Context, auth.GuardRequest) (auth.Verdict, error) {
+					return auth.Verdict{}, unavailableGuard(errPluginFault)
+				},
+			})
+		}
+	}
+	return out
+}
 
 // judge asks the backend to judge a sign-up or a sign-in and turns its answer
 // into the guard's. A backend that cannot answer refuses: a check that is
 // down must not become a door that is open.
 func (m *Manager) judge(ctx context.Context, l *loaded, name string, req auth.GuardRequest) (auth.Verdict, error) {
-	var out struct {
-		Verdict string `json:"verdict"`
-		Reason  string `json:"reason"`
-		Status  int    `json:"status"`
-		Code    string `json:"code"`
-		Message string `json:"message"`
-	}
+	var out guardAnswer
 	err := m.invoke(ctx, l, wasm.CallInfo{IP: req.IP}, "guard", map[string]any{
 		"name": name, "action": req.Action, "token": req.Token, "ip": req.IP, "username": req.Username,
 	}, &out, nil)
@@ -214,27 +303,53 @@ func (m *Manager) judge(ctx context.Context, l *loaded, name string, req auth.Gu
 		if errors.As(err, &ge) && deliberate(ge) {
 			return auth.Verdict{}, &auth.GuardRefusal{Err: guestHTTPError(ge), Reason: ge.Code}
 		}
-		return auth.Verdict{}, &auth.GuardRefusal{
-			Err:    httpx.UnavailableCode("plugin_unavailable", "Verification is unavailable right now. Try again shortly.").WithCause(err),
-			Reason: "plugin unavailable",
-		}
+		return auth.Verdict{}, unavailableGuard(err)
 	}
-	switch out.Verdict {
+	return out.verdict()
+}
+
+// guardAnswer is what a guard's backend says about a visitor.
+type guardAnswer struct {
+	Verdict string `json:"verdict"`
+	Reason  string `json:"reason"`
+	Status  int    `json:"status"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// verdict is the guard's answer to the visitor. Only an explicit allow lets
+// the visitor through: an empty or unrecognised verdict is an answer nobody
+// meant, and the zero auth.Verdict is unrestricted, so letting it fall
+// through would open the door for a backend that spoke a different dialect.
+func (a guardAnswer) verdict() (auth.Verdict, error) {
+	switch a.Verdict {
+	case "allow":
+		return auth.Verdict{}, nil
 	case "refuse":
 		// Any error status: a check that is down is told apart from a visitor
 		// who failed it by a 503, which a monitor can count.
-		status := out.Status
+		status := a.Status
 		if status < 400 || status > 599 {
 			status = 403
 		}
 		return auth.Verdict{}, &auth.GuardRefusal{
-			Err:    &httpx.Error{Status: status, Code: out.Code, Message: out.Message},
-			Reason: out.Reason,
+			Err:    &httpx.Error{Status: status, Code: a.Code, Message: a.Message},
+			Reason: a.Reason,
 		}
 	case "restrict":
-		return auth.Verdict{Restrict: true, Reason: out.Reason}, nil
+		return auth.Verdict{Restrict: true, Reason: a.Reason}, nil
 	}
-	return auth.Verdict{}, nil
+	return auth.Verdict{}, unavailableGuard(fmt.Errorf("guard answered %q", a.Verdict))
+}
+
+// unavailableGuard is the refusal a check that could not answer gets. The
+// cause is kept for the log; the visitor is told only that verification is
+// down.
+func unavailableGuard(cause error) error {
+	return &auth.GuardRefusal{
+		Err:    httpx.UnavailableCode("plugin_unavailable", "Verification is unavailable right now. Try again shortly.").WithCause(cause),
+		Reason: "plugin unavailable",
+	}
 }
 
 // siteBlock is the plugin's part of /api/site: what its backend last said for
@@ -272,11 +387,15 @@ func (m *Manager) decorator(l *loaded) invite.InviteeDecorator {
 		var out struct {
 			Invitees []row `json:"invitees"`
 		}
-		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		ctx, cancel := context.WithTimeout(ctx, decorateTimeout)
 		defer cancel()
 		err := m.invoke(ctx, l, wasm.CallInfo{}, "decorate_invitees",
 			map[string]any{"inviter_id": inviterID, "invitees": in}, &out, nil)
 		if err != nil {
+			// The invite list skips a decorator that fails and keeps the rows it had,
+			// and logs the failure once, so a backend that is down shows the list as
+			// it is. A guard fails closed because it decides who gets in; this
+			// decides nothing.
 			return nil, err
 		}
 		result := make([]invite.Invitee, len(out.Invitees))
@@ -303,10 +422,17 @@ func (m *Manager) commandsOf(l *loaded) []console.Command {
 			Destructive: c.Destructive, Endpoints: c.Endpoints, Plugin: l.name,
 		}
 		for _, a := range c.Args {
-			cmd.Args = append(cmd.Args, console.Arg{Name: a.Name, Hint: consoleText(a.Hint), Required: a.Required})
+			cmd.Args = append(cmd.Args, console.Arg{Name: a.Name, Hint: consoleText(a.Hint), Required: a.Required, Rest: a.Rest, Sensitive: a.Sensitive})
 		}
 		for _, f := range c.Flags {
-			cmd.Flags = append(cmd.Flags, console.Flag{Name: f.Name, Hint: consoleText(f.Hint), Value: f.Value})
+			cmd.Flags = append(cmd.Flags, console.Flag{Name: f.Name, Hint: consoleText(f.Hint), Value: f.Value, Sensitive: f.Sensitive})
+		}
+		// A command with no grant named was open to every administrator. Its
+		// backend runs with the package's own host permissions and cannot tell
+		// which administrator asked, so an unnamed grant means the widest one a
+		// terminal can hold.
+		if cmd.Permission == "" {
+			cmd.Permission = "super_admin"
 		}
 		cmd.Run = func(ctx context.Context, rt *console.Runtime) error { return m.runCommand(ctx, l, c, rt) }
 		out = append(out, cmd)
@@ -338,30 +464,69 @@ func (m *Manager) runCommand(ctx context.Context, l *loaded, c arcx.ConsoleComma
 		} `json:"out"`
 	}
 	info := wasm.CallInfo{Lang: rt.Session.Lang, IP: rt.Session.IP, Actor: actorOf(rt.Session.Actor)}
-	st := &callState{console: rt}
+	st := commandState(rt, l.pkg.Manifest, c)
 	err := m.invoke(ctx, l, info, "console", arg, &out, st)
 	if err != nil {
-		var ge *wasm.GuestError
-		if errors.As(err, &ge) && deliberate(ge) {
-			// A command that passed a refused Call on: what the console draws
-			// is the endpoint's own error, code and all, as it is for a
-			// command that was compiled in.
-			if ge.Code == "console" && st.consoleErr != nil {
-				return st.consoleErr
-			}
-			return errors.New(ge.Message)
-		}
-		return fmt.Errorf("the plugin failed: %w", err)
+		return commandFailure(err, st.consoleErrs)
 	}
 	for _, line := range out.Out {
 		switch line.Kind {
 		case "table":
-			if err := rt.Table(line.Headers, line.Rows); err != nil {
+			headers := make([]string, len(line.Headers))
+			for i, h := range line.Headers {
+				headers[i] = plainText(h)
+			}
+			rows := make([][]string, len(line.Rows))
+			for i, row := range line.Rows {
+				rows[i] = make([]string, len(row))
+				for j, cell := range row {
+					rows[i][j] = plainText(cell)
+				}
+			}
+			if err := rt.Table(headers, rows); err != nil {
 				return err
 			}
 		default:
-			rt.Printf("%s", line.Text)
+			rt.Printf("%s", plainText(line.Text))
 		}
 	}
 	return nil
+}
+
+// commandFailure is what the console draws for a command whose backend
+// failed. A deliberate refusal is shown as written. Anything else is the
+// backend's own failure, whose text may name a credential it was handed, so
+// it goes to the log and the operator sees a fixed sentence, as a guard's
+// visitor does.
+func commandFailure(err error, consoleErrs map[string]error) error {
+	var ge *wasm.GuestError
+	if errors.As(err, &ge) && deliberate(ge) {
+		// A command that passed a refused Call on: what the console draws is
+		// the endpoint's own error, code and all, as it is for a command that
+		// was compiled in. The error is looked up by the message the backend
+		// returned, so a command that made another refused call after this one
+		// still gets this one's sentence.
+		if ge.Code == "console" {
+			if refused, ok := consoleErrs[ge.Message]; ok {
+				return refused
+			}
+		}
+		return errors.New(ge.Message)
+	}
+	slog.Error("plugin: a console command failed", "error", err)
+	return errors.New("the plugin failed; the server log has the details")
+}
+
+// plainText drops the control characters a terminal would obey: the escape
+// sequences that move the cursor, retitle the window, or paint over what was
+// printed above. What a backend prints is often something a visitor typed (a
+// name, a note), and the operator's console must show it, not act on it.
+// Newline and tab are layout, and stay.
+func plainText(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) && r != '\n' && r != '\t' {
+			return -1
+		}
+		return r
+	}, s)
 }

@@ -7,6 +7,7 @@
 // refresh — so there is nothing to wire from AppShell beyond `v-if`.
 
 import { onBeforeUnmount, onMounted, watch } from 'vue';
+import { useRouter } from 'vue-router';
 import {
   activeToasts, dismissToast, openNotification, startNotifications, stopNotifications, type Toast,
 } from '@/stores/notifications';
@@ -14,6 +15,7 @@ import { describeNotification } from '@/lib/notification-text';
 import { relativeTime } from '@/lib/format';
 import { t } from '@/composables/useI18n';
 import { IconClose } from '@/icons';
+import OaIconButton from './OaIconButton.vue';
 
 const DISMISS_MS = 6000;
 
@@ -82,8 +84,10 @@ onBeforeUnmount(() => {
   timers.clear();
 });
 
+const router = useRouter();
+
 function onClick(toast: Toast): void {
-  void openNotification(toast.notification);
+  void openNotification(toast.notification, (link) => router.push(link));
 }
 </script>
 
@@ -107,14 +111,13 @@ function onClick(toast: Toast): void {
           <span class="oa-toast-text">{{ describeNotification(toast.notification).body }}</span>
           <span class="oa-toast-time">{{ relativeTime(toast.notification.created_at) }}</span>
         </span>
-        <button
-          type="button"
+        <OaIconButton
           class="oa-toast-close"
-          :aria-label="t('close')"
+          :label="t('close')"
           @click.stop="dismissToast(toast.id)"
         >
           <IconClose :size="12" />
-        </button>
+        </OaIconButton>
       </div>
     </TransitionGroup>
   </div>

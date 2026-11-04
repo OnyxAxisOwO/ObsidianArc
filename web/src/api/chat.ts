@@ -6,13 +6,13 @@
 // the server's request context is cancelled, and the provider stops
 // generating. Pressing Stop is one `AbortController.abort()`.
 
-import { t } from '../i18n';
-import { ApiError, api } from './client';
+import { t } from '@/composables/useI18n';
+import { ApiError, api, fetchApi } from './client';
+import { readSSE, streamRefusal, type SSEEvent } from './sse';
 
 export interface Conversation {
   id: string;
   project_id?: string;
-  mode?: 'chat' | 'work';
   title: string;
   model_id: string;
   pinned: boolean;
@@ -48,24 +48,6 @@ export interface AttachmentRef {
   discarded?: boolean;
 }
 
-// One tool call the model made during a work turn: announced before it
-// runs, filled in once the result arrives.
-//
-// The same shape serves two lives. During a turn useChat.ts pushes a row of
-// its own per call so the reader watches it happen; afterwards the server
-// saves the finished set on the assistant message, and a reload reads them
-// back from there. `done` is the only field the saved form does not carry —
-// a call that was written down is a call that finished.
-export interface ToolCallEntry {
-  id: string;
-  name: string;
-  arguments: string;
-  output?: string;
-  failed?: boolean;
-  /** False from tool_call until the matching tool_result lands. */
-  done: boolean;
-}
-
 export interface Message {
   id: string;
   seq: number;
@@ -73,14 +55,11 @@ export interface Message {
   content: string;
   reasoning?: string;
   error?: string;
+  error_code?: string;
   model_id?: string;
   model_name?: string;
   stats?: MessageStats;
   attachments?: AttachmentRef[];
-  /** Live, for the duration of the turn: one pushed row per call. */
-  toolCall?: ToolCallEntry;
-  /** Saved, read back with the answer the calls produced. */
-  tool_calls?: Omit<ToolCallEntry, 'done'>[];
   created_at: number;
 }
 
@@ -88,6 +67,7 @@ export interface ListConversationsParams {
   project_id?: string;
   archived?: boolean;
   limit?: number;
+  offset?: number;
 }
 
 export function listConversations(params?: ListConversationsParams): Promise<{ conversations: Conversation[] }> {
@@ -95,6 +75,7 @@ export function listConversations(params?: ListConversationsParams): Promise<{ c
   if (params?.project_id !== undefined) query.set('project_id', params.project_id);
   if (params?.archived !== undefined) query.set('archived', String(params.archived));
   if (params?.limit !== undefined) query.set('limit', String(params.limit));
+  if (params?.offset !== undefined) query.set('offset', String(params.offset));
   const qs = query.toString();
   return api.get<{ conversations: Conversation[] }>(`/api/conversations${qs ? `?${qs}` : ''}`);
 }
@@ -109,6 +90,16 @@ export function getConversation(id: string): Promise<{ conversation: Conversatio
 
 export function renameConversation(id: string, title: string): Promise<{ conversation: Conversation }> {
   return api.patch<{ conversation: Conversation }>(`/api/conversations/${id}`, { title });
+}
+
+/**
+ * Files a conversation under one of the owner's projects, or with "" takes it
+ * out of every project. The server answers 404 for a project that is not the
+ * owner's or is gone, and leaves updated_at alone, so filing never reorders
+ * the rail.
+ */
+export function moveConversation(id: string, projectID: string): Promise<{ conversation: Conversation }> {
+  return api.patch<{ conversation: Conversation }>(`/api/conversations/${id}`, { project_id: projectID });
 }
 
 export function deleteConversation(id: string): Promise<void> {
@@ -142,7 +133,7 @@ export function attachmentURL(id: string): string {
 
 // --- the streamed turn ---------------------------------------------------------
 
-export interface TurnRequest {
+interface TurnRequest {
   conversation_id?: string;
   model_id: string;
   content?: string;
@@ -151,12 +142,9 @@ export interface TurnRequest {
   truncate_from_message_id?: string;
   turnstile?: string;
   /**
-   * Which surface a NEW conversation opens as, and which project it opens
-   * in. The server reads both only while creating one — an existing thread
-   * keeps what it was opened with — so sending them on every turn is
-   * harmless and sending them on the first one is the whole point.
+   * Which project a NEW conversation opens in. The server reads it only
+   * while creating one — an existing thread keeps what it was opened with.
    */
-  mode?: 'chat' | 'work';
   project_id?: string;
 }
 
@@ -170,8 +158,6 @@ export interface TurnHandlers {
   }): void;
   onDelta?(text: string): void;
   onReasoning?(text: string): void;
-  onToolCall?(payload: { id: string; name: string; arguments: string }): void;
-  onToolResult?(payload: { id: string; name: string; output: string; failed: boolean }): void;
   onUsage?(usage: { input_tokens: number; output_tokens: number; reasoning_tokens: number }): void;
   onDone?(payload: {
     message_id: string;
@@ -184,17 +170,18 @@ export interface TurnHandlers {
 }
 
 /**
- * Runs one turn. Resolves when the stream ends; rejects only if the request
- * could not be made at all. A failure the server reported arrives through
- * onError, because by then the response has already started and there is no
- * status code left to carry it.
+ * Runs one turn. Resolves when the stream ends. Rejects when the request could
+ * not be made, when the server refuses it before the stream opens, or when the
+ * stream breaks partway (an abort, a dropped connection, or a handler that
+ * throws). A failure the server reports once the stream is open arrives through
+ * onError, because by then there is no status code left to carry it.
  */
 export async function sendTurn(
   request: TurnRequest,
   handlers: TurnHandlers,
   signal: AbortSignal,
 ): Promise<void> {
-  const response = await fetch('/api/chat', {
+  const response = await fetchApi('/api/chat', {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
@@ -202,93 +189,63 @@ export async function sendTurn(
     signal,
   });
 
-  if (!response.ok) {
-    // Everything checkable — the model, the permission, the quota — is
-    // checked before the stream opens, so a refusal is still an ordinary
-    // JSON error with a real status.
-    const text = await response.text();
-    let code = 'error';
-    let message = `Request failed with HTTP ${response.status}.`;
-    let details: Record<string, unknown> = {};
-    try {
-      const body = JSON.parse(text) as { error?: { code?: string; message?: string } & Record<string, unknown> };
-      if (body.error) {
-        const { code: bodyCode, message: bodyMessage, ...rest } = body.error;
-        code = bodyCode ?? code;
-        message = bodyMessage ?? message;
-        details = rest;
-      }
-    } catch {
-      // A non-JSON body (a proxy's error page) leaves the defaults.
-    }
-    throw new ApiError(response.status, code, message, details);
-  }
-
+  // Everything checkable — the model, the permission, the quota — is checked
+  // before the stream opens, so a refusal still has a real status.
+  if (!response.ok) throw await streamRefusal(response);
   if (!response.body) throw new ApiError(0, 'stream', t('streamMissing'));
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-
-    // Events are separated by a blank line. `\r\n\r\n` as well as `\n\n`,
-    // because some proxies rewrite line endings and a parser that only knows
-    // about `\n` sees one enormous event that never ends.
-    let boundary = /\r?\n\r?\n/.exec(buffer);
-    while (boundary) {
-      const frame = buffer.slice(0, boundary.index);
-      buffer = buffer.slice(boundary.index + boundary[0].length);
-      boundary = /\r?\n\r?\n/.exec(buffer);
-      dispatch(frame, handlers);
-    }
-  }
+  await readSSE(response.body, (event) => dispatch(event, handlers));
 }
 
-function dispatch(frame: string, handlers: TurnHandlers): void {
-  let event = '';
-  let data = '';
-
-  for (const line of frame.split(/\r?\n/)) {
-    if (line.startsWith('event:')) event = line.slice(6).trim();
-    else if (line.startsWith('data:')) data += line.slice(5).trim();
-  }
-  if (!data) return;
-
+function dispatch({ event, data }: SSEEvent, handlers: TurnHandlers): void {
   let payload: unknown;
   try {
     payload = JSON.parse(data);
   } catch {
     return;
   }
+  // Valid JSON that is not an object (`null`, a bare number) has no fields to
+  // read; reading `.text` from it threw inside the read loop and ended the turn.
+  if (typeof payload !== 'object' || payload === null) return;
 
-  switch (event) {
+  // The one place the frame's shape is asserted: the server writes each
+  // payload from a struct, so its fields are taken as given, except the text
+  // frames' string, which is checked below.
+  const frame = { event, payload } as TurnFrame;
+  switch (frame.event) {
     case 'start':
-      handlers.onStart?.(payload as Parameters<NonNullable<TurnHandlers['onStart']>>[0]);
+      handlers.onStart?.(frame.payload);
       break;
-    case 'delta':
-      handlers.onDelta?.((payload as { text: string }).text);
+    // A text frame with no string in it would be joined into the answer as the
+    // literal "undefined", so it is dropped rather than passed on.
+    case 'delta': {
+      const { text } = frame.payload;
+      if (typeof text === 'string') handlers.onDelta?.(text);
       break;
-    case 'reasoning':
-      handlers.onReasoning?.((payload as { text: string }).text);
+    }
+    case 'reasoning': {
+      const { text } = frame.payload;
+      if (typeof text === 'string') handlers.onReasoning?.(text);
       break;
-    case 'tool_call':
-      handlers.onToolCall?.(payload as Parameters<NonNullable<TurnHandlers['onToolCall']>>[0]);
-      break;
-    case 'tool_result':
-      handlers.onToolResult?.(payload as Parameters<NonNullable<TurnHandlers['onToolResult']>>[0]);
-      break;
+    }
     case 'usage':
-      handlers.onUsage?.(payload as Parameters<NonNullable<TurnHandlers['onUsage']>>[0]);
+      handlers.onUsage?.(frame.payload);
       break;
     case 'done':
-      handlers.onDone?.(payload as Parameters<NonNullable<TurnHandlers['onDone']>>[0]);
+      handlers.onDone?.(frame.payload);
       break;
     case 'error':
-      handlers.onError?.(payload as Parameters<NonNullable<TurnHandlers['onError']>>[0]);
+      handlers.onError?.(frame.payload);
       break;
   }
 }
+
+type HandlerPayload<K extends keyof TurnHandlers> = Parameters<NonNullable<TurnHandlers[K]>>[0];
+
+// Each event the turn stream sends, with the payload that event carries.
+type TurnFrame =
+  | { event: 'start'; payload: HandlerPayload<'onStart'> }
+  | { event: 'delta'; payload: { text?: unknown } }
+  | { event: 'reasoning'; payload: { text?: unknown } }
+  | { event: 'usage'; payload: HandlerPayload<'onUsage'> }
+  | { event: 'done'; payload: HandlerPayload<'onDone'> }
+  | { event: 'error'; payload: HandlerPayload<'onError'> };

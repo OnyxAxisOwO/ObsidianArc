@@ -2,14 +2,13 @@ package auth
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/text"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
@@ -65,8 +64,7 @@ func NewSessionStore(db *database.DB, users *user.Store) *SessionStore {
 
 // HashToken maps a cookie value to its row key.
 func HashToken(token string) string {
-	sum := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(sum[:])
+	return secret.Digest(token)
 }
 
 // sessionRefLength is how much of a session's id the "signed-in devices"
@@ -91,6 +89,11 @@ func ValidSessionRef(s string) bool {
 	return true
 }
 
+// SessionRef is the opaque id a session is shown as to its owner or to an
+// administrator. It is sessionRef's guarded slice, so a short id is no ref
+// rather than a panic; callers in other packages must not cut the id themselves.
+func SessionRef(id string) string { return sessionRef(id) }
+
 // sessionRef is the opaque id a session is shown as: HashToken's own hex
 // alphabet, so ValidSessionRef's check on the way back in is exact rather
 // than a guess at what Go's hex encoding happens to produce.
@@ -107,7 +110,7 @@ func sessionRef(id string) string {
 // token is returned once and never stored, so it exists only in the caller's
 // hand and in the browser.
 func (s *SessionStore) Create(ctx context.Context, userID string, ttl time.Duration, ip, userAgent string) (string, Session, error) {
-	return s.create(ctx, userID, ttl, ip, userAgent, false)
+	return s.create(ctx, nil, userID, ttl, ip, userAgent, false)
 }
 
 // CreatePending issues the half of a session a password buys when the
@@ -115,10 +118,17 @@ func (s *SessionStore) Create(ctx context.Context, userID string, ttl time.Durat
 // the expiry and sign-out all work the way they already do; the flag is what
 // keeps it from being mistaken for the whole.
 func (s *SessionStore) CreatePending(ctx context.Context, userID string, ttl time.Duration, ip, userAgent string) (string, Session, error) {
-	return s.create(ctx, userID, ttl, ip, userAgent, true)
+	return s.create(ctx, nil, userID, ttl, ip, userAgent, true)
 }
 
-func (s *SessionStore) create(ctx context.Context, userID string, ttl time.Duration, ip, userAgent string, pending bool) (string, Session, error) {
+// createIn is Create writing through q, for a registration whose account and
+// its first session must commit together, or not at all.
+func (s *SessionStore) createIn(ctx context.Context, q database.Queryer, userID string, ttl time.Duration, ip, userAgent string) (string, Session, error) {
+	return s.create(ctx, q, userID, ttl, ip, userAgent, false)
+}
+
+// create writes the session through q, or the store's own database when q is nil.
+func (s *SessionStore) create(ctx context.Context, q database.Queryer, userID string, ttl time.Duration, ip, userAgent string, pending bool) (string, Session, error) {
 	token := id.Secret(TokenBytes)
 	now := time.Now()
 
@@ -134,15 +144,68 @@ func (s *SessionStore) create(ctx context.Context, userID string, ttl time.Durat
 		TwoFactorPending: pending,
 	}
 
-	_, err := s.db.Exec(ctx,
-		`INSERT INTO sessions (id, user_id, created_at, expires_at, last_seen_at, ip, user_agent, two_factor_pending)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		record.ID, record.UserID, record.CreatedAt, record.ExpiresAt,
-		record.LastSeenAt, record.IP, record.UserAgent, record.TwoFactorPending)
-	if err != nil {
+	if err := s.insert(ctx, q, record); err != nil {
 		return "", Session{}, fmt.Errorf("auth: create session: %w", err)
 	}
 	return token, record, nil
+}
+
+// insert writes every column of a session row. The backoffice visit and the
+// device are written too, not left to their defaults: a row written again
+// under a new id has to keep both, and a default would drop them without any
+// error to say so. Takes a Queryer for the reason DeleteByUser does — Reissue
+// writes inside the transaction that changes the password.
+func (s *SessionStore) insert(ctx context.Context, q database.Queryer, record Session) error {
+	if q == nil {
+		q = s.db
+	}
+	_, err := q.Exec(ctx,
+		`INSERT INTO sessions (id, user_id, created_at, expires_at, last_seen_at, ip, user_agent,
+		   two_factor_pending, backoffice_at, backoffice_ip, backoffice_ua, device_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		record.ID, record.UserID, record.CreatedAt, record.ExpiresAt,
+		record.LastSeenAt, record.IP, record.UserAgent, record.TwoFactorPending,
+		record.BackofficeAt, record.BackofficeIP, record.BackofficeUA, record.DeviceID)
+	return err
+}
+
+// Reissue gives an existing session a new token in place of its old one. The
+// new row carries over everything the old one recorded about the sign-in: when
+// it began, how long it runs, whether its second step was passed, the
+// backoffice visit it holds and the device it belongs to. Only the cookie value
+// that finds it changes.
+//
+// The old row is left for the caller to delete, because the caller decides what
+// else ends with it. The new row goes in on q, so it commits or rolls back with
+// the caller's own writes. ErrSessionNotFound means there is no such session on
+// this account, or it has already run out — which is also what a session that a
+// concurrent request ended looks like by the time this runs.
+func (s *SessionStore) Reissue(ctx context.Context, q database.Queryer, userID, sessionID string) (string, error) {
+	if q == nil {
+		q = s.db
+	}
+	var record Session
+	err := q.QueryRow(ctx,
+		`SELECT id, user_id, created_at, expires_at, last_seen_at, ip, user_agent,
+		   two_factor_pending, backoffice_at, backoffice_ip, backoffice_ua, device_id
+		 FROM sessions WHERE id = ? AND user_id = ? AND expires_at > ?`,
+		sessionID, userID, time.Now().UnixMilli()).Scan(
+		&record.ID, &record.UserID, &record.CreatedAt, &record.ExpiresAt, &record.LastSeenAt,
+		&record.IP, &record.UserAgent, &record.TwoFactorPending,
+		&record.BackofficeAt, &record.BackofficeIP, &record.BackofficeUA, &record.DeviceID)
+	if database.IsNotFound(err) {
+		return "", ErrSessionNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("auth: read session: %w", err)
+	}
+
+	token := id.Secret(TokenBytes)
+	record.ID = HashToken(token)
+	if err := s.insert(ctx, q, record); err != nil {
+		return "", fmt.Errorf("auth: reissue session: %w", err)
+	}
+	return token, nil
 }
 
 // GetWithUser resolves a cookie to its session and the account that owns it.
@@ -179,7 +242,10 @@ func (s *SessionStore) GetWithUser(ctx context.Context, token string) (Session, 
 		_ = s.DeleteByID(ctx, key)
 		return Session{}, user.User{}, ErrSessionNotFound
 	}
-	account, err = user.NewStore(s.db).ResolveMembership(ctx, nil, account)
+	// The join's own store: it carries the plugin gate and the runtime fields
+	// the join was built from. A fresh store would name the columns of plugins
+	// that are switched off and leave out runtime-installed ones.
+	account, err = s.users.ResolveMembership(ctx, nil, account)
 	return record, account, err
 }
 
@@ -223,6 +289,21 @@ func (s *SessionStore) EnterBackofficeVisit(ctx context.Context, sessionID strin
 func (s *SessionStore) SetBackofficeAt(ctx context.Context, sessionID string, at int64) error {
 	if _, err := s.db.Exec(ctx, `UPDATE sessions SET backoffice_at = ? WHERE id = ?`, at, sessionID); err != nil {
 		return fmt.Errorf("auth: record backoffice entry: %w", err)
+	}
+	return nil
+}
+
+// ExtendBackofficeVisit slides an open visit forward to at. It writes only
+// while the row shows a visit open and last slid before notBefore. The caller
+// decided from a snapshot, which may be stale: a request that read the visit
+// before LeaveBackoffice closed it must not reopen it, and parallel requests
+// holding the same snapshot write once between them. One statement, so the
+// check and the write are the same row operation on both engines.
+func (s *SessionStore) ExtendBackofficeVisit(ctx context.Context, sessionID string, at, notBefore int64) error {
+	if _, err := s.db.Exec(ctx,
+		`UPDATE sessions SET backoffice_at = ? WHERE id = ? AND backoffice_at <> 0 AND backoffice_at < ?`,
+		at, sessionID, notBefore); err != nil {
+		return fmt.Errorf("auth: extend backoffice visit: %w", err)
 	}
 	return nil
 }
@@ -296,9 +377,11 @@ func (s *SessionStore) DeleteByPrefixForUser(ctx context.Context, userID, prefix
 	if err != nil {
 		return false, fmt.Errorf("auth: revoke session: %w", err)
 	}
+	// A driver that cannot say how many rows went is a failure, not "no such
+	// session": reporting it as a miss turns a server fault into a 404.
 	removed, err := result.RowsAffected()
 	if err != nil {
-		return false, nil
+		return false, fmt.Errorf("auth: revoke session rows: %w", err)
 	}
 	return removed > 0, nil
 }
@@ -313,9 +396,11 @@ func (s *SessionStore) DeleteOthers(ctx context.Context, userID, keepSessionID s
 	if err != nil {
 		return 0, fmt.Errorf("auth: revoke other sessions: %w", err)
 	}
+	// As DeleteByPrefixForUser: the DELETE may already have committed, so an
+	// unknown count is an error to report, not a zero.
 	removed, err := result.RowsAffected()
 	if err != nil {
-		return 0, nil
+		return 0, fmt.Errorf("auth: count other sessions revoked: %w", err)
 	}
 	return removed, nil
 }
@@ -342,7 +427,7 @@ func (s *SessionStore) DeleteExpired(ctx context.Context) (int64, error) {
 	}
 	removed, err := result.RowsAffected()
 	if err != nil {
-		return 0, nil
+		return 0, fmt.Errorf("auth: count pruned sessions: %w", err)
 	}
 	return removed, nil
 }

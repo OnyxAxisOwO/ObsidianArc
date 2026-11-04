@@ -5,34 +5,34 @@ import (
 	"html"
 )
 
-// replaceTitle swaps the shell's <title> text for the configured browser
-// title. A byte-level substitution rather than html/template: the document is
-// this project's own build output, not anything untrusted, and pulling in a
-// templating package to fill in one tag would be the kind of dependency
-// AGENTS.md asks to stop and question rather than reach for.
+// replaceBetween replaces the bytes after the first open marker, up to the next
+// closing marker, with value. A byte-level substitution rather than html/template:
+// the document is this project's own build output, not anything untrusted, and
+// pulling in a templating package to fill in one tag would be the kind of
+// dependency AGENTS.md asks to stop and question rather than reach for.
 //
-// Absent or malformed markup is left untouched: a title an operator cannot
-// see is a smaller failure than a handler that panics because a future build
-// changed how the shell writes its own tag.
-func replaceTitle(index []byte, title string) []byte {
-	const open = "<title>"
-	const close = "</title>"
-
+// Absent or malformed markup is left untouched: a title an operator cannot see is
+// a smaller failure than a handler that panics because a future build changed how
+// the shell writes its own tag.
+func replaceBetween(index []byte, open, closing, value string) []byte {
 	start := bytes.Index(index, []byte(open))
 	if start < 0 {
 		return index
 	}
-	contentStart := start + len(open)
-	end := bytes.Index(index[contentStart:], []byte(close))
+	valueStart := start + len(open)
+	end := bytes.Index(index[valueStart:], []byte(closing))
 	if end < 0 {
 		return index
 	}
-	end += contentStart
+	return spliced(index, valueStart, valueStart+end, []byte(value))
+}
 
+// replaceTitle swaps the shell's <title> text for the configured browser title.
+func replaceTitle(index []byte, title string) []byte {
 	// Escaped because, unlike the colour below, this is free text an operator
 	// typed into a settings field — it ends up inside markup, not inside an
 	// attribute value with its own quoting.
-	return spliced(index, contentStart, end, []byte(html.EscapeString(title)))
+	return replaceBetween(index, "<title>", "</title>", html.EscapeString(title))
 }
 
 // replaceThemeColor swaps the shell's static theme-color value for the
@@ -40,47 +40,21 @@ func replaceTitle(index []byte, title string) []byte {
 // the same neutral default the interface's own theme picker starts from — so
 // this only ever finds a value to replace.
 func replaceThemeColor(index []byte, color string) []byte {
-	const marker = `<meta name="theme-color" content="`
-
-	start := bytes.Index(index, []byte(marker))
-	if start < 0 {
-		return index
-	}
-	valueStart := start + len(marker)
-	valueEnd := bytes.IndexByte(index[valueStart:], '"')
-	if valueEnd < 0 {
-		return index
-	}
-	valueEnd += valueStart
-
 	// Not escaped: callers only ever pass a value settings.ValidHexColor has
 	// already accepted, which is `#` and six hex digits — none of them
 	// meaningful to an HTML attribute parser.
-	return spliced(index, valueStart, valueEnd, []byte(color))
+	return replaceBetween(index, `<meta name="theme-color" content="`, `"`, color)
 }
 
 // replaceFavicon swaps the shell's <link rel="icon"> href value for the
 // configured custom logo or favicon URL.
 func replaceFavicon(index []byte, faviconURL string) []byte {
-	const marker = `<link rel="icon" href="`
-
-	start := bytes.Index(index, []byte(marker))
-	if start < 0 {
-		return index
-	}
-	valueStart := start + len(marker)
-	valueEnd := bytes.IndexByte(index[valueStart:], '"')
-	if valueEnd < 0 {
-		return index
-	}
-	valueEnd += valueStart
-
-	return spliced(index, valueStart, valueEnd, []byte(html.EscapeString(faviconURL)))
+	return replaceBetween(index, `<link rel="icon" href="`, `"`, html.EscapeString(faviconURL))
 }
 
 // spliced returns index with the bytes between start and end replaced by
-// replacement. Shared by both substitutions above so there is one place that
-// gets the byte arithmetic right rather than two.
+// replacement. replaceBetween is its only caller, so the byte arithmetic that
+// every substitution depends on is written once.
 func spliced(index []byte, start, end int, replacement []byte) []byte {
 	out := make([]byte, 0, len(index)-(end-start)+len(replacement))
 	out = append(out, index[:start]...)

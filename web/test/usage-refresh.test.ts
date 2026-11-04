@@ -15,14 +15,19 @@ import { createApp, h, nextTick, ref, type App } from 'vue';
 import { ApiError, api } from '@/api/client';
 import { providePanelHost } from '@/composables/usePanelHost';
 import UsagePanel from '@/views/UsagePanel.vue';
-import AdminUsage from '@/views/admin/AdminUsage.vue';
-import { provideAdminView } from '@/views/admin/adminView';
+import { toggleCategory, toggleSafeMode } from '@/admin/safeMode';
+import { t } from '@/composables/useI18n';
 
 // Both surfaces agree on the pace, so the test pins the number rather than
 // importing it from either view.
 const REFRESH_MS = 15000;
 
-vi.mock('@/api/client', () => ({
+// The client's mock is built once, outside the factory. Each admin mount
+// resets the module registry (see freshAdminUsage), which runs the factory
+// again; a class or a vi.fn made inside it would then be a different one from
+// the `get` and `ApiError` this file holds, so a route set before the mount
+// would never be called and `instanceof ApiError` in the page would be false.
+const client = vi.hoisted(() => ({
   ApiError: class ApiError extends Error {
     readonly status: number;
     readonly code: string;
@@ -35,9 +40,15 @@ vi.mock('@/api/client', () => ({
       this.details = details;
     }
   },
+  get: vi.fn(),
+  post: vi.fn(),
+}));
+
+vi.mock('@/api/client', () => ({
+  ApiError: client.ApiError,
   api: {
-    get: vi.fn() as unknown as <T>(url: string) => Promise<T>,
-    post: vi.fn() as unknown as <T>(url: string, body?: unknown) => Promise<T>,
+    get: client.get as unknown as <T>(url: string) => Promise<T>,
+    post: client.post as unknown as <T>(url: string, body?: unknown) => Promise<T>,
   },
 }));
 
@@ -60,7 +71,6 @@ beforeEach(() => {
 afterEach(() => {
   app?.unmount();
   app = null;
-  document.body.textContent = '';
   vi.clearAllMocks();
   vi.useRealTimers();
 });
@@ -161,18 +171,104 @@ describe('UsagePanel', () => {
 
     mountPanel();
     await advance(0);
-    expect(document.body.textContent).toContain('boom');
+    // A server failure's sentence was written for logs, so the reader gets the
+    // panel's own line rather than the English it came with.
+    expect(document.body.textContent).not.toContain('boom');
+    expect(document.body.textContent).toContain(t('usageUnavailable'));
 
     down = false;
     await advance(REFRESH_MS);
 
-    expect(document.body.textContent).not.toContain('boom');
+    expect(document.body.textContent).not.toContain(t('usageUnavailable'));
     expect(document.body.textContent).toContain('5');
+  });
+
+  it('does not paint an older history read over a newer one', async () => {
+    let historyReads = 0;
+    let releaseStale!: (value: unknown) => void;
+    get.mockImplementation(async (url: string) => {
+      if (url === '/api/usage/me/history') {
+        historyReads += 1;
+        if (historyReads === 1) return { totals: totals(1), turns: [] };
+        // The first periodic read, held open past the next one.
+        if (historyReads === 2) return new Promise((resolve) => { releaseStale = resolve; });
+        return { totals: totals(777), turns: [] };
+      }
+      return panelRoutes({ totals: totals(0), turns: [] })(url);
+    });
+
+    mountPanel();
+    await advance(0);
+    await advance(REFRESH_MS);
+    await advance(REFRESH_MS);
+    expect(historyReads).toBe(3);
+    expect(document.body.textContent).toContain('777');
+
+    releaseStale({ totals: totals(333), turns: [] });
+    await advance(0);
+
+    expect(document.body.textContent).toContain('777');
+    expect(document.body.textContent).not.toContain('333');
+  });
+
+  it('does not put back a card spent while an earlier periodic read was on its way', async () => {
+    const card = { id: 'c1', source: 'grant', expires_at: Date.now() + 86_400_000, windows: [] };
+    let cardReads = 0;
+    let releaseStale!: (value: unknown) => void;
+    get.mockImplementation(async (url: string) => {
+      if (url === '/api/usage/cards') {
+        cardReads += 1;
+        if (cardReads === 1) return { cards: [card] };
+        // The periodic read that was asked for before the spend, held open.
+        if (cardReads === 2) return new Promise((resolve) => { releaseStale = resolve; });
+        return { cards: [] };
+      }
+      return panelRoutes({ totals: totals(0), turns: [] })(url);
+    });
+    vi.mocked(api.post).mockResolvedValue(undefined);
+
+    mountPanel();
+    await advance(0);
+    const useButton = (): HTMLButtonElement | undefined =>
+      [...document.body.querySelectorAll<HTMLButtonElement>('button')]
+        .find((node) => node.textContent?.trim() === t('cardUse'));
+    expect(useButton()).toBeDefined();
+
+    await advance(REFRESH_MS);
+    useButton()!.click();
+    await advance(0);
+    expect(cardReads).toBe(3);
+
+    releaseStale({ cards: [card] });
+    await advance(0);
+
+    expect(useButton()).toBeUndefined();
   });
 });
 
+/**
+ * The admin page and the view context it reads, from a module registry of
+ * their own. AdminUsage remembers the range, filters and tabs an operator left
+ * it on in module-level variables, so a page imported once for the whole file
+ * would start each test where the previous one left it, and a test's outcome
+ * would depend on the order it ran in. adminView comes from the same registry,
+ * since its injection key is a module-level Symbol. The backoffice's English
+ * is added to the new registry's dictionary as test/setup.ts adds it to the
+ * first one, or the page would draw its keys.
+ */
+async function freshAdminUsage() {
+  vi.resetModules();
+  await import('@/i18n.admin');
+  const [{ default: AdminUsage }, { provideAdminView }] = await Promise.all([
+    import('@/views/admin/AdminUsage.vue'),
+    import('@/views/admin/adminView'),
+  ]);
+  return { AdminUsage, provideAdminView };
+}
+
 /** Enough of the admin shell for a page that only names itself and renders. */
-function mountAdmin(): void {
+async function mountAdmin(): Promise<void> {
+  const { AdminUsage, provideAdminView } = await freshAdminUsage();
   const actionsHost = document.createElement('div');
   document.body.appendChild(actionsHost);
   app = createApp({
@@ -213,7 +309,7 @@ describe('AdminUsage', () => {
     let requests = 1;
     get.mockImplementation(async (url) => adminRoutes(adminPayload(requests))(url));
 
-    mountAdmin();
+    await mountAdmin();
     await advance(0);
     expect(document.body.textContent).toContain('1');
 
@@ -233,7 +329,7 @@ describe('AdminUsage', () => {
       return adminRoutes(null)(url);
     });
 
-    mountAdmin();
+    await mountAdmin();
     await advance(0);
     await advance(REFRESH_MS);
 
@@ -251,7 +347,7 @@ describe('AdminUsage', () => {
       return adminRoutes(null)(url);
     });
 
-    mountAdmin();
+    await mountAdmin();
     await advance(0);
     expect(document.body.textContent).toContain('boom');
 
@@ -273,7 +369,7 @@ describe('AdminUsage', () => {
     let state: DocumentVisibilityState = 'hidden';
     const visibility = vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => state);
     try {
-      mountAdmin();
+      await mountAdmin();
       await advance(0);
       await advance(REFRESH_MS * 3);
       expect(reads).toBe(1);
@@ -301,7 +397,7 @@ describe('AdminUsage', () => {
       return adminRoutes(null)(url);
     });
 
-    mountAdmin();
+    await mountAdmin();
     await advance(0);
     expect(usageSignals).toHaveLength(1);
     expect(usageSignals[0]?.aborted).toBe(false);
@@ -331,7 +427,7 @@ describe('AdminUsage', () => {
       return adminRoutes(null)(url);
     });
 
-    mountAdmin();
+    await mountAdmin();
     await advance(0);
     expect(activeSignal).toBeDefined();
     expect(activeSignal?.aborted).toBe(false);
@@ -358,7 +454,7 @@ describe('AdminUsage', () => {
       return adminRoutes(null)(url);
     });
 
-    mountAdmin();
+    await mountAdmin();
     await advance(0);
     expect(recordsSignals).toHaveLength(1);
     expect(recordsSignals[0]?.aborted).toBe(false);
@@ -390,7 +486,7 @@ describe('AdminUsage', () => {
       return adminRoutes(null)(url);
     });
 
-    mountAdmin();
+    await mountAdmin();
     await advance(0);
 
     // Switch range preset to abort initial request
@@ -399,5 +495,375 @@ describe('AdminUsage', () => {
     await advance(0);
 
     expect(document.querySelector('.oa-banner-error')).toBeNull();
+  });
+
+  // The summary's live figure can come out of a cache fifteen seconds old; the
+  // poll is the fresh one, and a refresh must not step the header back.
+  it('takes the live rate from its own poll, not from the summary', async () => {
+    get.mockImplementation(async (url: string) => {
+      if (url.startsWith('/api/admin/usage/rpm')) return { rpm: 3 };
+      if (url.startsWith('/api/admin/usage?')) return { ...adminPayload(1), current_rpm: 99 };
+      return adminRoutes(null)(url);
+    });
+
+    await mountAdmin();
+    await advance(0);
+    await advance(REFRESH_MS);
+
+    const live = document.querySelector('.oa-report-live')?.textContent ?? '';
+    expect(live).toBe(t('liveRPM', { count: '3' }));
+  });
+
+  // The report does not depend on the ledger page, and over a long range the
+  // ledger's count is often the slower of the two.
+  it('draws the figures before the ledger page has answered', async () => {
+    get.mockImplementation(async (url: string) => {
+      if (url.startsWith('/api/admin/usage/records')) return new Promise(() => {});
+      if (url.startsWith('/api/admin/usage?')) return adminPayload(42);
+      return adminRoutes(null)(url);
+    });
+
+    await mountAdmin();
+    await advance(0);
+
+    expect(document.body.textContent).toContain('42');
+  });
+
+  // A count slower than the interval used to be cancelled and asked again on
+  // every tick, and so never arrived.
+  it('lets a slow ledger request finish rather than restarting it each tick', async () => {
+    const signals: AbortSignal[] = [];
+    let finish!: (value: unknown) => void;
+    get.mockImplementation(async (url: string, options?: { signal?: AbortSignal }) => {
+      if (url.startsWith('/api/admin/usage/records')) {
+        if (options?.signal) signals.push(options.signal);
+        if (signals.length === 1) return new Promise((resolve) => { finish = resolve; });
+        return { records: [], total: 0 };
+      }
+      return adminRoutes(adminPayload(1))(url);
+    });
+
+    await mountAdmin();
+    await advance(0);
+    await advance(REFRESH_MS * 2);
+
+    expect(signals).toHaveLength(1);
+    expect(signals[0]?.aborted).toBe(false);
+
+    finish({ records: [], total: 0 });
+    await advance(0);
+    await advance(REFRESH_MS);
+    expect(signals).toHaveLength(2);
+  });
+
+  // A summary that fails while the ledger is still out must not drop the
+  // ledger's controller: leaving the page has to cancel that request too.
+  it('still cancels the ledger request on leaving after the summary failed', async () => {
+    let recordSignal: AbortSignal | undefined;
+    get.mockImplementation(async (url: string, options?: { signal?: AbortSignal }) => {
+      if (url.startsWith('/api/admin/usage/records')) {
+        recordSignal = options?.signal;
+        return new Promise(() => {});
+      }
+      if (url.startsWith('/api/admin/usage?')) throw new ApiError(500, 'internal', 'boom');
+      return adminRoutes(null)(url);
+    });
+
+    await mountAdmin();
+    await advance(0);
+    expect(recordSignal?.aborted).toBe(false);
+
+    app?.unmount();
+    app = null;
+    expect(recordSignal?.aborted).toBe(true);
+  });
+});
+
+// A ULID, the only shape the page accepts from a link as a filter.
+const MODEL_ID = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
+const ACCOUNT_ID = '01BX5ZZKBKACTAV9WEVGEMMVRZ';
+
+describe('AdminUsage windows and filters', () => {
+  afterEach(() => {
+    window.history.replaceState(null, '', '/');
+    toggleSafeMode(false);
+    toggleCategory('users', false);
+    toggleCategory('providers', false);
+  });
+
+  // A preset is the last N hours as of the request. A page left open must ask
+  // for the window that ends now, not the one that ended when it was opened.
+  it('asks for a preset window that moves forward while the page is open', async () => {
+    const since: number[] = [];
+    get.mockImplementation(async (url: string) => {
+      if (url.startsWith('/api/admin/usage?')) {
+        since.push(Number(new URL(url, 'http://localhost').searchParams.get('since')));
+        return adminPayload(1);
+      }
+      return adminRoutes(null)(url);
+    });
+
+    await mountAdmin();
+    await advance(0);
+    // The 24-hour preset is the second button in the range row.
+    document.querySelectorAll<HTMLButtonElement>('.oa-range button')[1]!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await advance(0);
+    const opened = since.at(-1)!;
+
+    vi.setSystemTime(Date.now() + 3 * 3600_000);
+    await advance(REFRESH_MS);
+    const refreshed = since.at(-1)!;
+
+    expect(refreshed).toBeGreaterThan(opened);
+    expect(Math.abs(refreshed - (Date.now() - 24 * 3600_000))).toBeLessThan(REFRESH_MS);
+  });
+
+  // The header's live rate is narrowed by the filters, as every figure beside
+  // it is, so the poll has to ask under the same ones.
+  it('reads the live rate under the same filters as the figures beside it', async () => {
+    window.history.replaceState(null, '', `/admin/usage?model=${MODEL_ID}`);
+    const rates: string[] = [];
+    get.mockImplementation(async (url: string) => {
+      if (url.startsWith('/api/admin/usage/rpm')) {
+        rates.push(url);
+        return { rpm: 2 };
+      }
+      if (url.startsWith('/api/admin/usage?')) return adminPayload(1);
+      return adminRoutes(null)(url);
+    });
+
+    await mountAdmin();
+    await advance(0);
+    await advance(10_000);
+
+    expect(rates.length).toBeGreaterThan(0);
+    expect(rates.every((url) => url.includes(`model_id=${MODEL_ID}`))).toBe(true);
+  });
+
+  // The page refreshes every fifteen seconds. A refresh that brings the same
+  // models must not reset the menu someone is moving through.
+  it('keeps an open model menu where it was through a refresh', async () => {
+    const models = ['alpha', 'beta', 'gamma', 'delta'].map((key) => ({
+      key, label: `Model ${key}`, detail: '', requests: 1, users: 1, models: 1, errors: 0, total_tokens: 0, credits: 0, input_tokens: 0, output_tokens: 0, reasoning_tokens: 0,
+    }));
+    get.mockImplementation(async (url: string) => {
+      if (url.startsWith('/api/admin/usage?')) return { ...adminPayload(4), by_model: models };
+      return adminRoutes(null)(url);
+    });
+
+    await mountAdmin();
+    await advance(0);
+    const trigger = document.querySelector<HTMLElement>('.oa-filter-select .oa-select') ?? document.querySelector<HTMLElement>('.oa-filter-select');
+    expect(trigger).not.toBeNull();
+    trigger!.click();
+    await advance(0);
+    for (let i = 0; i < 2; i++) {
+      trigger!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    }
+    await advance(0);
+    const optionsBefore = [...document.querySelectorAll<HTMLElement>('[role="option"]')];
+    expect(optionsBefore.length).toBeGreaterThan(2);
+    expect(optionsBefore[2]!.classList.contains('active')).toBe(true);
+
+    await advance(REFRESH_MS);
+
+    const optionsAfter = [...document.querySelectorAll<HTMLElement>('[role="option"]')];
+    expect(optionsAfter[2]!.classList.contains('active')).toBe(true);
+    expect(optionsAfter[0]!.classList.contains('active')).toBe(false);
+  });
+
+  it('does not write an account name into the focus banner under safe mode', async () => {
+    window.history.replaceState(null, '', `/admin/usage?user=${ACCOUNT_ID}`);
+    toggleSafeMode(true);
+    toggleCategory('users', true);
+    get.mockImplementation(async (url: string) => {
+      if (url.startsWith('/api/admin/usage?')) {
+        return {
+          ...adminPayload(4),
+          by_user: [{ key: ACCOUNT_ID, label: 'Alice Example', detail: 'alice', requests: 4, users: 1, models: 1, errors: 0, total_tokens: 0, credits: 0, input_tokens: 0, output_tokens: 0, reasoning_tokens: 0 }],
+        };
+      }
+      return adminRoutes(null)(url);
+    });
+
+    await mountAdmin();
+    await advance(0);
+
+    const banner = document.querySelector<HTMLElement>('.oa-report-focus');
+    expect(banner).not.toBeNull();
+    expect(banner!.textContent).not.toContain('Alice');
+    expect(banner!.textContent).not.toContain('alice');
+    expect(banner!.getAttribute('aria-label')).not.toContain('Alice');
+    expect(document.querySelectorAll<HTMLElement>('.oa-filter-select')[1]?.textContent).not.toContain('Alice');
+  });
+
+  // A model's second line is the provider serving it, and the provider menu
+  // names providers outright. Both stay hidden under the providers category,
+  // in the menus and in the banner a chosen model writes out.
+  it('does not write a provider name into the model menu, provider menu or focus banner under safe mode', async () => {
+    toggleSafeMode(true);
+    toggleCategory('providers', true);
+    const figures = { requests: 4, users: 1, models: 1, errors: 0, total_tokens: 0, credits: 0, input_tokens: 0, output_tokens: 0, reasoning_tokens: 0 };
+    get.mockImplementation(async (url: string) => {
+      if (url.startsWith('/api/admin/usage?')) {
+        return {
+          ...adminPayload(4),
+          by_model: [{ key: MODEL_ID, label: 'Model Alpha', detail: 'Provider Zeta', ...figures }],
+          by_provider: [{ key: 'zeta', label: 'Provider Zeta', detail: '', ...figures }],
+        };
+      }
+      return adminRoutes(null)(url);
+    });
+
+    await mountAdmin();
+    await advance(0);
+    const optionText = (): string => [...document.querySelectorAll<HTMLElement>('[role="option"]')].map((node) => node.textContent ?? '').join(' | ');
+
+    // Index 0 is the model filter, 3 the provider filter. Option 0 is "all", option 1 the model.
+    document.querySelectorAll<HTMLElement>('.oa-filter-select')[0]!.click();
+    await advance(0);
+    expect(optionText()).toContain('Model Alpha · ******');
+    expect(optionText()).not.toContain('Provider Zeta');
+    document.querySelectorAll<HTMLElement>('[role="option"]')[1]!.click();
+    await advance(0);
+
+    const banner = document.querySelector<HTMLElement>('.oa-report-focus');
+    expect(banner).not.toBeNull();
+    expect(banner!.textContent).toContain('Model Alpha');
+    expect(banner!.textContent).not.toContain('Provider Zeta');
+
+    document.querySelectorAll<HTMLElement>('.oa-filter-select')[3]!.click();
+    await advance(0);
+    expect(optionText()).toContain('******');
+    expect(optionText()).not.toContain('Provider Zeta');
+  });
+
+  it('reads outcome labels on the outcomes board while providers are masked', async () => {
+    toggleSafeMode(true);
+    toggleCategory('providers', true);
+    get.mockImplementation(async (url: string) => {
+      if (url.startsWith('/api/admin/usage?')) {
+        return {
+          ...adminPayload(4),
+          by_status: [{ key: 'error', label: '', detail: '', requests: 4, users: 1, models: 1, errors: 4, total_tokens: 0, credits: 0, input_tokens: 0, output_tokens: 0, reasoning_tokens: 0 }],
+        };
+      }
+      return adminRoutes(null)(url);
+    });
+
+    await mountAdmin();
+    await advance(0);
+    const outcomes = [...document.querySelectorAll<HTMLButtonElement>('#secSpread .oa-segment button')]
+      .find((button) => button.textContent?.trim() === t('spreadOutcomes'));
+    expect(outcomes).toBeDefined();
+    outcomes!.click();
+    await advance(0);
+
+    expect(document.querySelector<HTMLElement>('#secSpread')?.textContent).toContain(t('statusFailed'));
+  });
+});
+
+describe('AdminUsage ledger and custom range', () => {
+  /** Clicks the button under root whose text is label. */
+  function clickButtonLabelled(root: string, label: string): void {
+    const found = [...document.querySelectorAll<HTMLButtonElement>(root)].find((node) => node.textContent?.trim() === label);
+    if (!found) throw new Error(`Missing button: ${label}`);
+    found.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  }
+
+  /** The custom range dialog is an OaPanel, which needs a panel host as the layout provides one. */
+  async function mountAdminWithPanel(): Promise<void> {
+    const { AdminUsage, provideAdminView } = await freshAdminUsage();
+    // The panel host's injection key is module-level too, so it has to come
+    // from the registry the page was just imported from.
+    const { providePanelHost } = await import('@/composables/usePanelHost');
+    const actionsHost = document.createElement('div');
+    const panelHost = document.createElement('div');
+    document.body.append(actionsHost, panelHost);
+    app = createApp({
+      setup() {
+        provideAdminView({ setTitle: () => {}, reload: () => {}, params: [], actionsHost });
+        providePanelHost(ref(panelHost));
+      },
+      render: () => h(AdminUsage),
+    });
+    app.mount(host);
+  }
+
+  // A ledger that did not load is reported where the ledger is. It used to
+  // replace the whole report, and the message began with the class name, since
+  // String() of an error is "ApiError: ...".
+  it('shows a failed ledger inside its block and keeps the figures', async () => {
+    get.mockImplementation(async (url: string) => {
+      if (url.startsWith('/api/admin/usage?')) return adminPayload(7);
+      if (url.startsWith('/api/admin/usage/records')) throw new ApiError(500, 'internal', 'ledger is down');
+      return adminRoutes(null)(url);
+    });
+
+    await mountAdmin();
+    await advance(0);
+
+    const notices = document.querySelectorAll('.oa-notice-body');
+    expect(notices).toHaveLength(1);
+    expect(document.querySelector('#secRecords .oa-notice-body')?.textContent).toBe('ledger is down');
+    expect(document.body.textContent).not.toContain('ApiError');
+    expect(document.body.textContent).toContain('7');
+  });
+
+  // The picker has minute precision and the server's until is exclusive. A day
+  // picked as "yesterday" has to reach the first instant of today, or its last
+  // minute is left out of every figure and of the ledger.
+  it('asks for the whole of a day picked as yesterday', async () => {
+    const until: number[] = [];
+    get.mockImplementation(async (url: string) => {
+      if (url.startsWith('/api/admin/usage?')) {
+        until.push(Number(new URL(url, 'http://localhost').searchParams.get('until')));
+        return adminPayload(1);
+      }
+      return adminRoutes(null)(url);
+    });
+
+    await mountAdminWithPanel();
+    await advance(0);
+    clickButtonLabelled('.oa-range button', t('rangeCustomShort'));
+    await advance(0);
+    clickButtonLabelled('.oa-chip-btn', t('presetYesterday'));
+    await advance(0);
+    clickButtonLabelled('button', t('apply'));
+    await advance(0);
+
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    expect(until.at(-1)).toBe(startOfToday.getTime());
+  });
+});
+
+describe('AdminUsage all-time preset', () => {
+  afterEach(() => {
+    window.history.replaceState(null, '', '/');
+  });
+
+  // Without since the server starts the window at thirty days, so the all
+  // preset has to send since=0 to get the widest window it labels itself as.
+  it('asks for the widest window rather than the thirty-day default', async () => {
+    const sent: URLSearchParams[] = [];
+    get.mockImplementation(async (url: string) => {
+      if (url.startsWith('/api/admin/usage?')) {
+        sent.push(new URL(url, 'http://localhost').searchParams);
+        return adminPayload(1);
+      }
+      return adminRoutes(null)(url);
+    });
+
+    await mountAdmin();
+    await advance(0);
+    const all = [...document.querySelectorAll<HTMLButtonElement>('.oa-range button')]
+      .find((button) => button.textContent?.trim() === t('rangeAllShort'));
+    expect(all).toBeDefined();
+    all!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await advance(0);
+
+    expect(sent.at(-1)!.has('since')).toBe(true);
+    expect(sent.at(-1)!.get('since')).toBe('0');
   });
 });

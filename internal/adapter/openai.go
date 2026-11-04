@@ -10,6 +10,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"net/url"
 	"strconv"
 	"strings"
 )
@@ -23,8 +24,6 @@ import (
 // on. Those differences are handled here, not by asking an operator to pick a
 // vendor from a list.
 type openAIAdapter struct{}
-
-func (openAIAdapter) Kind() Kind { return KindOpenAI }
 
 type openAIMessage struct {
 	Role string `json:"role"`
@@ -295,12 +294,12 @@ func (a openAIAdapter) Chat(ctx context.Context, client *http.Client, p Provider
 	}
 
 	if streaming && strings.Contains(strings.ToLower(response.Header.Get("Content-Type")), "text/event-stream") {
-		return a.readStream(ctx, response, sink)
+		return a.readStream(ctx, response, sink, p.APIKey)
 	}
 	if streaming {
 		result, err := a.readOnce(response)
 		if err != nil {
-			return Result{}, err
+			return result, err
 		}
 		result.StreamFallbackReason = "the endpoint answered with " +
 			fallbackContentType(response.Header.Get("Content-Type")) + " instead of an event stream"
@@ -328,15 +327,18 @@ func (openAIAdapter) readOnce(response *http.Response) (Result, error) {
 		Usage openAIUsage `json:"usage"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
-		return Result{}, &Error{Kind: ErrorUpstream, Message: "The provider returned a response we could not read.", cause: err}
+		return Result{}, unreadable(err, "The provider returned a response we could not read.")
 	}
+	// Every failure below arrives with usage the provider billed, so it goes
+	// out with the error; the same reasoning as the Anthropic reader's refusal.
+	usage := payload.Usage.toUsage()
 	if len(payload.Choices) == 0 {
-		return Result{}, &Error{Kind: ErrorUpstream, Message: "The provider returned no answer."}
+		return Result{Usage: usage}, &Error{Kind: ErrorUpstream, Message: "The provider returned no answer."}
 	}
 
 	choice := payload.Choices[0]
 	if choice.Message.Refusal != "" {
-		return Result{}, &Error{Kind: ErrorRefusal, Message: choice.Message.Refusal}
+		return Result{Usage: usage}, &Error{Kind: ErrorRefusal, Message: choice.Message.Refusal}
 	}
 
 	reasoning, answer := splitThinking(choice.Message.Content)
@@ -344,11 +346,14 @@ func (openAIAdapter) readOnce(response *http.Response) (Result, error) {
 		Text:         answer,
 		Reasoning:    firstNonEmpty(choice.Message.ReasoningContent, choice.Message.Reasoning) + reasoning,
 		FinishReason: choice.FinishReason,
-		Usage:        payload.Usage.toUsage(),
+		Usage:        usage,
 	}
 	for _, call := range choice.Message.ToolCalls {
 		if call.Function.Name == "" {
 			continue
+		}
+		if !wellFormedArguments(call.Function.Arguments) {
+			return Result{Usage: usage}, malformedArguments()
 		}
 		result.ToolCalls = append(result.ToolCalls, ToolCall{
 			ID:        call.ID,
@@ -417,24 +422,25 @@ type openAIToolCallDelta struct {
 // the index for exactly that reason.
 type toolCallAssembly struct {
 	calls []ToolCall
-	at    map[int]int
+	// Arguments are collected here, one builder per call and in the same
+	// order, and written onto the call at finish. Appending to the string on
+	// the call copied everything received so far on every fragment: quadratic
+	// in the length of the arguments, from a server that picks the length.
+	// Pointers because a Builder that has been written to must not be copied,
+	// and the slice grows.
+	arguments []*strings.Builder
+	at        map[int]int
+	// The call the previous fragment touched. A fragment with neither an
+	// index nor an id continues it.
+	last int
 }
 
-func (a *toolCallAssembly) absorb(fragments []openAIToolCallDelta) {
+// absorb takes one frame's fragments. It fails when a call's arguments pass
+// MaxToolArgumentBytes, which ends the stream rather than let a model that
+// never closes its JSON fill memory.
+func (a *toolCallAssembly) absorb(fragments []openAIToolCallDelta) error {
 	for _, fragment := range fragments {
-		index := 0
-		if fragment.Index != nil {
-			index = *fragment.Index
-		}
-		if a.at == nil {
-			a.at = map[int]int{}
-		}
-		position, seen := a.at[index]
-		if !seen {
-			position = len(a.calls)
-			a.at[index] = position
-			a.calls = append(a.calls, ToolCall{})
-		}
+		position := a.position(fragment)
 		if fragment.ID != "" {
 			a.calls[position].ID = fragment.ID
 		}
@@ -444,21 +450,119 @@ func (a *toolCallAssembly) absorb(fragments []openAIToolCallDelta) {
 		if fragment.Function.Name != "" {
 			a.calls[position].Name = fragment.Function.Name
 		}
-		a.calls[position].Arguments += fragment.Function.Arguments
+		if a.arguments[position].Len()+len(fragment.Function.Arguments) > MaxToolArgumentBytes {
+			return toolArgumentsTooLarge()
+		}
+		a.arguments[position].WriteString(fragment.Function.Arguments)
 	}
+	return nil
+}
+
+// position is the call a fragment belongs to, opening one when the fragment
+// is the first of its call.
+//
+// An index places a fragment exactly. Without one, the id does, and a fragment
+// with neither continues the call before it. A server that drops the index
+// while two calls are in flight is naming each call by id: two ids are two
+// calls, not one call with both sets of arguments run together.
+func (a *toolCallAssembly) position(fragment openAIToolCallDelta) int {
+	if a.at == nil {
+		a.at = map[int]int{}
+	}
+	var position int
+	switch {
+	case fragment.Index != nil:
+		known, seen := a.at[*fragment.Index]
+		if !seen {
+			// An index after an index-less opening fragment names that same
+			// call: the server gave the id first and the index afterwards.
+			// A call that already has an index of its own is not reused, since
+			// a second index is a second call.
+			known = a.continuation(fragment)
+			if known < 0 {
+				known = a.open()
+			}
+			a.at[*fragment.Index] = known
+		}
+		position = known
+	case fragment.ID != "":
+		position = a.callWithID(fragment.ID)
+		if position < 0 {
+			position = a.open()
+		}
+	case len(a.calls) > 0:
+		position = a.last
+	default:
+		position = a.open()
+	}
+	a.last = position
+	return position
+}
+
+// open starts a call and returns its position.
+func (a *toolCallAssembly) open() int {
+	a.calls = append(a.calls, ToolCall{})
+	a.arguments = append(a.arguments, &strings.Builder{})
+	return len(a.calls) - 1
+}
+
+// callWithID is the position of the call already holding id, or -1. A server
+// that sends the id on every fragment but the index on none is still one call.
+func (a *toolCallAssembly) callWithID(id string) int {
+	for position, call := range a.calls {
+		if call.ID == id {
+			return position
+		}
+	}
+	return -1
+}
+
+// bound reports whether an index already names the call at position.
+func (a *toolCallAssembly) bound(position int) bool {
+	for _, known := range a.at {
+		if known == position {
+			return true
+		}
+	}
+	return false
+}
+
+// continuation is the call a new index continues when it does not open one of
+// its own: the call its id names, or else the call before it if that call has
+// no index yet. It is -1 when neither applies.
+func (a *toolCallAssembly) continuation(fragment openAIToolCallDelta) int {
+	if fragment.ID != "" {
+		// Two parallel calls can share an id only through a server that repeats
+		// it carelessly. Joining a call already bound to another index would
+		// concatenate both argument strings into one, so a bound call is not
+		// reused here either.
+		position := a.callWithID(fragment.ID)
+		if position >= 0 && a.bound(position) {
+			return -1
+		}
+		return position
+	}
+	if len(a.calls) == 0 || a.bound(a.last) {
+		return -1
+	}
+	return a.last
 }
 
 // finish emits each assembled call, once, now that no more fragments are
 // coming.
 func (a *toolCallAssembly) finish(result *Result, sink Sink) error {
-	for _, call := range a.calls {
+	for position, call := range a.calls {
 		if call.Name == "" {
 			// Fragments for a call whose name never arrived. Nothing can be
 			// invoked from that, and forwarding it would have the client
 			// call a tool it does not have.
 			continue
 		}
-		call.Arguments = toolArguments(call.Arguments)
+		raw := a.arguments[position].String()
+		if !wellFormedArguments(raw) {
+			return malformedArguments()
+		}
+		call.Arguments = toolArguments(raw)
 		result.ToolCalls = append(result.ToolCalls, call)
 		if err := sink(Event{Type: EventToolCall, ToolCall: call}); err != nil {
 			return err
@@ -467,7 +571,7 @@ func (a *toolCallAssembly) finish(result *Result, sink Sink) error {
 	return nil
 }
 
-func (openAIAdapter) readStream(ctx context.Context, response *http.Response, sink Sink) (Result, error) {
+func (openAIAdapter) readStream(ctx context.Context, response *http.Response, sink Sink, secret string) (Result, error) {
 	result := Result{Streamed: true}
 	var sinkErr error
 
@@ -487,10 +591,23 @@ func (openAIAdapter) readStream(ctx context.Context, response *http.Response, si
 		// Kept across deltas rather than rebuilt per delta: see inlineThinking.
 		thinking inlineThinking
 		tools    toolCallAssembly
+		// The inline reasoning as of the last delta. The result's reasoning is
+		// joined from it and the field's once, in settle, rather than on every
+		// delta: joining two growing strings per delta copies both each time.
+		inlineSoFar string
 	)
+
+	settle := func() {
+		result.Reasoning = fieldReasoning.String() + inlineSoFar
+	}
 
 	flushContent := func(final bool) error {
 		inline, answer := thinking.split(content.String())
+		if final && thinking.unresolved() {
+			// The stream ended on a tag after text that never closed: it was
+			// the answer all along, and what was held back for it is released.
+			answer = content.String()
+		}
 
 		// A trailing `<th` is not yet text — it may be the start of a tag.
 		// Holding it back until the next delta is what stops a stray `<th`
@@ -500,9 +617,18 @@ func (openAIAdapter) readStream(ctx context.Context, response *http.Response, si
 			visible -= partialTagLen(answer, thinkOpen)
 		}
 
-		if len(inline) > emittedInline {
-			delta := inline[emittedInline:]
-			emittedInline = len(inline)
+		// The same holds for reasoning while its closing tag is still
+		// arriving: a trailing "</th" is not reasoning yet. Sent early, it
+		// stays in the events, and when the tag completes the reasoning comes
+		// out shorter than what was already sent.
+		shownInline := len(inline)
+		if !final && !thinking.closeFound {
+			shownInline -= partialTagLen(inline, thinkClose)
+		}
+
+		if shownInline > emittedInline {
+			delta := inline[emittedInline:shownInline]
+			emittedInline = shownInline
 			if err := sink(Event{Type: EventReasoning, Text: delta}); err != nil {
 				return err
 			}
@@ -515,7 +641,7 @@ func (openAIAdapter) readStream(ctx context.Context, response *http.Response, si
 			}
 		}
 		result.Text = answer
-		result.Reasoning = fieldReasoning.String() + inline
+		inlineSoFar = inline
 		return nil
 	}
 
@@ -525,7 +651,7 @@ func (openAIAdapter) readStream(ctx context.Context, response *http.Response, si
 			return nil
 		}
 		if chunk.Error.Message != "" {
-			return &Error{Kind: ErrorUpstream, Message: chunk.Error.Message}
+			return &Error{Kind: ErrorUpstream, Message: redactSecret(chunk.Error.Message, secret)}
 		}
 
 		for _, usage := range []*openAIUsage{chunk.Usage, chunk.XGroq.Usage} {
@@ -549,7 +675,6 @@ func (openAIAdapter) readStream(ctx context.Context, response *http.Response, si
 
 		if thought := firstNonEmpty(choice.Delta.ReasoningContent, choice.Delta.Reasoning); thought != "" {
 			fieldReasoning.WriteString(thought)
-			result.Reasoning = fieldReasoning.String()
 			if err := sink(Event{Type: EventReasoning, Text: thought}); err != nil {
 				sinkErr = err
 				return err
@@ -559,7 +684,9 @@ func (openAIAdapter) readStream(ctx context.Context, response *http.Response, si
 		// Before the early return below: a tool-call frame usually carries no
 		// content at all, so reading it after that test would read none of
 		// them.
-		tools.absorb(choice.Delta.ToolCalls)
+		if err := tools.absorb(choice.Delta.ToolCalls); err != nil {
+			return err
+		}
 
 		if choice.Delta.Content == "" {
 			return nil
@@ -572,7 +699,10 @@ func (openAIAdapter) readStream(ctx context.Context, response *http.Response, si
 		return nil
 	})
 
+	// Every return below carries the reasoning seen so far, including the ones
+	// for a stream that failed part-way.
 	if err != nil {
+		settle()
 		if sinkErr != nil {
 			return result, sinkErr
 		}
@@ -585,7 +715,9 @@ func (openAIAdapter) readStream(ctx context.Context, response *http.Response, si
 
 	// Release anything held back as a possible tag prefix now that no more
 	// deltas are coming.
-	if err := flushContent(true); err != nil {
+	err = flushContent(true)
+	settle()
+	if err != nil {
 		return result, err
 	}
 	if err := tools.finish(&result, sink); err != nil {
@@ -663,7 +795,7 @@ func (openAIAdapter) GenerateImage(ctx context.Context, client *http.Client, p P
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
-		return ImageResult{}, &Error{Kind: ErrorUpstream, Message: "The provider returned an image response we could not read.", cause: err}
+		return ImageResult{}, unreadable(err, "The provider returned an image response we could not read.")
 	}
 	if len(payload.Data) == 0 {
 		return ImageResult{}, &Error{Kind: ErrorUpstream, Message: "The provider returned no images."}
@@ -758,30 +890,71 @@ func imageExtension(mime string) string {
 	}
 }
 
-func (anthropicAdapter) ListModels(ctx context.Context, client *http.Client, p Provider) ([]RemoteModel, error) {
-	return listModels(ctx, client, p)
-}
+// maxModelPages bounds how far an Anthropic listing is followed. Each page is
+// up to 200 models, so this is far beyond any real account; it exists so that
+// an endpoint that keeps answering has_more cannot hold the admin catalogue
+// open indefinitely.
+const maxModelPages = 10
 
 // Both protocols answer a models listing with `{"data": [...]}`, differing
 // only in whether entries carry a display name, so one implementation serves
-// both.
+// both. Anthropic pages its listing and says so with has_more and last_id; the
+// OpenAI shape has no such fields, so only the Anthropic kind follows the
+// cursor.
 func listModels(ctx context.Context, client *http.Client, p Provider) ([]RemoteModel, error) {
-	endpoint := modelsEndpoint(p.Kind, p.BaseURL)
+	first := modelsEndpoint(p.Kind, p.BaseURL)
+	endpoint := first
+	out := []RemoteModel{}
+	for range maxModelPages {
+		page, err := listModelsPage(ctx, client, p, endpoint)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, page.models...)
+		if p.Kind != KindAnthropic || !page.hasMore || page.lastID == "" {
+			break
+		}
+		// The first page's endpoint already carries a query (limit=200), so
+		// the cursor is appended to it rather than starting a new one.
+		endpoint = first + "&after_id=" + url.QueryEscape(page.lastID)
+	}
+	return out, nil
+}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+// modelsPage is one answer to a models listing and where the next one starts.
+type modelsPage struct {
+	models  []RemoteModel
+	hasMore bool
+	lastID  string
+}
+
+// listModelsPage fetches one page. It is bounded the way post bounds a
+// request: the provider's own timeout applies until its headers arrive, so a
+// listing from the admin catalogue cannot outlast the setting the operator
+// chose for that provider.
+func listModelsPage(ctx context.Context, client *http.Client, p Provider, endpoint string) (modelsPage, error) {
+	send, timedOut, done := providerDeadline(ctx, p)
+
+	req, err := http.NewRequestWithContext(send, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return nil, &Error{Kind: ErrorInvalidRequest, Message: "Invalid provider endpoint.", cause: err}
+		done(nil, err)
+		return modelsPage{}, &Error{Kind: ErrorInvalidRequest, Message: "Invalid provider endpoint.", cause: err}
 	}
 	applyHeaders(req, p)
 
 	response, err := client.Do(req)
 	if err != nil {
-		return nil, networkError(ctx, err)
+		done(nil, err)
+		if timedOut() {
+			return modelsPage{}, providerTimedOut(err)
+		}
+		return modelsPage{}, networkError(ctx, err)
 	}
+	response = limitResponse(done(response, nil))
 	defer response.Body.Close()
 
 	if response.StatusCode >= 400 {
-		return nil, classifyHTTP(p, endpoint, response.StatusCode,
+		return modelsPage{}, classifyHTTP(p, endpoint, response.StatusCode,
 			response.Header.Get("Retry-After"), readErrorBody(response), false)
 	}
 
@@ -796,9 +969,11 @@ func listModels(ctx context.Context, client *http.Client, p Provider) ([]RemoteM
 			Name        string `json:"name"`
 			DisplayName string `json:"display_name"`
 		} `json:"models"`
+		HasMore bool   `json:"has_more"`
+		LastID  string `json:"last_id"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
-		return nil, &Error{Kind: ErrorUpstream, Message: "The endpoint answered with something other than a model list.", cause: err}
+		return modelsPage{}, unreadable(err, "The endpoint answered with something other than a model list.")
 	}
 
 	entries := payload.Data
@@ -806,7 +981,11 @@ func listModels(ctx context.Context, client *http.Client, p Provider) ([]RemoteM
 		entries = payload.Models
 	}
 
-	out := make([]RemoteModel, 0, len(entries))
+	page := modelsPage{
+		models:  make([]RemoteModel, 0, len(entries)),
+		hasMore: payload.HasMore,
+		lastID:  payload.LastID,
+	}
 	for _, entry := range entries {
 		id := firstNonEmpty(entry.ID, entry.Name)
 		if id == "" {
@@ -816,9 +995,9 @@ func listModels(ctx context.Context, client *http.Client, p Provider) ([]RemoteM
 		if display == id {
 			display = ""
 		}
-		out = append(out, RemoteModel{ID: id, DisplayName: display})
+		page.models = append(page.models, RemoteModel{ID: id, DisplayName: display})
 	}
-	return out, nil
+	return page, nil
 }
 
 // --- shared helpers ----------------------------------------------------------
@@ -826,12 +1005,38 @@ func listModels(ctx context.Context, client *http.Client, p Provider) ([]RemoteM
 // toolArguments is the arguments field as the protocols want it: JSON text,
 // always parseable. A call with no arguments is a call with `{}` — an empty
 // string is not valid JSON, and a client that decodes it fails on a tool the
-// model invoked correctly.
+// model invoked correctly. It serves transcript replay, where a malformed
+// argument would make the provider refuse the whole request, and the arguments
+// the model produced. The streamed paths and the buffered OpenAI path check
+// those with wellFormedArguments and refuse rather than replace them: a call
+// cut short at max_tokens would otherwise run its tool with an empty argument
+// list.
 func toolArguments(raw string) string {
-	if strings.TrimSpace(raw) == "" {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || trimmed == "null" || !json.Valid([]byte(trimmed)) {
 		return "{}"
 	}
 	return raw
+}
+
+// wellFormedArguments reports whether arguments the provider produced can be
+// handed on. Empty and null are a call with no arguments. Anything else must be
+// an object: a number or an array would reach the caller's tool and fail there,
+// which is the case the emulated path refuses too.
+func wellFormedArguments(raw string) bool {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || trimmed == "null" {
+		return true
+	}
+	return strings.HasPrefix(trimmed, "{") && json.Valid([]byte(trimmed))
+}
+
+// malformedArguments ends the turn when the provider's arguments are not JSON,
+// which is what a call cut off at max_tokens looks like. It is an upstream
+// error, so the caller hears that the turn failed and never that a call was
+// made.
+func malformedArguments() *Error {
+	return &Error{Kind: ErrorUpstream, Message: "The provider sent tool arguments that are not valid JSON."}
 }
 
 // schemaOrEmpty is the parameter schema a tool travels with. A tool that

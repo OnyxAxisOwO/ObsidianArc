@@ -9,12 +9,13 @@
 | `site.name` | `Obsidian Arc` | 站点名称 |
 | `site.description` | 空 | 站点说明 |
 | `site.browser_title` | 空 | 浏览器标签页标题；空值使用 `site.name` |
-| `site.auth_card_position` | `center` | 登录与注册卡片停靠位置；可选 `center`、`left` 或 `right` |
+| `site.auth_card_position` | `center` | 登录与注册布局；`center`、`left`、`right` 为悬浮卡片；`left-panel`、`right-panel` 为约四成宽的左侧、右侧通高面板，另一侧保留默认背景；窄屏时面板铺满宽度。登录与注册之间切换时平滑展开、收起表单 |
 | `about.title` / `about.body` | 空 | 关于页面标题与 Markdown 详细介绍；空值使用内置内容 |
 | `home.notice` | 空 | 首页通知横条上的一行字（最多 300 字符），登录前也可见 |
 | `home.notice_body` | 空 | 点开横条后的 Markdown 正文（最多 4000 字符） |
 | `home.notice_tone` | `info` | 横条样式：`info` 或 `warning` |
 | `home.notice_dismissible` | `true` | 是否允许关闭通知 |
+| `update.check` | `true` | 超级管理员打开后台时，是否向 GitHub 查询新版本并在后台提醒；每 12 小时最多查询一次，关闭后服务器不会向 GitHub 发出任何请求 |
 | `registration.enabled` | `true` | 是否开放注册 |
 | `registration.default_group` | 空 | 注册分组覆盖值；未设置时使用默认组 |
 | `registration.require_email` | `false` | 注册是否要求邮箱 |
@@ -61,7 +62,6 @@
 | `chat.default_system_prompt` | 空 | 默认系统提示词 |
 | `chat.max_turns` | `40` | 发送给上游的历史范围上限 |
 | `chat.allow_archive` | `true` | 是否允许用户归档会话 |
-| `chat.agent_max_rounds` | `8` | 智能体工作流（工具调用）单次提问最大轮数上限 |
 
 访客试用只在 `landing.mode=chat` 时提供。`site` 是程序自带的官网首页，内容由程序提供，不读取 `landing.intro`；介绍页支持受控 HTML，首页通知则是纯文本，三者格式不同。详见[访客试用](../features/trial)。
 
@@ -72,7 +72,7 @@
 | `api.enabled` | `false` | 全站 API 开关，也限制管理员 |
 | `quota.admins_bypass` | `true` | 管理员是否绕过额度限制 |
 | `quota.usage_display` | `absolute` | 具体数值、已用比例或剩余比例；额度窗口和赠金条都按它措辞 |
-| `quota.max_concurrent` | `0` | 全站最大并发流式请求数限制；0 表示不限 |
+| `quota.max_concurrent` | `4` | 全站最大并发流式请求数限制；0 表示不限 |
 
 API 开关与额度豁免是两项独立设置。用户组还需要 `api_access` 权限；额度上限在全局、用户组或用户策略中配置。
 
@@ -86,7 +86,7 @@ API 开关与额度豁免是两项独立设置。用户组还需要 `api_access`
 
 | 设置键 | 默认值 | 用途 |
 | --- | --- | --- |
-| `attachments.max_mb` | `6` | 单文件大小上限，最高 64 MB |
+| `attachments.max_mb` | `6` | 单文件大小上限，最高 64 MB；同样适用于 /v1 接口的图片 |
 | `attachments.retain` | `false` | 发送后是否保留上传图片数据 |
 | `attachments.purge_after_days` | `0` | 按年龄清理；0 不启用 |
 | `attachments.purge_daily_at` | 空 | 每日清理时间，格式 `HH:MM` |

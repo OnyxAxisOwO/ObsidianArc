@@ -6,7 +6,7 @@
 
 import { ApiError, api } from './client';
 
-export type WindowKind = '5h' | '1w' | '1m';
+type WindowKind = '5h' | '1w' | '1m';
 
 export interface UsageWindow {
   kind: WindowKind;

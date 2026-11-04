@@ -1,11 +1,17 @@
 package server
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
 )
 
 // The console's permission story, exercised as HTTP.
@@ -85,6 +91,144 @@ func delegate(t *testing.T, in *instance, founder *session, target *session, gra
 	}, founder)
 	if response.Code != http.StatusOK {
 		t.Fatalf("delegate %v: %d %s", grants, response.Code, response.Body.String())
+	}
+}
+
+// startedWriter reports when the first streamed frame has gone out, which is
+// how the test knows a watch has finished its first run and is waiting.
+type startedWriter struct {
+	*httptest.ResponseRecorder
+	once    sync.Once
+	started chan struct{}
+}
+
+func (w *startedWriter) Write(p []byte) (int, error) {
+	n, err := w.ResponseRecorder.Write(p)
+	if bytes.Contains(p, []byte("event: out")) {
+		w.once.Do(func() { close(w.started) })
+	}
+	return n, err
+}
+
+// A watch is one request that does not end on its own, so the sign-in it
+// started under is read again before each run after the first. Signing out
+// deletes that session, and the watch must stop on its next run rather than
+// keep going on the account it began with.
+func TestAWatchStopsWhenItsSignInIsSignedOut(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+
+	body, err := json.Marshal(map[string]any{"line": "watch --interval 1s --count 5 -- user list", "cols": 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/console/exec", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Sec-Fetch-Site", "same-origin")
+	request.AddCookie(founder.cookie)
+
+	writer := &startedWriter{ResponseRecorder: httptest.NewRecorder(), started: make(chan struct{})}
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		in.handler.ServeHTTP(writer, request)
+	}()
+
+	select {
+	case <-writer.started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the watch never printed its first run")
+	}
+	if response := in.do(http.MethodPost, "/api/auth/logout", nil, founder); response.Code != http.StatusNoContent {
+		t.Fatalf("sign out: %d %s", response.Code, response.Body.String())
+	}
+
+	select {
+	case <-finished:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the watch kept running after its sign-in ended")
+	}
+
+	output, verdict := readConsoleStream(t, writer.ResponseRecorder)
+	if verdict.OK {
+		t.Errorf("the watch reported success after its sign-in ended:\n%s", output)
+	}
+	if runs := strings.Count(output, "\x1b[H\x1b[2J"); runs != 1 {
+		t.Errorf("the watch ran %d times, want 1", runs)
+	}
+	if !strings.Contains(output, "watch stopped") {
+		t.Errorf("the stop was not explained:\n%s", output)
+	}
+}
+
+// A watch asks again before each run after the first, and that ask must only
+// read the sign-in. Renewing it would let a stream that nobody is watching hold
+// a session open past its idle expiry, and would count the stream as the person
+// being there.
+func TestAWatchDoesNotRenewItsSignIn(t *testing.T) {
+	in := newInstance(t, func(c *config.Config) {
+		// Any renewal falls due at once, so a watch that renews moves the row.
+		c.Session.TouchInterval = time.Millisecond
+	})
+	founder := in.register("founder", "a-good-password")
+
+	signIn := func() (lastSeen, expires int64) {
+		t.Helper()
+		var rows int
+		if err := in.db.QueryRow(context.Background(),
+			`SELECT COUNT(*), MAX(last_seen_at), MAX(expires_at) FROM sessions WHERE user_id = ?`,
+			founder.userID).Scan(&rows, &lastSeen, &expires); err != nil {
+			t.Fatalf("read the sign-in: %v", err)
+		}
+		if rows != 1 {
+			t.Fatalf("the founder holds %d sign-ins, want 1", rows)
+		}
+		return lastSeen, expires
+	}
+
+	body, err := json.Marshal(map[string]any{"line": "watch --interval 1s --count 2 -- user list", "cols": 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/console/exec", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Sec-Fetch-Site", "same-origin")
+	request.AddCookie(founder.cookie)
+
+	writer := &startedWriter{ResponseRecorder: httptest.NewRecorder(), started: make(chan struct{})}
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		in.handler.ServeHTTP(writer, request)
+	}()
+
+	select {
+	case <-writer.started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the watch never printed its first run")
+	}
+	// The sign-in as the first run left it. The second run is a second away, so
+	// everything that happens to the row from here on is the watch's doing.
+	lastSeenBefore, expiresBefore := signIn()
+
+	select {
+	case <-finished:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the watch never finished its second run")
+	}
+	lastSeenAfter, expiresAfter := signIn()
+
+	if lastSeenAfter != lastSeenBefore || expiresAfter != expiresBefore {
+		t.Errorf("the watch's re-check moved the sign-in: last seen %d -> %d, expires %d -> %d",
+			lastSeenBefore, lastSeenAfter, expiresBefore, expiresAfter)
+	}
+
+	output, verdict := readConsoleStream(t, writer.ResponseRecorder)
+	if !verdict.OK {
+		t.Fatalf("the watch did not finish its two runs:\n%s", output)
+	}
+	if runs := strings.Count(output, "\x1b[H\x1b[2J"); runs != 2 {
+		t.Fatalf("the watch ran %d times, want 2, so the re-check was never exercised", runs)
 	}
 }
 
@@ -186,6 +330,86 @@ func TestConsoleNeitherListsNorCompletesWhatTheActorCannotRun(t *testing.T) {
 			t.Errorf("completion offered %q to an administrator who cannot run it", item.Value)
 		}
 	}
+}
+
+// The browser reads these keys literally (ConsoleCompletion in
+// web/src/api/console.ts), and encoding/json matches keys case-insensitively,
+// so the struct decode above would pass with Go field names too. Decode into
+// raw keys so the wire casing is what is checked.
+func TestConsoleCompletionUsesTheKeysTheBrowserReads(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+
+	response := in.do(http.MethodPost, "/api/console/complete",
+		map[string]any{"line": "user l", "pos": 6}, founder)
+	if response.Code != http.StatusOK {
+		t.Fatalf("complete: %d %s", response.Code, response.Body.String())
+	}
+
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(response.Body.Bytes(), &top); err != nil {
+		t.Fatalf("decode completion: %v", err)
+	}
+	if len(top) != 2 || top["from"] == nil || top["items"] == nil {
+		t.Fatalf("completion keys = %v, want exactly from and items", keysOf(top))
+	}
+	var from int
+	if err := json.Unmarshal(top["from"], &from); err != nil || from != 5 {
+		t.Fatalf("from = %s, want 5", top["from"])
+	}
+
+	var items []map[string]json.RawMessage
+	if err := json.Unmarshal(top["items"], &items); err != nil {
+		t.Fatalf("decode items: %v", err)
+	}
+	found := false
+	for _, item := range items {
+		if len(item) != 3 || item["value"] == nil || item["label"] == nil || item["hint"] == nil {
+			t.Fatalf("item keys = %v, want exactly value, label and hint", keysOf(item))
+		}
+		var value string
+		if err := json.Unmarshal(item["value"], &value); err != nil {
+			t.Fatalf("decode value: %v", err)
+		}
+		if value == "list" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("completing %q offered no %q item: %s", "user l", "list", response.Body.String())
+	}
+}
+
+// A word that matches nothing used to answer "items": null. The browser reads
+// items.length, so Tab threw and did nothing. Both completers are checked: the
+// command name and the flag after a command.
+func TestConsoleCompletionWithNoMatchSendsAnEmptyList(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+
+	for _, line := range []string{"user zzq", "user list --zzq"} {
+		response := in.do(http.MethodPost, "/api/console/complete",
+			map[string]any{"line": line, "pos": len(line)}, founder)
+		if response.Code != http.StatusOK {
+			t.Fatalf("complete %q: %d %s", line, response.Code, response.Body.String())
+		}
+
+		var top map[string]json.RawMessage
+		if err := json.Unmarshal(response.Body.Bytes(), &top); err != nil {
+			t.Fatalf("decode completion for %q: %v", line, err)
+		}
+		if raw := strings.TrimSpace(string(top["items"])); raw != "[]" {
+			t.Errorf("completing %q: items = %s, want an empty JSON array", line, raw)
+		}
+	}
+}
+
+func keysOf[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 // The other direction: a super administrator is not held to a narrower list

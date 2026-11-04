@@ -1,14 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, shallowRef, type App, type Component } from 'vue';
+import { type Component } from 'vue';
 import AdminInvites from '../src/views/admin/AdminInvites.vue';
-import { adminApi, type InviteCode, type InviteStats, type InviteUse } from '../src/admin/api';
+import { adminApi, adminQueryParams, type InviteCode, type InviteStats, type InviteUse } from '../src/admin/api';
 import * as authApi from '../src/api/auth';
-import { provideAdminView } from '../src/views/admin/adminView';
-import { providePanelHost } from '../src/composables/usePanelHost';
+import { ApiError } from '../src/api/client';
+import * as markdown from '../src/chat/markdown';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { siteInfo } from '../src/stores/session';
+import { adminShell, mountComponent, settle, button } from './helpers';
+import { queriesSent } from './admin-query';
 
-let app: App | undefined;
+let unmount: (() => void) | undefined;
 let host: HTMLElement;
 let panels: HTMLElement;
 let actions: HTMLElement;
@@ -22,31 +24,14 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  app?.unmount();
-  app = undefined;
-  document.body.textContent = '';
+  unmount?.();
+  unmount = undefined;
   vi.restoreAllMocks();
 });
 
-async function settle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await nextTick();
-}
 
-async function mount(component: Component): Promise<void> {
-  app = createApp({ setup() {
-    providePanelHost(shallowRef(panels));
-    provideAdminView({ actionsHost: actions, setTitle: () => {}, reload: () => {}, params: [] });
-    return () => h(component);
-  } });
-  app.mount(host);
-  await settle();
-}
-
-function button(root: ParentNode, label: string): HTMLButtonElement {
-  const found = [...root.querySelectorAll<HTMLButtonElement>('button')].find((node) => node.textContent?.trim() === label);
-  if (!found) throw new Error(`Button not found: ${label}`);
-  return found;
+async function mount(component: Component, props: Record<string, unknown> = {}): Promise<void> {
+  unmount = await mountComponent(component, props, { host, panels, adminView: adminShell(actions) });
 }
 
 function fieldFor(root: ParentNode, label: string): HTMLElement {
@@ -106,8 +91,8 @@ function stubBase(overrides: { settings?: Record<string, string> } = {}): void {
 /** Most tests care about the main list only; the partner card fetches on its
  *  own, so it gets a quiet empty stub unless a test says otherwise. */
 function stubPartners(codes: InviteCode[] = []): void {
-  vi.spyOn(adminApi, 'invites').mockImplementation(async (query: string) =>
-    query.includes('kind=partner') ? { codes, total: codes.length } : { codes: [], total: 0 });
+  vi.spyOn(adminApi, 'invites').mockImplementation(async (query) =>
+    adminQueryParams(query).get('kind') === 'partner' ? { codes, total: codes.length } : { codes: [], total: 0 });
 }
 
 describe('registration mode and rewards', () => {
@@ -150,11 +135,46 @@ describe('registration mode and rewards', () => {
 
     button(actions, t('save')).click();
     await settle();
-    expect(save).toHaveBeenCalledWith(expect.objectContaining({
-      'invites.user_enabled': 'true',
-      'invites.user_limit': '10',
-      'invites.reward_every': '1',
-    }));
+    // The limit and reward shown are the server's own defaults, so they are not
+    // written: only the switch this card changed is sent.
+    expect(save).toHaveBeenCalledWith({ 'invites.user_enabled': 'true' });
+  });
+
+  // A cleared number used to be saved as the default the page would have
+  // shown, so an operator who emptied the field got a value they never typed.
+  it('will not save a cleared number field, and says that a field is empty', async () => {
+    stubBase({ settings: { 'invites.user_enabled': 'true' } });
+    stubPartners();
+    const save = vi.spyOn(adminApi, 'saveSettings').mockResolvedValue({ settings: {} });
+    await mount(AdminInvites);
+
+    input(fieldFor(host, t('userInviteLimit')).querySelector<HTMLInputElement>('input')!, '');
+    await settle();
+
+    expect(button(actions, t('save')).disabled).toBe(true);
+    expect(host.textContent).toContain(t('settingNumberRequired'));
+    button(actions, t('save')).click();
+    await settle();
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  // Switching personal invites off hides the cleared field, so the page is valid
+  // again. The cleared limit must not be written as its default on the way out.
+  it('does not write a cleared limit as its default when personal invites are switched off', async () => {
+    stubBase({ settings: { 'invites.user_enabled': 'true', 'invites.user_limit': '20' } });
+    stubPartners();
+    const save = vi.spyOn(adminApi, 'saveSettings').mockResolvedValue({ settings: {} });
+    await mount(AdminInvites);
+
+    input(fieldFor(host, t('userInviteLimit')).querySelector<HTMLInputElement>('input')!, '');
+    await settle();
+    switchFor(host, t('userInvitesEnabled')).click();
+    await settle();
+
+    button(actions, t('save')).click();
+    await settle();
+
+    expect(save).toHaveBeenCalledWith({ 'invites.user_enabled': 'false' });
   });
 
   it('reads the reward rule as one sentence, and explains a zero reward rather than stating it', async () => {
@@ -168,6 +188,38 @@ describe('registration mode and rewards', () => {
     await settle();
     expect(host.textContent).toContain(t('inviteRewardRuleNone', { every: 5 }));
   });
+
+  // A closed instance that still requires a code: loading it must not record
+  // invites.required as 'false', or opening it would send nothing for the flag.
+  it('opens sign-ups from closed and clears the code requirement the server still holds', async () => {
+    stubBase({ settings: { 'registration.enabled': 'false', 'invites.required': 'true' } });
+    stubPartners();
+    const save = vi.spyOn(adminApi, 'saveSettings').mockResolvedValue({ settings: {} });
+    await mount(AdminInvites);
+
+    await choose(fieldFor(host, t('registrationMode')).querySelector<HTMLButtonElement>('.oa-select')!, t('registrationModeOpen'));
+    button(actions, t('save')).click();
+    await settle();
+
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({
+      'registration.enabled': 'true',
+      'invites.required': 'false',
+    }));
+  });
+
+  it('leaves a closed instance\'s code requirement alone when only personal invites change', async () => {
+    stubBase({ settings: { 'registration.enabled': 'false', 'invites.required': 'true' } });
+    stubPartners();
+    const save = vi.spyOn(adminApi, 'saveSettings').mockResolvedValue({ settings: {} });
+    await mount(AdminInvites);
+
+    switchFor(host, t('userInvitesEnabled')).click();
+    await settle();
+    button(actions, t('save')).click();
+    await settle();
+
+    expect(save).toHaveBeenCalledWith({ 'invites.user_enabled': 'true' });
+  });
 });
 
 describe('the code list', () => {
@@ -175,17 +227,17 @@ describe('the code list', () => {
     stubBase();
     const list = vi.spyOn(adminApi, 'invites').mockResolvedValue({ codes: [], total: 0 });
     await mount(AdminInvites);
-    expect(list).toHaveBeenCalledWith('?limit=20&offset=0');
+    expect(queriesSent(list)).toContain('limit=20&offset=0');
 
     const [kind, status] = [...host.querySelectorAll<HTMLButtonElement>('.oa-filter-select')];
     await choose(kind!, t('inviteKindPartner'));
-    expect(list).toHaveBeenLastCalledWith('?limit=20&offset=0&kind=partner');
+    expect(queriesSent(list).at(-1)).toBe('limit=20&offset=0&kind=partner');
 
     await choose(status!, t('inviteStatusRevoked'));
-    expect(list).toHaveBeenLastCalledWith('?limit=20&offset=0&kind=partner&status=revoked');
+    expect(queriesSent(list).at(-1)).toBe('limit=20&offset=0&kind=partner&status=revoked');
 
     input(host.querySelector<HTMLInputElement>('input[type="search"]')!, 'partner');
-    await vi.waitFor(() => expect(list).toHaveBeenLastCalledWith('?limit=20&offset=0&kind=partner&status=revoked&q=partner'));
+    await vi.waitFor(() => expect(queriesSent(list).at(-1)).toBe('limit=20&offset=0&kind=partner&status=revoked&q=partner'));
   });
 });
 
@@ -321,7 +373,7 @@ describe('partner codes', () => {
 
   it('lists partner codes in their own card, with registrations split from claims', async () => {
     stubBase();
-    vi.spyOn(adminApi, 'invites').mockImplementation(async (query: string) => (query.includes('kind=partner')
+    vi.spyOn(adminApi, 'invites').mockImplementation(async (query) => (adminQueryParams(query).get('kind') === 'partner'
       ? {
         codes: [{
           id: 'p1', code: 'ACMEPARTNER', owner_id: '', owner_username: '', owner_nickname: '',
@@ -340,6 +392,25 @@ describe('partner codes', () => {
     const row = host.querySelector('#secInvitePartners tbody tr')!;
     expect(row.textContent).toContain('5');
     expect(row.textContent).toContain('4');
+  });
+
+  it('asks for the server\'s full page of partner codes and says how many it is not showing', async () => {
+    stubBase();
+    const partner = (index: number): InviteCode => ({
+      id: `p${index}`, code: `PARTNER${index}X`, owner_id: '', owner_username: '', owner_nickname: '',
+      kind: 'partner', name: `Partner ${index}`, allow_existing: true,
+      group_id: '', group_name: '', group_days: 0, group_days_max: 0,
+      max_uses: 0, uses: 0, expires_at: 0, revoked_at: 0, note: '', created_by: 'op',
+      created_at: Date.now(), status: 'active', claims: 0,
+    });
+    const partners = vi.spyOn(adminApi, 'invites').mockImplementation(async (query) => (adminQueryParams(query).get('kind') === 'partner'
+      ? { codes: [partner(1), partner(2)], total: 75 }
+      : { codes: [], total: 0 }));
+    await mount(AdminInvites);
+
+    expect(queriesSent(partners)).toContain('kind=partner&limit=200&offset=0');
+    expect(host.querySelector('#secInvitePartners')!.textContent)
+      .toContain(t('partnerCodesCapped', { shown: 2, total: 75 }));
   });
 
   // A partner's code is a word somebody chose. Eight letters long, it used to
@@ -388,12 +459,12 @@ describe('an existing code', () => {
     { user_id: 'u3', username: 'carol', nickname: '', group_days: 3, created_at: Date.now(), rewarded_at: 0, reward_cards: 0, reward_skipped: '', via: 'claim' },
   ];
 
-  async function openRow(): Promise<void> {
+  async function openRow(total = uses.length): Promise<void> {
     stubBase();
-    vi.spyOn(adminApi, 'invites').mockImplementation(async (query: string) => (query.includes('kind=partner')
+    vi.spyOn(adminApi, 'invites').mockImplementation(async (query) => (adminQueryParams(query).get('kind') === 'partner'
       ? { codes: [], total: 0 }
       : { codes: [code], total: 1 }));
-    vi.spyOn(adminApi, 'inviteUses').mockResolvedValue({ uses });
+    vi.spyOn(adminApi, 'inviteUses').mockResolvedValue({ uses, total });
     await mount(AdminInvites);
     // The partner card's own table is empty in this stub, so the main list
     // is the only one with a row to click.
@@ -410,6 +481,16 @@ describe('an existing code', () => {
     expect(panels.textContent).toContain(t('inviteViaClaim'));
   });
 
+  it('says when the list is only the newest page of every use', async () => {
+    await openRow(250);
+    expect(panels.textContent).toContain(t('inviteUsesCapped', { shown: uses.length, total: 250 }));
+  });
+
+  it('says nothing about truncation when the list holds every use', async () => {
+    await openRow();
+    expect(panels.textContent).not.toContain(t('inviteUsesCapped', { shown: uses.length, total: uses.length }));
+  });
+
   it('revokes on the second press, and then offers nothing more to revoke', async () => {
     await openRow();
     const revoke = vi.spyOn(adminApi, 'revokeInvite').mockResolvedValue({ code: { ...code, status: 'revoked', revoked_at: Date.now() } });
@@ -423,4 +504,91 @@ describe('an existing code', () => {
     expect(revoke).toHaveBeenCalledWith('inv1');
     expect(() => button(panels, t('revokeLabel'))).toThrow();
   });
+});
+
+describe('a part of the page that fails on its own', () => {
+  // The settings card is the only part that cannot be drawn without its answer.
+  // A failed read there used to replace the statistics, partners and codes too,
+  // although none of them read the settings.
+  it('shows the settings failure in the settings card, and keeps the rest of the page', async () => {
+    stubBase();
+    stubPartners();
+    vi.spyOn(adminApi, 'settings').mockRejectedValue(new ApiError(500, 'internal', 'settings went away'));
+    await mount(AdminInvites);
+
+    expect(host.querySelector('#secInviteSettings')!.textContent).toContain(t('couldNotLoad'));
+    expect(host.querySelector('#secInviteStats')!.textContent).toContain(t('statActiveCodes'));
+    expect(host.querySelector('#secInviteCodes')).not.toBeNull();
+    expect(host.querySelector('#secInvitePartners')).not.toBeNull();
+  });
+
+  // The group list is only read by the generate panel, so its failure must not
+  // hold the settings card, nor be shown where the settings are.
+  it('keeps the settings card when only the group list fails, and reports it in the generate panel', async () => {
+    stubBase();
+    stubPartners();
+    vi.spyOn(adminApi, 'groupOptions').mockRejectedValue(new ApiError(500, 'internal', 'groups went away'));
+    await mount(AdminInvites);
+
+    expect(fieldFor(host, t('registrationMode')).querySelector('.oa-select-label')).not.toBeNull();
+    expect(host.querySelector('#secInviteSettings')!.textContent).not.toContain('groups went away');
+
+    button(actions, t('generateInvites')).click();
+    await settle();
+    expect(panels.textContent).toContain('groups went away');
+  });
+});
+
+describe('generating codes from a cleared number', () => {
+  // A cleared count used to mint one code, and a cleared use limit an unlimited
+  // one, neither of them shown in the panel.
+  it('does not generate from a cleared count, and says that a field is empty', async () => {
+    stubBase();
+    stubPartners();
+    const create = vi.spyOn(adminApi, 'createInvites').mockResolvedValue({ codes: [] });
+    await mount(AdminInvites);
+
+    button(actions, t('generateInvites')).click();
+    await settle();
+    input(fieldFor(panels, t('inviteCount')).querySelector<HTMLInputElement>('input')!, '');
+    await settle();
+    button(panels, t('generateInvites')).click();
+    await settle();
+
+    expect(create).not.toHaveBeenCalled();
+    expect(panels.textContent).toContain(t('settingNumberRequired'));
+  });
+});
+
+describe('copying a minted batch', () => {
+  // The button carries the result, so it has to go back to its own label once
+  // the moment has passed; otherwise a failed copy stayed on it for good.
+  it('says a refused copy on the button, then puts the label back', async () => {
+    stubBase();
+    stubPartners();
+    vi.spyOn(adminApi, 'createInvites').mockResolvedValue({
+      codes: [{
+        id: 'new-0', code: 'CODE00000000', owner_id: '', owner_username: '', owner_nickname: '',
+        kind: 'batch', name: '', allow_existing: false,
+        group_id: '', group_name: '', group_days: 0, group_days_max: 0,
+        max_uses: 1, uses: 0, expires_at: 0, revoked_at: 0,
+        note: '', created_by: 'op', created_at: Date.now(), status: 'active', claims: 0,
+      } satisfies InviteCode],
+    });
+    vi.spyOn(markdown, 'copyToClipboard').mockResolvedValue(false);
+    await mount(AdminInvites);
+
+    button(actions, t('generateInvites')).click();
+    await settle();
+    button(panels, t('generateInvites')).click();
+    await settle();
+    button(panels, t('copyAll')).click();
+    await settle();
+    expect(panels.textContent).toContain(t('copyFailed'));
+
+    await new Promise((resolve) => setTimeout(resolve, 1600));
+    await settle();
+    expect(panels.textContent).not.toContain(t('copyFailed'));
+    expect(button(panels, t('copyAll'))).toBeDefined();
+  }, 10_000);
 });

@@ -3,6 +3,7 @@ package console
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -94,7 +95,9 @@ var consoleExempt = map[string]string{
 	"GET /api/auth/pow-challenge":                   "fetching a proof-of-work challenge happens before there is a terminal",
 	"POST /api/auth/verify":                         "followed from the link in the verification email",
 	"GET /api/auth/oauth/start/{provider}":          "a browser redirect to the identity provider",
+	"POST /api/auth/oauth/start/{provider}":         "the sign-in page's form post to the same redirect",
 	"GET /api/auth/oauth/callback/{provider}":       "a browser redirect back from the identity provider",
+	"POST /api/auth/oauth/connections/{provider}":   "starting a connection, which ends in a browser trip to the identity provider and back",
 	"GET /api/auth/oauth/signup":                    "part of signing up through an identity provider",
 	"POST /api/auth/oauth/signup":                   "part of signing up through an identity provider",
 	"GET /api/site":                                 "public instance details for the sign-in page, not a setting",
@@ -254,11 +257,61 @@ func TestEveryCommandHasBilingualHelp(t *testing.T) {
 			t.Fatalf("%s: not found in the built registry", cmd.Name)
 		}
 		var buf bytes.Buffer
-		renderCommandHelp(&buf, s, got, reg)
+		renderCommandHelp(&buf, s, got)
 		if buf.Len() == 0 {
 			t.Errorf("%s: help rendered nothing", cmd.Name)
 		}
 	}
+}
+
+// Every example is a line someone copies out of help and types, so each one has
+// to get through the steps Execute gives a typed line: tokenise, resolve the
+// command, parse its flags, and refuse a bare value that was meant for a flag.
+// Nothing else reads an example back through the parser (the test above only
+// counts them and renders help), which is how two examples that no longer
+// parse shipped.
+func TestEveryExampleParses(t *testing.T) {
+	c := New(Options{})
+	for _, cmd := range allCommands {
+		for _, line := range cmd.Examples {
+			if err := parseExample(c, line); err != nil {
+				t.Errorf("%s: example %q does not parse: %v", cmd.Name, line, err)
+			}
+		}
+	}
+}
+
+// parseExample takes one example through the parser without running it.
+func parseExample(c *Console, line string) error {
+	tokens, err := Tokenize(line)
+	if err != nil {
+		return err
+	}
+	return parseTokens(c, tokens)
+}
+
+// parseTokens follows a watch into the command it repeats, as runTokens does
+// with the nested line, so the examples of the wrapped command are checked too.
+func parseTokens(c *Console, tokens []string) error {
+	if len(tokens) == 0 {
+		return fmt.Errorf("no command given")
+	}
+	_, name, rest, found := c.resolve(tokens)
+	if !found {
+		return fmt.Errorf("no command named %q", name)
+	}
+	cmd, _ := c.reg.lookup(name)
+	parsed, err := ParseFlags(rest, cmd.Flags)
+	if err != nil {
+		return err
+	}
+	if err := refuseLooseValues(cmd, parsed); err != nil {
+		return err
+	}
+	if cmd.Name == "watch" {
+		return parseTokens(c, parsed.Args)
+	}
+	return nil
 }
 
 // TestDestructiveCommandsRefuseWithoutYes is §1.8.5: every command marked

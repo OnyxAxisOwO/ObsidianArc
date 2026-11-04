@@ -11,21 +11,24 @@
 // says which with the bars, so it arrives with them rather than a moment after.
 // A bar that keeps its amounts to itself is only ever worded as a share.
 //
+// A shared pool is drawn the same way, its balance being everybody's: its badge
+// says so, and the line under it adds the account's own daily share.
+//
 // The panel that hosts this asks it to read again (`refreshKey`) on its own
 // timer and after anything that could have changed a bar, a check-in reward,
 // say. That read is quiet, like the panel's other refreshes: a failure leaves
 // the bars that are on screen, because the last good figures are a better
-// answer than an error where they were. The first read, and the one after a
-// switch, say what went wrong.
+// answer than an error where they were. The first read, and a switch the server
+// refuses, say what went wrong.
 
 import { computed, onMounted, ref, watch } from 'vue';
-import { ApiError } from '@/api/client';
 import { fetchBonus, setBonusChoice, type BonusBar } from '@/api/bonus';
 import type { UsageDisplay } from '@/api/usage';
 import OaBadge from '@/components/OaBadge.vue';
 import OaCollapsible from '@/components/OaCollapsible.vue';
 import OaSwitchField from '@/components/OaSwitchField.vue';
 import { t, tn } from '@/composables/useI18n';
+import { apiFailureText } from '@/lib/api-error-text';
 import { absoluteTime } from '@/lib/format';
 
 const props = defineProps<{
@@ -36,30 +39,50 @@ const props = defineProps<{
 const bars = ref<BonusBar[]>([]);
 const display = ref<UsageDisplay>('absolute');
 const error = ref('');
-const busy = ref('');
+/** The bars with a switch in flight. Switching one must not free another. */
+const busy = ref<ReadonlySet<string>>(new Set());
+/**
+ * Bumped by every read; a switch that lands starts one. Reads can overlap — a
+ * quiet refresh started before a switch can finish after it, still carrying the
+ * bar as it was — so a response only draws if nothing newer has started since.
+ */
+let generation = 0;
 
 async function load(quiet = false): Promise<void> {
+  const request = ++generation;
   try {
     const summary = await fetchBonus();
+    if (request !== generation) return;
     bars.value = summary.bars;
     display.value = summary.display ?? 'absolute';
     error.value = '';
   } catch (caught) {
-    if (quiet) return;
-    error.value = caught instanceof ApiError ? caught.message : t('bonusLoadFailed');
+    if (quiet || request !== generation) return;
+    error.value = apiFailureText(caught, 'bonusLoadFailed');
   }
 }
 
 async function choose(bar: BonusBar, enabled: boolean): Promise<void> {
-  busy.value = bar.bar_id;
+  const id = bar.bar_id;
+  busy.value = new Set([...busy.value, id]);
   try {
-    await setBonusChoice(bar.bar_id, enabled);
-    bar.enabled = enabled;
+    await setBonusChoice(id, enabled);
+    // Looked up again: a read that landed while the request was out has
+    // replaced the bar objects, and the one the switch was made on is no
+    // longer the one on screen.
+    const current = bars.value.find((entry) => entry.bar_id === id);
+    if (current) current.enabled = enabled;
     error.value = '';
+    // A read that was out before the switch carries the bar as it was, and the
+    // other figures with it, and that read is dropped now. Reading again brings
+    // those figures in; it is quiet, so a failure keeps the switch on screen.
+    void load(true);
   } catch (caught) {
-    error.value = caught instanceof ApiError ? caught.message : t('bonusChoiceFailed');
+    error.value = apiFailureText(caught, 'bonusChoiceFailed', { bonus_not_choosable: 'bonusNotChoosable' });
   } finally {
-    busy.value = '';
+    const next = new Set(busy.value);
+    next.delete(id);
+    busy.value = next;
   }
 }
 
@@ -97,6 +120,14 @@ function fill(bar: BonusBar): string {
 /** What is true of the bar right now, in a line. */
 function detail(bar: BonusBar): string {
   const parts: string[] = [];
+  const pool = bar.pool;
+  if (pool) {
+    parts.push(pool.only ? t('bonusPoolOnlyLine') : bar.enabled ? t('bonusBeforeAllowance') : t('bonusAfterAllowance'));
+    if (pool.daily_limit > 0) parts.push(t('bonusPoolDaily', { used: credits(pool.daily_used), limit: credits(pool.daily_limit) }));
+    if (pool.resets_at > 0) parts.push(t('quotaResets', { when: absoluteTime(pool.resets_at) }));
+    if (bar.model_ids.length) parts.push(tn(bar.model_ids.length, 'bonusModelsOne', 'bonusModelsOther'));
+    return parts.join(' · ');
+  }
   parts.push(bar.kind === 'reserve' || !bar.enabled ? t('bonusAfterAllowance') : t('bonusBeforeAllowance'));
   parts.push(bar.expires_at > 0 ? t('bonusExpires', { when: absoluteTime(bar.expires_at) }) : t('bonusNoExpiry'));
   if (bar.model_ids.length) parts.push(tn(bar.model_ids.length, 'bonusModelsOne', 'bonusModelsOther'));
@@ -127,6 +158,7 @@ watch(() => props.refreshKey, () => load(true));
           <span class="oa-bonus-name">
             {{ bar.name }}
             <OaBadge v-if="bar.kind === 'reserve'" tone="muted">{{ t('bonusKindReserve') }}</OaBadge>
+            <OaBadge v-else-if="bar.kind === 'shared'" tone="muted">{{ t('bonusKindShared') }}</OaBadge>
           </span>
           <span class="oa-usage-value">{{ figure(bar) }}</span>
         </div>
@@ -141,7 +173,7 @@ watch(() => props.refreshKey, () => load(true));
             :model-value="bar.enabled"
             :label="t('bonusUseFirst')"
             :hint="t('bonusUseFirstHint')"
-            :disabled="busy === bar.bar_id"
+            :disabled="busy.has(bar.bar_id)"
             @update:model-value="choose(bar, $event)"
           />
         </div>

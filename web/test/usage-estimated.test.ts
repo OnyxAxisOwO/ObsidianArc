@@ -23,7 +23,6 @@ beforeEach(() => { vi.useFakeTimers(); });
 afterEach(() => {
   app?.unmount();
   app = null;
-  document.body.textContent = '';
   vi.clearAllMocks();
   vi.useRealTimers();
 });

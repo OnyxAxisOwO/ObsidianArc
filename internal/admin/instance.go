@@ -1,18 +1,24 @@
 package admin
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/audit"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/screening"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
@@ -22,11 +28,36 @@ import (
 
 // The dashboard and the instance settings.
 
+// dashboardAccount is the only account shape the dashboard sends. The records
+// it lists come from the same table the users grant reads, and that grant is
+// the one that may see an address, the signup address or a ban reason; the
+// dashboard grant is narrower, so the fields are named here rather than taken
+// from user.User, whose JSON carries all of them.
+type dashboardAccount struct {
+	ID        string `json:"id"`
+	Username  string `json:"username"`
+	Nickname  string `json:"nickname"`
+	CreatedAt int64  `json:"created_at"`
+}
+
 // dashboard is deliberately short. An operator opening it wants to know
 // whether the thing is working and what it is costing — not to read a wall of
 // charts that exist because a dashboard is expected to have charts.
 func (h *Handlers) dashboard(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
+	actor := auth.MustUser(ctx)
+	// The same budget and slot the usage reads take. A load runs about a dozen
+	// aggregates over the ledger, and without them a dashboard grant could drive
+	// the ledger as hard as the usage page, with no limit at all.
+	if err := h.allowUsageRead(r); err != nil {
+		return err
+	}
+	release, err := httpx.AcquireAggregationSlot(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+
 	now := time.Now()
 	zone, err := zoneFrom(r)
 	if err != nil {
@@ -64,11 +95,15 @@ func (h *Handlers) dashboard(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 
-	day := usage.Filter{Since: now.Add(-24 * time.Hour).UnixMilli()}
+	// Both edges sit on the hour. The ledger is rolled up by hour and the
+	// store compares the start hour-aligned but the end exactly, so an edge
+	// inside an hour would count that hour on both sides of the boundary.
+	dayStart := now.Add(-24 * time.Hour).Truncate(time.Hour).UnixMilli()
+	day := usage.Filter{Since: dayStart}
 	// The day before that, so each of the day's figures can say which way it
 	// moved. A figure with no direction is a number to memorise; one with an
 	// arrow is a thing to act on.
-	dayBefore := usage.Filter{Since: now.Add(-48 * time.Hour).UnixMilli(), Until: day.Since}
+	dayBefore := usage.Filter{Since: now.Add(-48 * time.Hour).Truncate(time.Hour).UnixMilli(), Until: dayStart}
 	week := usage.Filter{Since: now.AddDate(0, 0, -7).UnixMilli()}
 
 	metric := r.URL.Query().Get("metric")
@@ -79,22 +114,43 @@ func (h *Handlers) dashboard(w http.ResponseWriter, r *http.Request) error {
 		heatmap                    []usage.Slot
 		recent                     []usage.Record
 	)
-	err = together(
+	reads := []func() error{
 		func() (err error) { today, err = h.usage.Totals(ctx, day); return },
 		func() (err error) { yesterday, err = h.usage.Totals(ctx, dayBefore); return },
 		func() (err error) { thisWeek, err = h.usage.Totals(ctx, week); return },
 		func() (err error) { topModels, err = h.usage.GroupBy(ctx, "model", metric, week); return },
-		func() (err error) { topUsers, err = h.usage.GroupBy(ctx, "user", metric, week); return },
 		func() (err error) { series, err = h.usage.Series(ctx, week, 6*time.Hour, zone); return },
 		// When in the week people use it: the shape an operator plans
 		// maintenance around, and the one a total over seven days hides.
 		func() (err error) { heatmap, err = h.usage.Heatmap(ctx, week, zone); return },
-		func() (err error) { recent, _, err = h.usage.List(ctx, usage.Filter{Limit: 8}); return },
-	)
-	if err != nil {
+	}
+	// Per-account spend and the newest requests name the people who made them,
+	// and that is what the usage grant is for. A dashboard grant sees the
+	// totals and the newest accounts (dashboardAccount), and nothing that
+	// says who spent what.
+	canSeeUsage := hasPermission(actor, "usage")
+	if canSeeUsage {
+		reads = append(reads,
+			func() (err error) { topUsers, err = h.usage.GroupBy(ctx, "user", metric, week); return },
+			func() (err error) { recent, err = h.usage.Newest(ctx, 8); return },
+		)
+	}
+	if err := together(reads...); err != nil {
 		return httpx.Internal(err)
 	}
+	if topUsers == nil {
+		topUsers = []usage.Breakdown{}
+	}
+	if recent == nil {
+		recent = []usage.Record{}
+	}
 
+	newest := make([]dashboardAccount, 0, len(users))
+	for _, account := range users {
+		newest = append(newest, dashboardAccount{
+			ID: account.ID, Username: account.Username, Nickname: account.Nickname, CreatedAt: account.CreatedAt,
+		})
+	}
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"counts": map[string]any{
 			"users":             totalUsers,
@@ -104,7 +160,7 @@ func (h *Handlers) dashboard(w http.ResponseWriter, r *http.Request) error {
 			"models":            len(models),
 			"enabled_models":    enabledModels,
 		},
-		"newest_users": users,
+		"newest_users": newest,
 		"last_24h":     today,
 		"prev_24h":     yesterday,
 		"last_7d":      thisWeek,
@@ -141,12 +197,7 @@ func (h *Handlers) listSettings(w http.ResponseWriter, r *http.Request) error {
 		}
 		out["attachments"] = map[string]any{"held": held, "bytes": bytes}
 		if h.settings != nil {
-			loginBgs := h.settings.LoginBackgrounds()
-			bgs := make(map[string]string, len(loginBgs))
-			for v, at := range loginBgs {
-				bgs[v] = fmt.Sprintf("/api/site/login-background/%s?v=%d", v, at)
-			}
-			out["login_background"] = bgs
+			out["backgrounds"] = auth.BackgroundURLs(h.settings)
 			if h.settings.SiteLogoUpdatedAt() > 0 {
 				out["logo_url"] = fmt.Sprintf("/api/site/logo?v=%d", h.settings.SiteLogoUpdatedAt())
 			} else {
@@ -163,10 +214,24 @@ func (h *Handlers) listSettings(w http.ResponseWriter, r *http.Request) error {
 var writableSettings = map[string]bool{
 	settings.SiteName:                   true,
 	settings.SiteDescription:            true,
+	settings.ProfileShowSignupUserAgent: true,
+	settings.AvatarProvider:             true,
 	settings.SiteAuthCardPosition:       true,
+	settings.ThemeMode:                  true,
+	settings.ThemeAccent:                true,
+	settings.ThemeCustomAccent:          true,
+	settings.ThemeBackgroundTint:        true,
+	settings.ThemeWallpaperDim:          true,
+	settings.ThemeWallpaperBlur:         true,
+	settings.ThemeTranslucency:          true,
+	settings.ThemePanelBlur:             true,
+	settings.ThemeEnforce:               true,
+	settings.ThemeAsciiField:            true,
 	settings.AboutTitle:                 true,
 	settings.AboutBody:                  true,
 	settings.AboutShowSoftwareInfo:      true,
+	settings.UpdateCheck:                true,
+	settings.AuditRetentionDays:         true,
 	settings.HomeNotice:                 true,
 	settings.HomeNoticeDismissible:      true,
 	settings.HomeNoticeBody:             true,
@@ -193,6 +258,8 @@ var writableSettings = map[string]bool{
 	settings.TurnstileOnAPIKey:          true,
 	settings.TurnstileOnRedeem:          true,
 	settings.TurnstileOnFeedback:        true,
+	settings.TurnstileOnImages:          true,
+	settings.PoWOnImages:                true,
 	settings.RegistrationCaptchaMode:    true,
 	settings.PoWBaseMaxNumber:           true,
 	settings.PoWElevatedMaxNumber:       true,
@@ -238,7 +305,6 @@ var writableSettings = map[string]bool{
 	settings.TwoFactorBackofficeNetwork: true,
 	settings.TwoFactorBackofficeBrowser: true,
 	settings.NewDeviceEmail:             true,
-	settings.ChatAgentMaxRounds:         true,
 	settings.ChatChallengeRequests:      true,
 	settings.ChatChallengeWindowSecs:    true,
 	settings.ChatChallengeClearMins:     true,
@@ -260,9 +326,11 @@ var writableSettings = map[string]bool{
 	settings.TrialModel:                 true,
 	settings.DefaultSystemPrompt:        true,
 	settings.ConversationMaxTurns:       true,
+	settings.AllowArchive:               true,
 	settings.APIEnabled:                 true,
 	settings.AttachmentMaxMB:            true,
 	settings.AttachmentRetain:           true,
+	settings.ImageHistory:               true,
 	settings.AttachmentPurgeDays:        true,
 	settings.AttachmentPurgeDaily:       true,
 	settings.AttachmentOrphanMins:       true,
@@ -282,10 +350,6 @@ var writableSettings = map[string]bool{
 // The numeric settings and what they may be, shared by the ordinary save and
 // the import below so the two cannot come to disagree about a bound. The
 // browser offers the same range, but that is a convenience: this is the check.
-//
-// The rounds ceiling is the one worth explaining. Each round is a real
-// provider request, so the number is what a single question may cost at
-// worst; the consumer floors it at 1, and nothing up there caps it.
 var numericBounds = map[string][2]int{
 	settings.SignupReviewRestrictHours:  {0, 24 * 365},
 	settings.InvitesUserLimit:           {0, 10000},
@@ -295,10 +359,226 @@ var numericBounds = map[string][2]int{
 	settings.ChatChallengeRequests:      {0, 1000},
 	settings.ChatChallengeWindowSecs:    {5, 3600},
 	settings.ChatChallengeClearMins:     {1, 24 * 60},
-	settings.ChatAgentMaxRounds:         {1, 50},
 	settings.TwoFactorRememberDays:      {0, settings.MaxTwoFactorRememberDays},
 	settings.TwoFactorBackofficeMinutes: {1, settings.MaxTwoFactorBackofficeMinutes},
 	settings.LeaderboardSize:            {1, settings.MaxLeaderboardSize},
+	// The ranges the account's own wallpaper sliders have (theme.ts clamps
+	// to the same), so a site default can be nothing a reader could not
+	// have picked for themselves.
+	settings.ThemeWallpaperDim:  {0, 100},
+	settings.ThemeWallpaperBlur: {0, 40},
+	settings.ThemeTranslucency:  {0, 90},
+	settings.ThemePanelBlur:     {0, 40},
+	// Checked in one place for both the save and the import. Checked by hand in
+	// the save alone, an import used to store a retention the save refuses.
+	settings.AttachmentPurgeDays:  {0, 3650},
+	settings.AttachmentOrphanMins: {5, 1440},
+	// Thresholds and retention the availability checker applies to every model.
+	// Above 100 a success-rate threshold disables every model that has samples,
+	// and a retention of zero stops pruning, so these are bounded like the rest.
+	settings.HealthWindowMins:   {1, 7 * 24 * 60},
+	settings.HealthDisableAfter: {0, 1000},
+	settings.HealthRetainDays:   {1, 3650},
+	settings.HealthDisableBelow: {0, 100},
+	settings.HealthWarnBelow:    {0, 100},
+	// The signup throttles, the proof-of-work numbers, the concurrency and turn
+	// limits and the trial. Where the form gives a range it is used; where it gives
+	// only a minimum, the ceiling is the server's own, far above anything a site
+	// uses.
+	// Unbounded, a value typed as text was read as the default, and a limit of
+	// zero or less is not enforced at all, so sign-up throttling went quietly off.
+	settings.SignupsPerMinute:     {0, 1000},
+	settings.SignupsPerHour:       {0, 10000},
+	settings.SignupsPerIP:         {0, 10000},
+	settings.SignupsIPWindowMin:   {1, 7 * 24 * 60},
+	settings.PoWBaseMaxNumber:     {1, 10000000},
+	settings.PoWElevatedMaxNumber: {1, 10000000},
+	settings.PoWThreshold:         {1, 1000},
+	settings.AuditRetentionDays:   {audit.MinRetentionDays, audit.MaxRetentionDays},
+	settings.QuotaMaxConcurrent:   {0, 100},
+	settings.ConversationMaxTurns: {2, 200},
+	settings.TrialTurns:           {1, 20},
+	settings.AttachmentMaxMB:      {1, settings.MaxAttachmentCeilingMB},
+	// A millisecond timestamp, written by the reset itself. Only its sign and
+	// its width are checked, which is all the uptime baseline can use.
+	settings.HealthResetAt: {0, math.MaxInt},
+}
+
+// valueRule is a check that needs nothing but the key and its value, written
+// once for the save, which answers with its error, and the import, which drops
+// the key and names it. Each rule used to be written in both functions, and an
+// import once stored a value the save refused because only one copy changed.
+type valueRule struct {
+	keys  []string
+	check func(key, value string) error
+}
+
+var valueRules = []valueRule{
+	{[]string{settings.ProfileShowSignupUserAgent}, func(_, value string) error {
+		if value != "true" && value != "false" {
+			return httpx.BadRequestCode("setting_boolean_invalid", "Expected true or false.")
+		}
+		return nil
+	}},
+	{[]string{settings.AvatarProvider}, func(_, value string) error {
+		if !settings.ValidAvatarProvider(value) {
+			return httpx.BadRequestCode("avatar_provider_unknown", "Unknown avatar provider.")
+		}
+		return nil
+	}},
+	{[]string{settings.LandingMode}, func(_, value string) error {
+		if !settings.ValidLandingMode(value) {
+			return httpx.BadRequestCode("landing_mode_unknown", "Unknown landing mode %q.", value).
+				WithDetails(map[string]any{"value": value})
+		}
+		return nil
+	}},
+	{[]string{settings.SiteAuthCardPosition}, func(_, value string) error {
+		if !settings.ValidAuthCardPosition(value) {
+			return httpx.BadRequestCode("auth_card_position_unknown", "Unknown auth card position %q.", value).
+				WithDetails(map[string]any{"value": value})
+		}
+		return nil
+	}},
+	// Empty is allowed for both — it means "no override", not "black" — so
+	// only a non-empty value that fails the format is refused.
+	{[]string{settings.PWAThemeColor, settings.PWABackgroundColor}, func(key, value string) error {
+		if value != "" && !settings.ValidHexColor(value) {
+			return httpx.BadRequestCode("setting_colour_invalid", "Setting %q must be a #rrggbb colour.", key).
+				WithDetails(map[string]any{"setting": key})
+		}
+		return nil
+	}},
+	// A manifest icon on another host is silently dropped by the image
+	// policy anyway; refusing it here says so instead of leaving an operator
+	// to wonder why the install prompt has no icon.
+	{[]string{settings.PWAIconURL}, func(_, value string) error {
+		if !settings.ValidPWAIconURL(value) {
+			return httpx.BadRequestCode("pwa_icon_invalid", "The PWA icon must be a path on this server or a data URI.")
+		}
+		return nil
+	}},
+	// An unparseable schedule would read as "off" and quietly never run, so
+	// it is refused here rather than discovered by an operator wondering why
+	// nothing is being cleaned up.
+	{[]string{settings.AttachmentPurgeDaily}, func(_, value string) error {
+		if strings.TrimSpace(value) == "" {
+			return nil
+		}
+		if _, _, ok := conversation.ParseDailyTime(value); !ok {
+			return httpx.BadRequestCode("cleanup_time_invalid", "The daily cleanup time must be HH:MM, or empty for never.")
+		}
+		return nil
+	}},
+	// An unknown display mode would leave every user's allowance rendered as
+	// nothing at all, so it is checked here rather than guessed at in the
+	// browser.
+	{[]string{settings.UsageDisplay}, func(_, value string) error {
+		if !settings.ValidUsageDisplay(value) {
+			return httpx.BadRequestCode("usage_display_unknown", "Unknown usage display %q.", value).
+				WithDetails(map[string]any{"value": value})
+		}
+		return nil
+	}},
+	{[]string{settings.HomeNoticeTone}, func(_, value string) error {
+		if !settings.ValidHomeNoticeTone(value) {
+			return httpx.BadRequestCode("notice_tone_unknown", "Unknown notice tone %q.", value).
+				WithDetails(map[string]any{"value": value})
+		}
+		return nil
+	}},
+	{[]string{settings.LeaderboardIdentity}, func(_, value string) error {
+		if !settings.ValidLeaderboardIdentity(value) {
+			return httpx.BadRequestCode("leaderboard_identity_unknown", "Unknown leaderboard identity %q.", value).
+				WithDetails(map[string]any{"value": value})
+		}
+		return nil
+	}},
+}
+
+// checkValues is the save's side of valueRules: the first refusal in the
+// table's order, so the same body is always answered with the same error.
+func checkValues(body map[string]string) error {
+	for _, rule := range valueRules {
+		for _, key := range rule.keys {
+			if value, present := body[key]; present {
+				if err := rule.check(key, value); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// The settings that name a row. A trial model that does not exist would make
+// the front door offer a conversation it cannot hold, a missing sign-up
+// reviewer model would point the reviewer at nothing, and a registration group
+// that does not exist would send every new account into no group at all, which
+// quietly means no models. The save refuses one of these; the import clears it.
+var referenceKeys = []string{settings.TrialModel, settings.SignupReviewModel, settings.RegistrationGroup}
+
+// referenceRefused checks a value for one of referenceKeys. refusal is what the
+// save answers and what the import clears the key for; err is a lookup that
+// failed for some reason other than the row being absent, which says nothing
+// about the row and so is reported rather than taken for an answer. Empty
+// means "none" and is always allowed.
+func (h *Handlers) referenceRefused(ctx context.Context, key, value string) (refusal, err error) {
+	if value == "" {
+		return nil, nil
+	}
+	if key == settings.RegistrationGroup {
+		if !id.Valid(value) {
+			return httpx.BadRequestCode("malformed_group_id", "Malformed group id."), nil
+		}
+		if _, err := h.groups.ByID(ctx, nil, value); err != nil {
+			if errors.Is(err, group.ErrNotFound) {
+				return translateGroupError(err), nil
+			}
+			return nil, err
+		}
+		return nil, nil
+	}
+	if !id.Valid(value) {
+		return httpx.BadRequestCode("malformed_model_id", "Malformed model id."), nil
+	}
+	if _, err := h.models.ByID(ctx, value); err != nil {
+		if errors.Is(err, model.ErrNotFound) {
+			return model.TranslateError(err), nil
+		}
+		return nil, err
+	}
+	return nil, nil
+}
+
+// The second-step settings, which the import checks one at a time: once
+// against the request's account and again against the row the write reads.
+var twoFactorKeys = []string{settings.TwoFactorPolicy, settings.TwoFactorIssuer, settings.TwoFactorBackofficeMode}
+
+// overlongNotice lists the home-notice keys holding more characters than they
+// may, in the order the save reports them. The notice is served to people who
+// have not signed in, so the save and the import both measure it here rather
+// than trusting what the form or the file sent.
+func overlongNotice(body map[string]string) []string {
+	var over []string
+	if text, present := body[settings.HomeNotice]; present && utf8.RuneCountInString(text) > settings.MaxHomeNoticeTitleChars {
+		over = append(over, settings.HomeNotice)
+	}
+	if text, present := body[settings.HomeNoticeBody]; present && utf8.RuneCountInString(text) > settings.MaxHomeNoticeBodyChars {
+		over = append(over, settings.HomeNoticeBody)
+	}
+	return over
+}
+
+// twoFactorRecheckNeeded reports whether a save changes one of the two second-step
+// switches whose check reads the saver's own row. Only those saves take the
+// instance lock inside the write; any other save would queue behind every
+// registration and demotion for nothing. The issuer is left out because its
+// check reads only the request, and the snapshot pass already refuses a bad one.
+func twoFactorRecheckNeeded(values map[string]string) bool {
+	_, policy := values[settings.TwoFactorPolicy]
+	_, backoffice := values[settings.TwoFactorBackofficeMode]
+	return policy || backoffice
 }
 
 func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error {
@@ -318,10 +598,12 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 			return permissionDenied()
 		}
 		if !h.writable(key) {
-			return httpx.BadRequest("Unknown setting %q.", key)
+			return httpx.BadRequestCode("setting_unknown", "Unknown setting %q.", key).
+				WithDetails(map[string]any{"setting": key})
 		}
-		if len(value) > 8*1024 {
-			return httpx.BadRequest("Setting %q is too long.", key)
+		if len(value) > settings.MaxValueBytes {
+			return httpx.BadRequestCode("setting_too_long", "Setting %q is too long.", key).
+				WithDetails(map[string]any{"setting": key})
 		}
 	}
 
@@ -336,11 +618,14 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 		}
 	}
 
-	if mode, present := body[settings.LandingMode]; present && !settings.ValidLandingMode(mode) {
-		return httpx.BadRequest("Unknown landing mode %q.", mode)
+	if err := checkValues(body); err != nil {
+		return err
 	}
-	if pos, present := body[settings.SiteAuthCardPosition]; present && !settings.ValidAuthCardPosition(pos) {
-		return httpx.BadRequest("Unknown auth card position %q.", pos)
+	if err := checkThemeSettings(body); err != nil {
+		return err
+	}
+	if err := h.checkOIDCSettings(body); err != nil {
+		return err
 	}
 	if err := checkTwoFactorSettings(auth.MustUser(r.Context()), body); err != nil {
 		return err
@@ -362,105 +647,67 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 			}
 		}
 	}
-	// Empty is allowed for both — it means "no override", not "black" — so
-	// only a non-empty value that fails the format is refused.
-	for _, key := range []string{settings.PWAThemeColor, settings.PWABackgroundColor} {
-		if value, present := body[key]; present && value != "" && !settings.ValidHexColor(value) {
-			return httpx.BadRequest("Setting %q must be a #rrggbb colour.", key)
+	for _, key := range referenceKeys {
+		if _, present := body[key]; !present {
+			continue
 		}
-	}
-	// A manifest icon on another host is silently dropped by the image
-	// policy anyway; refusing it here says so instead of leaving an operator
-	// to wonder why the install prompt has no icon.
-	if url, present := body[settings.PWAIconURL]; present && !settings.ValidPWAIconURL(url) {
-		return httpx.BadRequest("The PWA icon must be a path on this server or a data URI.")
-	}
-	// A trial model that does not exist would make the front door offer a
-	// conversation it cannot hold.
-	if modelID, present := body[settings.TrialModel]; present && modelID != "" {
-		if !isValidID(modelID) {
-			return httpx.BadRequest("Malformed model id.")
+		refusal, err := h.referenceRefused(r.Context(), key, body[key])
+		if err != nil {
+			return httpx.Internal(err)
 		}
-		if _, err := h.models.ByID(r.Context(), modelID); err != nil {
-			return model.TranslateError(err)
-		}
-	}
-
-	// An unknown display mode would leave every user's allowance rendered as
-	// nothing at all, so it is checked here rather than guessed at in the
-	// browser.
-	if raw, present := body[settings.AttachmentMaxMB]; present {
-		size, err := strconv.Atoi(strings.TrimSpace(raw))
-		if err != nil || size < 1 || size > settings.MaxAttachmentCeilingMB {
-			return httpx.BadRequest("The attachment limit must be between 1 and %d MB.",
-				settings.MaxAttachmentCeilingMB)
-		}
-	}
-	// An unparseable schedule would read as "off" and quietly never run, so
-	// it is refused here rather than discovered by an operator wondering why
-	// nothing is being cleaned up.
-	if raw, present := body[settings.AttachmentPurgeDaily]; present && strings.TrimSpace(raw) != "" {
-		if _, _, ok := conversation.ParseDailyTime(raw); !ok {
-			return httpx.BadRequest("The daily cleanup time must be HH:MM, or empty for never.")
-		}
-	}
-	if raw, present := body[settings.AttachmentPurgeDays]; present {
-		if days, err := strconv.Atoi(strings.TrimSpace(raw)); err != nil || days < 0 || days > 3650 {
-			return httpx.BadRequest("Keep images for between 0 and 3650 days; 0 means no age limit.")
-		}
-	}
-	if raw, present := body[settings.AttachmentOrphanMins]; present {
-		if mins, err := strconv.Atoi(strings.TrimSpace(raw)); err != nil || mins < 5 || mins > 1440 {
-			return httpx.BadRequest("Unsent uploads must be kept for between 5 and 1440 minutes.")
+		if refusal != nil {
+			return refusal
 		}
 	}
 	for key, bounds := range numericBounds {
 		if raw, present := body[key]; present {
 			value, err := strconv.Atoi(strings.TrimSpace(raw))
 			if err != nil || value < bounds[0] || value > bounds[1] {
-				return httpx.BadRequest("Setting %q must be between %d and %d.",
-					key, bounds[0], bounds[1])
+				return httpx.BadRequestCode("setting_out_of_range", "Setting %q must be between %d and %d.",
+					key, bounds[0], bounds[1]).
+					WithDetails(map[string]any{"setting": key, "min": bounds[0], "max": bounds[1]})
 			}
 		}
 	}
 
-	if display, present := body[settings.UsageDisplay]; present && !settings.ValidUsageDisplay(display) {
-		return httpx.BadRequest("Unknown usage display %q.", display)
-	}
 	// The notice is served to people who have not signed in, so how much of it
 	// there can be is decided here and not by whatever the form happened to send.
-	if tone, present := body[settings.HomeNoticeTone]; present && !settings.ValidHomeNoticeTone(tone) {
-		return httpx.BadRequest("Unknown notice tone %q.", tone)
-	}
-	if text, present := body[settings.HomeNotice]; present && utf8.RuneCountInString(text) > settings.MaxHomeNoticeTitleChars {
-		return httpx.BadRequest("The notice line is at most %d characters; put the rest in the text that opens from it.",
-			settings.MaxHomeNoticeTitleChars)
-	}
-	if text, present := body[settings.HomeNoticeBody]; present && utf8.RuneCountInString(text) > settings.MaxHomeNoticeBodyChars {
-		return httpx.BadRequest("The notice text is at most %d characters.", settings.MaxHomeNoticeBodyChars)
-	}
-	if identity, present := body[settings.LeaderboardIdentity]; present && !settings.ValidLeaderboardIdentity(identity) {
-		return httpx.BadRequest("Unknown leaderboard identity %q.", identity)
-	}
-
-	// A registration group that does not exist would send every new account
-	// into no group at all, which quietly means no models.
-	if groupID, present := body[settings.RegistrationGroup]; present && groupID != "" {
-		if !isValidID(groupID) {
-			return httpx.BadRequest("Malformed group id.")
+	if over := overlongNotice(body); len(over) > 0 {
+		if over[0] == settings.HomeNotice {
+			return httpx.BadRequestCode("notice_title_too_long", "The notice line is at most %d characters; put the rest in the text that opens from it.",
+				settings.MaxHomeNoticeTitleChars).
+				WithDetails(map[string]any{"max": settings.MaxHomeNoticeTitleChars})
 		}
-		if _, err := h.groups.ByID(r.Context(), nil, groupID); err != nil {
-			return translateGroupError(err)
-		}
+		return httpx.BadRequestCode("notice_body_too_long", "The notice text is at most %d characters.", settings.MaxHomeNoticeBodyChars).
+			WithDetails(map[string]any{"max": settings.MaxHomeNoticeBodyChars})
 	}
 
 	if err := h.validateDefined(body); err != nil {
 		return err
 	}
 
-	if err := h.settings.SetMany(r.Context(), body); err != nil {
-		return httpx.Internal(err)
+	// The check above reads the saver's account from the request, which can
+	// predate a second step switched off by another request in the meantime.
+	// The same test runs on the row read inside the write's transaction, under
+	// the instance lock that disabling a second step also takes.
+	recheck := func(q database.Queryer) error {
+		fresh, err := h.users.ByID(r.Context(), q, auth.MustUser(r.Context()).ID)
+		if err != nil {
+			return translateUserError(err)
+		}
+		return checkTwoFactorSettings(fresh, body)
 	}
+	before := h.currentValues(body)
+	var save error
+	if twoFactorRecheckNeeded(body) {
+		save = h.settings.SetManyChecked(r.Context(), body, recheck)
+	} else {
+		save = h.settings.SetMany(r.Context(), body)
+	}
+	if save != nil {
+		return responseOr(save, internalError)
+	}
+	h.noteSettings(r.Context(), before, body)
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"settings": h.visibleSettings(auth.MustUser(r.Context()))})
 }
 
@@ -477,13 +724,16 @@ func (h *Handlers) updateSettings(w http.ResponseWriter, r *http.Request) error 
 //
 // Unknown keys are skipped rather than refused for the same reason: a
 // document written by a newer release should not be unusable by this one.
+// Keys outside this administrator's grants are skipped and named too: a file
+// spans several sections, and refusing it whole would drop the ones they may
+// change.
 func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error {
 	var body map[string]string
 	if err := httpx.DecodeJSON(w, r, &body, 256*1024); err != nil {
 		return err
 	}
 	if len(body) == 0 {
-		return httpx.BadRequest("That file contains no settings.")
+		return httpx.BadRequestCode("settings_file_empty", "That file contains no settings.")
 	}
 
 	twoFactorCode := body["two_factor_code"]
@@ -492,122 +742,11 @@ func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error 
 		twoFactorCode = r.Header.Get("X-Two-Factor-Code")
 	}
 
-	applied := map[string]string{}
-	skipped := []string{}
-
-	for key, value := range body {
-		if !hasPermission(auth.MustUser(r.Context()), h.settingPermission(key)) {
-			return permissionDenied()
-		}
-		if !h.writable(key) || len(value) > 8*1024 {
-			skipped = append(skipped, key)
-			continue
-		}
-		applied[key] = value
+	applied, skipped := h.importableSettings(r, body)
+	h.dropRefusedImports(r, applied, &skipped, twoFactorCode)
+	if err := h.clearDanglingReferences(r.Context(), applied, &skipped); err != nil {
+		return err
 	}
-
-	if mode, present := applied[settings.LandingMode]; present && !settings.ValidLandingMode(mode) {
-		delete(applied, settings.LandingMode)
-		skipped = append(skipped, settings.LandingMode)
-	}
-	if pos, present := applied[settings.SiteAuthCardPosition]; present && !settings.ValidAuthCardPosition(pos) {
-		delete(applied, settings.SiteAuthCardPosition)
-		skipped = append(skipped, settings.SiteAuthCardPosition)
-	}
-	if display, present := applied[settings.UsageDisplay]; present && !settings.ValidUsageDisplay(display) {
-		delete(applied, settings.UsageDisplay)
-		skipped = append(skipped, settings.UsageDisplay)
-	}
-	if tone, present := applied[settings.HomeNoticeTone]; present && !settings.ValidHomeNoticeTone(tone) {
-		delete(applied, settings.HomeNoticeTone)
-		skipped = append(skipped, settings.HomeNoticeTone)
-	}
-	if identity, present := applied[settings.LeaderboardIdentity]; present && !settings.ValidLeaderboardIdentity(identity) {
-		delete(applied, settings.LeaderboardIdentity)
-		skipped = append(skipped, settings.LeaderboardIdentity)
-	}
-	for _, key := range []string{settings.PWAThemeColor, settings.PWABackgroundColor} {
-		if value, present := applied[key]; present && value != "" && !settings.ValidHexColor(value) {
-			delete(applied, key)
-			skipped = append(skipped, key)
-		}
-	}
-	if url, present := applied[settings.PWAIconURL]; present && !settings.ValidPWAIconURL(url) {
-		delete(applied, settings.PWAIconURL)
-		skipped = append(skipped, settings.PWAIconURL)
-	}
-	// Dropped rather than refused, like everything else here — and for the
-	// importer's own sake: a file from an instance that requires the second
-	// step must not shut out an operator who has not switched it on yet.
-	for _, key := range []string{settings.TwoFactorPolicy, settings.TwoFactorIssuer, settings.TwoFactorBackofficeMode} {
-		if value, present := applied[key]; present {
-			if checkTwoFactorSettings(auth.MustUser(r.Context()), map[string]string{key: value}) != nil {
-				delete(applied, key)
-				skipped = append(skipped, key)
-			}
-		}
-	}
-	if value, present := applied[settings.SignupReviewPrompt]; present && strings.TrimSpace(value) != strings.TrimSpace(h.settings.Get(settings.SignupReviewPrompt)) {
-		actor := auth.MustUser(r.Context())
-		if !actor.TwoFactorEnabled() || strings.TrimSpace(twoFactorCode) == "" ||
-			h.auth.VerifyTwoFactorCode(r.Context(), actor, strings.TrimSpace(twoFactorCode), h.clientIP(r)) != nil {
-			delete(applied, settings.SignupReviewPrompt)
-			skipped = append(skipped, settings.SignupReviewPrompt)
-		}
-	}
-	if raw, present := applied[settings.AttachmentPurgeDaily]; present && strings.TrimSpace(raw) != "" {
-		if _, _, ok := conversation.ParseDailyTime(raw); !ok {
-			delete(applied, settings.AttachmentPurgeDaily)
-			skipped = append(skipped, settings.AttachmentPurgeDaily)
-		}
-	}
-	if raw, present := applied[settings.AttachmentMaxMB]; present {
-		size, err := strconv.Atoi(strings.TrimSpace(raw))
-		if err != nil || size < 1 || size > settings.MaxAttachmentCeilingMB {
-			delete(applied, settings.AttachmentMaxMB)
-			skipped = append(skipped, settings.AttachmentMaxMB)
-		}
-	}
-	for key, bounds := range numericBounds {
-		if raw, present := applied[key]; present {
-			value, err := strconv.Atoi(strings.TrimSpace(raw))
-			if err != nil || value < bounds[0] || value > bounds[1] {
-				delete(applied, key)
-				skipped = append(skipped, key)
-			}
-		}
-	}
-
-	// The identifiers that name a model, and the one that names a group. A
-	// dangling one is cleared rather than carried, so the instance ends up in
-	// a state it can describe: "no default group" beats "a default group that
-	// does not exist". The list is a loop rather than a block each so that a
-	// fourth identifier is added in one place.
-	for _, key := range []string{settings.TrialModel, settings.SignupReviewModel} {
-		modelID, present := applied[key]
-		if !present || modelID == "" {
-			continue
-		}
-		if !isValidID(modelID) {
-			applied[key] = ""
-			skipped = append(skipped, key)
-			continue
-		}
-		if _, err := h.models.ByID(r.Context(), modelID); err != nil {
-			applied[key] = ""
-			skipped = append(skipped, key)
-		}
-	}
-	if groupID, present := applied[settings.RegistrationGroup]; present && groupID != "" {
-		if !isValidID(groupID) {
-			applied[settings.RegistrationGroup] = ""
-			skipped = append(skipped, settings.RegistrationGroup)
-		} else if _, err := h.groups.ByID(r.Context(), nil, groupID); err != nil {
-			applied[settings.RegistrationGroup] = ""
-			skipped = append(skipped, settings.RegistrationGroup)
-		}
-	}
-
 	for key, value := range applied {
 		if d, ok := h.settings.Defined(key); ok && d.Validate != nil && d.Validate(value) != nil {
 			delete(applied, key)
@@ -615,14 +754,149 @@ func (h *Handlers) importSettings(w http.ResponseWriter, r *http.Request) error 
 		}
 	}
 
-	if err := h.settings.SetMany(r.Context(), applied); err != nil {
-		return httpx.Internal(err)
+	// The two-step keys were checked against the request's snapshot above. The
+	// same keys are checked again against the saver's row as the write commits,
+	// as updateSettings does, and dropped and named there too.
+	recheck := func(q database.Queryer) error {
+		fresh, err := h.users.ByID(r.Context(), q, auth.MustUser(r.Context()).ID)
+		if err != nil {
+			return translateUserError(err)
+		}
+		for _, key := range twoFactorKeys {
+			if value, present := applied[key]; present && checkTwoFactorSettings(fresh, map[string]string{key: value}) != nil {
+				delete(applied, key)
+				skipped = append(skipped, key)
+			}
+		}
+		return nil
 	}
+	before := h.currentValues(applied)
+	var save error
+	if twoFactorRecheckNeeded(applied) {
+		save = h.settings.SetManyChecked(r.Context(), applied, recheck)
+	} else {
+		save = h.settings.SetMany(r.Context(), applied)
+	}
+	if save != nil {
+		return responseOr(save, internalError)
+	}
+	h.noteSettings(r.Context(), before, applied)
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"settings": h.visibleSettings(auth.MustUser(r.Context())),
 		"applied":  len(applied),
 		"skipped":  skipped,
 	})
+}
+
+// importableSettings is the part of an imported document this administrator
+// may write at all, and the keys left out of it.
+func (h *Handlers) importableSettings(r *http.Request, body map[string]string) (map[string]string, []string) {
+	applied := map[string]string{}
+	skipped := []string{}
+
+	for key, value := range body {
+		if !hasPermission(auth.MustUser(r.Context()), h.settingPermission(key)) || !h.writable(key) || len(value) > settings.MaxValueBytes {
+			skipped = append(skipped, key)
+			continue
+		}
+		applied[key] = value
+	}
+
+	// The same rule the form's save keeps: an export shows a secret as the
+	// mask, and importing that file back used to write the row of dots over
+	// the real value — every challenge or provider sign-in behind it then
+	// failing for everybody, with nothing on screen to say why.
+	for _, key := range h.secretKeys() {
+		if value, present := applied[key]; present && (value == "" || value == secretMask) {
+			delete(applied, key)
+		}
+	}
+	return applied, skipped
+}
+
+// dropRefusedImports drops from applied, and names in skipped, each value the
+// ordinary save would refuse.
+func (h *Handlers) dropRefusedImports(r *http.Request, applied map[string]string, skipped *[]string, twoFactorCode string) {
+	drop := func(key string) {
+		delete(applied, key)
+		*skipped = append(*skipped, key)
+	}
+	for _, rule := range valueRules {
+		for _, key := range rule.keys {
+			if value, present := applied[key]; present && rule.check(key, value) != nil {
+				drop(key)
+			}
+		}
+	}
+	for _, key := range themeChecked {
+		if value, present := applied[key]; present && checkThemeSettings(map[string]string{key: value}) != nil {
+			drop(key)
+		}
+	}
+	// Dropped and named, like the rest of this document, rather than failing the
+	// whole import: a file exported before this check existed can carry one.
+	for _, key := range oidcURLKeys {
+		if h.oidcURLRefused(key, applied[key]) {
+			drop(key)
+		}
+	}
+	// Dropped rather than refused, like everything else here — and for the
+	// importer's own sake: a file from an instance that requires the second
+	// step must not shut out an operator who has not switched it on yet.
+	for _, key := range twoFactorKeys {
+		if value, present := applied[key]; present {
+			if checkTwoFactorSettings(auth.MustUser(r.Context()), map[string]string{key: value}) != nil {
+				drop(key)
+			}
+		}
+	}
+	if value, present := applied[settings.SignupReviewPrompt]; present && strings.TrimSpace(value) != strings.TrimSpace(h.settings.Get(settings.SignupReviewPrompt)) {
+		actor := auth.MustUser(r.Context())
+		if !actor.TwoFactorEnabled() || strings.TrimSpace(twoFactorCode) == "" ||
+			h.auth.VerifyTwoFactorCode(r.Context(), actor, strings.TrimSpace(twoFactorCode), h.clientIP(r)) != nil {
+			drop(settings.SignupReviewPrompt)
+		}
+	}
+	for key, bounds := range numericBounds {
+		if raw, present := applied[key]; present {
+			value, err := strconv.Atoi(strings.TrimSpace(raw))
+			if err != nil || value < bounds[0] || value > bounds[1] {
+				drop(key)
+			}
+		}
+	}
+
+	// The save refuses these lengths; the import drops the key and names it, so a
+	// file from elsewhere cannot put a longer notice in front of signed-out visitors.
+	for _, key := range overlongNotice(applied) {
+		drop(key)
+	}
+}
+
+// clearDanglingReferences clears, and names in skipped, each imported row
+// identifier that names nothing here.
+//
+// A dangling identifier is cleared rather than carried, so the instance
+// ends up in a state it can describe: "no default group" beats "a default
+// group that does not exist". A lookup that failed says nothing about the
+// row, so it fails the import instead: clearing on it used to wipe a
+// working trial model or registration group whenever the database blinked.
+func (h *Handlers) clearDanglingReferences(ctx context.Context, applied map[string]string, skipped *[]string) error {
+	for _, key := range referenceKeys {
+		value, present := applied[key]
+		if !present {
+			continue
+		}
+		refusal, err := h.referenceRefused(ctx, key, value)
+		if err != nil {
+			return httpx.Internal(err)
+		}
+		if refusal != nil {
+			applied[key] = ""
+			*skipped = append(*skipped, key)
+		}
+	}
+	return nil
 }
 
 // purgeAttachments drops every stored image immediately.
@@ -658,18 +932,109 @@ func (h *Handlers) purgeAttachments(w http.ResponseWriter, r *http.Request) erro
 	})
 }
 
+var themeChecked = []string{settings.ThemeMode, settings.ThemeAccent, settings.ThemeBackgroundTint, settings.ThemeCustomAccent}
+
+// checkThemeSettings holds the theme keys to the shapes the browser reads.
+// Only the keys present are checked; a missing one is not being changed.
+func checkThemeSettings(body map[string]string) error {
+	if mode, present := body[settings.ThemeMode]; present && !settings.ValidThemeMode(mode) {
+		return httpx.BadRequestCode("theme_mode_unknown", "Unknown theme mode %q.", mode).
+			WithDetails(map[string]any{"value": mode})
+	}
+	for _, key := range []string{settings.ThemeAccent, settings.ThemeBackgroundTint} {
+		if value, present := body[key]; present && !settings.ValidThemeAccent(value) {
+			return httpx.BadRequestCode("setting_accent_invalid", "Setting %q must be an accent's name.", key).
+				WithDetails(map[string]any{"setting": key})
+		}
+	}
+	if value, present := body[settings.ThemeCustomAccent]; present && value != "" && !settings.ValidHexColor(value) {
+		return httpx.BadRequestCode("setting_colour_invalid", "Setting %q must be a #rrggbb colour.", settings.ThemeCustomAccent).
+			WithDetails(map[string]any{"setting": settings.ThemeCustomAccent})
+	}
+	return nil
+}
+
+// The OpenID Connect addresses a sign-in reaches, and the issuer discovery is
+// fetched from. See settings.ValidOIDCURL.
+var oidcURLKeys = []string{
+	settings.OAuthOIDCIssuer,
+	settings.OAuthOIDCAuthURL,
+	settings.OAuthOIDCTokenURL,
+	settings.OAuthOIDCUserInfoURL,
+}
+
+// oidcURLRefused reports whether saving value under key would store an address
+// a sign-in may not use. Trimmed the way the sign-in reads the setting, so what
+// is checked is what would be used. A value already stored is not refused here:
+// keeping it changes nothing, the sign-in refuses it at use, and refusing it on
+// every save would block each other change on the page for an address nobody
+// typed this time.
+func (h *Handlers) oidcURLRefused(key, value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || settings.ValidOIDCURL(value) {
+		return false
+	}
+	return value != strings.TrimSpace(h.settings.Get(key))
+}
+
+// checkOIDCSettings refuses a new plaintext OpenID Connect address when it is
+// saved. The code lets the screen say which field to change, and the setting
+// travels in details because the message beside it is English only. An empty
+// value is allowed: it clears the override.
+func (h *Handlers) checkOIDCSettings(body map[string]string) error {
+	for _, key := range oidcURLKeys {
+		if h.oidcURLRefused(key, body[key]) {
+			return httpx.BadRequestCode("oidc_url_not_https",
+				"Setting %q must be an https address; plain http is allowed only for a loopback address.", key).
+				WithDetails(map[string]any{"setting": key})
+		}
+	}
+	return nil
+}
+
 func (h *Handlers) putLoginBackground(w http.ResponseWriter, r *http.Request) error {
 	variant := settings.NormalizeVariant(r.PathValue("variant"))
 	if !settings.ValidLoginBackgroundVariants[variant] {
-		return httpx.BadRequest("Unknown login background variant.")
+		return httpx.BadRequestCode("login_background_variant_unknown", "Unknown login background variant.")
 	}
 
 	var body struct {
+		// Sent by the admin screen but never trusted: the stored type is sniffed
+		// from the bytes. It stays declared because the decoder is strict, and
+		// rejecting the field the screen sends would fail every upload.
 		Mime string `json:"mime"`
 		Data string `json:"data"`
+		// A page instead of a picture. Present means this is one; the two
+		// are not combined.
+		HTML *string `json:"html"`
 	}
 	if err := httpx.DecodeJSON(w, r, &body, settings.MaxLoginBackgroundBytes*4/3+16*1024); err != nil {
 		return err
+	}
+
+	if body.HTML != nil {
+		// A page runs script for every visitor, signed in or not, and the
+		// front door frames it with the sign-in form in view. The settings
+		// grant covers pictures; a delegated holder must not be able to put
+		// a page in front of people that sends what they type somewhere else,
+		// so the page itself is reserved for a super administrator.
+		if !auth.MustUser(r.Context()).IsSuperAdmin() {
+			return permissionDenied()
+		}
+		at, err := h.settings.SetHTMLBackground(r.Context(), variant, *body.HTML)
+		switch {
+		case errors.Is(err, settings.ErrLoginBackgroundTooLarge):
+			return httpx.BadRequestCode("page_too_large", "That page is too large.")
+		case errors.Is(err, settings.ErrLoginBackgroundUnsupported):
+			return httpx.BadRequestCode("page_empty", "The page is empty.")
+		case err != nil:
+			return httpx.Internal(err)
+		}
+		return httpx.WriteJSON(w, http.StatusOK, map[string]any{
+			"url":        fmt.Sprintf("/api/site/login-background/%s?v=%d", variant, at),
+			"html":       true,
+			"updated_at": at,
+		})
 	}
 
 	raw := body.Data
@@ -683,16 +1048,16 @@ func (h *Handlers) putLoginBackground(w http.ResponseWriter, r *http.Request) er
 	raw = strings.ReplaceAll(raw, "\t", "")
 	data, err := base64.StdEncoding.DecodeString(raw)
 	if err != nil {
-		return httpx.BadRequest("Image data is not valid base64.")
+		return httpx.BadRequestCode("image_base64_invalid", "Image data is not valid base64.")
 	}
 
-	at, err := h.settings.SetLoginBackground(r.Context(), variant, body.Mime, data)
+	at, err := h.settings.SetLoginBackground(r.Context(), variant, data)
 	if err != nil {
 		switch {
 		case errors.Is(err, settings.ErrLoginBackgroundUnsupported):
-			return httpx.BadRequest("Login backgrounds must be JPEG, PNG, WebP or AVIF.")
+			return httpx.BadRequestCode("login_background_type", "Login backgrounds must be JPEG, PNG, WebP or AVIF.")
 		case errors.Is(err, settings.ErrLoginBackgroundTooLarge):
-			return httpx.BadRequest("That image is too large.")
+			return httpx.BadRequestCode("image_too_large", "That image is too large.")
 		default:
 			return httpx.Internal(err)
 		}
@@ -707,7 +1072,7 @@ func (h *Handlers) putLoginBackground(w http.ResponseWriter, r *http.Request) er
 func (h *Handlers) deleteLoginBackground(w http.ResponseWriter, r *http.Request) error {
 	variant := settings.NormalizeVariant(r.PathValue("variant"))
 	if !settings.ValidLoginBackgroundVariants[variant] {
-		return httpx.BadRequest("Unknown login background variant.")
+		return httpx.BadRequestCode("login_background_variant_unknown", "Unknown login background variant.")
 	}
 
 	if err := h.settings.DeleteLoginBackground(r.Context(), variant); err != nil {
@@ -718,6 +1083,7 @@ func (h *Handlers) deleteLoginBackground(w http.ResponseWriter, r *http.Request)
 
 func (h *Handlers) putLogo(w http.ResponseWriter, r *http.Request) error {
 	var body struct {
+		// Sent by the admin screen but never trusted; see putLoginBackground.
 		Mime string `json:"mime"`
 		Data string `json:"data"`
 	}
@@ -736,16 +1102,16 @@ func (h *Handlers) putLogo(w http.ResponseWriter, r *http.Request) error {
 	raw = strings.ReplaceAll(raw, "\t", "")
 	data, err := base64.StdEncoding.DecodeString(raw)
 	if err != nil {
-		return httpx.BadRequest("Image data is not valid base64.")
+		return httpx.BadRequestCode("image_base64_invalid", "Image data is not valid base64.")
 	}
 
-	at, err := h.settings.SetSiteLogo(r.Context(), body.Mime, data)
+	at, err := h.settings.SetSiteLogo(r.Context(), data)
 	if err != nil {
 		switch {
 		case errors.Is(err, settings.ErrLogoUnsupported):
-			return httpx.BadRequest("Logo must be PNG, JPEG, SVG, WebP, AVIF, GIF or ICO.")
+			return httpx.BadRequestCode("logo_type", "Logo must be PNG, JPEG, SVG, WebP, AVIF, GIF or ICO.")
 		case errors.Is(err, settings.ErrLogoTooLarge):
-			return httpx.BadRequest("That image is too large.")
+			return httpx.BadRequestCode("image_too_large", "That image is too large.")
 		default:
 			return httpx.Internal(err)
 		}
@@ -788,21 +1154,14 @@ func (h *Handlers) validateDefined(body map[string]string) error {
 	return nil
 }
 
-// secretKeys is every credential this build knows about, core and plugin —
-// a switched-off plugin's too: redacting a key nothing shows costs nothing,
-// and missing one would hand its credential out.
-func secretKeys() []string {
-	out := append([]string(nil), secretSettings...)
-	for _, d := range settings.AllDefinitions() {
-		if d.Secret {
-			out = append(out, d.Key)
-		}
-	}
-	return out
-}
-
-// secretKeys is the same list for this server: the compiled-in ones, and
-// those of plugins installed while it runs.
+// secretKeys is every credential this server knows: the compiled-in ones, and
+// those of plugins installed while it runs. A switched-off plugin's are included
+// too: redacting a key nothing shows costs nothing, and missing one would hand
+// its credential out.
+//
+// It reads this server's settings service rather than the process-wide
+// registry, because the registry does not see plugins installed at run time,
+// and their credentials are the ones most likely to be missing from it.
 func (h *Handlers) secretKeys() []string {
 	out := append([]string(nil), secretSettings...)
 	for _, d := range h.settings.AllDefinitions() {
@@ -828,15 +1187,14 @@ var secretSettings = []string{
 // screen needs.
 const secretMask = "••••••••"
 
-// redacted copies the settings with every credential masked.
+// redactedWith copies the settings with each of secrets masked.
 //
 // A copy, because All() hands back the live map and masking it in place would
 // blank the running configuration. This is the endpoint an administrator
 // reads, so the mask is not about them — it is about the response existing at
 // all: a secret in a JSON body is a secret in a proxy log, a browser cache
-// and whatever the operator pasted the response into.
-func redacted(all map[string]string) map[string]string { return redactedWith(all, secretKeys()) }
-
+// and whatever the operator pasted the response into. The list is the
+// server's own (Handlers.secretKeys), never a registry-wide one.
 func redactedWith(all map[string]string, secrets []string) map[string]string {
 	out := make(map[string]string, len(all))
 	for key, value := range all {

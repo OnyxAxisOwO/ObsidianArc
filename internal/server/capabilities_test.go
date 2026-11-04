@@ -21,7 +21,7 @@ func capabilityStore(t *testing.T) *group.Store {
 		Driver:       "sqlite",
 		DSN:          filepath.Join(t.TempDir(), "groups.db"),
 		MaxOpenConns: 4,
-		MaxIdleConns: 2,
+		MaxIdleConns: 4,
 	})
 	if err != nil {
 		t.Fatalf("open database: %v", err)

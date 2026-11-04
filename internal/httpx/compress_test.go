@@ -90,7 +90,7 @@ func chained(t *testing.T, handler http.Handler, accept string) *httptest.Respon
 		request.Header.Set("Accept-Encoding", accept)
 	}
 	response := httptest.NewRecorder()
-	Chain(handler, RequestID(), Recover(), Logger(), Compress()).ServeHTTP(response, request)
+	Chain(handler, RequestID(), Logger(), Recover(), Compress()).ServeHTTP(response, request)
 	return response
 }
 
@@ -305,5 +305,82 @@ func TestAcceptEncodingIsReadCorrectly(t *testing.T) {
 		if got := acceptsGzip(header); got != want {
 			t.Errorf("acceptsGzip(%q) = %v, want %v", header, got, want)
 		}
+	}
+}
+
+// The same rule for any coding: br is what the embedded frontend asks about.
+func TestAcceptsEncodingReadsOtherCodingsTheSameWay(t *testing.T) {
+	for header, want := range map[string]bool{
+		"br":                   true,
+		"gzip, deflate, br":    true,
+		"BR":                   true,
+		"gzip":                 false,
+		"br;q=0, gzip":         false,
+		"*":                    true,
+		"*;q=0, br":            true,
+		"*, br;q=0":            false,
+		"br;q=0.001":           true,
+		"brotli":               false,
+		"":                     false,
+		"identity, br;q=0.0":   false,
+		"gzip;q=1.0, br;q=0.5": true,
+	} {
+		if got := AcceptsEncoding(header, "br"); got != want {
+			t.Errorf("AcceptsEncoding(%q, br) = %v, want %v", header, got, want)
+		}
+	}
+}
+
+// A body that arrives already encoded, the way the embedded frontend sends
+// its precompressed copies, passes through byte for byte: the compressor
+// neither re-encodes it nor adds a second label.
+func TestAnEncodedBodyIsNotCompressedAgain(t *testing.T) {
+	for _, encoding := range []string{"br", "gzip"} {
+		t.Run(encoding, func(t *testing.T) {
+			body := strings.Repeat("already encoded bytes ", 100)
+			response := compressed(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+				w.Header().Set("Content-Encoding", encoding)
+				_, _ = io.WriteString(w, body)
+			}), "gzip, br")
+
+			if got := response.Header().Values("Content-Encoding"); len(got) != 1 || got[0] != encoding {
+				t.Fatalf("Content-Encoding = %q, want only %q", got, encoding)
+			}
+			if response.Body.String() != body {
+				t.Error("the encoded body was rewritten on its way out")
+			}
+		})
+	}
+}
+
+// A handler may flush before it has written a status or a byte. Net/http
+// sends 200 at that point, so the compression decision has to be taken then:
+// otherwise the headers leave without Content-Encoding and the gzip body that
+// follows is read as plain text.
+func TestFlushBeforeAnyWriteStillLabelsTheEncoding(t *testing.T) {
+	body := strings.Repeat("<p>hello</p>", 200)
+	response := compressed(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_ = http.NewResponseController(w).Flush()
+		_, _ = io.WriteString(w, body)
+	}), "gzip")
+
+	// Result() is the header snapshot taken when the status went out. The live
+	// map would show Content-Encoding even after the client had already been
+	// sent headers without it.
+	if got := response.Result().Header.Get("Content-Encoding"); got != "gzip" {
+		t.Fatalf("Content-Encoding on the wire = %q, want gzip; the body is gzip bytes", got)
+	}
+	reader, err := gzip.NewReader(response.Body)
+	if err != nil {
+		t.Fatalf("the body is not gzip: %v", err)
+	}
+	round, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(round) != body {
+		t.Error("the body did not survive the round trip")
 	}
 }

@@ -10,9 +10,9 @@
   "author": "Obsidian Arc",
   "license": "MIT",
   "requires": { "api": 1 },
-  "permissions": ["db", "network", "users", "cards", "sessions", "notify", "security_log", "console"],
+  "permissions": ["db", "network", "users", "cards", "rewards", "sessions", "notify", "security_log", "challenge", "console"],
   "backend": "plugin.wasm",
-  "hooks": ["describe", "decorate_invitees"],
+  "hooks": ["describe", "decorate_invitees", "sweep"],
   "settings": [
     {
       "key": "demo.mode", "default": "open", "enum": ["open", "closed"], "initial": true,
@@ -29,13 +29,16 @@
   "oauth_bindings": [{ "provider": "oidc", "field": "handle", "pattern": "^[0-9]{5,15}$" }],
   "guards": [
     { "action": "register", "name": "demo", "event": "demo_challenge" },
-    { "action": "login", "name": "demo", "event": "demo_challenge" }
+    { "action": "login", "name": "demo", "event": "demo_challenge" },
+    { "action": "images", "name": "demo", "event": "demo_challenge" }
   ],
   "routes": [
     { "pattern": "GET /api/admin/x/demo/things", "access": "admin", "permission": "users" },
     { "pattern": "POST /api/admin/x/demo/things", "access": "admin", "permission": "users" },
     { "pattern": "POST /api/admin/x/demo/disable/{id}", "access": "admin", "permission": "users" },
     { "pattern": "POST /api/admin/x/demo/retire/{id}", "access": "admin", "permission": "users" },
+    { "pattern": "POST /api/admin/x/demo/reward/{id}", "access": "admin", "permission": "users" },
+    { "pattern": "POST /api/x/demo/challenged", "access": "public" },
     { "pattern": "POST /api/x/demo/hook", "access": "public" },
     { "pattern": "GET /api/x/demo/upstream", "access": "public" },
     { "pattern": "GET /api/x/demo/echo", "access": "public" },

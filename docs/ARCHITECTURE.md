@@ -13,6 +13,11 @@ two designs do the same job, the one with fewer moving parts wins.
 
 ## 1. What is here today
 
+This section describes the standalone build the plan started from, as it was
+then. Its stylesheets and scripts have since become `web/src/styles/_chat.scss`,
+`_workspace.scss` and the Vue components; the table keeps the original names
+because it records where the port began.
+
 | | |
 | --- | --- |
 | Frontend | Vanilla JavaScript, no framework, no bundler, no build step |
@@ -76,9 +81,8 @@ them is preserved.
   rows, with a "manage models" footer that jumps to settings.
 - **Settings** — a right-side drawer, 420px, sections separated by uppercase
   subheads, with an accent picker of 10 dots plus a custom hex row.
-- **Motion** — `aiChatSwitch` on conversation change and on a just-sent
-  message, a caret that blinks at the live end of a streaming answer, a
-  0.34s `cubic-bezier(0.2, 0, 0, 1)` rail slide, and a full
+- **Motion** — `oaRise` on conversation change, a caret that blinks at the live end of a streaming answer, a
+  0.34s `--ai-ease-standard` (`cubic-bezier(0.2, 0, 0, 1)`) rail slide, and a full
   `prefers-reduced-motion` path that turns all of it off.
 - **Theme** — light values on `:root`, dark by `prefers-color-scheme`, forced
   by `[data-theme]`; one accent hue clamped per scheme by `color-utils.js` so
@@ -192,9 +196,13 @@ Go, direct:
 | --- | --- | --- |
 | `modernc.org/sqlite` | SQLite driver | Pure Go: no cgo, static binary, trivial cross-compile. Behind a `nosqlite` build tag for Postgres-only builds. |
 | `github.com/jackc/pgx/v5` | Postgres driver | The standard, and its `stdlib` shim keeps everything on `database/sql`. |
-| `golang.org/x/crypto` | argon2id | Official. |
+| `golang.org/x/crypto` | argon2id, the SSH console | Official. |
+| `github.com/tetratelabs/wazero` | The plugin-package sandbox | Pure Go WebAssembly runtime, so the binary stays static; about 2.8 MB of it. |
 
-That is the whole list. Routing is `net/http`'s `ServeMux` (Go 1.22 method +
+That is the whole list. `golang.org/x/sync` is linked too, but only
+indirectly, through pgx's pool; merging concurrent requests for one heavy
+backoffice aggregation is `internal/flight`, a page with `singleflight`'s
+behaviour, so it is not a fifth direct dependency. Routing is `net/http`'s `ServeMux` (Go 1.22 method +
 wildcard patterns). Migrations are a 60-line runner over an `embed.FS`. No
 ORM, no query builder, no logging framework (`log/slog` is in the standard
 library), no config library.
@@ -219,10 +227,474 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 25.86 MB (22.16 MB `-tags nosqlite`, Linux amd64); this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 229.26 kB to open the chat (189.47 JS + 39.79 CSS) |
+| Binary (SQLite + embedded SPA) | < 30 MB | 28.14 MB (24.43 MB `-tags nosqlite`, Linux amd64, Go 1.27.3), 0.41 MB of it the frontend's brotli copies and 0.41 MB the embedded zone database; this repository ships no plugin |
+| Frontend, on the wire | < 135 kB | 174.64 kB to open the chat with brotli (154.12 JS + 20.52 CSS); 207.94 kB with gzip (183.85 JS + 24.09 CSS), which the budget holds; the brotli is a copy compressed at build time, the gzip is Go's, made as it goes out |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-10-31, after the model picker's detail sheet gained the
+API-facing model name. Its label shares the core dictionary with the model
+editor; the public catalogue uses the same naming rules as the compatible
+API. First paint is 207.94 kB with Go's gzip (183.85 JS + 24.09 CSS),
+174.64 kB with brotli (154.12 JS + 20.52 CSS), within the unchanged 208 kB
+budget and 18 core assets. The backoffice adds 179.00 kB JS + 15.87 kB CSS
+with gzip; Chinese adds 20.84 kB plus 38.49 kB for the backoffice. Built as
+below, the Linux amd64 binary is 28,135,584 bytes (24,432,800 without
+SQLite), and the brotli copies total 414,707 bytes.
+
+Remeasured on 2026-10-31, after checkbox ticks changed to a single joined
+stroke and the bulk-action bar gained entry and exit transitions. First paint
+is 207.91 kB with Go's gzip (183.81 JS + 24.09 CSS), 174.55 kB with brotli
+(154.03 JS + 20.52 CSS), within the unchanged 208 kB budget. The backoffice
+adds 179.01 kB JS + 15.87 kB CSS with gzip. All 18 core assets remain; the
+Linux amd64 binary, built as below, is still 28,131,488 bytes (24,428,704
+without SQLite), and the brotli copies total 414,505 bytes.
+
+Remeasured on 2026-10-29, after Rune was added below the backoffice overview.
+Its conversation, work-mode controls and geometric ASCII field stay in the
+existing backoffice chunk; all 18 core assets and the 208 kB build budget
+remain unchanged. The ordinary chat field now reads its geometry on resize
+instead of on every animation frame. Menu containment and select following
+use small native listeners and frame handles; the proof-of-work search is
+serialized once for both execution paths, so the bundler minifies both.
+Backoffice frame styles travel with the backoffice. First paint is 207.77 kB with Go's gzip
+(183.82 JS + 23.95 CSS), 174.46 kB with brotli (154.09 JS + 20.37 CSS).
+The backoffice adds 178.99 kB JS + 15.79 kB CSS with gzip; its Chinese adds
+38.50 kB. Linux amd64, Go 1.27.3, `-trimpath -ldflags '-s -w'` produces
+28,131,488 bytes (24,428,704 without SQLite); the brotli copies total
+414,433 bytes. The wire figures, binaries and brotli total were remeasured on
+2026-10-30 after left and right sign-in panels and the login/registration
+expansion animation were added. The original floating-card layouts remain
+available; the animation and background previews add no chunks. Both build
+gates measure the server's own gzip response, with the same 208 kB limit:
+Node's codec can vary across versions and CPUs and is not the response sent
+to a browser. These figures describe the preceding build.
+
+The current figures were refreshed on 2026-10-30 after registration UA
+visibility controls and Gravatar / WeAvatar support were added. Custom avatars
+retain priority; the configured email avatar services are tried in order for
+empty avatars, with the second requested only if the first has no image or fails.
+
+Remeasured on 2026-10-31 after page slides retained their outgoing route
+and shared their duration with Vue. First paint is 207.77 kB with gzip and
+174.46 kB with brotli; the binaries remain the same size and the brotli
+copies total 414,433 bytes. The 18 core assets and 208 kB budget are unchanged.
+
+Rune uses a permission-filtered console catalogue and the existing command
+transport, so every operation reaches the same backoffice authorization,
+verification and audit checks as a manual operation. The default mode asks
+before every command; assisted mode automatically approves only commands
+whose declared endpoints are all GETs; full access also runs writes within
+the signed-in administrator's grants. A verification refusal pauses the
+operation for the administrator to complete it and explicitly retry. Model
+calls reserve and settle the ordinary chat allowance, including tool
+continuations and interrupted calls. Management transcripts are held only
+in this browser session and are cleared on reload or sign-out; the server
+keeps the existing usage and administrative audit records.
+
+Remeasured on 2026-10-29, after the history and folders became one rail
+with drag and menu filing, and the header and account menu were regrouped.
+The account menu's content and styles load on first open; the folder list's
+content and styles load only for an account with folders or when starting
+one. The triggers, loose rows and shared rename form remain on the entry.
+The two deliberate splits keep the existing 208 kB build budget: the entry
+is 207.60 kB with Go's gzip (183.84 JS + 23.76 CSS), 174.17 kB with brotli
+(153.96 JS + 20.36 CSS). An account with folders also fetches 3.75 / 3.30 kB
+(gzip / brotli); opening the account menu adds 2.52 / 2.15 kB. This is
+18 core assets, each optional component owning its script and stylesheet.
+The Linux amd64 binary, Go 1.27.3, `-trimpath -ldflags '-s -w'`, is
+28,057,760 bytes (24,359,072 without SQLite); its brotli copies total about
+0.41 MB. These figures describe the earlier rail build.
+
+Remeasured on 2026-10-28 (UTC), after the empty conversation gained a field
+of drifting characters behind it (with a switch for the instance and one
+for each reader), the wait for a first token a dot-matrix pill, the model
+list a search field, keyboard, tiles and an effort meter, and the rail a new
+head and empty state:
+206.66 kB with gzip (183.17 JS + 23.49 CSS) and 173.44 kB with brotli
+(153.40 JS + 20.04 CSS), 5.25 and 4.33 kB more than below. Both are on the
+first paint because the empty conversation is what the chat opens on, and
+they took the bundle test's gzip budget from 204 kB to 208 kB, raised on
+purpose and said so in the test. The vendors' model marks are a chunk of
+their own, 6.51 kB gzipped, fetched the first time a model tile is drawn;
+the other lazy chunks are unchanged.
+
+Remeasured on 2026-10-19 (UTC), after the build stopped writing gzip copies.
+Node's zlib picks its matching code by CPU: the same first paint gzipped at
+level 9 came to 201.27 kB on an ARM Mac and 201.89 kB on CI's x86 runner, so
+the figure the docs quote could not be reproduced by the test that holds them
+to it. Brotli's encoder showed no such difference (169.11 kB on both), so the
+build keeps its brotli copies and gzip is left to `httpx.Compress`, whose Go
+encoder at BestCompression gives the same bytes everywhere. A browser that
+takes only gzip receives 201.41 kB (178.60 JS + 22.81 CSS); one that takes
+brotli still receives 169.11 kB. The lazy chunks, gzip then brotli: backoffice
+170.65 / 137.12 kB plus 15.21 / 13.33 kB of stylesheet, Chinese dictionary
+20.35 / 16.92 kB, the backoffice's Chinese 37.25 / 30.87 kB, terminal 8.06 /
+7.36 kB plus 1.67 / 1.40 kB, math 3.76 / 3.25 kB, front page 4.17 / 3.68 kB
+plus 3.89 / 3.40 kB, landing page 3.12 / 2.75 kB plus 0.62 / 0.51 kB. The
+binary loses the gzip copies and is 27.98 MB (24.28 MB without SQLite), built
+the same way as below. The bundle is unchanged. For the same reason the
+bundle test no longer holds the docs to the build's own gzip column (Node's
+zlib at its default level, 248.63 kB on the Mac against 249.16 kB on CI for
+one build), which had kept CI red since 2026-10-15; it keeps its budget.
+
+Remeasured on 2026-10-18 (UTC), after the review fixes below were merged
+into one tree: the backoffice's refusals by code, the Options API branch
+compiled out, the front page's and the landing page's stylesheets in their own
+chunks, the backoffice's Chinese in its own, a conversation renamed in its row,
+the build's brotli and gzip copies of every asset, and a provider sign-in that
+carries a challenge started by a request rather than a form. To open the chat a
+browser that takes brotli receives 169.11 kB (149.65 JS + 19.46 CSS) and one
+that takes only gzip 201.27 kB (178.40 JS + 22.87 CSS); the build's gzip
+column reads 201.97 kB (178.83 JS + 23.14 CSS), 2.03 kB under the bundle
+test's 204 kB. The lazy chunks, gzip then brotli: backoffice 170.65 /
+137.12 kB plus 15.25 / 13.33 kB of stylesheet, Chinese dictionary 20.06 /
+16.92 kB, the backoffice's Chinese 36.94 / 30.87 kB, terminal 8.07 / 7.36 kB
+plus 1.67 / 1.40 kB, math 3.73 / 3.25 kB, front page 4.15 / 3.68 kB plus
+3.91 / 3.40 kB, landing page 3.12 / 2.75 kB plus 0.62 / 0.51 kB. The build
+emits thirteen files besides the plugins'. The binary is 28.44 MB (24.74 MB
+without SQLite), built the same way as below.
+
+Remeasured on 2026-10-18 (UTC), after the zone database was compiled in
+(`internal/checkin/tzdata.go`). A host with no zone files, Windows
+among them, otherwise has `time.LoadLocation` fail, and the check-in and the
+bonus pools would count their days in UTC. Nothing else moved, the frontend
+included. The binary is 28.44 MB (24.74 MB without SQLite), up 0.41 MB from the
+figure below, built the same way as below (`CGO_ENABLED=0 GOOS=linux
+GOARCH=amd64`, `-trimpath`, `-ldflags "-s -w"`).
+
+Remeasured on 2026-10-18 (UTC), after the build began compressing the
+assets itself. Every file under `assets/` gets a brotli copy at quality 11 and
+a gzip copy at level 9, in `dist/precompressed/`, and the server sends the one
+the request accepts instead of compressing each uncached asset as it goes out;
+brotli at that quality is far too slow to run per request. The first paint is
+still counted as gzip, now the build's copy rather than Go's encoder: 205.67 kB
+(179.16 JS + 26.52 CSS), down 0.02 kB. A browser that takes brotli receives
+172.70 kB (150.47 JS + 22.23 CSS). The copies add 0.86 MB to the binary, which
+is 28.03 MB (24.33 MB without SQLite), built the same way as below; the
+originals stay, for the client that takes neither and for range requests.
+Nothing else moved.
+
+Remeasured on 2026-10-18 (UTC), after the second batch of left-over review
+fixes. A provider sign-in that carries a challenge token or a proof now
+leaves as a form post rather than a navigation, so neither lands in an
+address; the helper that builds the form is on the sign-in page, in the
+entry. 205.69 kB to open the chat (179.28 JS + 26.41 CSS), up 0.10 kB; the
+build's estimate is 206.43 kB, 0.57 kB under the bundle test's 207 kB. The
+backoffice's refusals now carry codes, and their sentences, in both
+languages, travel with the backoffice and the Chinese dictionary rather than
+the entry: backoffice 173.67 kB plus 15.24 kB of stylesheet, Chinese
+dictionary 54.04 kB. The binary is 27.16 MB (23.49 MB without SQLite), built
+the same way as below.
+
+Remeasured on 2026-10-18 (UTC), after the review fixes: the Options API branch
+of Vue is compiled out by both Vite configs, since nothing in the tree uses
+it. 204.73 kB to open the chat (178.31 JS + 26.43 CSS), down 1.58 kB; the
+build's estimate is 205.38 kB, 0.62 kB under the bundle test's 206 kB. The
+lazy chunks are unchanged, and the binary still reads 27.10 MB (23.40 MB
+without SQLite).
+
+Remeasured on 2026-10-18 (UTC), after the account form's refusals were given
+sentences of the page's own. A password change refused as unchanged or too
+long, and a profile refused for its address, bio or avatar, read in the
+reader's language instead of the server's English; the streaming caret takes
+its blink phase from the page clock, so the last block being rebuilt on every
+frame no longer holds it still; the account section of settings reads its
+connections and authorizations the first time it is shown rather than when the
+panel opens; and the five panels' full-screen switches are one component.
+206.31 kB to open the chat (179.89 JS + 26.43 CSS), up 0.20 kB; the build's
+estimate is 206.98 kB, 0.02 kB under the bundle test's 207 kB, which is why
+the sign-in screen's split into smaller parts waits: each part measured as
+more first paint, not less. The Chinese dictionary is 53.46 kB and the public
+front page 4.17 kB; the other lazy chunks are unchanged.
+
+Remeasured on 2026-10-18 (UTC), after a round of interface review fixes. A
+refused request and a refused stream now read their error body through one
+reader in `api/client.ts`, and a refused stream raises the backoffice's code
+prompt as a refused request does; the two policy redirects in the router are
+one ordered table; a report's kind, priority and status are named by
+`lib/feedback.ts` for the reader's panel and the backoffice alike; and the
+settings sections and the selects that offer translated choices work them
+out once per change instead of on every render. 206.11 kB to open the chat
+(179.70 JS + 26.41 CSS), up 0.29 kB; the build's estimate is 206.79 kB, 0.21
+kB under the bundle test's 207 kB. The backoffice is 167.32 kB plus 15.24 kB
+of stylesheet, the terminal 8.06 kB and the LaTeX renderer 3.76 kB, which
+lost two aliases nothing called; the other lazy chunks are unchanged.
+
+Remeasured on 2026-10-18 (UTC), after a round of chat review fixes. A
+conversation is renamed in its row now rather than through the browser's
+prompt, and both lists draw their rows with one shared component, so the
+transcript's list no longer renders again on every streamed frame and
+switching conversations redraws only the two rows that changed. Inline
+emphasis remembers a marker that has no closing instead of scanning for one
+again from every later opener. 205.82 kB to open the chat (179.41 JS + 26.41
+CSS), up 0.16 kB; the build's estimate is 206.66 kB, 0.41 kB under the bundle
+test's 207 kB. The backoffice is 167.26 kB plus 15.24 kB of stylesheet, the
+public front page 4.13 kB and the terminal 8.04 kB; the other lazy chunks are
+unchanged.
+
+Remeasured on 2026-10-18 (UTC), after a second round of backoffice review
+fixes. The accent and background-tint label tables the reader's appearance
+settings and the site theme both show are one shared module now, and the
+project list words a failed read the way the rest of the chat does. 205.66 kB
+to open the chat (179.24 JS + 26.41 CSS), up 0.05 kB; the build's estimate is
+206.38 kB, 0.62 kB under the bundle test's 207 kB. The audit trail's and the
+shared pool's words moved from their own dictionaries into the backoffice's
+English and the Chinese dictionary, so the backoffice is 167.30 kB plus 15.24
+kB of stylesheet and the Chinese dictionary 53.40 kB; the other lazy chunks
+are unchanged.
+
+Remeasured on 2026-10-18 (UTC), after a round of backoffice review fixes. A
+response body that breaks off after its headers is now the same translated
+network error as a connection that never opened, which `api/client.ts` adds
+to the entry; the leaderboard panel's own copy of the abort check gave way
+to `lib/abort.ts`. 205.61 kB to open the chat (179.19 JS + 26.41 CSS), up
+0.02 kB; the build's estimate is still 206.32 kB. The backoffice's error
+wording, load and delete skeletons and model editor were consolidated inside
+its own chunk: 170.86 kB plus 15.24 kB of stylesheet. The Chinese dictionary
+is 51.63 kB with one more security-log reason; the other lazy chunks are
+unchanged.
+
+Remeasured on 2026-10-18 (UTC), after a pass over the stylesheets: rules that no
+element matched, declarations a later rule had already overridden, and a second
+copy of the full-screen grid are gone, and the gap between 1100px and 1101px in
+the layout breakpoints is closed, so a fractional viewport such as 1100.5px gets
+the overlay it was missing. 202.02 kB to open the chat (179.23 JS + 22.79 CSS),
+down 0.08 kB; the build's estimate is 202.65 kB, 1.35 kB under the bundle test's
+204 kB budget. The backoffice stylesheet is 15.21 kB on the wire, and the binary
+still rounds to 27.10 MB.
+
+Remeasured on 2026-10-18 (UTC), after the front page's and the landing
+page's stylesheets moved out of the entry: `_front.scss` and the new
+`_landing.scss` are imported by their views, so they arrive as
+`FrontPage-*.css` and `LandingView-*.css` with those chunks. 202.10 kB to open
+the chat (179.23 JS + 22.87 CSS), down 3.31 kB; the build's estimate is
+202.72 kB, and the bundle test's budget is ratcheted from 207 kB to 204 kB.
+The front page is now 4.13 kB plus 3.89 kB of stylesheet, which is
+0.57 kB more in all for its visitors than when the sheet rode in the entry,
+and the landing page 3.12 kB plus 0.62 kB. Everything else unchanged. The
+binary was not rebuilt for this; its figure is the one below.
+
+Remeasured on 2026-10-18 (UTC), after a second round of stylesheet merges:
+the three identical entrance keyframes are one (`oaRise`), the easing curves
+are `--ai-ease-*` tokens, the settings panel no longer restates the field
+rule, and a few dead rules and class names are gone. 205.41 kB to open the
+chat (179.16 JS + 26.25 CSS), down 0.05 kB; the build's estimate is
+206.10 kB, 0.90 kB under the bundle test's 207 kB. Backoffice 170.53 kB plus
+15.22 kB of stylesheet, terminal 8.05 kB plus 1.67 kB, Chinese dictionary
+51.60 kB, the other lazy chunks unchanged. The binary was not rebuilt for
+this; its figure is the one below.
+
+Remeasured on 2026-10-18 (UTC), after a round of stylesheet merges: the
+repeated note box, text column, picture frame, empty line and pill-switch
+option are each written once, the workspace's duplicate page-slide pins and
+two copies of the spinner's turn are gone, and the rail's project rules moved
+back into `_chat.scss`. 205.46 kB to open the chat (179.18 JS + 26.28 CSS),
+down 0.13 kB; the build's estimate is 206.17 kB, 0.83 kB under the bundle
+test's 207 kB. Backoffice 170.54 kB plus 15.23 kB of stylesheet, terminal
+8.05 kB plus 1.65 kB, Chinese dictionary 51.60 kB, the other lazy chunks
+unchanged. The binary was not rebuilt for this; its figure is the one below.
+
+Remeasured on 2026-10-18 (UTC), with the backoffice's Chinese split out of
+the Chinese dictionary. The 1658 keys only the backoffice says had their
+English moved into the backoffice's chunk already, but their Chinese still
+travelled in `i18n.zh`, so every Chinese reader fetched the backoffice's
+words to open a conversation. They are now `i18n.admin.zh.ts`, a chunk of its
+own rather than a part of the backoffice's, so an English-reading
+administrator does not fetch them either: the Chinese dictionary is 20.30 kB
+(from 51.60 kB) and the backoffice's Chinese 33.13 kB, fetched before the
+backoffice's first render for a Chinese reader and before the switch for an
+administrator who picks Chinese inside it. The loader that does this is in
+the entry: 205.74 kB to open the chat (179.32 JS + 26.41 CSS), up 0.15 kB;
+the build's estimate is 206.46 kB, 0.54 kB under the bundle test's 207 kB.
+Backoffice 170.56 kB plus 15.24 kB of stylesheet, the other lazy chunks
+unchanged. The build emits eleven files besides the plugins'. The binary is
+27.10 MB (23.40 MB without SQLite), built the same way as below.
+
+Remeasured on 2026-10-18 (UTC), after the billing and operations review
+fixes were merged. Refusals from feedback, announcements, backup and import
+now carry codes the interface translates, quoting their limits from the
+answer's details, and the reader's sentences for them sit in the entry's
+dictionary because `lib/api-error.ts` names them. 205.59 kB to open the chat
+(179.18 JS + 26.41 CSS), up 0.62 kB; the build's estimate is 206.32 kB,
+0.68 kB under the bundle test's 207 kB. Backoffice 170.57 kB plus 15.24 kB of
+stylesheet, Chinese dictionary 51.60 kB, the other lazy chunks unchanged. The
+binary is 27.10 MB (23.40 MB without SQLite), built the same way as below.
+
+Remeasured on 2026-10-18 (UTC), after a round of review fixes and three
+splits of the entry. The English only the backoffice says (1658 keys) moved out
+of `i18n.ts` into `i18n.admin.ts`, which the backoffice's chunk carries; the
+rules only the backoffice draws moved out of the entry's stylesheet into
+`styles/admin.scss`, emitted as `AdminPage-*.css`; and the terminal's rules
+followed into `TerminalPanel-*.css`. 204.97 kB to open the chat (178.56 JS +
+26.41 CSS), down 42.32 kB from 247.29 kB; the build's estimate is 205.69 kB,
+down from 248.63 kB and 1.31 kB under the bundle test's budget, ratcheted to 207 kB
+behind it. The reader who opens the backoffice pays for that instead: its
+chunk is 170.59 kB plus 15.24 kB of stylesheet (from 140.69 kB with none). The
+terminal is 8.05 kB plus 1.63 kB of stylesheet, the Chinese dictionary
+51.19 kB, math 3.79 kB (formula results are now cached by source), front page
+4.14 kB, landing page 3.12 kB (it shares the chat's stream reader,
+`api/sse.ts`, instead of carrying its own). The build emits ten files besides
+the plugins'. The binary is 27.09 MB (23.39 MB without SQLite), built the same
+way as below. Lazy chunks are measured as the server sends them, through
+`httpx.Compress`.
+
+Remeasured on 2026-10-16 (UTC), with shared quota pools added. Their
+backoffice words load with the backoffice (views/admin/pool-text.ts); what an
+account sees of a pool is in the English dictionary. That alone took the
+build's estimate to 250.14 kB, so the shared stylesheet was swept for rules no
+template, script or plugin names any more — 97 of them, among them a
+settings drawer, a model detector, a plugin guide and ranking and facts
+layouts that nothing draws — along with five dead dictionary entries and an
+unused component. 247.29 kB to open the chat (205.98 JS + 41.31 CSS), down
+1.15 kB; the build's estimate is 248.63 kB, 1.37 kB under the budget. Chinese
+dictionary 51.01 kB, backoffice 140.69 kB (the pool's screen and words), the
+other lazy chunks unchanged. The binary is 27.08 MB (23.38 MB without SQLite),
+built the same way as below.
+
+Remeasured on 2026-10-16 (UTC), with the administrators' audit trail added. Its
+styles are in the shared stylesheet; its words, all but the page's name, load
+with the backoffice (views/admin/audit-text.ts), because in the English
+dictionary they took the build's estimate to 251.14 kB, over the 250 kB the
+bundle test holds it to. 248.44 kB to open the chat (205.80 JS + 42.64 CSS), up
+0.68 kB; the build's estimate is 249.83 kB, 0.17 kB under that budget. Chinese
+dictionary 51.03 kB, backoffice 137.60 kB, the other lazy chunks unchanged. The binary is 27.00 MB (23.29 MB without SQLite), built
+the same way as below.
+
+Remeasured on 2026-10-15 (UTC), from this release's source with Go 1.27.2. The first
+paint is measured as the server sends it: the bytes of the two entry files
+through the same compressor, read back from the built binary with
+`Accept-Encoding: gzip`. Go's default compression level sent 258.70 kB for those
+two files, 4.6% more, because the default runs the fast matcher and level 9 runs
+the lazy one zlib uses; the server now uses level 9. The build's gzip column is
+zlib's default level and is kept as the build's estimate, not as a transfer
+size. The lazy chunks sent (gzip at level 9): Chinese dictionary 50.97 kB,
+backoffice 130.11 kB, terminal 8.25 kB, math 3.69 kB, front page 4.12 kB, landing
+page 3.31 kB. The binary is 26.86 MB (23.16 MB without SQLite). The
+2026-10-12 figures predate this release's changes to the frontend and to
+the server, which is why the binary and the bundle both moved.
+
+Remeasured on 2026-10-12 (UTC), after the second audit's fixes were merged:
+the dictionary carries the new refusals and the settings controls show their
+keys. 243.11 kB (200.79 kB JS + 42.32 kB CSS), up 0.08 kB from the figure
+below; the Chinese dictionary is 48.80 kB, the backoffice chunk 126.35 kB and
+the terminal 7.54 kB. The binary is 26.43 MB (22.72 MB without SQLite), built
+with Go 1.27.1 for Linux amd64 with -trimpath and -s -w; the same build of the
+commit before these fixes is 26.33 MB, so they add 0.10 MB.
+
+Remeasured on 2026-10-12 (UTC), after the review of the security fixes. The
+settings pages now send only the keys they changed, the terminal keeps its
+password-bearing lines out of history, and the chat's Markdown parser bounds its
+nesting. 243.03 kB (200.71 kB JS + 42.32 kB CSS), up 0.05 kB from the figure
+below, from the build's gzip column. The backoffice chunk is 126.35 kB, up
+0.35 kB, and the terminal 7.54 kB. The binary figure stands: the frontend grew by
+about a kilobyte before compression.
+
+Built with Go 1.27.2 from the merged third audit round onward, which carries the standard library's fixes for the advisories `govulncheck` reaches from this code; the figures above were last measured before that toolchain move and the remembered-browser cookie change, which together moved the binary by about 0.02 MB.
+
+Remeasured on 2026-10-10 (UTC), after providers took several API keys and the
+model editor several detected models at once: the dictionary carries the new
+strings and the icon set an undo arrow. 242.98 kB (200.67 kB JS + 42.31 kB
+CSS), up 0.78 kB from the figure below. The backoffice chunk is 126.00 kB and
+the Chinese dictionary 48.76 kB. The binary moved by a few kilobytes and its
+figure stands.
+
+Remeasured on 2026-10-10 (UTC), after the last of that day's review fixes:
+/v1 bodies are read at most four at a time per account and get their read window
+when their turn comes, a short upload no longer holds its connection, a bonus
+revoked mid-request stays revoked, and only a super administrator chooses a new
+provider's address. 242.20 kB (199.95 kB JS + 42.25 kB CSS), up 0.09 kB from the
+figure below. The backoffice chunk is 124.75 kB and the Chinese dictionary
+48.53 kB. The binary is 26.30 MB (22.61 MB without SQLite), up 0.02 MB, built
+the same way.
+
+Remeasured on 2026-10-10 (UTC), after this day's review fixes on the sign-in
+and binding paths: console password entry and provider sign-in ask the login
+guards, the details form asks them again before it completes a sign-in, invite
+guesses are counted per address before any paid check runs, and binding a
+provider asks for the account's password, or for a sign-in made in the last
+fifteen minutes, first. 242.11 kB (199.86 kB JS + 42.25 kB CSS) from the
+build's gzip column, up 0.53 kB from the figure below. The backoffice chunk is
+124.75 kB and the Chinese dictionary 48.52 kB. The binary is 26.28 MB (22.58 MB
+without SQLite), up 0.02 MB, built the same way as the figure below
+(`CGO_ENABLED=0 GOOS=linux GOARCH=amd64`, `-trimpath`, `-ldflags "-s -w"`).
+
+Remeasured on 2026-10-10 (UTC), after the second round of that day's fixes
+merged: banning became its own action with a reason, the backoffice's account
+menu opens its panels beside it (and the connect link returns there), and the
+plugin install form sends only the keys the viewer may write. 241.58 kB
+(199.33 kB JS + 42.25 kB CSS) from the build's gzip column, up 1.09 kB from the
+figure below, nearly all of it the panels. The backoffice chunk is 124.74 kB
+and the Chinese dictionary 48.46 kB. The binary is 26.27 MB (22.57 MB without
+SQLite), up 0.08 MB, built the same way as the figure below
+(`CGO_ENABLED=0 GOOS=linux GOARCH=amd64`, `-trimpath`, `-ldflags "-s -w"`).
+
+Remeasured on 2026-10-10 (UTC), after the security fixes of that day: sign-out
+now clears the chat, draft and project stores, the markdown parser scans
+headings and code spans linearly, provider sign-up carries its proof of work,
+and the OIDC, backup and plugin-install forms explain their new refusals:
+240.49 kB (198.31 kB JS + 42.18 kB CSS), up 1.36 kB, from the build's gzip
+column. The backoffice chunk is 123.81 kB and the Chinese dictionary 48.20 kB.
+The binary is 26.19 MB (22.49 MB without SQLite), up 0.09 MB, measured as the
+difference between this tree and the previous one built the same way.
+
+Remeasured on 2026-10-09 (UTC), after the backoffice learned of newer releases
+(`GET /api/admin/update`, its dialog and the dashboard notices): 239.13 kB
+(196.95 kB JS + 42.18 kB CSS), up 0.54 kB, read from the build's own gzip
+column as the figures below were. The backoffice chunk is 123.60 kB and the
+Chinese dictionary 47.93 kB. The binary is 26.10 MB (22.40 MB without
+SQLite), up 0.03 MB.
+
+Remeasured on 2026-10-09 (UTC), after the work surface was removed — the
+mode switch, the tool-call rows and the console broker behind them: 238.59 kB
+(196.56 kB JS + 42.03 kB CSS), down 1.15 kB from the figure below. The
+backoffice chunk is 122.46 kB, the Chinese dictionary 47.53 kB and the
+terminal 7.53 kB. The binary is 26.07 MB (22.37 MB without SQLite), down from
+26.11 MB.
+
+Remeasured on 2026-10-09 (UTC), after the security fixes of that day (asking
+for the current password before two-step sign-in is switched on or the address
+moves, the terminal's history keeping no secrets, a plugin's settings drawing
+only the keys the server showed): 239.74 kB (197.64 kB JS + 42.10 kB CSS), up
+0.69 kB from 239.05 kB at the commit before, measured the same way. That
+commit was already 0.33 kB above the figure recorded here, from changes that
+did not remeasure. The backoffice chunk is 122.15 kB, the Chinese dictionary
+47.86 kB and the terminal 7.55 kB. The binary is 26.11 MB (22.41 MB without
+SQLite), up from 26.05 MB at the commit before, built with Go 1.27.1.
+
+Remeasured on 2026-10-07 (UTC), after a plugin's panel could list entries an
+operator wrote, each opening its own form behind the instance's own human
+check, and an action card could ask for numbers, switches, paragraphs and
+rows (`PluginUserControls`, `PluginActionControl`): 238.72 kB (196.65 kB JS +
+42.07 kB CSS), up 2.33 kB from 236.39 kB, measured the same way. The panel
+now draws the proof-of-work solver and the Turnstile widget, both already in
+the main graph for sign-up. The backoffice chunk is 121.88 kB and the Chinese
+dictionary 47.66 kB. The binary was not remeasured.
+
+Remeasured on 2026-10-07 (UTC), after an operator could set the site's own
+theme and a background for the signed-in interface, each variant a picture or
+a page of HTML (`OaBackdrop`, the theme layering in `theme/theme.ts`):
+236.39 kB (194.75 kB JS + 41.64 kB CSS), up 2.37 kB from 234.02 kB, measured
+the same way; most of the CSS is the backoffice's background stage, which
+lives in the shared stylesheet like every other surface. The backoffice chunk
+is 120.31 kB and the Chinese dictionary 47.56 kB. The binary was not remeasured.
+
+Remeasured on 2026-10-07 (UTC), after plugins could bring a panel of their
+own for everybody signed in (`PluginUserPanel`, entered from the account menu):
+234.02 kB (193.18 kB JS + 40.84 kB CSS), up 1.87 kB from 232.15 kB at the
+commit before, measured the same way — gzip -9 of the entry script and
+stylesheet. The panel is in the main graph rather than a chunk of its own
+because the bundle test counts the files, and it is small. The binary was not
+remeasured.
+
+Remeasured on 2026-10-04 (UTC), after the list screens learned to tick several
+rows and act on them (`OaBulkBar`, `useBulk`, the selection column of
+`OaTable`). The first paint is 231.51 kB (190.74 kB JS + 40.77 kB CSS), up 0.89
+kB from 230.62 kB at the commit before — which was itself up from the figure
+below, the screens added since not having been remeasured. The selection column
+is in the shared table; the bar and the composable are only in the backoffice
+chunk, which is now 115.40 kB (from 113.15 kB). The Chinese pack is 46.52 kB.
+The binary was not remeasured.
 
 Remeasured on 2026-10-01 (UTC), after the grouped backoffice pages were centred
 under their headings, the sign-in providers made rows of their card and the
@@ -497,9 +969,11 @@ transport — is also admin-only code, and all 8.35 kB of its frontend landed in
 chunk, which nobody who cannot open it ever fetches. What reached the first
 paint is the two things this project deliberately does not split: its English
 strings, because `en` in `i18n.ts` is the type that makes the Chinese
-dictionary provably complete, and its stylesheet, because there is one. Those
+dictionary provably complete, and its stylesheet, because there was one then. Those
 are 0.97 kB of JS and 0.86 kB of CSS. Splitting either is the careful job named below, not
-something to do while adding a screen.
+something to do while adding a screen. Both have been split since: the
+backoffice's English and its stylesheet now travel in its chunk, and so do the
+terminal's, the front page's and the landing page's stylesheets.
 
 The console had added 1.07 MB, all of it `golang.org/x/crypto/ssh`. That is a
 package of a module `go.mod` already required for Argon2id, so it adds no
@@ -519,33 +993,60 @@ is whether this project's own code grows, not whether the framework does. It
 moved from 130 to 135 kB when the measured bundle reached 131.05 kB rather
 than leaving a target the shipped usage controls no longer met.
 
-The five pieces most people never need are split off: the administration
-backoffice, the terminal, the Chinese dictionary, the LaTeX renderer, and the
-public front page.
-What each reader actually downloads:
+The pieces fetched only when needed are split off: the administration
+backoffice (with its own English and its own stylesheet), the terminal (with
+its stylesheet), the Chinese dictionary, the backoffice's Chinese, the LaTeX
+renderer, the public front
+page, and the landing page (the intro or trial a signed-out visitor sees on an
+instance that chose one), each of those last two with its stylesheet. The vendors' model marks, the
+account menu's content and stylesheet, and the folder list's content and
+stylesheet are optional chunks too.
+What each reader actually downloads, as the server sends it (2026-10-31):
 
-| | gzipped |
-| --- | --- |
-| English, not an administrator | 211.37 kB |
-| Chinese, not an administrator | 251.67 kB |
-| …and a conversation containing a formula | 255.28 kB |
-| Chinese administrator, backoffice open | 345.12 kB |
-| Anybody, once they open the terminal | +7.22 kB |
-| A visitor to an instance whose front door is the front page | +3.96 kB |
+| | gzip | brotli |
+| --- | --- | --- |
+| English, not an administrator | 207.94 kB | 174.64 kB |
+| Chinese, not an administrator | 228.78 kB | 192.06 kB |
+| …and a conversation containing a formula | 232.55 kB | 195.31 kB |
+| Chinese administrator, backoffice open | 462.14 kB | 381.30 kB |
+| Anybody, once they open the terminal | +9.73 kB | +8.75 kB |
+| A visitor to an instance whose front door is the front page | +8.06 kB | +7.08 kB |
+| A signed-out visitor to an instance whose front door is the intro or trial | +3.74 kB | +3.25 kB |
+
+The baseline excludes the optional account menu, folder list and model marks.
+Accounts with folders fetch the folder chunk after the list is read, and the
+menu chunk is added if an administrator enters the backoffice through it.
+Opening model tiles adds 6.27 kB gzip / 5.63 kB brotli of vendor marks.
 
 Route-level splitting would shave the first paint further and is deliberately
 switched off for everything but the backoffice and the terminal: /settings, /keys, /usage and
 /about are columns over a chat that is already on screen, so a chunk each buys
 a round trip in the middle of a click to defer bytes the reader was going to
 fetch anyway.
-The stylesheet is not split: `admin.css` carries the shared design system —
-panels, fields, tables, the About screen — and separating the part that is
-genuinely admin-only is a different, more careful job.
+The stylesheet is split by the classes a rule needs, not by file: a rule goes
+to the backoffice's stylesheet (`styles/admin.scss`, emitted as
+`AdminPage-*.css`) only if every selector in it needs a class no other chunk
+renders, and `test/bundle.test.ts` checks every one against the built output.
+`_surfaces.scss` stays in the entry, because it carries the shared design
+system — panels, fields, tables, the About screen. The terminal's rules arrive
+with the terminal in `TerminalPanel-*.css`, the front page's in
+`FrontPage-*.css` and the landing page's in `LandingView-*.css`. Each of those
+three is a stylesheet the browser fetches after the chunk's script is asked
+for and before it runs, so the reader who opens the terminal, or a signed-out
+visitor whose front door is the front page or the intro or trial, waits one
+more serial round trip before that screen draws. That is the trade the
+backoffice made first: the few readers who open such a screen pay a round
+trip so that every first paint stops carrying its rules. The one rule the front page and the
+landing page share, `.oa-landing-brand`, stays in the entry, because neither
+chunk can reach the other's stylesheet.
 
 These are transferred sizes. The server compresses its own responses, because
 the deployment this document assumes has nothing in front of it to do that
 instead: 136 kB of JavaScript leaves as 47, and 70 kB of CSS as 13. The
-allowlist in `httpx.Compress` is what keeps the event stream out of it — a
+frontend's scripts, stylesheets and shell were compressed when they were built
+and are sent as they are, with `Content-Encoding`, `Vary: Accept-Encoding` and
+a tag per coding, and the compressor leaves an encoded body alone; it still
+handles everything else. The allowlist in `httpx.Compress` is what keeps the event stream out of it — a
 streamed answer pushed through a compressor arrives when the buffer fills
 rather than when the model produced a word, and nothing in any log would say
 so.
@@ -604,8 +1105,9 @@ models               id, provider_id→providers, model_id, display_name,
 conversations        id, user_id, title, model_id, pinned,
                      created_at, updated_at, deleted_at
 messages             id, conversation_id, user_id, seq, role, content,
-                     reasoning, error, model_id, provider_id,
-                     stats_json, created_at       UNIQUE(conversation_id, seq)
+                     reasoning, error, error_code, model_id, model_name,
+                     provider_id, stats_json, created_at
+                     UNIQUE(conversation_id, seq)
 attachments          id, user_id, message_id, kind, mime, width, height,
                      size, data (BLOB), created_at
 usage_records        id, user_id, group_id, provider_id, model_id, model_ref,
@@ -735,7 +1237,7 @@ POST /api/chat            (SSE response)
 1. `RequireUser` → the session's user; `status = 'disabled'` is rejected here.
 2. Resolve the model **and** check the user's group may use it. The frontend's
    model list is a convenience; this check is the authority.
-3. `quota.Reserve` — atomic, see §9. A rejection is a `429` carrying which
+3. `quota.ReserveFor` — atomic, see §9. A rejection is a `429` carrying which
    window tripped and when it resets.
 4. Load the transcript (`WHERE conversation_id = ? AND user_id = ?`), append
    the user message, create the conversation if this is the first turn.
@@ -758,7 +1260,8 @@ proxy unchanged, and cancellation is just closing the connection.
 The client uses `fetch` + a `ReadableStream` reader rather than `EventSource`,
 because the request is a POST. The SSE frame parser already written in
 `provider.js` (including `\r\n\r\n` framing for proxies that rewrite line
-endings) is reused verbatim.
+endings) became `web/src/api/sse.ts`, which the chat, the terminal and the
+trial share; the backoffice's model probe still reads its own stream.
 
 Timeouts: `ResponseHeaderTimeout` on the upstream client, plus a per-provider
 overall deadline. `WriteTimeout` on our own server is disabled for the SSE
@@ -869,7 +1372,7 @@ will not be.
 | Provider keys | AES-256-GCM at rest, key derived by HKDF from `OBSIDIAN_SECRET_KEY`. Never serialised into any response — the admin UI sees `••••1234`. Never logged. |
 | Log redaction | A `redact()` helper for anything key-shaped; request bodies are never logged. |
 | Input validation | Every handler decodes into a typed struct with explicit bounds; `MaxBytesReader` on all bodies. |
-| Rate limiting | Per-IP on `/api/auth/*` (in-memory token bucket), per-user via quota everywhere else. |
+| Rate limiting | Per-IP on `/api/auth/*` (in-memory token bucket), per-user via quota everywhere else. The login, second-step, current-password and invite-code guess budgets are held in each process's memory, so N processes sharing one database give each budget N times its size; the instance-wide sign-up limit is counted in the database. The trial's per-address and instance-wide hourly budgets are in process memory for the same reason, so the trial runs on one instance. |
 | Abuse review | Sign-up review produces `allow`, timed `restrict`, or `refuse`; restrictions gate all programmatic API keys at the account level. Browser chat bursts use a database-backed per-account counter and an on-demand Turnstile challenge. |
 | Security audit | Access decisions are persisted in `security_events`, separately from the ordinary HTTP request log. |
 
@@ -941,7 +1444,8 @@ POST   /api/attachments             GET  /api/attachments/{id}
 POST   /api/images/generate
 GET    /api/usage/me                → current windows, limits, resets_at
 GET    /api/uptime                  → system & model availability
-GET    /api/announcements           POST /api/announcements/read
+GET    /api/announcements           POST /api/announcements/read  {ids}
+GET    /api/announcements/{id}
 GET    /api/preferences             PATCH /api/preferences
 PATCH  /api/profile
 GET/POST/PATCH/DELETE /api/admin/{users,groups,providers,models}/…
@@ -987,6 +1491,7 @@ OBSIDIAN_SECRET_KEY        encrypts provider keys; generated into the data
                            directory when unset
 OBSIDIAN_SESSION_TTL       720h
 OBSIDIAN_TRUST_PROXY       false
+OBSIDIAN_TRUST_CLOUDFLARE   false
 OBSIDIAN_LOG_LEVEL         info
 ```
 

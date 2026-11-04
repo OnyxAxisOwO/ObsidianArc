@@ -14,9 +14,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
@@ -39,7 +42,7 @@ type Capabilities struct {
 	SupportsTools        bool `json:"supports_tools"`
 	// The image lab may generate with it. Says nothing about conversations:
 	// a model that draws is very often a model that also talks, and marking
-	// it for the lab used to take it out of the composer's picker entirely.
+	// it for the lab must not take it out of the composer's picker.
 	SupportsImageGen bool `json:"supports_image_gen"`
 	// It generates pictures inside a conversation, which is what makes the
 	// chat surface show it as an image generator. Off by default and off for
@@ -150,6 +153,7 @@ func (m Model) Extra() map[string]any {
 	}
 	var out map[string]any
 	if err := json.Unmarshal([]byte(trimmed), &out); err != nil {
+		slog.Warn("model request override does not decode, so it is dropped", "model", m.ID, "error", err)
 		return nil
 	}
 	return out
@@ -240,6 +244,23 @@ var (
 	ErrNotPermitted           = errors.New("model: not available to this account")
 	ErrDisabled               = errors.New("model: this model is currently unavailable")
 	ErrInvalidRequestOverride = errors.New("model: request override must be a valid JSON object")
+	// Another model routes to this one. Deleting it would clear that route
+	// (the foreign key sets it to NULL), and the source would then be served
+	// by its own provider: the one the operator routed away from.
+	ErrRouted        = errors.New("model: other models route to this one")
+	ErrInvalidAccess = errors.New("model: access must be use, view or none")
+	// Checked before the insert: left to the foreign key, the failure is an
+	// internal error, and the caller cannot tell it was the request's fault.
+	ErrGrantModelMissing = errors.New("model: a grant names a model that does not exist")
+	// A route is one hop. Authorize follows exactly one, so a route to a
+	// routed model, or from a model that other routes already point at,
+	// would make a chain that quietly ignores its last link.
+	ErrRouteChain = errors.New("model: a route is one hop, and that model is already part of a route")
+	// Not ErrNotFound: that one reads as "the model being saved is
+	// unavailable", and the mistake is in the target the operator typed.
+	ErrRouteTargetMissing = errors.New("model: the route's target does not exist")
+	// Empty means inherit the provider's style and is always accepted.
+	ErrInvalidReasoningStyle = errors.New("model: unknown reasoning style")
 )
 
 const (
@@ -290,6 +311,9 @@ type CreateInput struct {
 	ReasoningStyle  adapter.ReasoningStyle
 	ReasoningTiers  []ReasoningTier
 	RequestOverride string
+	// When set, these grants replace the default of 'use' for every group, in
+	// the same transaction as the model row.
+	GroupGrants *[]ModelGroupGrant
 	Capabilities
 	Weights
 }
@@ -319,10 +343,14 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Model, error) {
 		return Model{}, err
 	}
 	record = normalized
+	if err := checkReasoningStyle(record.ReasoningStyle); err != nil {
+		return Model{}, err
+	}
 
 	now := time.Now().UnixMilli()
 	record.CreatedAt, record.UpdatedAt = now, now
 
+	var granted []ModelGroupGrant
 	err = s.db.Tx(ctx, func(tx *database.Tx) error {
 		// A provider being disabled and a model being added are one invariant,
 		// even when two server instances do them at the same time. Both paths
@@ -343,6 +371,12 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Model, error) {
 			record.Enabled = false
 		}
 
+		if err := lockRouteTarget(ctx, tx, record.RouteToID); err != nil {
+			return err
+		}
+		if err := checkRouteTx(ctx, tx, record.ID, record.RouteToID); err != nil {
+			return err
+		}
 		_, err := tx.Exec(ctx, `INSERT INTO models
 			(id, provider_id, model_id, display_name, description, avatar, enabled, hidden, sort_order,
 			 supports_reasoning, supports_images, supports_vision, supports_streaming,
@@ -363,6 +397,16 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Model, error) {
 		if err != nil {
 			return err
 		}
+		// Chosen grants go in this transaction, not after it: a grant the
+		// database refuses then refuses the model too, rather than leaving a
+		// saved model with the default grant to every group.
+		if in.GroupGrants != nil {
+			if err := setModelGroups(ctx, tx, record.ID, *in.GroupGrants); err != nil {
+				return err
+			}
+			granted, err = modelGroupGrants(ctx, tx, record.ID)
+			return err
+		}
 		// Default all existing groups to 'use' if not already present
 		_, err = tx.Exec(ctx, `INSERT INTO group_models (group_id, model_id, access)
 			SELECT g.id, ?, ? FROM user_groups g
@@ -372,10 +416,15 @@ func (s *Store) Create(ctx context.Context, in CreateInput) (Model, error) {
 		return err
 	})
 	if err != nil {
-		if isUnique(err) {
+		if database.IsUnique(err) {
 			return Model{}, s.whichDuplicate(ctx, record.APIName, record.ID)
 		}
 		return Model{}, fmt.Errorf("model: create: %w", err)
+	}
+	// What was stored, not what was asked for: the store drops 'none' and
+	// repeated groups, so an echo of the request would not match the grants.
+	if in.GroupGrants != nil {
+		record.GroupGrants = granted
 	}
 	return record, nil
 }
@@ -396,6 +445,8 @@ type Update struct {
 	ReasoningStyle  *adapter.ReasoningStyle
 	ReasoningTiers  *[]ReasoningTier
 	RequestOverride *string
+	// Replaces the model's grants in the same transaction as the other fields.
+	GroupGrants *[]ModelGroupGrant
 
 	SupportsReasoning    *bool
 	SupportsImages       *bool
@@ -416,50 +467,99 @@ type Update struct {
 }
 
 func (s *Store) Update(ctx context.Context, modelID string, in Update) (Model, error) {
-	current, err := s.ByID(ctx, modelID)
+	// Checked only when the caller sends a style. A row stored before this
+	// check existed is not re-validated by an edit that leaves its style alone,
+	// or that row could never be saved again.
+	if in.ReasoningStyle != nil {
+		if err := checkReasoningStyle(*in.ReasoningStyle); err != nil {
+			return Model{}, err
+		}
+	}
+	// The provider row is taken before the model row, as Create does and as
+	// provider.Update's cascade does, so the two cannot wait on each other. A
+	// model's provider never changes, so naming it before the transaction is
+	// safe.
+	owner, err := s.ByID(ctx, modelID)
 	if err != nil {
 		return Model{}, err
 	}
 
-	next := current
-	assign(&next.ModelID, in.ModelID)
-	assign(&next.APIName, in.APIName)
-	assign(&next.SystemPrompt, in.SystemPrompt)
-	assign(&next.AutoDisabled, in.AutoDisabled)
-	assign(&next.DisplayName, in.DisplayName)
-	assign(&next.Description, in.Description)
-	assign(&next.Avatar, in.Avatar)
-	assign(&next.Enabled, in.Enabled)
-	assign(&next.Hidden, in.Hidden)
-	assign(&next.SortOrder, in.SortOrder)
-	assign(&next.RouteToID, in.RouteToID)
-	assign(&next.ReasoningStyle, in.ReasoningStyle)
-	assign(&next.ReasoningTiers, in.ReasoningTiers)
-	assign(&next.RequestOverride, in.RequestOverride)
-	assign(&next.SupportsReasoning, in.SupportsReasoning)
-	assign(&next.SupportsImages, in.SupportsImages)
-	assign(&next.SupportsVision, in.SupportsVision)
-	assign(&next.SupportsStreaming, in.SupportsStreaming)
-	assign(&next.SupportsSystemPrompt, in.SupportsSystemPrompt)
-	assign(&next.SupportsTools, in.SupportsTools)
-	assign(&next.SupportsImageGen, in.SupportsImageGen)
-	assign(&next.SupportsChatImageGen, in.SupportsChatImageGen)
-	assign(&next.EmulateTools, in.EmulateTools)
-	assign(&next.ContextWindow, in.ContextWindow)
-	assign(&next.MaxOutputTokens, in.MaxOutputTokens)
-	assign(&next.Request, in.RequestWeight)
-	assign(&next.InputToken, in.InputTokenWeight)
-	assign(&next.OutputToken, in.OutputTokenWeight)
-	assign(&next.ReasoningToken, in.ReasoningTokenWeight)
-
-	next, err = validate(next)
-	if err != nil {
-		return Model{}, err
-	}
+	var next Model
+	var granted []ModelGroupGrant
 	err = s.db.Tx(ctx, func(tx *database.Tx) error {
 		if _, err := tx.Exec(ctx,
-			`UPDATE providers SET updated_at = updated_at WHERE id = ?`, next.ProviderID); err != nil {
+			`UPDATE providers SET updated_at = updated_at WHERE id = ?`, owner.ProviderID); err != nil {
 			return fmt.Errorf("model: lock provider: %w", err)
+		}
+		// A route write takes two model rows, the source's and its target's.
+		// Two routes that point at each other across providers would each hold
+		// one row and wait for the other if both took source first, and
+		// PostgreSQL aborts one as a deadlock. The lower id first makes them
+		// queue instead.
+		if in.RouteToID != nil && *in.RouteToID != "" {
+			first, second := modelID, *in.RouteToID
+			if second < first {
+				first, second = second, first
+			}
+			for _, lockedID := range []string{first, second} {
+				if _, err := tx.Exec(ctx,
+					`UPDATE models SET updated_at = updated_at WHERE id = ?`, lockedID); err != nil {
+					return fmt.Errorf("model: lock route: %w", err)
+				}
+			}
+		}
+		// Everything below is decided from the row as it stands under the model's
+		// own lock. The checker's DisableIfEnabled takes that lock when it switches
+		// a model off, so a copy read before the lock could still say enabled, and
+		// a write built from it would switch the model back on.
+		if _, err := tx.Exec(ctx,
+			`UPDATE models SET updated_at = updated_at WHERE id = ?`, modelID); err != nil {
+			return fmt.Errorf("model: lock model: %w", err)
+		}
+		current, err := byID(ctx, tx, modelID)
+		if err != nil {
+			return err
+		}
+
+		next = current
+		assign(&next.ModelID, in.ModelID)
+		assign(&next.APIName, in.APIName)
+		assign(&next.SystemPrompt, in.SystemPrompt)
+		assign(&next.AutoDisabled, in.AutoDisabled)
+		assign(&next.DisplayName, in.DisplayName)
+		assign(&next.Description, in.Description)
+		assign(&next.Avatar, in.Avatar)
+		assign(&next.Enabled, in.Enabled)
+		assign(&next.Hidden, in.Hidden)
+		assign(&next.SortOrder, in.SortOrder)
+		assign(&next.RouteToID, in.RouteToID)
+		assign(&next.ReasoningStyle, in.ReasoningStyle)
+		assign(&next.ReasoningTiers, in.ReasoningTiers)
+		assign(&next.RequestOverride, in.RequestOverride)
+		assign(&next.SupportsReasoning, in.SupportsReasoning)
+		assign(&next.SupportsImages, in.SupportsImages)
+		assign(&next.SupportsVision, in.SupportsVision)
+		assign(&next.SupportsStreaming, in.SupportsStreaming)
+		assign(&next.SupportsSystemPrompt, in.SupportsSystemPrompt)
+		assign(&next.SupportsTools, in.SupportsTools)
+		assign(&next.SupportsImageGen, in.SupportsImageGen)
+		assign(&next.SupportsChatImageGen, in.SupportsChatImageGen)
+		assign(&next.EmulateTools, in.EmulateTools)
+		assign(&next.ContextWindow, in.ContextWindow)
+		assign(&next.MaxOutputTokens, in.MaxOutputTokens)
+		assign(&next.Request, in.RequestWeight)
+		assign(&next.InputToken, in.InputTokenWeight)
+		assign(&next.OutputToken, in.OutputTokenWeight)
+		assign(&next.ReasoningToken, in.ReasoningTokenWeight)
+
+		next, err = validate(next)
+		if err != nil {
+			return err
+		}
+		if next.RouteToID != current.RouteToID {
+			if err := checkRouteTx(ctx, tx, modelID, next.RouteToID); err != nil {
+				return err
+			}
 		}
 		var providerEnabled bool
 		if err := tx.QueryRow(ctx,
@@ -468,10 +568,26 @@ func (s *Store) Update(ctx context.Context, modelID string, in Update) (Model, e
 		}
 		if !providerEnabled {
 			next.Enabled = false
+			// An enable the provider refused must leave the checker's claim standing,
+			// even when the caller also clears it (a health reset does): otherwise the
+			// refusal would erase the one record that says the model was switched off
+			// by the system and not by an operator.
+			if in.Enabled != nil && *in.Enabled {
+				next.AutoDisabled = current.AutoDisabled
+			}
+		}
+		// An operator changing the state is a decision about the model, and it
+		// ends the checker's claim on it: left standing, the next sweep would
+		// switch the model back on and undo the decision. A save that leaves the
+		// state as it was keeps the claim, because the editor sends every field
+		// on every save. This is compared after the provider check, so an enable
+		// the provider refused changed nothing and keeps the claim.
+		if in.Enabled != nil && next.Enabled != current.Enabled && in.AutoDisabled == nil {
+			next.AutoDisabled = false
 		}
 		next.UpdatedAt = time.Now().UnixMilli()
 
-		_, err := tx.Exec(ctx, `UPDATE models SET
+		_, err = tx.Exec(ctx, `UPDATE models SET
 			model_id = ?, display_name = ?, description = ?, avatar = ?, enabled = ?, hidden = ?, sort_order = ?,
 			supports_reasoning = ?, supports_images = ?, supports_vision = ?, supports_streaming = ?,
 			supports_system_prompt = ?, supports_tools = ?, supports_image_gen = ?, supports_chat_image_gen = ?,
@@ -488,13 +604,26 @@ func (s *Store) Update(ctx context.Context, modelID string, in Update) (Model, e
 			next.Request, next.InputToken, next.OutputToken, next.ReasoningToken,
 			routeValue(next.RouteToID), next.ReasoningStyle, encodeTiers(next.ReasoningTiers),
 			next.APIName, next.AutoDisabled, next.SystemPrompt, next.RequestOverride, next.UpdatedAt, modelID)
+		if err != nil {
+			return err
+		}
+		if in.GroupGrants == nil {
+			return nil
+		}
+		if err := setModelGroups(ctx, tx, modelID, *in.GroupGrants); err != nil {
+			return err
+		}
+		granted, err = modelGroupGrants(ctx, tx, modelID)
 		return err
 	})
 	if err != nil {
-		if isUnique(err) {
+		if database.IsUnique(err) {
 			return Model{}, s.whichDuplicate(ctx, next.APIName, modelID)
 		}
 		return Model{}, fmt.Errorf("model: update: %w", err)
+	}
+	if in.GroupGrants != nil {
+		next.GroupGrants = granted
 	}
 	return next, nil
 }
@@ -507,7 +636,7 @@ func (s *Store) Update(ctx context.Context, modelID string, in Update) (Model, e
 // its own copy, and two instances sharing a database can read the same
 // enabled model and both decide to disable it. An unconditional UPDATE would
 // have both writes succeed and both callers believe they were the one that
-// changed something, which is what used to double the notice. The guard is
+// changed something, which would double the notice. The guard is
 // the WHERE clause itself rather than a separate read-then-write: the
 // condition is checked and applied by the database as one statement, so the
 // second instance's write finds the row no longer enabled and changes
@@ -527,6 +656,47 @@ func (s *Store) DisableIfEnabled(ctx context.Context, modelID string) (bool, err
 	return affected == 1, nil
 }
 
+// EnableIfAutoDisabled is the mirror of DisableIfEnabled: the checker's own
+// write, switching a model back on only while the row still carries the
+// checker's claim. The checker decides from a snapshot taken before its probes,
+// which can run for minutes, so an operator may have switched the model off in
+// the meantime. An unconditional write would undo that decision.
+//
+// A model whose provider is off stays off and keeps the claim, so the next
+// pass asks again once the provider is back. The provider's row lock is taken
+// first, the one Update and Create take, so the check reads the provider as
+// committed: a provider disable still in flight either finishes before the
+// check or waits for this transaction and then cascades over the model. A
+// test inside the single UPDATE would not do this, because under PostgreSQL's
+// READ COMMITTED it sees the provider as it was before that disable committed.
+func (s *Store) EnableIfAutoDisabled(ctx context.Context, modelID string) (bool, error) {
+	var flipped bool
+	err := s.db.Tx(ctx, func(tx *database.Tx) error {
+		// Naming the provider through the model means a model that does not
+		// exist locks nothing, and the update below then matches nothing.
+		if _, err := tx.Exec(ctx,
+			`UPDATE providers SET updated_at = updated_at
+			 WHERE id = (SELECT provider_id FROM models WHERE id = ?)`, modelID); err != nil {
+			return fmt.Errorf("model: lock provider: %w", err)
+		}
+		result, err := tx.Exec(ctx,
+			`UPDATE models SET enabled = ?, auto_disabled = ?, updated_at = ?
+			 WHERE id = ? AND enabled = ? AND auto_disabled = ?
+			   AND EXISTS (SELECT 1 FROM providers WHERE providers.id = models.provider_id AND providers.enabled = ?)`,
+			true, false, time.Now().UnixMilli(), modelID, false, true, true)
+		if err != nil {
+			return fmt.Errorf("model: enable if auto disabled: %w", err)
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("model: enable if auto disabled rows affected: %w", err)
+		}
+		flipped = affected == 1
+		return nil
+	})
+	return flipped, err
+}
+
 // The public API name has a unique index (idx_models_api_name). Multiple
 // entries for the same model_id under a provider are permitted.
 func (s *Store) whichDuplicate(ctx context.Context, apiName, exceptID string) error {
@@ -542,7 +712,13 @@ func (s *Store) whichDuplicate(ctx context.Context, apiName, exceptID string) er
 }
 
 func (s *Store) ByID(ctx context.Context, modelID string) (Model, error) {
-	return scan(s.db.QueryRow(ctx,
+	return byID(ctx, s.db, modelID)
+}
+
+// byID reads a model through the given queryer, so a decision can be taken
+// from the row as it stands inside a transaction that already holds its lock.
+func byID(ctx context.Context, q database.Queryer, modelID string) (Model, error) {
+	return scan(q.QueryRow(ctx,
 		`SELECT `+withProvider+` FROM models m JOIN providers p ON p.id = m.provider_id WHERE m.id = ?`,
 		modelID), true, false)
 }
@@ -615,26 +791,22 @@ func (s *Store) ListForUser(ctx context.Context, groupID string, isAdmin bool) (
 
 // FindAPIModel resolves one API-facing model name without materialising full
 // model and provider rows for the whole catalogue on every generation.
+//
+// SQLite's LOWER folds ASCII alone, so the SQL prefilter below would miss a
+// name or a restriction that differs from the stored one only in the case of
+// a non-ASCII letter, while the listing, which compares in Go, matches it.
+// A request that spells such a letter is resolved in Go instead, over a narrow
+// projection of what the caller may use; the common case keeps the prefilter.
 func (s *Store) FindAPIModel(
 	ctx context.Context, groupID string, isAdmin bool, restrictions []string, wanted string,
 ) (string, error) {
+	if !isASCII(wanted) || slices.ContainsFunc(restrictions, func(r string) bool { return !isASCII(r) }) {
+		return s.findAPIModelFolded(ctx, groupID, isAdmin, restrictions, wanted)
+	}
+	availableFrom, availableArgs := usableModelsFrom(groupID, isAdmin)
 	available := `SELECT m.id, m.model_id, m.api_name, m.display_name, m.sort_order,
 		CASE WHEN m.api_name <> '' THEN m.api_name ELSE m.model_id END AS public_name
-		FROM models m
-		JOIN providers p ON p.id = m.provider_id
-		WHERE m.enabled = ? AND p.enabled = ? AND m.hidden = ?`
-	availableArgs := []any{true, true, false}
-	if !isAdmin {
-		available += ` AND EXISTS (
-			SELECT 1 FROM user_groups g
-			WHERE g.id = ?
-			  AND (g.allow_all_models = ? OR EXISTS (
-				SELECT 1 FROM group_models gm
-				WHERE gm.group_id = g.id AND gm.model_id = m.id AND gm.access = ?
-			  ))
-		)`
-		availableArgs = append(availableArgs, groupID, true, AccessUse)
-	}
+		` + availableFrom
 	if len(restrictions) > 0 {
 		available += ` AND (`
 		for i, restriction := range restrictions {
@@ -673,36 +845,197 @@ func (s *Store) FindAPIModel(
 	}
 	defer rows.Close()
 
+	var found []APIRow
 	for rows.Next() {
-		var candidate struct {
-			ID          string
-			ModelID     string
-			APIName     string
-			DisplayName string
-			Claims      int
-		}
-		if err := rows.Scan(&candidate.ID, &candidate.ModelID, &candidate.APIName,
-			&candidate.DisplayName, &candidate.Claims); err != nil {
+		var id, modelID, apiName, displayName string
+		var claims int
+		if err := rows.Scan(&id, &modelID, &apiName, &displayName, &claims); err != nil {
 			return "", fmt.Errorf("model: scan API model: %w", err)
 		}
-		ref := candidate.APIName
-		if ref == "" {
-			ref = candidate.ModelID
-			if ref == "" {
-				ref = candidate.ID
-			} else if candidate.Claims > 1 {
-				ref += "-" + modelIDTail(candidate.ID)
-			}
-		}
-		if candidate.ID == wanted || strings.EqualFold(ref, wanted) ||
-			strings.EqualFold(candidate.DisplayName, wanted) {
-			return candidate.ID, nil
-		}
+		found = append(found, NewAPIRow(id, modelID, apiName, displayName, claims))
 	}
 	if err := rows.Err(); err != nil {
 		return "", fmt.Errorf("model: read API model candidates: %w", err)
 	}
+	if i := PickAPIRow(found, wanted); i >= 0 {
+		return found[i].ID, nil
+	}
 	return "", ErrNotFound
+}
+
+// findAPIModelFolded is FindAPIModel with every name compared in Go, for the
+// spellings SQLite cannot fold. It reads what the caller may use and nothing
+// of the provider beyond whether it is on; the restriction and the claims are
+// applied to that set here, the way the SQL applies them to its own.
+func (s *Store) findAPIModelFolded(
+	ctx context.Context, groupID string, isAdmin bool, restrictions []string, wanted string,
+) (string, error) {
+	from, args := usableModelsFrom(groupID, isAdmin)
+	rows, err := s.db.Query(ctx,
+		`SELECT m.id, m.model_id, m.api_name, m.display_name `+from+`
+		 ORDER BY m.sort_order, m.display_name`, args...)
+	if err != nil {
+		return "", fmt.Errorf("model: find API model: %w", err)
+	}
+	defer rows.Close()
+	type row struct{ id, modelID, apiName, displayName string }
+	var usable []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.id, &r.modelID, &r.apiName, &r.displayName); err != nil {
+			return "", fmt.Errorf("model: scan API model: %w", err)
+		}
+		if len(restrictions) > 0 && !slices.ContainsFunc(restrictions, func(restriction string) bool {
+			return strings.EqualFold(r.id, restriction) || strings.EqualFold(r.displayName, restriction)
+		}) {
+			continue
+		}
+		usable = append(usable, r)
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("model: read API model candidates: %w", err)
+	}
+
+	claims := make(map[string]int, len(usable))
+	for _, r := range usable {
+		claims[PublicName(r.apiName, r.modelID)]++
+	}
+	found := make([]APIRow, 0, len(usable))
+	for _, r := range usable {
+		found = append(found, NewAPIRow(r.id, r.modelID, r.apiName, r.displayName, claims[PublicName(r.apiName, r.modelID)]))
+	}
+	if i := PickAPIRow(found, wanted); i >= 0 {
+		return found[i].ID, nil
+	}
+	return "", ErrNotFound
+}
+
+// usableModelsFrom is the FROM and WHERE of the models a caller may send to:
+// enabled, not hidden, on an enabled provider, and usable by their group.
+func usableModelsFrom(groupID string, isAdmin bool) (string, []any) {
+	from := `FROM models m
+		JOIN providers p ON p.id = m.provider_id
+		WHERE m.enabled = ? AND p.enabled = ? AND m.hidden = ?`
+	args := []any{true, true, false}
+	if !isAdmin {
+		from += ` AND EXISTS (
+			SELECT 1 FROM user_groups g
+			WHERE g.id = ?
+			  AND (g.allow_all_models = ? OR EXISTS (
+				SELECT 1 FROM group_models gm
+				WHERE gm.group_id = g.id AND gm.model_id = m.id AND gm.access = ?
+			  ))
+		)`
+		args = append(args, groupID, true, AccessUse)
+	}
+	return from, args
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
+}
+
+// APIRow is a model as the OpenAI-compatible surface names it. The listing
+// and the lookup both build one per row and rank it with Tier, so the two
+// cannot disagree about which model a name reaches.
+type APIRow struct {
+	ID          string
+	ModelID     string
+	APIName     string
+	DisplayName string
+	// The identifier the listing advertises the row under: APIRef.
+	Ref string
+	// Ref is not the upstream id, which for an unnamed row means other rows
+	// share that id and Ref carries the row's IDTail.
+	Qualified bool
+}
+
+// NewAPIRow builds a row's names, claims being how many of the rows the
+// caller may use answer to its public name.
+func NewAPIRow(id, modelID, apiName, displayName string, claims int) APIRow {
+	ref := APIRef(id, modelID, apiName, claims)
+	return APIRow{
+		ID: id, ModelID: modelID, APIName: apiName, DisplayName: displayName,
+		Ref: ref, Qualified: ref != modelID,
+	}
+}
+
+// PublicName is the name this instance answers to for a model, before any
+// qualifying: the API name an administrator set, or else the upstream id.
+func PublicName(apiName, modelID string) string {
+	if apiName != "" {
+		return apiName
+	}
+	return modelID
+}
+
+// APIRef is the identifier a row is advertised under, given how many usable
+// rows claim its public name. A chosen API name is never qualified, since a
+// unique index keeps it its own and qualifying it would defeat choosing it.
+// An upstream id two rows share — one model behind a primary and a fallback
+// provider — qualifies both, because which is "second" depends on a sort
+// order an administrator can change.
+func APIRef(id, modelID, apiName string, claims int) string {
+	name := PublicName(apiName, modelID)
+	switch {
+	case name == "":
+		return id
+	case apiName != "":
+		return apiName
+	case claims > 1:
+		return name + "-" + IDTail(id)
+	default:
+		return name
+	}
+}
+
+// How a row answers to a requested name, best first.
+const (
+	APITierID = iota
+	APITierRef
+	APITierDisplayName
+	APINoMatch
+)
+
+// Tier ranks how the row answers to wanted: by its row id, by the name the
+// listing gave out, or by its display name.
+func (r APIRow) Tier(wanted string) int {
+	// An unnamed row's display name defaults to its upstream id. Where several
+	// rows share that id, each would match the bare id at this tier and the
+	// first by sort order would answer, though the listing offers only their
+	// qualified refs. The bare id reaches none of them.
+	sharedBareID := r.APIName == "" && r.Qualified && strings.EqualFold(r.DisplayName, r.ModelID)
+	switch {
+	case r.ID == wanted:
+		return APITierID
+	case strings.EqualFold(r.Ref, wanted):
+		return APITierRef
+	case !sharedBareID && strings.EqualFold(r.DisplayName, wanted):
+		return APITierDisplayName
+	}
+	return APINoMatch
+}
+
+// PickAPIRow is the index of the row wanted reaches, or -1. The rows are in
+// sort order, so the first hit in a tier is the one the operator listed
+// first; taking the first hit of any tier let a display name at sort 0 shadow
+// an API name at sort 5, and a label should never beat a name.
+func PickAPIRow(rows []APIRow, wanted string) int {
+	best, bestTier := -1, APINoMatch
+	for i, row := range rows {
+		if tier := row.Tier(wanted); tier < bestTier {
+			best, bestTier = i, tier
+			if tier == APITierID {
+				break
+			}
+		}
+	}
+	return best
 }
 
 func splitQualifiedAPIRef(wanted string) (string, string, bool) {
@@ -713,8 +1046,12 @@ func splitQualifiedAPIRef(wanted string) (string, string, bool) {
 	return wanted[:separator], wanted[separator+1:], true
 }
 
-func modelIDTail(id string) string {
-	lowered := strings.ToLower(id)
+// IDTail is the qualifier a row's id adds to a shared upstream id: its last six
+// characters, which are random in a ULID, so two rows created in the same
+// millisecond still differ. The listing and the lookup both call it, because
+// they have to agree on the spelling.
+func IDTail(rowID string) string {
+	lowered := strings.ToLower(rowID)
 	if len(lowered) <= 6 {
 		return lowered
 	}
@@ -831,43 +1168,33 @@ func (s *Store) readCallable(
 ) (Model, provider.Provider, []byte, error) {
 	query := `SELECT ` + withProvider + `,
 		p.base_url, p.api_key_enc, p.headers_json, p.anthropic_version, p.reasoning_style,
-		p.timeout_seconds, p.api_key_hint, p.sort_order, p.enabled, p.created_at, p.updated_at
+		p.timeout_seconds, p.sort_order, p.enabled, p.created_at, p.updated_at, p.key_rotation
 		FROM models m
 		JOIN providers p ON p.id = m.provider_id
 		WHERE ` + where
 
 	var (
-		record     Model
 		upstream   provider.Provider
 		sealed     []byte
 		headerJSON string
-		tiers      string
-		route      sql.NullString
 	)
-	err := s.db.QueryRow(ctx, query, args...).Scan(
-		&record.ID, &record.ProviderID, &record.ModelID, &record.DisplayName, &record.Description,
-		&record.Avatar, &record.Enabled, &record.SortOrder,
-		&record.SupportsReasoning, &record.SupportsImages, &record.SupportsVision,
-		&record.SupportsStreaming, &record.SupportsSystemPrompt, &record.SupportsTools,
-		&record.ContextWindow, &record.MaxOutputTokens,
-		&record.Request, &record.InputToken, &record.OutputToken, &record.ReasoningToken,
-		&record.CreatedAt, &record.UpdatedAt, &route, &record.ReasoningStyle,
-		&record.Hidden, &tiers, &record.APIName, &record.AutoDisabled, &record.SystemPrompt,
-		&record.SupportsImageGen, &record.SupportsChatImageGen, &record.RequestOverride,
-		&record.EmulateTools,
-		&record.ProviderName, &record.ProviderKind,
+	// The model's own columns go through scan(), the one list every other read
+	// uses, so a column added there reaches this read too. Only the provider's
+	// columns are added here: a second hand-written list is where a column goes
+	// missing, and a missing column shows up as a failed completion or as ignored
+	// reasoning tiers.
+	record, err := scan(s.db.QueryRow(ctx, query, args...), true, false,
 		&upstream.BaseURL, &sealed, &headerJSON, &upstream.AnthropicVersion, &upstream.ReasoningStyle,
-		&upstream.TimeoutSeconds, &upstream.APIKeyHint, &upstream.SortOrder, &upstream.Enabled,
-		&upstream.CreatedAt, &upstream.UpdatedAt,
+		&upstream.TimeoutSeconds, &upstream.SortOrder, &upstream.Enabled,
+		&upstream.CreatedAt, &upstream.UpdatedAt, &upstream.KeyRotation,
 	)
 	if err != nil {
-		if database.IsNotFound(err) {
+		if errors.Is(err, ErrNotFound) {
 			return Model{}, provider.Provider{}, nil, ErrNotFound
 		}
 		return Model{}, provider.Provider{}, nil, fmt.Errorf("model: read callable: %w", err)
 	}
-	record.RouteToID = route.String
-	upstream.Headers = decodeHeaders(headerJSON)
+	upstream.Headers = provider.DecodeHeaders(record.ProviderID, headerJSON)
 	return record, upstream, sealed, nil
 }
 
@@ -886,19 +1213,99 @@ func (s *Store) Reorder(ctx context.Context, modelIDs []string) error {
 	now := time.Now().UnixMilli()
 	return s.db.Tx(ctx, func(tx *database.Tx) error {
 		for position, modelID := range modelIDs {
-			if _, err := tx.Exec(ctx,
+			res, err := tx.Exec(ctx,
 				`UPDATE models SET sort_order = ?, updated_at = ? WHERE id = ?`,
-				position, now, modelID); err != nil {
+				position, now, modelID)
+			if err != nil {
 				return fmt.Errorf("model: reorder: %w", err)
+			}
+			// An id that names no model matches nothing and fails silently. The
+			// order is then wrong for the row the caller meant to move, so the
+			// whole batch is refused and rolled back rather than half applied.
+			n, err := res.RowsAffected()
+			if err != nil {
+				return fmt.Errorf("model: reorder rows: %w", err)
+			}
+			if n == 0 {
+				return ErrNotFound
 			}
 		}
 		return nil
 	})
 }
 
+// Delete removes a model, unless another one routes to it. The check and the
+// delete run under the target's row lock, the same lock a route write takes
+// on its target, so a route set concurrently either lands first and is
+// refused here, or waits and finds the row gone.
 func (s *Store) Delete(ctx context.Context, modelID string) error {
-	if _, err := s.db.Exec(ctx, `DELETE FROM models WHERE id = ?`, modelID); err != nil {
-		return fmt.Errorf("model: delete: %w", err)
+	return s.db.Tx(ctx, func(tx *database.Tx) error {
+		if _, err := tx.Exec(ctx,
+			`UPDATE models SET updated_at = updated_at WHERE id = ?`, modelID); err != nil {
+			return fmt.Errorf("model: lock model: %w", err)
+		}
+		var routed int
+		if err := tx.QueryRow(ctx,
+			`SELECT COUNT(*) FROM models WHERE route_to_id = ?`, modelID).Scan(&routed); err != nil {
+			return fmt.Errorf("model: count routes: %w", err)
+		}
+		if routed > 0 {
+			return ErrRouted
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM models WHERE id = ?`, modelID); err != nil {
+			return fmt.Errorf("model: delete: %w", err)
+		}
+		return nil
+	})
+}
+
+// lockRouteTarget takes the target's row lock for a route write. Delete takes
+// the same lock, so a route to a model and that model's deletion cannot both
+// commit: without it, a route committed after Delete's check would be cleared
+// by the foreign key when the target went.
+func lockRouteTarget(ctx context.Context, tx *database.Tx, routeToID string) error {
+	if routeToID == "" {
+		return nil
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE models SET updated_at = updated_at WHERE id = ?`, routeToID); err != nil {
+		return fmt.Errorf("model: lock route target: %w", err)
+	}
+	return nil
+}
+
+// checkRouteTx refuses a new route that would leave a chain for Authorize to
+// stop short of. Its callers hold the provider's row lock and the target's
+// row lock: Create takes the target's with lockRouteTarget, and Update takes
+// it and the source's, in id order, before it gets here. So a route written
+// beside this one is already committed or waits for it. Checking the incoming
+// routes is what the target-side check alone misses: with A routed to B, a
+// route from B to C passes that check, and a request for A would silently use
+// B's upstream while ignoring B's own route.
+func checkRouteTx(ctx context.Context, tx *database.Tx, modelID, routeToID string) error {
+	if routeToID == "" {
+		return nil
+	}
+	if routeToID == modelID {
+		return ErrRouteChain
+	}
+	target, err := byID(ctx, tx, routeToID)
+	if errors.Is(err, ErrNotFound) {
+		return ErrRouteTargetMissing
+	}
+	if err != nil {
+		return err
+	}
+	if target.RouteToID != "" {
+		return ErrRouteChain
+	}
+	var incoming int
+	if err := tx.QueryRow(ctx,
+		`SELECT COUNT(*) FROM models WHERE route_to_id = ?`, modelID).Scan(&incoming); err != nil {
+		return fmt.Errorf("model: read incoming routes: %w", err)
+	}
+	if incoming > 0 {
+		return ErrRouteChain
 	}
 	return nil
 }
@@ -938,59 +1345,92 @@ func (s *Store) GroupModelGrants(ctx context.Context, groupID string) ([]GroupGr
 	return out, rows.Err()
 }
 
-func (s *Store) GroupModelIDs(ctx context.Context, groupID string) ([]string, error) {
-	grants, err := s.GroupModelGrants(ctx, groupID)
+// AllGroupGrants is every group's grants in one query, keyed by group id, for
+// a page that lists all the groups. A group with no grants is absent.
+func (s *Store) AllGroupGrants(ctx context.Context, q database.Queryer) (map[string][]GroupGrant, error) {
+	if q == nil {
+		q = s.db
+	}
+	rows, err := q.Query(ctx, `SELECT group_id, model_id, access FROM group_models`)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("model: all group grants: %w", err)
 	}
-	out := make([]string, 0, len(grants))
-	for _, g := range grants {
-		if g.Access == AccessUse {
-			out = append(out, g.ModelID)
+	defer rows.Close()
+
+	out := map[string][]GroupGrant{}
+	for rows.Next() {
+		var groupID string
+		var g GroupGrant
+		if err := rows.Scan(&groupID, &g.ModelID, &g.Access); err != nil {
+			return nil, fmt.Errorf("model: all group grants scan: %w", err)
 		}
+		out[groupID] = append(out[groupID], g)
 	}
-	return out, nil
+	return out, rows.Err()
 }
 
-// SetGroupModels replaces a group's grants wholesale, in one transaction, so
-// a half-applied permission change cannot exist.
-func (s *Store) SetGroupModels(ctx context.Context, groupID string, grants []GroupGrant) error {
-	return s.db.Tx(ctx, func(tx *database.Tx) error {
-		if _, err := tx.Exec(ctx, `DELETE FROM group_models WHERE group_id = ?`, groupID); err != nil {
-			return fmt.Errorf("model: clear group models: %w", err)
+// SetGroupModels replaces a group's grants wholesale. A nil q runs it in its
+// own transaction; a caller that has just written the group passes its
+// transaction, so the group and its grants commit or roll back together. A
+// grant written after the group's own commit would leave a group with no
+// grants behind when it fails, and the retry would then be refused as a
+// duplicate name.
+func (s *Store) SetGroupModels(ctx context.Context, q database.Queryer, groupID string, grants []GroupGrant) error {
+	if q == nil {
+		return s.db.Tx(ctx, func(tx *database.Tx) error {
+			return s.SetGroupModels(ctx, tx, groupID, grants)
+		})
+	}
+	if _, err := q.Exec(ctx, `DELETE FROM group_models WHERE group_id = ?`, groupID); err != nil {
+		return fmt.Errorf("model: clear group models: %w", err)
+	}
+	seen := map[string]bool{}
+	for _, g := range grants {
+		if g.ModelID == "" || seen[g.ModelID] {
+			continue
 		}
-		seen := map[string]bool{}
-		for _, g := range grants {
-			if g.ModelID == "" || seen[g.ModelID] {
-				continue
-			}
-			access := normalizeAccess(g.Access)
-			if access == "" {
-				continue
-			}
-			seen[g.ModelID] = true
-			if _, err := tx.Exec(ctx,
-				`INSERT INTO group_models (group_id, model_id, access) VALUES (?, ?, ?)`,
-				groupID, g.ModelID, access); err != nil {
-				return fmt.Errorf("model: grant %s: %w", g.ModelID, err)
-			}
+		access, err := normalizeAccess(g.Access)
+		if err != nil {
+			return err
 		}
-		return nil
-	})
+		if access == "" {
+			continue
+		}
+		seen[g.ModelID] = true
+		// The lookup shares the caller's transaction, so a missing model rolls
+		// the group and its other grants back with it.
+		var found int
+		switch err := q.QueryRow(ctx, `SELECT 1 FROM models WHERE id = ?`, g.ModelID).Scan(&found); {
+		case errors.Is(err, sql.ErrNoRows):
+			return fmt.Errorf("model: grant %s: %w", g.ModelID, ErrGrantModelMissing)
+		case err != nil:
+			return fmt.Errorf("model: look up grant %s: %w", g.ModelID, err)
+		}
+		if _, err := q.Exec(ctx,
+			`INSERT INTO group_models (group_id, model_id, access) VALUES (?, ?, ?)`,
+			groupID, g.ModelID, access); err != nil {
+			return fmt.Errorf("model: grant %s: %w", g.ModelID, err)
+		}
+	}
+	return nil
 }
 
 // SetGroupModelIDs is a convenience wrapper for callers specifying only IDs.
-func (s *Store) SetGroupModelIDs(ctx context.Context, groupID string, modelIDs []string) error {
+func (s *Store) SetGroupModelIDs(ctx context.Context, q database.Queryer, groupID string, modelIDs []string) error {
 	grants := make([]GroupGrant, len(modelIDs))
-	for i, id := range modelIDs {
-		grants[i] = GroupGrant{ModelID: id, Access: AccessUse}
+	for i, modelID := range modelIDs {
+		grants[i] = GroupGrant{ModelID: modelID, Access: AccessUse}
 	}
-	return s.SetGroupModels(ctx, groupID, grants)
+	return s.SetGroupModels(ctx, q, groupID, grants)
 }
 
 // ModelGroupGrants returns which groups are granted access to a specific model.
 func (s *Store) ModelGroupGrants(ctx context.Context, modelID string) ([]ModelGroupGrant, error) {
-	rows, err := s.db.Query(ctx, `SELECT group_id, access FROM group_models WHERE model_id = ?`, modelID)
+	return modelGroupGrants(ctx, s.db, modelID)
+}
+
+func modelGroupGrants(ctx context.Context, q database.Queryer, modelID string) ([]ModelGroupGrant, error) {
+	rows, err := q.Query(ctx, `SELECT group_id, access FROM group_models WHERE model_id = ?`, modelID)
 	if err != nil {
 		return nil, fmt.Errorf("model: model group grants: %w", err)
 	}
@@ -1010,27 +1450,36 @@ func (s *Store) ModelGroupGrants(ctx context.Context, modelID string) ([]ModelGr
 // SetModelGroups replaces a model's grants across all groups in one transaction.
 func (s *Store) SetModelGroups(ctx context.Context, modelID string, grants []ModelGroupGrant) error {
 	return s.db.Tx(ctx, func(tx *database.Tx) error {
-		if _, err := tx.Exec(ctx, `DELETE FROM group_models WHERE model_id = ?`, modelID); err != nil {
-			return fmt.Errorf("model: clear model groups: %w", err)
-		}
-		seen := map[string]bool{}
-		for _, g := range grants {
-			if g.GroupID == "" || seen[g.GroupID] {
-				continue
-			}
-			access := normalizeAccess(g.Access)
-			if access == "" {
-				continue
-			}
-			seen[g.GroupID] = true
-			if _, err := tx.Exec(ctx,
-				`INSERT INTO group_models (group_id, model_id, access) VALUES (?, ?, ?)`,
-				g.GroupID, modelID, access); err != nil {
-				return fmt.Errorf("model: grant group %s: %w", g.GroupID, err)
-			}
-		}
-		return nil
+		return setModelGroups(ctx, tx, modelID, grants)
 	})
+}
+
+// setModelGroups is SetModelGroups inside the caller's transaction, for the
+// writes that save a model and its grants together.
+func setModelGroups(ctx context.Context, tx *database.Tx, modelID string, grants []ModelGroupGrant) error {
+	if _, err := tx.Exec(ctx, `DELETE FROM group_models WHERE model_id = ?`, modelID); err != nil {
+		return fmt.Errorf("model: clear model groups: %w", err)
+	}
+	seen := map[string]bool{}
+	for _, g := range grants {
+		if g.GroupID == "" || seen[g.GroupID] {
+			continue
+		}
+		access, err := normalizeAccess(g.Access)
+		if err != nil {
+			return err
+		}
+		if access == "" {
+			continue
+		}
+		seen[g.GroupID] = true
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO group_models (group_id, model_id, access) VALUES (?, ?, ?)`,
+			g.GroupID, modelID, access); err != nil {
+			return fmt.Errorf("model: grant group %s: %w", g.GroupID, err)
+		}
+	}
+	return nil
 }
 
 // AllModelGrants returns all group grants indexed by model id.
@@ -1053,20 +1502,45 @@ func (s *Store) AllModelGrants(ctx context.Context) (map[string][]ModelGroupGran
 	return out, rows.Err()
 }
 
-func normalizeAccess(access string) string {
+// normalizeAccess maps an administrator's word for a grant onto the stored
+// level. "none" and "" mean no grant. Anything else that is not a level is
+// refused rather than read as full use: a typo such as "viwe" must not grant
+// far more than was asked for, so it is refused with an error the administrator sees.
+func normalizeAccess(access string) (string, error) {
 	switch strings.TrimSpace(strings.ToLower(access)) {
 	case AccessView:
-		return AccessView
+		return AccessView, nil
 	case AccessUse:
-		return AccessUse
+		return AccessUse, nil
 	case "none", "":
-		return ""
+		return "", nil
 	default:
-		return AccessUse
+		return "", ErrInvalidAccess
 	}
 }
 
+// CheckAccess reports whether an access word is one the grant tables accept.
+// Handlers call it before saving so an unknown word is answered before any
+// write. The grants share the model's transaction, so a refused word would roll
+// the row back on its own.
+func CheckAccess(access string) error {
+	_, err := normalizeAccess(access)
+	return err
+}
+
 // --- helpers -------------------------------------------------------------------
+
+// checkReasoningStyle refuses a style the adapters cannot act on. The provider
+// store refused these already; the model store did not, so a typo was saved,
+// replaced the provider's valid style at resolution, and the OpenAI switch has
+// no branch for it, which turned reasoning off without a word.
+func checkReasoningStyle(style adapter.ReasoningStyle) error {
+	trimmed := adapter.ReasoningStyle(strings.TrimSpace(string(style)))
+	if trimmed == "" || trimmed.Valid() {
+		return nil
+	}
+	return ErrInvalidReasoningStyle
+}
 
 func validate(record Model) (Model, error) {
 	record.ModelID = strings.TrimSpace(record.ModelID)
@@ -1114,8 +1588,10 @@ func validate(record Model) (Model, error) {
 	if record.RequestOverride == "" {
 		record.RequestOverride = "{}"
 	} else {
+		// "null" decodes without error into a nil map, so the nil check is what
+		// keeps a non-object out of the column.
 		var obj map[string]any
-		if err := json.Unmarshal([]byte(record.RequestOverride), &obj); err != nil {
+		if err := json.Unmarshal([]byte(record.RequestOverride), &obj); err != nil || obj == nil {
 			return Model{}, ErrInvalidRequestOverride
 		}
 	}
@@ -1181,7 +1657,7 @@ func normalizeTiers(in []ReasoningTier) []ReasoningTier {
 	return out
 }
 
-// The column holds ” for a model using the built-in three, so a row written
+// The column holds an empty string for a model using the built-in three, so a row written
 // before tiers existed decodes to the same nil the editor writes back when
 // the list is emptied.
 func encodeTiers(tiers []ReasoningTier) string {
@@ -1195,12 +1671,16 @@ func encodeTiers(tiers []ReasoningTier) string {
 	return string(encoded)
 }
 
-func decodeTiers(raw string) []ReasoningTier {
+// decodeTiers reads a model's reasoning tiers. A row that does not decode gives
+// none, so the model falls back to its adapter's own budget. The warning names
+// the model because that is the only trace of why its tiers stopped applying.
+func decodeTiers(modelID, raw string) []ReasoningTier {
 	if raw == "" {
 		return nil
 	}
 	var out []ReasoningTier
 	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		slog.Warn("model reasoning tiers do not decode; the adapter default applies", "model", modelID, "error", err)
 		return nil
 	}
 	return out
@@ -1222,9 +1702,11 @@ func assign[T any](target *T, value *T) {
 	}
 }
 
-type rowScanner interface{ Scan(dest ...any) error }
+type rowScanner = database.RowScanner
 
-func scan(row rowScanner, joined bool, withUsable bool) (Model, error) {
+// scan reads the model's columns, then the joined provider name and kind, then
+// Usable, then whatever extra targets a query selects after those.
+func scan(row rowScanner, joined bool, withUsable bool, extra ...any) (Model, error) {
 	var record Model
 	var tiers string
 	// NULL rather than empty, because the column carries a foreign key:
@@ -1248,6 +1730,7 @@ func scan(row rowScanner, joined bool, withUsable bool) (Model, error) {
 	if withUsable {
 		targets = append(targets, &record.Usable)
 	}
+	targets = append(targets, extra...)
 	if err := row.Scan(targets...); err != nil {
 		if database.IsNotFound(err) {
 			return Model{}, ErrNotFound
@@ -1255,7 +1738,7 @@ func scan(row rowScanner, joined bool, withUsable bool) (Model, error) {
 		return Model{}, fmt.Errorf("model: scan: %w", err)
 	}
 	record.RouteToID = route.String
-	record.ReasoningTiers = decodeTiers(tiers)
+	record.ReasoningTiers = decodeTiers(record.ID, tiers)
 	return record, nil
 }
 
@@ -1275,18 +1758,4 @@ func collect(rows rowsScanner, joined bool, withUsable bool) ([]Model, error) {
 		out = append(out, record)
 	}
 	return out, rows.Err()
-}
-
-func decodeHeaders(raw string) map[string]string {
-	out := map[string]string{}
-	if raw == "" {
-		return out
-	}
-	_ = json.Unmarshal([]byte(raw), &out)
-	return out
-}
-
-func isUnique(err error) bool {
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "unique") || strings.Contains(message, "duplicate")
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin/arcx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
 // The backoffice grants for this screen, one per kind of change, so a super
@@ -21,6 +22,17 @@ const (
 	PermissionView   = "plugins"
 	PermissionManage = "plugins_manage"
 	PermissionRemove = "plugins_remove"
+)
+
+// Body limits for the screen's requests. A settings-carrying install is the
+// largest JSON the screen takes; the confirmations are a code and a flag.
+const (
+	maxPluginBody  = 64 * 1024
+	maxConfirmBody = 1024
+	// An upload is read in memory up to this much and spills to disk past it,
+	// and a form adds this much around the archive it carries.
+	formMemory   = 1 << 20
+	formOverhead = 1 << 20
 )
 
 // Handlers is the plugins screen's API.
@@ -49,8 +61,15 @@ func (h *Handlers) Mount(backoffice *admin.Handlers) {
 	for _, route := range []admin.Route{
 		{Pattern: "GET /api/admin/plugins", Permission: view, Handler: h.list},
 		{Pattern: "GET /api/admin/plugins/{name}", Permission: view, Handler: h.show},
-		{Pattern: "POST /api/admin/plugins/preview", Permission: PermissionManage, Handler: h.preview},
-		{Pattern: "POST /api/admin/plugins/install-package", Permission: PermissionManage, Handler: h.installPackage},
+		// A super administrator's alone, whatever grants anybody else holds.
+		// A package's migrations run as the database's owner at install,
+		// before it is even switched on and whatever permissions it
+		// declares, so uploading one is the power to rewrite any row — a
+		// delegated grant made its holder a super administrator by an
+		// UPDATE of their own. Switching installed plugins on and off stays
+		// delegable: that runs nothing nobody has already accepted.
+		{Pattern: "POST /api/admin/plugins/preview", Permission: "super_admin", Handler: h.preview},
+		{Pattern: "POST /api/admin/plugins/install-package", Permission: "super_admin", Handler: h.installPackage},
 		{Pattern: "POST /api/admin/plugins/{name}/install", Permission: PermissionManage, Handler: h.install},
 		{Pattern: "POST /api/admin/plugins/{name}/enable", Permission: PermissionManage, Handler: h.enable},
 		{Pattern: "POST /api/admin/plugins/{name}/disable", Permission: PermissionManage, Handler: h.disable},
@@ -60,15 +79,15 @@ func (h *Handlers) Mount(backoffice *admin.Handlers) {
 	}
 }
 
-func (h *Handlers) list(w http.ResponseWriter, _ *http.Request) error {
+func (h *Handlers) list(w http.ResponseWriter, r *http.Request) error {
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
-		"plugins":             h.manager.List(),
+		"plugins":             h.viewerPlugins(r),
 		"two_factor_required": h.twoFactorRequired(),
 	})
 }
 
 func (h *Handlers) show(w http.ResponseWriter, r *http.Request) error {
-	info, err := h.manager.Info(r.PathValue("name"))
+	info, err := h.viewerPlugin(r, r.PathValue("name"))
 	if err != nil {
 		return translate(err)
 	}
@@ -83,7 +102,16 @@ type installBody struct {
 
 func (h *Handlers) install(w http.ResponseWriter, r *http.Request) error {
 	var body installBody
-	if err := httpx.DecodeJSON(w, r, &body, 64*1024); err != nil {
+	if err := httpx.DecodeJSON(w, r, &body, maxPluginBody); err != nil {
+		return err
+	}
+	if err := h.checkSettingGrants(auth.MustUser(r.Context()), body.Settings); err != nil {
+		return err
+	}
+	// The operator's setting covers installing as well as switching off: an
+	// install applies the plugin's migrations and can switch it on in the same
+	// request, so it takes the code the other changes take.
+	if err := h.verify(w, r, body.TwoFactorCode); err != nil {
 		return err
 	}
 	name := r.PathValue("name")
@@ -92,7 +120,21 @@ func (h *Handlers) install(w http.ResponseWriter, r *http.Request) error {
 	}); err != nil {
 		return translate(err)
 	}
-	return h.answer(w, name)
+	return h.answer(w, r, name)
+}
+
+// checkSettingGrants holds an install's settings to each key's own grant, as
+// the shared settings route does. plugins_manage alone is not a grant to set
+// every key a plugin declares, and a key the security grant owns is not one it
+// may set. Both install paths call it, so a package install and a compiled-in
+// one cannot disagree about who may write what.
+func (h *Handlers) checkSettingGrants(actor user.User, values map[string]string) error {
+	for key := range values {
+		if !admin.CanWriteSetting(h.settings, actor, key) {
+			return httpx.ForbiddenCode("admin_permission_denied", "You do not have permission to access this page or perform this action.")
+		}
+	}
+	return nil
 }
 
 func (h *Handlers) enable(w http.ResponseWriter, r *http.Request) error {
@@ -100,7 +142,7 @@ func (h *Handlers) enable(w http.ResponseWriter, r *http.Request) error {
 	if err := h.manager.Enable(r.Context(), h.actor(r), name); err != nil {
 		return translate(err)
 	}
-	return h.answer(w, name)
+	return h.answer(w, r, name)
 }
 
 type confirmBody struct {
@@ -112,59 +154,61 @@ type confirmBody struct {
 // only when security.two_factor_plugin_manage is enabled.
 func (h *Handlers) disable(w http.ResponseWriter, r *http.Request) error {
 	var body confirmBody
-	if err := httpx.DecodeJSON(w, r, &body, 1024); err != nil {
+	if err := httpx.DecodeJSON(w, r, &body, maxConfirmBody); err != nil {
 		return err
 	}
 	name := r.PathValue("name")
 	if _, err := h.manager.Info(name); err != nil {
 		return translate(err)
 	}
-	if h.twoFactorRequired() {
-		if err := h.verify(w, r, body.TwoFactorCode); err != nil {
-			return err
-		}
+	if err := h.verify(w, r, body.TwoFactorCode); err != nil {
+		return err
 	}
 	if err := h.manager.Disable(r.Context(), h.actor(r), name); err != nil {
 		return translate(err)
 	}
-	return h.answer(w, name)
+	return h.answer(w, r, name)
 }
 
 func (h *Handlers) uninstall(w http.ResponseWriter, r *http.Request) error {
 	var body confirmBody
-	if err := httpx.DecodeJSON(w, r, &body, 1024); err != nil {
+	if err := httpx.DecodeJSON(w, r, &body, maxConfirmBody); err != nil {
 		return err
+	}
+	// A purge runs the plugin's own SQL as the database's owner, and nobody
+	// shows that SQL to whoever removes the plugin, so erasing the data is a
+	// super administrator's, as uploading a package is. Removing a plugin and
+	// keeping its data stays a delegable grant.
+	if body.Purge && !auth.MustUser(r.Context()).IsSuperAdmin() {
+		return httpx.ForbiddenCode("admin_permission_denied", "You do not have permission to access this page or perform this action.")
 	}
 	name := r.PathValue("name")
 	if _, err := h.manager.Info(name); err != nil {
 		return translate(err)
 	}
-	if h.twoFactorRequired() {
-		if err := h.verify(w, r, body.TwoFactorCode); err != nil {
-			return err
-		}
+	if err := h.verify(w, r, body.TwoFactorCode); err != nil {
+		return err
 	}
 	if err := h.manager.Uninstall(r.Context(), h.actor(r), name, body.Purge); err != nil {
 		return translate(err)
 	}
 	// A package that was removed is not there to be described: the answer is
-	// the list without it. A compiled-in plugin stays in the list, as
-	// available, and is described as that.
-	if info, err := h.manager.Info(name); err == nil {
-		return httpx.WriteJSON(w, http.StatusOK, map[string]any{
-			"plugin":              info,
-			"plugins":             h.manager.List(),
-			"two_factor_required": h.twoFactorRequired(),
-		})
+	// the list without it, with a null plugin. A compiled-in plugin stays in the
+	// list, as available, and is described as that.
+	var plugin any
+	if info, err := h.viewerPlugin(r, name); err == nil {
+		plugin = info
 	}
-	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
-		"plugin":              nil,
-		"plugins":             h.manager.List(),
-		"two_factor_required": h.twoFactorRequired(),
-	})
+	return httpx.WriteJSON(w, http.StatusOK, h.screen(r, plugin))
 }
 
+// verify checks the operator's second-step code when the policy asks for one.
+// With the policy off it does nothing, so every change that the policy covers
+// calls it unconditionally, and the order of checks is the same for each.
 func (h *Handlers) verify(w http.ResponseWriter, r *http.Request, code string) error {
+	if !h.twoFactorRequired() {
+		return nil
+	}
 	actor := auth.MustUser(r.Context())
 	if !actor.TwoFactorEnabled() {
 		return httpx.ForbiddenCode("two_factor_required",
@@ -183,16 +227,63 @@ func (h *Handlers) verify(w http.ResponseWriter, r *http.Request, code string) e
 
 // answer is the plugin as it now stands and the whole list, so the screen
 // redraws from one response.
-func (h *Handlers) answer(w http.ResponseWriter, name string) error {
-	info, err := h.manager.Info(name)
+func (h *Handlers) answer(w http.ResponseWriter, r *http.Request, name string) error {
+	info, err := h.viewerPlugin(r, name)
 	if err != nil {
 		return translate(err)
 	}
-	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
-		"plugin":              info,
-		"plugins":             h.manager.List(),
+	return httpx.WriteJSON(w, http.StatusOK, h.screen(r, info))
+}
+
+// screen is the envelope every answer about one plugin carries: the plugin as
+// it now stands (nil when it is gone), the whole list, and whether the policy
+// asks for a second step. The screen redraws from it alone, so a field the
+// screen reads is one every answer must carry.
+func (h *Handlers) screen(r *http.Request, plugin any) map[string]any {
+	return map[string]any{
+		"plugin":              plugin,
+		"plugins":             h.viewerPlugins(r),
 		"two_factor_required": h.twoFactorRequired(),
-	})
+	}
+}
+
+// viewerPlugins is every plugin the screen lists, each with the setting keys
+// the viewer may write, so every answer that carries plugins says the same.
+func (h *Handlers) viewerPlugins(r *http.Request) []Info {
+	viewer := auth.MustUser(r.Context())
+	infos := h.manager.List()
+	for i := range infos {
+		infos[i].WritableSettings = h.writableBy(viewer, infos[i].Name)
+	}
+	return infos
+}
+
+// viewerPlugin is one plugin, with the setting keys the viewer may write.
+func (h *Handlers) viewerPlugin(r *http.Request, name string) (Info, error) {
+	info, err := h.manager.Info(name)
+	if err != nil {
+		return Info{}, err
+	}
+	info.WritableSettings = h.writableBy(auth.MustUser(r.Context()), info.Name)
+	return info, nil
+}
+
+// writableBy is the keys of one plugin that viewer may read and write, by the
+// grant each key carries. It is the check install makes on every key it is
+// sent, so a dialog that sends only these is never refused for a key the
+// viewer left alone. It is never nil, so the JSON reads [] and not null.
+//
+// The keys come from the service, which also holds an installed package's, and
+// are judged by the same service the install and the settings route judge them
+// by.
+func (h *Handlers) writableBy(viewer user.User, name string) []string {
+	keys := []string{}
+	for _, d := range h.settings.DefinitionsOf(name) {
+		if admin.CanWriteSetting(h.settings, viewer, d.Key) {
+			keys = append(keys, d.Key)
+		}
+	}
+	return keys
 }
 
 func (h *Handlers) actor(r *http.Request) Actor {
@@ -211,8 +302,8 @@ func (h *Handlers) ip(r *http.Request) string {
 // says, holding the archive so the confirmation does not upload it twice.
 // Nothing is stored and nothing runs.
 func (h *Handlers) preview(w http.ResponseWriter, r *http.Request) error {
-	r.Body = http.MaxBytesReader(w, r.Body, arcx.MaxArchive+(1<<20))
-	if err := r.ParseMultipartForm(1 << 20); err != nil {
+	r.Body = http.MaxBytesReader(w, r.Body, arcx.MaxArchive+formOverhead)
+	if err := r.ParseMultipartForm(formMemory); err != nil {
 		return httpx.BadRequestCode("invalid_package", "The upload could not be read; the package may be larger than %d MiB.", arcx.MaxArchive>>20)
 	}
 	file, _, err := r.FormFile("file")
@@ -243,13 +334,14 @@ type installPackageBody struct {
 // two-step code as switching a plugin off does, when that is required.
 func (h *Handlers) installPackage(w http.ResponseWriter, r *http.Request) error {
 	var body installPackageBody
-	if err := httpx.DecodeJSON(w, r, &body, 64*1024); err != nil {
+	if err := httpx.DecodeJSON(w, r, &body, maxPluginBody); err != nil {
 		return err
 	}
-	if h.twoFactorRequired() {
-		if err := h.verify(w, r, body.TwoFactorCode); err != nil {
-			return err
-		}
+	if err := h.checkSettingGrants(auth.MustUser(r.Context()), body.Settings); err != nil {
+		return err
+	}
+	if err := h.verify(w, r, body.TwoFactorCode); err != nil {
+		return err
 	}
 	name, op, err := h.manager.ConfirmUpload(r.Context(), h.actor(r), body.Token, InstallOptions{
 		Enable: body.Enable, Settings: body.Settings,
@@ -257,28 +349,25 @@ func (h *Handlers) installPackage(w http.ResponseWriter, r *http.Request) error 
 	if err != nil {
 		return translate(err)
 	}
-	info, err := h.manager.Info(name)
+	info, err := h.viewerPlugin(r, name)
 	if err != nil {
 		return translate(err)
 	}
-	return httpx.WriteJSON(w, http.StatusOK, map[string]any{
-		"plugin":              info,
-		"plugins":             h.manager.List(),
-		"two_factor_required": h.twoFactorRequired(),
-		"did":                 op,
-	})
+	env := h.screen(r, info)
+	env["did"] = op
+	return httpx.WriteJSON(w, http.StatusOK, env)
 }
 
 func translate(err error) error {
 	var setting *SettingError
-	var preflight *PreflightError
+	var refusal *PreflightError
 	switch {
 	case errors.As(err, &setting):
 		return httpx.BadRequestCode("plugin_setting_invalid", "Setting %q: %s", setting.Key, setting.Reason)
 	case errors.Is(err, arcx.ErrInvalid):
 		return httpx.BadRequestCode("invalid_package", "%s", strings.TrimPrefix(err.Error(), arcx.ErrInvalid.Error()+": "))
-	case errors.As(err, &preflight):
-		return httpx.BadRequestCode("plugin_cannot_install", "%s", preflight.Reason)
+	case errors.As(err, &refusal):
+		return httpx.BadRequestCode("plugin_cannot_install", "%s", refusal.Reason)
 	case errors.Is(err, ErrNameTaken):
 		return httpx.Conflict("plugin_name_taken", "A built-in plugin already has that name.")
 	case errors.Is(err, ErrUnchanged):

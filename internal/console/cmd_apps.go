@@ -2,6 +2,7 @@ package console
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -82,11 +83,7 @@ func init() {
 				return nil
 			}
 			issuer := asStr(asMap(data)["issuer"])
-			if rt.Session.Lang == "zh" {
-				rt.Printf("\nissuer：%s\n", issuer)
-			} else {
-				rt.Printf("\nissuer: %s\n", issuer)
-			}
+			rt.Say(Text{EN: fmt.Sprintf("\nissuer: %s\n", issuer), ZH: fmt.Sprintf("\nissuer：%s\n", issuer)})
 			return nil
 		},
 	})
@@ -125,7 +122,7 @@ func init() {
 				if !asBoolVal(app["confidential"]) {
 					kind = "public (PKCE)"
 				}
-				return rt.Fields([][2]string{
+				return rt.FieldsOf(app, [][2]string{
 					{"id", asStr(app["id"])},
 					{"name", asStr(app["name"])},
 					{"description", asStr(app["description"])},
@@ -138,10 +135,7 @@ func init() {
 					{"created", formatMS(app["created_at"])},
 				})
 			}
-			if rt.Session.Lang == "zh" {
-				return rt.Errorf("没有这个应用。")
-			}
-			return rt.Errorf("no such application.")
+			return rt.Fail(Text{EN: "no such application.", ZH: "没有这个应用。"})
 		},
 	})
 
@@ -155,10 +149,11 @@ func init() {
 				"string equality. https is required except on localhost. --public is for software " +
 				"with nowhere to keep a secret, such as a single-page app: it gets no client secret " +
 				"and must use PKCE. --trusted skips the consent screen, which is for the operator's " +
-				"own services and nothing else. The client secret is printed once, here.",
+				"own services and nothing else, and only a super administrator may set it. The " +
+				"client secret is printed once, here.",
 			ZH: "--redirect 接受一个或多个回调地址，用逗号分隔，之后按字符串完全匹配。除 localhost 外必须是 " +
 				"https。--public 用于没有地方存放密钥的软件（例如纯前端应用）：它不会获得 client secret，" +
-				"必须使用 PKCE。--trusted 会跳过授权确认页，只适用于运营方自己的服务。" +
+				"必须使用 PKCE。--trusted 会跳过授权确认页，只适用于运营方自己的服务，且只有超级管理员能设置。" +
 				"client secret 只在这里打印一次。",
 		},
 		Flags: []Flag{
@@ -180,10 +175,7 @@ func init() {
 			name := rt.String("name")
 			redirect := rt.String("redirect")
 			if name == "" || redirect == "" {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("需要 --name 和 --redirect")
-				}
-				return rt.Errorf("--name and --redirect are required")
+				return rt.Fail(Text{EN: "--name and --redirect are required", ZH: "需要 --name 和 --redirect"})
 			}
 
 			body := map[string]any{
@@ -219,12 +211,7 @@ func init() {
 			if rt.effectiveJSON() {
 				return nil
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("\nclient secret 只显示这一次，请立即保存。\n")
-			} else {
-				rt.Printf("\nthe client secret is shown once; save it now.\n")
-			}
-			return nil
+			return rt.confirm(Text{EN: "\nthe client secret is shown once; save it now.", ZH: "\nclient secret 只显示这一次，请立即保存。"})
 		},
 	})
 
@@ -237,10 +224,14 @@ func init() {
 			EN: "Only the flags you give are changed. --disabled true stops the application signing " +
 				"anybody in and makes the tokens it already holds stop answering, which is the switch " +
 				"to reach for when its secret has leaked; --scopes narrows what it may ask for, and a " +
-				"narrower list takes effect on the next sign-in rather than on tokens already issued.",
+				"narrower list takes effect on the next sign-in rather than on tokens already issued. " +
+				"Changing the callbacks, or anything at all on a trusted application, needs a super " +
+				"administrator: consent is kept per application, so a new callback would receive the " +
+				"codes of people who agreed to the old one.",
 			ZH: "只会修改你给出的选项。--disabled true 会让该应用无法再登录，且它已持有的令牌立即失效——" +
 				"密钥泄露时应当先用这个开关；--scopes 用于收窄它能申请的信息，收窄后在下次登录时生效，" +
-				"不影响已签发的令牌。",
+				"不影响已签发的令牌。修改回调地址，或修改受信任应用的任何内容，需要超级管理员：" +
+				"授权是按应用记录的，新增的回调会收到此前同意过的人的授权码。",
 		},
 		Args: []Arg{{Name: "id", Hint: Text{EN: "application id", ZH: "应用 id"}, Required: true}},
 		Flags: []Flag{
@@ -272,10 +263,7 @@ func init() {
 				body["scopes"] = strings.Fields(strings.ReplaceAll(scopes, ",", " "))
 			}
 			if len(body) == 0 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("没有要修改的内容。")
-				}
-				return rt.Errorf("nothing to change.")
+				return rt.Fail(Text{EN: "nothing to change.", ZH: "没有要修改的内容。"})
 			}
 
 			data, _, err := rt.Call(http.MethodPatch,
@@ -332,12 +320,7 @@ func init() {
 			if rt.effectiveJSON() {
 				return nil
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("\n只显示这一次，请立即保存。\n")
-			} else {
-				rt.Printf("\nshown once; save it now.\n")
-			}
-			return nil
+			return rt.confirm(Text{EN: "\nshown once; save it now.", ZH: "\n只显示这一次，请立即保存。"})
 		},
 	})
 
@@ -368,12 +351,10 @@ func init() {
 				"/api/admin/applications/"+url.PathEscape(appID), nil); err != nil {
 				return err
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已删除。\n")
-			} else {
-				rt.Printf("deleted.\n")
+			if rt.effectiveJSON() {
+				return rt.Fields(nil)
 			}
-			return nil
+			return rt.confirm(Text{EN: "deleted.", ZH: "已删除。"})
 		},
 	})
 }

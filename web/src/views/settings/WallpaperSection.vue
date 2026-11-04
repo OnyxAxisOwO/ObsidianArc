@@ -9,17 +9,20 @@
 // broken.
 
 import { computed, ref } from 'vue';
-import { ApiError, api } from '@/api/client';
+import { api } from '@/api/client';
+import { apiErrorText } from '@/lib/api-error';
 import { ImageError, prepareImage } from '@/chat/image';
 import OaRangeField from '@/components/OaRangeField.vue';
 import { IconImage, IconChevronRight } from '@/icons';
 import { t } from '@/composables/useI18n';
 import { useTheme } from '@/composables/useTheme';
-import { setWallpaper, type Wallpaper } from '@/theme/theme';
+import { previewWallpaper, setWallpaper, type Wallpaper } from '@/theme/theme';
 import { syncPreferences } from '@/stores/session';
 
 const theme = useTheme();
-const current = computed(() => theme.paper());
+// The reader's own picture, not whatever is painted: the instance may be
+// drawing its own behind a reader who has none.
+const current = computed(() => theme.ownPaper());
 
 // Empty until it has something to report. "A wallpaper is set" is a sentence
 // about a picture the reader can already see behind the panel; this line is
@@ -34,7 +37,7 @@ const translucency = ref(current.value?.translucency ?? 0);
 const panelBlur = ref(current.value?.panelBlur ?? 0);
 
 function readSliders(): Wallpaper | null {
-  const existing = theme.paper();
+  const existing = theme.ownPaper();
   if (!existing) return null;
   return {
     url: existing.url,
@@ -45,16 +48,22 @@ function readSliders(): Wallpaper | null {
   };
 }
 
-/** On every move: local only, so the change is on screen at once. */
+/** On every move: painted only, so the change is on screen at once. */
 function preview(): void {
   const next = readSliders();
-  if (next) setWallpaper(next);
+  if (next) previewWallpaper(next);
 }
 
-/** On release: the same value, this time remembered by the account. */
+/**
+ * On release: stored, and remembered by the account. Storing is deferred to
+ * here because it notifies every theme listener, which a slider cannot afford
+ * on each step.
+ */
 function persist(): void {
   const next = readSliders();
-  if (next) syncPreferences({ wallpaper: next });
+  if (!next) return;
+  setWallpaper(next);
+  syncPreferences({ wallpaper: next });
 }
 
 async function upload(file: File): Promise<void> {
@@ -85,9 +94,9 @@ async function upload(file: File): Promise<void> {
     syncPreferences({ wallpaper: next });
     status.value = '';
   } catch (error) {
-    status.value = error instanceof ImageError || error instanceof ApiError
-      ? error.message
-      : String(error);
+    // An ImageError is already worded in the reader's language; a request
+    // failure is translated by its code like every other screen's.
+    status.value = error instanceof ImageError ? error.message : apiErrorText(error);
   } finally {
     uploading.value = false;
   }

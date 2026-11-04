@@ -6,13 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/tetratelabs/wazero"
+
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin/pkgtest"
 )
 
 var (
@@ -36,11 +39,11 @@ func guest(t *testing.T) []byte {
 			guestErr = err
 			return
 		}
+		// The module is read into memory below, so the directory is not needed
+		// past this build; left behind, every run would leave one in the temp dir.
+		defer os.RemoveAll(dir)
 		out := filepath.Join(dir, "guest.wasm")
-		cmd := exec.Command("go", "build", "-buildmode=c-shared", "-o", out, "./testdata/guest")
-		cmd.Env = append(os.Environ(), "GOOS=wasip1", "GOARCH=wasm")
-		if b, err := cmd.CombinedOutput(); err != nil {
-			guestErr = errors.New(string(b))
+		if guestErr = pkgtest.CompileWasm(".", "./testdata/guest", out); guestErr != nil {
 			return
 		}
 		guestWasm, guestErr = os.ReadFile(out)
@@ -96,6 +99,19 @@ func TestAHostAnswerBiggerThanTheGuestsBufferStillArrives(t *testing.T) {
 	}
 	if n != len(big)+2 { // the JSON string's quotes
 		t.Fatalf("the guest read %d bytes of a %d-byte answer", n, len(big)+2)
+	}
+}
+
+// The host's answer is what makes the reply big: the echo op hands it back
+// inside the guest's reply, and the request stays small, so only the reply is
+// over the limit. The route layer maps this sentinel to a 502 by identity, so
+// the engine must return it rather than an error that says the same thing.
+func TestAnAnswerLongerThanMaxMessageIsErrResponseTooLarge(t *testing.T) {
+	answer := strings.Repeat("x", 2000)
+	b := load(t, Limits{MaxMessage: 1000}, func(*Call, string, json.RawMessage) (any, error) { return answer, nil })
+	err := b.Invoke(t.Context(), CallInfo{Plugin: "demo"}, "echo", map[string]int{"n": 7}, nil, nil)
+	if !errors.Is(err, ErrResponseTooLarge) {
+		t.Fatalf("err = %v, want ErrResponseTooLarge", err)
 	}
 }
 
@@ -304,9 +320,11 @@ func waitUntil(t *testing.T, what string, cond func() bool) {
 }
 
 // The compiled code is tens of megabytes a backend and what these backends serve
-// is used now and then, so an idle one gives it back and the next call pays for
-// compiling it again — without the caller seeing anything but the delay.
-func TestAnIdleBackendGivesItsCompiledCodeBackAndTheNextCallCompilesItAgain(t *testing.T) {
+// is used now and then, so an idle one drops it and the next call pays for
+// compiling it again — without the caller seeing anything but the delay. That
+// the runtime behind it is closed is checked by TestAnEvictedBackendClosesItsRuntime;
+// this one checks the backend keeps working after the drop.
+func TestAnIdleBackendDropsItsCompiledCodeAndTheNextCallCompilesItAgain(t *testing.T) {
 	b := load(t, Limits{IdleEvict: 40 * time.Millisecond}, nil)
 	waitUntil(t, "the idle backend is evicted", func() bool { return !b.isWarm() })
 
@@ -318,6 +336,28 @@ func TestAnIdleBackendGivesItsCompiledCodeBackAndTheNextCallCompilesItAgain(t *t
 		t.Fatal("the call did not compile it again")
 	}
 	waitUntil(t, "it is evicted again", func() bool { return !b.isWarm() })
+}
+
+// The field going nil proves nothing about memory: the native code lives in the
+// runtime the backend compiled on, and only closing that runtime gives it back.
+// The shared compilation cache keeps native code after a runtime closes, so
+// this test sets it aside, as TestCompiledCodeIsKeptInTheCacheDirectoryAndReadBack
+// does, and checks the runtime itself.
+func TestAnEvictedBackendClosesItsRuntime(t *testing.T) {
+	old := shared.Swap(nil)
+	t.Cleanup(func() { shared.Store(old) })
+	var made wazero.Runtime
+	runtimeHook = func(rt wazero.Runtime) { made = rt }
+	t.Cleanup(func() { runtimeHook = nil })
+
+	b := load(t, Limits{IdleEvict: 40 * time.Millisecond}, nil)
+	waitUntil(t, "the idle backend is evicted", func() bool { return !b.isWarm() })
+	if made == nil {
+		t.Fatal("the backend compiled without making a runtime")
+	}
+	if _, err := made.CompileModule(t.Context(), guest(t)); err == nil {
+		t.Fatal("the runtime an evicted backend compiled on is still open")
+	}
 }
 
 func TestABackendThatIsNeverEvictedKeepsItsCode(t *testing.T) {
@@ -439,4 +479,167 @@ func TestCompiledCodeIsKeptInTheCacheDirectoryAndReadBack(t *testing.T) {
 	if err := second.Invoke(t.Context(), CallInfo{Plugin: "demo"}, "echo", nil, &out, nil); err != nil {
 		t.Fatalf("a call after eviction: %v", err)
 	}
+}
+
+// Anyone can reach a public route or a sign-up guard, and every call is an
+// instance with a memory ceiling of its own, so the number running at once is
+// bounded. A call past the bound is turned away at once rather than queued —
+// a queue of requests is the flood again — and the slot is the call's only for
+// as long as it runs.
+func TestCallsPastTheLimitFailAtOnceAndFreeTheirSlots(t *testing.T) {
+	entered := make(chan struct{}, 8)
+	release := make(chan struct{})
+	b := load(t, Limits{MaxConcurrent: 2}, func(*Call, string, json.RawMessage) (any, error) {
+		entered <- struct{}{}
+		<-release
+		return "ok", nil
+	})
+
+	var running sync.WaitGroup
+	results := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		running.Add(1)
+		go func() {
+			defer running.Done()
+			results <- b.Invoke(t.Context(), CallInfo{Plugin: "demo"}, "echo", nil, nil, nil)
+		}()
+	}
+	<-entered
+	<-entered
+
+	started := time.Now()
+	err := b.Invoke(t.Context(), CallInfo{Plugin: "demo"}, "echo", nil, nil, nil)
+	if !errors.Is(err, ErrBusy) {
+		t.Fatalf("a third call while two were running: %v", err)
+	}
+	if took := time.Since(started); took > time.Second {
+		t.Fatalf("the refused call waited %v; it should be turned away at once", took)
+	}
+
+	close(release)
+	running.Wait()
+	close(results)
+	for err := range results {
+		if err != nil {
+			t.Fatalf("a call that had its slot: %v", err)
+		}
+	}
+	if err := b.Invoke(t.Context(), CallInfo{Plugin: "demo"}, "echo", nil, nil, nil); err != nil {
+		t.Fatalf("a call after the slots were given back: %v", err)
+	}
+}
+
+func TestTheLimitIsSharedAcrossTheBackendsOfOneEngine(t *testing.T) {
+	entered := make(chan struct{}, 4)
+	release := make(chan struct{})
+	host := func(*Call, string, json.RawMessage) (any, error) {
+		entered <- struct{}{}
+		<-release
+		return nil, nil
+	}
+	engine := NewEngine(Limits{MaxConcurrent: 1})
+	first := engine.Load("one", guest(t), host)
+	second := engine.Load("two", guest(t), host)
+	t.Cleanup(first.Close)
+	t.Cleanup(second.Close)
+
+	done := make(chan error, 1)
+	go func() { done <- first.Invoke(t.Context(), CallInfo{Plugin: "one"}, "echo", nil, nil, nil) }()
+	<-entered
+	if err := second.Invoke(t.Context(), CallInfo{Plugin: "two"}, "echo", nil, nil, nil); !errors.Is(err, ErrBusy) {
+		t.Fatalf("another plugin's call while the engine was full: %v", err)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTheDefaultLimitIsBoundedAndANegativeOneIsNot(t *testing.T) {
+	if got := NewEngine(Limits{}).limits.MaxConcurrent; got != 32 {
+		t.Fatalf("default MaxConcurrent = %d", got)
+	}
+	if NewEngine(Limits{MaxConcurrent: -1}).slots != nil {
+		t.Fatal("a negative limit still bounds the engine")
+	}
+}
+
+// Two modules that compile and export the three names the SDK's do, but are
+// not its shape: one has no memory, one has an arc_alloc that returns nothing.
+// Both used to load, and the first call then indexed a result or a memory that
+// was not there, with no recover around it — the janitor's sweep would take the
+// server down with it. Each must be refused at load, and a call must fail.
+func TestAModuleOfTheWrongShapeIsRefusedAtLoadNotCrashedOnACall(t *testing.T) {
+	// (module) with _initialize, arc_alloc and arc_call, and no memory section.
+	noMemory := []byte{
+		0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x0f, 0x03, 0x60, 0x00, 0x00, 0x60, 0x01,
+		0x7f, 0x01, 0x7f, 0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7e, 0x03, 0x04, 0x03, 0x00, 0x01, 0x02, 0x07,
+		0x26, 0x03, 0x0b, 0x5f, 0x69, 0x6e, 0x69, 0x74, 0x69, 0x61, 0x6c, 0x69, 0x7a, 0x65, 0x00, 0x00,
+		0x09, 0x61, 0x72, 0x63, 0x5f, 0x61, 0x6c, 0x6c, 0x6f, 0x63, 0x00, 0x01, 0x08, 0x61, 0x72, 0x63,
+		0x5f, 0x63, 0x61, 0x6c, 0x6c, 0x00, 0x02, 0x0a, 0x0e, 0x03, 0x02, 0x00, 0x0b, 0x04, 0x00, 0x20,
+		0x00, 0x0b, 0x04, 0x00, 0x42, 0x00, 0x0b,
+	}
+	// The same with a memory section and a "memory" export, and arc_alloc
+	// declared to return nothing, so the signature is the only thing wrong with it.
+	allocReturnsNothing := []byte{
+		0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x0e, 0x03, 0x60, 0x00, 0x00, 0x60, 0x01,
+		0x7f, 0x00, 0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7e, 0x03, 0x04, 0x03, 0x00, 0x01, 0x02, 0x05, 0x03,
+		0x01, 0x00, 0x01, 0x07, 0x2f, 0x04, 0x0b, 0x5f, 0x69, 0x6e, 0x69, 0x74, 0x69, 0x61, 0x6c, 0x69,
+		0x7a, 0x65, 0x00, 0x00, 0x09, 0x61, 0x72, 0x63, 0x5f, 0x61, 0x6c, 0x6c, 0x6f, 0x63, 0x00, 0x01,
+		0x08, 0x61, 0x72, 0x63, 0x5f, 0x63, 0x61, 0x6c, 0x6c, 0x00, 0x02, 0x06, 0x6d, 0x65, 0x6d, 0x6f,
+		0x72, 0x79, 0x02, 0x00, 0x0a, 0x0c, 0x03, 0x02, 0x00, 0x0b, 0x02, 0x00, 0x0b, 0x04, 0x00, 0x42,
+		0x00, 0x0b,
+	}
+	for name, module := range map[string][]byte{"without memory": noMemory, "with an arc_alloc that returns nothing": allocReturnsNothing} {
+		t.Run(name, func(t *testing.T) {
+			b := NewEngine(Limits{}).Load("wrong", module, nil)
+			t.Cleanup(b.Close)
+			if err := b.Ready(t.Context()); err == nil || !strings.Contains(err.Error(), "plugin SDK") {
+				t.Fatalf("a backend of the wrong shape was not refused as one: %v", err)
+			}
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("a call into it panicked: %v", r)
+				}
+			}()
+			if err := b.Invoke(t.Context(), CallInfo{Plugin: "wrong"}, "sweep", nil, nil, nil); err == nil {
+				t.Fatal("a backend that failed to load answered a call")
+			}
+		})
+	}
+}
+
+// Close lands while a compile is parked. The compile takes its copy of the module
+// bytes under the lock before it starts, so Close clearing the field meanwhile
+// does not reach it: the compile still builds, and Ready reports the backend
+// removed. Parking the compile holds the window open, so this is decided by the
+// outcome and not left to the race detector.
+func TestCloseDuringACompileIsNotADataRace(t *testing.T) {
+	entered, proceed := make(chan struct{}), make(chan struct{})
+	compileHook = func() {
+		close(entered)
+		<-proceed
+	}
+	t.Cleanup(func() { compileHook = nil })
+
+	b := NewEngine(Limits{}).Load("demo", guest(t), nil)
+	ready := make(chan error, 1)
+	go func() { ready <- b.Ready(t.Context()) }()
+	<-entered
+
+	closeDone := make(chan struct{})
+	go func() {
+		b.Close()
+		close(closeDone)
+	}()
+	waitUntil(t, "close", func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.closed
+	})
+	close(proceed)
+	if err := <-ready; err != nil && !errors.Is(err, errRemoved) {
+		t.Fatalf("a compile that Close landed in failed for another reason: %v", err)
+	}
+	<-closeDone
 }

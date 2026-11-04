@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -672,6 +673,77 @@ func TestADisabledAccountStopsBeingAnIdentity(t *testing.T) {
 	if recorder.Code != http.StatusUnauthorized {
 		t.Errorf("userinfo for a disabled account = %d, want it refused immediately", recorder.Code)
 	}
+
+	// Nor does its refresh token keep minting identity tokens. It renews
+	// itself a month at a time, so this was the way a banned account stayed
+	// signed in everywhere else.
+	refreshed := h.postForm("/oauth/token", url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {tokens.RefreshToken},
+		"client_id":     {app.ClientID},
+		"client_secret": {secret},
+	})
+	if refreshed.Code != http.StatusBadRequest {
+		t.Errorf("refresh for a disabled account = %d %s, want it refused", refreshed.Code, refreshed.Body.String())
+	}
+}
+
+// The provider meets an operator's requirement on the token endpoint and the
+// identity endpoint as well as on the web. A requirement it cannot read is not
+// a reason to keep issuing: the web lets an account through on the same error
+// because it only decides one request, but a token outlives the request.
+func TestAHoldThatCannotBeReadStopsTheProvidersTokens(t *testing.T) {
+	h := newHarness(t)
+	app, secret := h.app(t, CreateAppInput{})
+
+	code, _ := codeFrom(t, h.consent(t, authorizeURL(app.ClientID, nil), true))
+	tokens := decodeTokens(t, h.exchange(code, app.ClientID, secret, nil))
+
+	h.service.holds = Holds{MustBindOIDC: func(context.Context, user.User) (bool, error) {
+		return false, errors.New("the database is unavailable")
+	}}
+
+	request := httptest.NewRequest(http.MethodGet, "/oauth/userinfo", nil)
+	request.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
+	recorder := httptest.NewRecorder()
+	h.mux.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusInternalServerError {
+		t.Errorf("userinfo while the hold cannot be read = %d %s, want it refused", recorder.Code, recorder.Body.String())
+	}
+
+	refreshed := h.postForm("/oauth/token", url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {tokens.RefreshToken},
+		"client_id":     {app.ClientID},
+		"client_secret": {secret},
+	})
+	if refreshed.Code != http.StatusBadRequest || !strings.Contains(refreshed.Body.String(), "invalid_grant") {
+		t.Errorf("refresh while the hold cannot be read = %d %s, want invalid_grant", refreshed.Code, refreshed.Body.String())
+	}
+}
+
+// email_verified says the address was proved here, not that nothing is held
+// back: on an instance that never asks for confirmation every address is
+// "verified", and an application linking accounts by address would take a
+// stranger's word for whose address it is.
+func TestEmailVerifiedMeansTheAddressWasProved(t *testing.T) {
+	h := newHarness(t)
+	app, secret := h.app(t, CreateAppInput{})
+
+	code, _ := codeFrom(t, h.consent(t, authorizeURL(app.ClientID, nil), true))
+	claims := h.verify(t, decodeTokens(t, h.exchange(code, app.ClientID, secret, nil)).IDToken)
+	if claims["email_verified"] != false {
+		t.Errorf("email_verified = %v for an address nobody proved", claims["email_verified"])
+	}
+
+	if err := h.users.MarkEmailProven(context.Background(), nil, h.account.ID, h.account.Email); err != nil {
+		t.Fatal(err)
+	}
+	code, _ = codeFrom(t, h.consent(t, authorizeURL(app.ClientID, nil), true))
+	claims = h.verify(t, decodeTokens(t, h.exchange(code, app.ClientID, secret, nil)).IDToken)
+	if claims["email_verified"] != true {
+		t.Errorf("email_verified = %v for a proved address", claims["email_verified"])
+	}
 }
 
 func TestRevokingATokenTakesBothHalves(t *testing.T) {
@@ -698,6 +770,44 @@ func TestRevokingATokenTakesBothHalves(t *testing.T) {
 	})
 	if unknown.Code != http.StatusOK {
 		t.Errorf("revoking an unknown token = %d, want the same answer", unknown.Code)
+	}
+}
+
+// These three read a form without anybody having signed in, and the standard
+// library will buffer ten megabytes of one before it gives up.
+func TestProtocolEndpointsRefuseAnOversizedBody(t *testing.T) {
+	h := newHarness(t)
+	app, secret := h.app(t, CreateAppInput{})
+	huge := strings.Repeat("a", 4*maxFormBytes)
+
+	for _, path := range []string{"/oauth/token", "/oauth/revoke"} {
+		response := h.postForm(path, url.Values{
+			"client_id": {app.ClientID}, "client_secret": {secret},
+			"grant_type": {"authorization_code"}, "token": {"x"}, "padding": {huge},
+		})
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "invalid_request") {
+			t.Errorf("%s with a %d-byte body = %d %s, want 400 invalid_request",
+				path, 4*maxFormBytes, response.Code, response.Body.String())
+		}
+	}
+
+	// The bearer token may ride in the body of a POST, so the same ceiling
+	// applies there; the oversized form reads as no token at all.
+	request := httptest.NewRequest(http.MethodPost, "/oauth/userinfo",
+		strings.NewReader(url.Values{"access_token": {"t"}, "padding": {huge}}.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	recorder := httptest.NewRecorder()
+	h.mux.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Errorf("userinfo with an oversized body = %d, want 401", recorder.Code)
+	}
+
+	// A normal request still gets through.
+	ok := h.postForm("/oauth/revoke", url.Values{
+		"token": {"x"}, "client_id": {app.ClientID}, "client_secret": {secret},
+	})
+	if ok.Code != http.StatusOK {
+		t.Errorf("an ordinary revoke = %d", ok.Code)
 	}
 }
 

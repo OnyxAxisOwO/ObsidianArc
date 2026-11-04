@@ -5,45 +5,56 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
+	"strconv"
 	"strings"
 )
 
 // parseHeaders turns "X-Foo=bar,X-Bar=baz" into the map[string]string
-// POST/PATCH /api/admin/providers takes for headers.
-func parseHeaders(raw string) map[string]string {
+// POST/PATCH /api/admin/providers takes for headers. An entry without '='
+// is refused, not skipped: on an edit the map replaces the stored set, so a
+// dropped typo would clear every other header and still report success.
+// Values cannot contain commas, since the list is split on them.
+func parseHeaders(rt *Runtime, raw string) (map[string]string, error) {
 	out := map[string]string{}
 	for _, entry := range splitCSV(raw) {
 		k, v, ok := strings.Cut(entry, "=")
-		if !ok {
-			continue
+		k = strings.TrimSpace(k)
+		if !ok || k == "" {
+			return nil, rt.Fail(Text{EN: fmt.Sprintf("--headers takes name=value, got %q", entry), ZH: fmt.Sprintf("--headers 要写成 名称=值，得到 %q", entry)})
 		}
-		out[strings.TrimSpace(k)] = strings.TrimSpace(v)
+		out[k] = strings.TrimSpace(v)
 	}
-	return out
+	return out, nil
 }
 
 // parseTiers turns "id:name:budget,id2:name2:budget2" into the
 // []{id,name,budget} shape POST/PATCH /api/admin/models takes for
-// reasoning_tiers.
-func parseTiers(raw string) []map[string]any {
-	var out []map[string]any
+// reasoning_tiers. The id never contains a colon, the budget is the last
+// field, and everything between is the name, so a name may contain colons.
+// An empty value is an empty list, not nil: nil marshals as null, which the
+// server reads as "not given", so a clear would report success and keep every
+// tier.
+func parseTiers(rt *Runtime, raw string) ([]map[string]any, error) {
+	out := []map[string]any{}
 	for _, entry := range splitCSV(raw) {
-		parts := strings.SplitN(entry, ":", 3)
-		tier := map[string]any{}
-		if len(parts) > 0 {
-			tier["id"] = strings.TrimSpace(parts[0])
-		}
-		if len(parts) > 1 {
+		parts := strings.Split(entry, ":")
+		tier := map[string]any{"id": strings.TrimSpace(parts[0])}
+		if n := len(parts); n == 2 {
 			tier["name"] = strings.TrimSpace(parts[1])
-		}
-		if len(parts) > 2 {
-			var budget int
-			fmt.Sscanf(strings.TrimSpace(parts[2]), "%d", &budget)
+		} else if n > 2 {
+			tier["name"] = strings.TrimSpace(strings.Join(parts[1:n-1], ":"))
+			// A budget that did not parse would otherwise be stored as 0, which
+			// reads as a tier that has no budget at all.
+			budget, err := strconv.Atoi(strings.TrimSpace(parts[n-1]))
+			if err != nil {
+				return nil, rt.Fail(Text{EN: fmt.Sprintf("--tiers entry %q: the budget must be a whole number", entry), ZH: fmt.Sprintf("--tiers 的预算必须是整数：%q", entry)})
+			}
 			tier["budget"] = budget
 		}
 		out = append(out, tier)
 	}
-	return out
+	return out, nil
 }
 
 func init() {
@@ -65,7 +76,7 @@ func init() {
 				p := asMap(raw)
 				rows = append(rows, []string{
 					asStr(p["id"]), asStr(p["name"]), asStr(p["kind"]), asStr(p["base_url"]),
-					yesNo(asBoolVal(p["enabled"])), fmt.Sprint(asNum(p["model_count"])), asStr(p["api_key_hint"]),
+					yesNo(asBoolVal(p["enabled"])), formatNumber(asNum(p["model_count"])), asStr(p["api_key_hint"]),
 				})
 			}
 			return rt.Table([]string{"id", "name", "kind", "base_url", "enabled", "models", "key"}, rows)
@@ -102,23 +113,23 @@ func init() {
 				}
 			}
 			if p == nil {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("没有这个服务商。")
-				}
-				return rt.Errorf("no such provider.")
+				return rt.Fail(Text{EN: "no such provider.", ZH: "没有这个服务商。"})
 			}
 			jsonMode := rt.effectiveJSON()
 			var headers []string
 			for k, v := range asMap(p["headers"]) {
 				headers = append(headers, k+"="+asStr(v))
 			}
-			if err := rt.Fields([][2]string{
+			// A map has no order of its own. Sorted, the same provider prints its
+			// headers in the same order every time it is shown.
+			sort.Strings(headers)
+			if err := rt.FieldsOf(p, [][2]string{
 				{"id", asStr(p["id"])}, {"name", asStr(p["name"])}, {"kind", asStr(p["kind"])},
 				{"base_url", asStr(p["base_url"])}, {"allow_insecure", yesNo(asBoolVal(p["allow_insecure"]))},
 				{"api_key_hint", asStr(p["api_key_hint"])}, {"headers", strings.Join(headers, ", ")},
-				{"reasoning_style", asStr(p["reasoning_style"])}, {"timeout_seconds", fmt.Sprint(asNum(p["timeout_seconds"]))},
-				{"enabled", yesNo(asBoolVal(p["enabled"]))}, {"sort_order", fmt.Sprint(asNum(p["sort_order"]))},
-				{"model_count", fmt.Sprint(asNum(p["model_count"]))}, {"created_at", formatMS(p["created_at"])},
+				{"reasoning_style", asStr(p["reasoning_style"])}, {"timeout_seconds", formatNumber(asNum(p["timeout_seconds"]))},
+				{"enabled", yesNo(asBoolVal(p["enabled"]))}, {"sort_order", formatNumber(asNum(p["sort_order"]))},
+				{"model_count", formatNumber(asNum(p["model_count"]))}, {"created_at", formatMS(p["created_at"])},
 			}); err != nil {
 				return err
 			}
@@ -158,7 +169,7 @@ func init() {
 			{Name: "--allow-insecure", Hint: Text{EN: "permit plain http to a non-loopback host", ZH: "允许对非本机地址使用明文 http"}},
 			{Name: "--api-key", Hint: Text{EN: "the credential, write-only", ZH: "凭据，仅写入不可再读出"}, Value: "KEY", Sensitive: true},
 			{Name: "--copy-key-from", Hint: Text{EN: "another provider's ref, copies its sealed key", ZH: "另一个服务商的引用，复制其已封存密钥"}, Value: "REF"},
-			{Name: "--headers", Hint: Text{EN: "comma list of Header=value, ≤20", ZH: "逗号分隔的 Header=value，最多 20 个"}, Value: "LIST"},
+			{Name: "--headers", Hint: Text{EN: "comma list of Header=value, ≤20", ZH: "逗号分隔的 Header=value，最多 20 个"}, Value: "LIST", Sensitive: true},
 			{Name: "--anthropic-version", Hint: Text{EN: "the anthropic-version header value", ZH: "anthropic-version 请求头的值"}, Value: "TEXT"},
 			{Name: "--reasoning-style", Hint: Text{EN: "auto, none, anthropic, openai_effort, openrouter or qwen", ZH: "auto、none、anthropic、openai_effort、openrouter 或 qwen"}, Value: "STYLE"},
 			{Name: "--timeout-seconds", Hint: Text{EN: "default 120, max 900", ZH: "默认 120，最大 900"}, Value: "N", Default: "120"},
@@ -174,11 +185,14 @@ func init() {
 		Run: func(_ context.Context, rt *Runtime) error {
 			for _, req := range []string{"name", "kind", "base-url"} {
 				if !rt.Present(req) || rt.String(req) == "" {
-					if rt.Session.Lang == "zh" {
-						return rt.Errorf("需要 --%s", req)
-					}
-					return rt.Errorf("--%s is required", req)
+					return rt.Fail(Text{EN: fmt.Sprintf("--%s is required", req), ZH: fmt.Sprintf("需要 --%s", req)})
 				}
+			}
+			// Refused here, before any lookup or request: with both flags the typed
+			// key would win and the copy would vanish without a word, and with
+			// neither the server refuses only after the round trip.
+			if rt.Present("api-key") == rt.Present("copy-key-from") {
+				return rt.Fail(Text{EN: "give exactly one of --api-key or --copy-key-from", ZH: "请只给出 --api-key 或 --copy-key-from 之一"})
 			}
 			body := bodyBuilder{
 				"name":     rt.String("name"),
@@ -188,7 +202,7 @@ func init() {
 			body.boolv(rt, "allow-insecure", "allow_insecure")
 			if rt.Present("api-key") {
 				body["api_key"] = rt.String("api-key")
-			} else if rt.Present("copy-key-from") {
+			} else {
 				pid, err := resolveProviderRef(rt, rt.String("copy-key-from"))
 				if err != nil {
 					return err
@@ -196,7 +210,11 @@ func init() {
 				body["copy_key_from"] = pid
 			}
 			if rt.Present("headers") {
-				body["headers"] = parseHeaders(rt.String("headers"))
+				headers, err := parseHeaders(rt, rt.String("headers"))
+				if err != nil {
+					return err
+				}
+				body["headers"] = headers
 			}
 			body.str(rt, "anthropic-version", "anthropic_version")
 			body.str(rt, "reasoning-style", "reasoning_style")
@@ -230,7 +248,7 @@ func init() {
 			{Name: "--base-url", Hint: Text{EN: "https unless --allow-insecure and loopback", ZH: "https，除非 --allow-insecure 且为本机地址"}, Value: "URL"},
 			{Name: "--allow-insecure", Hint: Text{EN: "permit plain http to a non-loopback host", ZH: "允许对非本机地址使用明文 http"}, Value: "BOOL"},
 			{Name: "--api-key", Hint: Text{EN: "replace the stored credential", ZH: "替换已保存的凭据"}, Value: "KEY", Sensitive: true},
-			{Name: "--headers", Hint: Text{EN: "comma list of Header=value, replaces the set", ZH: "逗号分隔的 Header=value，整体替换"}, Value: "LIST"},
+			{Name: "--headers", Hint: Text{EN: "comma list of Header=value, replaces the set", ZH: "逗号分隔的 Header=value，整体替换"}, Value: "LIST", Sensitive: true},
 			{Name: "--anthropic-version", Hint: Text{EN: "the anthropic-version header value", ZH: "anthropic-version 请求头的值"}, Value: "TEXT"},
 			{Name: "--reasoning-style", Hint: Text{EN: "auto, none, anthropic, openai_effort, openrouter or qwen", ZH: "auto、none、anthropic、openai_effort、openrouter 或 qwen"}, Value: "STYLE"},
 			{Name: "--timeout-seconds", Hint: Text{EN: "max 900", ZH: "最大 900"}, Value: "N"},
@@ -256,7 +274,11 @@ func init() {
 			body.boolv(rt, "allow-insecure", "allow_insecure")
 			body.str(rt, "api-key", "api_key")
 			if rt.Present("headers") {
-				body["headers"] = parseHeaders(rt.String("headers"))
+				headers, err := parseHeaders(rt, rt.String("headers"))
+				if err != nil {
+					return err
+				}
+				body["headers"] = headers
 			}
 			body.str(rt, "anthropic-version", "anthropic_version")
 			body.str(rt, "reasoning-style", "reasoning_style")
@@ -265,10 +287,7 @@ func init() {
 			body.intv(rt, "sort-order", "sort_order")
 
 			if len(body) == 0 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("没有需要修改的内容：请至少给出一个选项")
-				}
-				return rt.Errorf("nothing to change: give at least one flag")
+				return rt.Fail(Text{EN: "nothing to change: give at least one flag", ZH: "没有需要修改的内容：请至少给出一个选项"})
 			}
 			data, _, err := rt.Call(http.MethodPatch, "/api/admin/providers/"+url.PathEscape(pid), map[string]any(body))
 			if err != nil {
@@ -307,12 +326,10 @@ func init() {
 			if _, _, err := rt.Call(http.MethodDelete, "/api/admin/providers/"+url.PathEscape(pid), nil); err != nil {
 				return err
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已删除。\n")
-			} else {
-				rt.Printf("deleted.\n")
+			if rt.effectiveJSON() {
+				return rt.Fields(nil)
 			}
-			return nil
+			return rt.confirm(Text{EN: "deleted.", ZH: "已删除。"})
 		},
 	})
 
@@ -421,23 +438,20 @@ func init() {
 				}
 			}
 			if m == nil {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("没有这个模型。")
-				}
-				return rt.Errorf("no such model.")
+				return rt.Fail(Text{EN: "no such model.", ZH: "没有这个模型。"})
 			}
 			jsonMode := rt.effectiveJSON()
-			if err := rt.Fields([][2]string{
+			if err := rt.FieldsOf(m, [][2]string{
 				{"id", asStr(m["id"])}, {"provider", asStr(m["provider_name"])}, {"model_id", asStr(m["model_id"])},
 				{"api_name", asStr(m["api_name"])}, {"display_name", asStr(m["display_name"])},
 				{"enabled", yesNo(asBoolVal(m["enabled"]))}, {"hidden", yesNo(asBoolVal(m["hidden"]))},
 				{"auto_disabled", yesNo(asBoolVal(m["auto_disabled"]))}, {"route_to_id", asStr(m["route_to_id"])},
-				{"reasoning_style", asStr(m["reasoning_style"])}, {"context_window", fmt.Sprint(asNum(m["context_window"]))},
-				{"max_output_tokens", fmt.Sprint(asNum(m["max_output_tokens"]))},
-				{"request_weight", fmt.Sprint(asNum(m["request_weight"]))},
-				{"input_token_weight", fmt.Sprint(asNum(m["input_token_weight"]))},
-				{"output_token_weight", fmt.Sprint(asNum(m["output_token_weight"]))},
-				{"reasoning_token_weight", fmt.Sprint(asNum(m["reasoning_token_weight"]))},
+				{"reasoning_style", asStr(m["reasoning_style"])}, {"context_window", formatNumber(asNum(m["context_window"]))},
+				{"max_output_tokens", formatNumber(asNum(m["max_output_tokens"]))},
+				{"request_weight", formatNumber(asNum(m["request_weight"]))},
+				{"input_token_weight", formatNumber(asNum(m["input_token_weight"]))},
+				{"output_token_weight", formatNumber(asNum(m["output_token_weight"]))},
+				{"reasoning_token_weight", formatNumber(asNum(m["reasoning_token_weight"]))},
 				{"supports_reasoning", yesNo(asBoolVal(m["supports_reasoning"]))},
 				{"supports_images", yesNo(asBoolVal(m["supports_images"]))},
 				{"supports_vision", yesNo(asBoolVal(m["supports_vision"]))},
@@ -447,7 +461,7 @@ func init() {
 				{"supports_chat_image_gen", yesNo(asBoolVal(m["supports_chat_image_gen"]))},
 				{"emulate_tools", yesNo(asBoolVal(m["emulate_tools"]))},
 				{"request_override", asStr(m["request_override"])},
-				{"sort_order", fmt.Sprint(asNum(m["sort_order"]))}, {"created_at", formatMS(m["created_at"])},
+				{"sort_order", formatNumber(asNum(m["sort_order"]))}, {"created_at", formatMS(m["created_at"])},
 			}); err != nil {
 				return err
 			}
@@ -527,7 +541,11 @@ func init() {
 		}
 		body.str(rt, "reasoning-style", "reasoning_style")
 		if rt.Present("tiers") {
-			body["reasoning_tiers"] = parseTiers(rt.String("tiers"))
+			tiers, err := parseTiers(rt, rt.String("tiers"))
+			if err != nil {
+				return nil, err
+			}
+			body["reasoning_tiers"] = tiers
 		}
 		if rt.Present("groups") {
 			grants, err := parseGroupGrants(rt, rt.String("groups"))
@@ -564,16 +582,13 @@ func init() {
 		Flags:   append([]Flag{{Name: "--provider", Hint: Text{EN: "provider ref, required", ZH: "服务商引用，必填"}, Value: "REF"}}, modelFlags(true)...),
 		Examples: []string{
 			"model create --provider OpenAI --model-id gpt-4o --display-name 'GPT-4o'",
-			"model create --provider Anthropic --model-id claude-3-7-sonnet --display-name Claude --supports-reasoning",
+			"model create --provider Anthropic --model-id claude-3-7-sonnet --display-name Claude --supports-reasoning true",
 		},
 		Permission: "models",
 		Endpoints:  []string{"POST /api/admin/models"},
 		Run: func(_ context.Context, rt *Runtime) error {
 			if !rt.Present("provider") || rt.String("provider") == "" {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("需要 --provider")
-				}
-				return rt.Errorf("--provider is required")
+				return rt.Fail(Text{EN: "--provider is required", ZH: "需要 --provider"})
 			}
 			pid, err := resolveProviderRef(rt, rt.String("provider"))
 			if err != nil {
@@ -622,10 +637,7 @@ func init() {
 				return err
 			}
 			if len(body) == 0 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("没有需要修改的内容：请至少给出一个选项")
-				}
-				return rt.Errorf("nothing to change: give at least one flag")
+				return rt.Fail(Text{EN: "nothing to change: give at least one flag", ZH: "没有需要修改的内容：请至少给出一个选项"})
 			}
 			data, _, err := rt.Call(http.MethodPatch, "/api/admin/models/"+url.PathEscape(mid), map[string]any(body))
 			if err != nil {
@@ -658,12 +670,10 @@ func init() {
 			if _, _, err := rt.Call(http.MethodDelete, "/api/admin/models/"+url.PathEscape(mid), nil); err != nil {
 				return err
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已删除。\n")
-			} else {
-				rt.Printf("deleted.\n")
+			if rt.effectiveJSON() {
+				return rt.Fields(nil)
 			}
-			return nil
+			return rt.confirm(Text{EN: "deleted.", ZH: "已删除。"})
 		},
 	})
 
@@ -678,16 +688,13 @@ func init() {
 			ZH: "按希望的展示顺序列出模型；位置即写入 sort_order。未列出的模型保留原有 sort_order，" +
 				"可能因此与列出的模型顺序冲突。",
 		},
-		Args:       []Arg{{Name: "refs...", Hint: Text{EN: "model refs, in the new order", ZH: "模型引用，按新顺序排列"}, Required: true}},
+		Args:       []Arg{{Name: "refs...", Hint: Text{EN: "model refs, in the new order", ZH: "模型引用，按新顺序排列"}, Required: true, Rest: true}},
 		Examples:   []string{"model order gpt-4o gpt-4o-mini claude", "model order 01H8X… 01H8Y…"},
 		Permission: "models",
 		Endpoints:  []string{"PUT /api/admin/models/order"},
 		Run: func(_ context.Context, rt *Runtime) error {
 			if rt.NArg() == 0 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("至少需要一个模型引用")
-				}
-				return rt.Errorf("at least one model ref is required")
+				return rt.Fail(Text{EN: "at least one model ref is required", ZH: "至少需要一个模型引用"})
 			}
 			var ids []string
 			for _, ref := range rt.Args() {
@@ -700,12 +707,10 @@ func init() {
 			if _, _, err := rt.Call(http.MethodPut, "/api/admin/models/order", map[string]any{"ids": ids}); err != nil {
 				return err
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已更新排序。\n")
-			} else {
-				rt.Printf("order updated.\n")
+			if rt.effectiveJSON() {
+				return rt.Fields(nil)
 			}
-			return nil
+			return rt.confirm(Text{EN: "order updated.", ZH: "已更新排序。"})
 		},
 	})
 
@@ -723,16 +728,13 @@ func init() {
 				"作为一个带引号的参数粘贴；网页终端中可先用 Shift+Enter 分行输入。" +
 				"其中一条有问题不会中止其余条目，请查看返回结果的 skipped 列表。",
 		},
-		Args:       []Arg{{Name: "json", Hint: Text{EN: "the import document", ZH: "导入文档"}, Required: true}},
+		Args:       []Arg{{Name: "json", Hint: Text{EN: "the import document", ZH: "导入文档"}, Required: true, Rest: true}},
 		Examples:   []string{`model import '{"models":[{"provider":"OpenAI","model_id":"gpt-4o","display_name":"GPT-4o"}]}'`, "model import --json '{...}'"},
 		Permission: "models",
 		Endpoints:  []string{"POST /api/admin/models/import"},
 		Run: func(_ context.Context, rt *Runtime) error {
 			if rt.NArg() == 0 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("需要一份 JSON 文档")
-				}
-				return rt.Errorf("a JSON document is required")
+				return rt.Fail(Text{EN: "a JSON document is required", ZH: "需要一份 JSON 文档"})
 			}
 			body, err := parseJSONBody(rt, strings.Join(rt.Args(), " "))
 			if err != nil {
@@ -748,32 +750,16 @@ func init() {
 				skipped = append(skipped, asStr(s))
 			}
 			return rt.Fields([][2]string{
-				{"created", fmt.Sprint(asNum(m["created"]))}, {"updated", fmt.Sprint(asNum(m["updated"]))},
+				{"created", formatNumber(asNum(m["created"]))}, {"updated", formatNumber(asNum(m["updated"]))},
 				{"skipped", strings.Join(skipped, "; ")},
 			})
 		},
 	})
 }
 
-// parseGroupGrants turns "group-a:use,group-b:view" into the
-// []{group_id,access} shape POST/PATCH /api/admin/models takes for
-// group_grants, resolving each left-hand side through resolveGroupRef.
+// parseGroupGrants turns "group-a:use,group-b:view" into the []{group_id,access}
+// rows a model's group_grants takes, resolving each left-hand side through
+// resolveGroupRef.
 func parseGroupGrants(rt *Runtime, raw string) ([]map[string]any, error) {
-	var out []map[string]any
-	for _, entry := range splitCSV(raw) {
-		ref, access, ok := strings.Cut(entry, ":")
-		if !ok {
-			access = "use"
-		}
-		gid, err := resolveGroupRef(rt, strings.TrimSpace(ref))
-		if err != nil {
-			return nil, err
-		}
-		access = strings.TrimSpace(access)
-		if access == "" {
-			access = "use"
-		}
-		out = append(out, map[string]any{"group_id": gid, "access": access})
-	}
-	return out, nil
+	return parseGrantList(rt, raw, "group_id", resolveGroupRef)
 }

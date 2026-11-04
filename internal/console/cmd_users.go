@@ -2,367 +2,12 @@ package console
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
-	"sort"
 	"strconv"
 	"strings"
-	"time"
-
-	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 )
-
-// ---------------------------------------------------------------------
-// Shared helpers, used by every cmd_*.go file in this package. They live
-// here rather than in registry.go because they are command-authoring
-// convenience built on top of the engine, not engine surface — registry.go
-// stays the one file every other agent's Runtime calls compile against.
-// ---------------------------------------------------------------------
-
-// asMap/asSlice/asStr/asBoolVal/asNum read a field out of the generic
-// encoding/json shapes Runtime.Call decodes into (map[string]any, []any,
-// string, bool, float64), returning the zero value instead of panicking
-// when a key is absent or the wrong dynamic type — which is normal here: a
-// show command reads a nested field that a different server version might
-// have renamed or omitted, and a wrong render beats a panic on the console.
-func asMap(v any) map[string]any { m, _ := v.(map[string]any); return m }
-func asSlice(v any) []any        { s, _ := v.([]any); return s }
-func asStr(v any) string         { s, _ := v.(string); return s }
-func asBoolVal(v any) bool       { b, _ := v.(bool); return b }
-func asNum(v any) float64        { n, _ := v.(float64); return n }
-func asInt64Val(v any) int64     { return int64(asNum(v)) }
-
-// formatTime renders an epoch-millisecond timestamp the way every list and
-// show command in this package does: UTC, minute precision, "-" for zero —
-// every *_at field in the admin API uses 0 to mean "never" or "permanent".
-func formatTime(ms int64) string {
-	if ms <= 0 {
-		return "-"
-	}
-	return time.UnixMilli(ms).UTC().Format("2006-01-02 15:04")
-}
-
-func formatMS(v any) string { return formatTime(asInt64Val(v)) }
-
-// limitStr renders a nullable quota limit (quota.Summary's limit_requests /
-// limit_tokens / limit_credits): null means "not set at any level", which
-// is a real, distinct answer from zero and must not print as "0".
-func limitStr(v any) string {
-	if v == nil {
-		return "-"
-	}
-	return fmt.Sprint(asNum(v))
-}
-
-func yesNo(b bool) string {
-	if b {
-		return "yes"
-	}
-	return "no"
-}
-
-// splitCSV turns "a, b ,c" into ["a","b","c"], dropping empty entries —
-// used by every flag that accepts a comma list (--permissions, --models,
-// --grants).
-func splitCSV(s string) []string {
-	if strings.TrimSpace(s) == "" {
-		return nil
-	}
-	parts := strings.Split(s, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		if p = strings.TrimSpace(p); p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
-}
-
-func formatWindows(raw any) string {
-	slice := asSlice(raw)
-	if len(slice) == 0 {
-		return "full"
-	}
-	parts := make([]string, 0, len(slice))
-	for _, item := range slice {
-		if s := asStr(item); s != "" {
-			parts = append(parts, s)
-		}
-	}
-	if len(parts) == 0 {
-		return "full"
-	}
-	return strings.Join(parts, ",")
-}
-
-// bodyBuilder collects PATCH/POST fields, setting a key only when its flag
-// was actually given on the line. Every write route in API.md treats an
-// absent field as "leave alone" (a pointer on the server side) — guessing a
-// zero value here would turn "I didn't mention nickname" into "clear the
-// nickname", which is the opposite of every edit command's contract.
-type bodyBuilder map[string]any
-
-func (b bodyBuilder) str(rt *Runtime, flag, key string) {
-	if rt.Present(flag) {
-		b[key] = rt.String(flag)
-	}
-}
-
-// fields reads --field key=value,key=value into the body's "fields" object:
-// the plugin account fields, whose keys this package does not know.
-func (b bodyBuilder) fields(rt *Runtime) error {
-	if !rt.Present("field") {
-		return nil
-	}
-	values := map[string]string{}
-	for _, pair := range splitCSV(rt.String("field")) {
-		key, value, ok := strings.Cut(pair, "=")
-		if !ok || strings.TrimSpace(key) == "" {
-			return rt.Errorf("--field takes key=value, got %q", pair)
-		}
-		values[strings.TrimSpace(key)] = strings.TrimSpace(value)
-	}
-	b["fields"] = values
-	return nil
-}
-
-// fieldRows is an account's plugin fields as show-command rows, sorted.
-func fieldRows(u map[string]any) [][2]string {
-	values := asMap(u["fields"])
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	rows := make([][2]string, 0, len(keys))
-	for _, key := range keys {
-		rows = append(rows, [2]string{key, asStr(values[key])})
-	}
-	return rows
-}
-
-func (b bodyBuilder) intv(rt *Runtime, flag, key string) {
-	if rt.Present(flag) {
-		b[key] = rt.Int(flag)
-	}
-}
-
-func (b bodyBuilder) int64v(rt *Runtime, flag, key string) {
-	if rt.Present(flag) {
-		n, _ := strconv.ParseInt(rt.String(flag), 10, 64)
-		b[key] = n
-	}
-}
-
-func (b bodyBuilder) floatv(rt *Runtime, flag, key string) {
-	if rt.Present(flag) {
-		f, _ := strconv.ParseFloat(rt.String(flag), 64)
-		b[key] = f
-	}
-}
-
-func (b bodyBuilder) boolv(rt *Runtime, flag, key string) {
-	if rt.Present(flag) {
-		b[key] = rt.Bool(flag)
-	}
-}
-
-// resolveByFields is what every "accept a name where the UI would accept an
-// id" convenience in this package boils down to, once the right list has
-// been fetched: match one or more fields case-insensitively, exact matches
-// before substring matches, and refuse to guess between two matches at the
-// same tier — an admin fat-fingering "user delete alice" must never delete
-// "alice2" because it happened to be the only substring match left after
-// "alice" the exact match was also found (exact always wins outright, so
-// this only turns ambiguous when two rows tie at the same tier).
-func resolveByFields(lang, kindEN, kindZH, ref string, items []any, labelField string, fields ...string) (string, error) {
-	lower := strings.ToLower(strings.TrimSpace(ref))
-	var exact, partial []map[string]any
-	for _, raw := range items {
-		m := asMap(raw)
-		isExact, isPartial := false, false
-		for _, f := range fields {
-			v := strings.ToLower(asStr(m[f]))
-			if v == "" {
-				continue
-			}
-			if v == lower {
-				isExact = true
-			} else if strings.Contains(v, lower) {
-				isPartial = true
-			}
-		}
-		if isExact {
-			exact = append(exact, m)
-		} else if isPartial {
-			partial = append(partial, m)
-		}
-	}
-	for _, bucket := range [][]map[string]any{exact, partial} {
-		switch len(bucket) {
-		case 0:
-			continue
-		case 1:
-			return asStr(bucket[0]["id"]), nil
-		default:
-			names := make([]string, len(bucket))
-			for i, m := range bucket {
-				names[i] = asStr(m[labelField])
-			}
-			if lang == "zh" {
-				return "", fmt.Errorf("%s %q 有歧义，匹配到：%s（请改用 id）", kindZH, ref, strings.Join(names, "、"))
-			}
-			return "", fmt.Errorf("%s %q is ambiguous: matches %s (use the id instead)", kindEN, ref, strings.Join(names, ", "))
-		}
-	}
-	if lang == "zh" {
-		return "", fmt.Errorf("没有匹配%s %q 的记录", kindZH, ref)
-	}
-	return "", fmt.Errorf("no %s matches %q", kindEN, ref)
-}
-
-// resolveUserRef resolves ref to a user id via GET /api/admin/users, which
-// every command in this file already holds the "users" grant to call. A
-// value that already looks like an id is trusted as-is and not looked up —
-// a wrong id then surfaces as the endpoint's own 404, which is the correct
-// answer for "that account is gone", not "no account is named that".
-func resolveUserRef(rt *Runtime, ref string) (string, error) {
-	if id.Valid(ref) {
-		return ref, nil
-	}
-	q := url.Values{"q": {ref}, "limit": {"25"}}
-	data, _, err := rt.Call(http.MethodGet, "/api/admin/users?"+q.Encode(), nil)
-	if err != nil {
-		return "", err
-	}
-	return resolveByFields(rt.Session.Lang, "user", "用户", ref, asSlice(asMap(data)["users"]), "username", "username")
-}
-
-// resolveMemberRef is resolveUserRef's counterpart for group-domain
-// commands (cmd_groups.go): it resolves a username through
-// GET /api/admin/member-options instead of /api/admin/users, so "group
-// assign alice" only ever needs the "groups" grant the command already
-// requires, never an extra "users" grant just to type a name instead of an
-// id.
-func resolveMemberRef(rt *Runtime, ref string) (string, error) {
-	if id.Valid(ref) {
-		return ref, nil
-	}
-	q := url.Values{"q": {ref}, "limit": {"25"}}
-	data, _, err := rt.Call(http.MethodGet, "/api/admin/member-options?"+q.Encode(), nil)
-	if err != nil {
-		return "", err
-	}
-	return resolveByFields(rt.Session.Lang, "user", "用户", ref, asSlice(asMap(data)["users"]), "username", "username")
-}
-
-// resolveGroupRef resolves ref to a group id. It reads the selector list
-// GET /api/admin/references exposes for exactly this purpose (§2.56 of
-// API.md): that list is gated on "users,models,usage,security,settings,
-// groups" — any one of those — so a command outside the groups domain
-// (user edit --group, model create --groups, quota set --scope group) can
-// resolve a group name without needing the "groups" grant itself, as long
-// as it holds whatever grant it does hold in that gate list, which every
-// caller in this package does. A groups-domain command still works even if
-// the gate were ever narrowed, because an empty answer here falls back to
-// GET /api/admin/groups, which "groups" itself always passes.
-func resolveGroupRef(rt *Runtime, ref string) (string, error) {
-	if id.Valid(ref) {
-		return ref, nil
-	}
-	data, _, err := rt.Call(http.MethodGet, "/api/admin/references", nil)
-	if err != nil {
-		return "", err
-	}
-	groups := asSlice(asMap(data)["groups"])
-	if len(groups) == 0 {
-		data2, _, err2 := rt.Call(http.MethodGet, "/api/admin/groups", nil)
-		if err2 != nil {
-			return "", err2
-		}
-		groups = asSlice(asMap(data2)["groups"])
-	}
-	return resolveByFields(rt.Session.Lang, "group", "分组", ref, groups, "name", "name")
-}
-
-// resolveProviderRef mirrors resolveGroupRef for providers, using the
-// references list gated on CanAdmin("models") — which is why a "model
-// create --provider" only needs the "models" grant, never "providers".
-func resolveProviderRef(rt *Runtime, ref string) (string, error) {
-	if id.Valid(ref) {
-		return ref, nil
-	}
-	data, _, err := rt.Call(http.MethodGet, "/api/admin/references", nil)
-	if err != nil {
-		return "", err
-	}
-	providers := asSlice(asMap(data)["providers"])
-	if len(providers) == 0 {
-		data2, _, err2 := rt.Call(http.MethodGet, "/api/admin/providers", nil)
-		if err2 != nil {
-			return "", err2
-		}
-		providers = asSlice(asMap(data2)["providers"])
-	}
-	return resolveByFields(rt.Session.Lang, "provider", "服务商", ref, providers, "name", "name")
-}
-
-// resolveModelRef mirrors resolveGroupRef for models, matching against
-// either the display name or the upstream model id, using the references
-// list gated on "groups,settings,security" — which is why a "group edit
-// --models" only needs the "groups" grant.
-func resolveModelRef(rt *Runtime, ref string) (string, error) {
-	if id.Valid(ref) {
-		return ref, nil
-	}
-	data, _, err := rt.Call(http.MethodGet, "/api/admin/references", nil)
-	if err != nil {
-		return "", err
-	}
-	models := asSlice(asMap(data)["models"])
-	if got, mErr := resolveByFields(rt.Session.Lang, "model", "模型", ref, models, "display_name", "display_name", "model_id"); mErr == nil {
-		return got, nil
-	}
-	data2, _, err2 := rt.Call(http.MethodGet, "/api/admin/models", nil)
-	if err2 != nil {
-		return "", err2
-	}
-	return resolveByFields(rt.Session.Lang, "model", "模型", ref, asSlice(asMap(data2)["models"]), "display_name", "display_name", "model_id")
-}
-
-// generatePassword produces a random password for `user passwd --generate`.
-// id.Secret already exists for exactly this — cryptographically random
-// bytes, base64url-encoded — so a temporary credential is not a second
-// place in the codebase that has an opinion about how to read crypto/rand.
-func generatePassword() string { return id.Secret(18) }
-
-// parseJSONBody validates raw as JSON and wraps it as a json.RawMessage so
-// Runtime.Call's own json.Marshal writes it through byte for byte, instead
-// of decoding and re-encoding a document a console command (model import,
-// setting import) has no reason to understand the shape of — the server is
-// the one thing here that actually validates it field by field.
-func parseJSONBody(rt *Runtime, raw string) (json.RawMessage, error) {
-	raw = strings.TrimSpace(raw)
-	if !json.Valid([]byte(raw)) {
-		if rt.Session.Lang == "zh" {
-			return nil, fmt.Errorf("不是合法的 JSON")
-		}
-		return nil, fmt.Errorf("not valid JSON")
-	}
-	return json.RawMessage(raw), nil
-}
-
-func requireRef(rt *Runtime, what string) (string, error) {
-	if rt.NArg() == 0 {
-		if rt.Session.Lang == "zh" {
-			return "", fmt.Errorf("需要一个%s", what)
-		}
-		return "", fmt.Errorf("a %s is required", what)
-	}
-	return rt.Arg(0), nil
-}
 
 // ---------------------------------------------------------------------
 // user list | show | edit | delete | passwd | keys | key-revoke | chats |
@@ -485,27 +130,32 @@ func init() {
 				return err
 			}
 
-			if !jsonMode {
-				cards := asMap(m["cards"])
-				fmt.Fprintf(rt.Out, "\ncards: %v available, %v used, %v expired, %v total\n",
-					asNum(cards["available"]), asNum(cards["used"]), asNum(cards["expired"]), asNum(cards["total"]))
-
-				usage := asMap(m["usage"])
-				var qrows [][]string
-				for _, raw := range asSlice(usage["windows"]) {
-					w := asMap(raw)
-					qrows = append(qrows, []string{
-						asStr(w["kind"]), yesNo(asBoolVal(w["enforced"])),
-						fmt.Sprint(asNum(w["used_requests"])), limitStr(w["limit_requests"]),
-						fmt.Sprint(asNum(w["used_tokens"])), limitStr(w["limit_tokens"]),
-						fmt.Sprintf("%.2f", asNum(w["used_credits"])), limitStr(w["limit_credits"]),
-					})
-				}
-				fmt.Fprintln(rt.Out, "\nquota:")
-				RenderTable(rt.Out, rt.Session.Width, rt.Session.Colour,
-					[]string{"window", "enforced", "req used", "req limit", "tok used", "tok limit", "cr used", "cr limit"}, qrows)
-				fmt.Fprintln(rt.Out, "\nkeys:")
+			// Under --json the account document is the whole answer. The keys
+			// are a second request, and its body would replace the first in
+			// rt.rawJSON and be printed after it: two documents, which no
+			// single-document parser accepts. `user keys` prints them as JSON.
+			if jsonMode {
+				return nil
 			}
+			cards := asMap(m["cards"])
+			fmt.Fprintf(rt.Out, "\ncards: %s available, %s used, %s expired, %s total\n",
+				formatNumber(asNum(cards["available"])), formatNumber(asNum(cards["used"])), formatNumber(asNum(cards["expired"])), formatNumber(asNum(cards["total"])))
+
+			usage := asMap(m["usage"])
+			var qrows [][]string
+			for _, raw := range asSlice(usage["windows"]) {
+				w := asMap(raw)
+				qrows = append(qrows, []string{
+					asStr(w["kind"]), yesNo(asBoolVal(w["enforced"])),
+					formatNumber(asNum(w["used_requests"])), limitStr(w["limit_requests"]),
+					formatNumber(asNum(w["used_tokens"])), limitStr(w["limit_tokens"]),
+					fmt.Sprintf("%.2f", asNum(w["used_credits"])), limitStr(w["limit_credits"]),
+				})
+			}
+			fmt.Fprintln(rt.Out, "\nquota:")
+			RenderTable(rt.Out, rt.Session.Width, rt.Session.Colour,
+				[]string{"window", "enforced", "req used", "req limit", "tok used", "tok limit", "cr used", "cr limit"}, qrows)
+			fmt.Fprintln(rt.Out, "\nkeys:")
 
 			keysData, _, err := rt.Call(http.MethodGet, "/api/admin/users/"+url.PathEscape(uid)+"/keys", nil)
 			if err != nil {
@@ -530,9 +180,10 @@ func init() {
 		Usage:   "user edit <id|username> [flags]",
 		Help: Text{
 			EN: "Only the flags you give are changed — an absent flag leaves that field alone. " +
-				"--group '' clears group membership. --permissions replaces the whole grant list.",
+				"--group '' clears group membership. --permissions replaces the whole grant list. " +
+				"--reason is what a banned account sees at sign-in, so it goes with --status disabled.",
 			ZH: "只会修改你给出的选项，未给出的字段保持不变。--group '' 会清除分组成员身份。" +
-				"--permissions 会整体替换权限列表。",
+				"--permissions 会整体替换权限列表。--reason 是被封禁的账户登录时看到的理由，需与 --status disabled 一起使用。",
 		},
 		Args: []Arg{
 			{Name: "id|username", Hint: Text{EN: "account id or username", ZH: "账户 id 或用户名"}, Required: true},
@@ -548,11 +199,13 @@ func init() {
 			{Name: "--group", Hint: Text{EN: "group name or id, or '' to clear", ZH: "分组名称或 id，'' 表示清除"}, Value: "REF"},
 			{Name: "--group-expires-at", Hint: Text{EN: "membership expiry, epoch ms, 0 = permanent", ZH: "成员到期时间（毫秒时间戳），0 表示永久"}, Value: "MS"},
 			{Name: "--status", Hint: Text{EN: "active or disabled", ZH: "active 或 disabled"}, Value: "STATUS"},
+			{Name: "--reason", Hint: Text{EN: "why the account is banned, shown at sign-in, ≤500 chars; needs --status disabled", ZH: "封禁理由，登录时显示，≤500 字符；需要同时给出 --status disabled"}, Value: "TEXT"},
 			{Name: "--api-restricted", Hint: Text{EN: "turn the per-account API brake on/off", ZH: "开启或关闭该账户的 API 限制"}, Value: "BOOL"},
 			{Name: "--api-restriction-hours", Hint: Text{EN: "0-8760, 0 = no automatic expiry", ZH: "0-8760，0 表示不自动到期"}, Value: "N"},
 		},
 		Examples: []string{
 			"user edit alice --status disabled",
+			"user edit alice --status disabled --reason 'spamming the group chat'",
 			"user edit alice --role admin --permissions users,groups",
 		},
 		Permission: "users",
@@ -577,7 +230,14 @@ func init() {
 			}
 			body.str(rt, "role", "role")
 			if rt.Present("permissions") {
-				body["admin_permissions"] = splitCSV(rt.String("permissions"))
+				// An empty value clears the grants, so it must reach the server as an
+				// empty list. Null is read there as "not given", and the command would
+				// report success with the grants left as they were.
+				permissions := splitCSV(rt.String("permissions"))
+				if permissions == nil {
+					permissions = []string{}
+				}
+				body["admin_permissions"] = permissions
 			}
 			if rt.Present("group") {
 				if v := rt.String("group"); v == "" {
@@ -590,14 +250,20 @@ func init() {
 			}
 			body.int64v(rt, "group-expires-at", "group_expires_at")
 			body.str(rt, "status", "status")
+			// Refused rather than sent alone: on an account left active the server
+			// drops a reason without a word, and an operator would never learn it
+			// had been thrown away.
+			if rt.Present("reason") {
+				if rt.String("status") != "disabled" {
+					return rt.Fail(Text{EN: "--reason needs --status disabled: a reason explains a ban", ZH: "--reason 需要与 --status disabled 一起使用：理由只用于封禁"})
+				}
+				body.str(rt, "reason", "ban_reason")
+			}
 			body.boolv(rt, "api-restricted", "api_restricted")
 			body.intv(rt, "api-restriction-hours", "api_restriction_hours")
 
 			if len(body) == 0 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("没有需要修改的内容：请至少给出一个选项")
-				}
-				return rt.Errorf("nothing to change: give at least one flag")
+				return rt.Fail(Text{EN: "nothing to change: give at least one flag", ZH: "没有需要修改的内容：请至少给出一个选项"})
 			}
 
 			data, _, err := rt.Call(http.MethodPatch, "/api/admin/users/"+url.PathEscape(uid), map[string]any(body))
@@ -644,12 +310,10 @@ func init() {
 			if _, _, err := rt.Call(http.MethodDelete, "/api/admin/users/"+url.PathEscape(uid), nil); err != nil {
 				return err
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已删除。\n")
-			} else {
-				rt.Printf("deleted.\n")
+			if rt.effectiveJSON() {
+				return rt.Fields(nil)
 			}
-			return nil
+			return rt.confirm(Text{EN: "deleted.", ZH: "已删除。"})
 		},
 	})
 
@@ -676,7 +340,18 @@ func init() {
 		Permission:  "users",
 		Destructive: true,
 		Endpoints:   []string{"POST /api/admin/users/{id}/password"},
+		// The account reference is what the record is for. A password typed
+		// where --password was meant lands after it, and the refused attempt is
+		// recorded too, so the tail is masked here rather than declared as a
+		// second Arg, which would stop refuseLooseValues from refusing it.
+		SecretArgs: secretFrom(1),
 		Run: func(_ context.Context, rt *Runtime) error {
+			// Checked before the account is looked up. With --generate taking
+			// precedence, a typed password would be dropped without a word and the
+			// operator told the one that was generated.
+			if rt.Bool("generate") && rt.Present("password") {
+				return rt.Fail(Text{EN: "use --password or --generate, not both", ZH: "请只用 --password 或 --generate 之一"})
+			}
 			ref, err := requireRef(rt, "account id or username")
 			if err != nil {
 				return err
@@ -686,36 +361,33 @@ func init() {
 				return err
 			}
 
-			generated := rt.Present("generate")
+			// Bool, not Present: "--generate false" is given, and must not replace the password.
+			generated := rt.Bool("generate")
 			password := rt.String("password")
 			switch {
 			case generated:
 				password = generatePassword()
 			case password == "":
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("请给出 --password 或 --generate 之一")
-				}
-				return rt.Errorf("give exactly one of --password or --generate")
+				return rt.Fail(Text{EN: "give exactly one of --password or --generate", ZH: "请给出 --password 或 --generate 之一"})
 			}
 
 			if _, _, err := rt.Call(http.MethodPost, "/api/admin/users/"+url.PathEscape(uid)+"/password",
 				map[string]any{"new_password": password}); err != nil {
 				return err
 			}
+			// The POST answers without the generated password, so under --json the
+			// record is built here; Fields would print that answer and drop it.
 			if generated {
-				if rt.Session.Lang == "zh" {
-					rt.Printf("已生成新密码，请立即转告用户（之后不会再显示）：%s\n", password)
-				} else {
-					rt.Printf("generated a new password — hand it to the user now, it will not be shown again: %s\n", password)
+				if rt.effectiveJSON() {
+					return rt.FieldsOf(map[string]any{"password": password}, [][2]string{{"password", password}})
 				}
+				rt.Say(Text{EN: fmt.Sprintf("generated a new password — hand it to the user now, it will not be shown again: %s\n", password), ZH: fmt.Sprintf("已生成新密码，请立即转告用户（之后不会再显示）：%s\n", password)})
 				return nil
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("密码已更新。\n")
-			} else {
-				rt.Printf("password updated.\n")
+			if rt.effectiveJSON() {
+				return rt.Fields(nil)
 			}
-			return nil
+			return rt.confirm(Text{EN: "password updated.", ZH: "密码已更新。"})
 		},
 	})
 
@@ -770,10 +442,7 @@ func init() {
 		Endpoints:   []string{"DELETE /api/admin/users/{id}/keys/{key}"},
 		Run: func(_ context.Context, rt *Runtime) error {
 			if rt.NArg() < 2 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("需要账户和密钥 id")
-				}
-				return rt.Errorf("an account and a key id are required")
+				return rt.Fail(Text{EN: "an account and a key id are required", ZH: "需要账户和密钥 id"})
 			}
 			uid, err := resolveUserRef(rt, rt.Arg(0))
 			if err != nil {
@@ -782,12 +451,10 @@ func init() {
 			if _, _, err := rt.Call(http.MethodDelete, "/api/admin/users/"+url.PathEscape(uid)+"/keys/"+url.PathEscape(rt.Arg(1)), nil); err != nil {
 				return err
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已吊销。\n")
-			} else {
-				rt.Printf("revoked.\n")
+			if rt.effectiveJSON() {
+				return rt.Fields(nil)
 			}
-			return nil
+			return rt.confirm(Text{EN: "revoked.", ZH: "已吊销。"})
 		},
 	})
 
@@ -832,7 +499,7 @@ func init() {
 				c := asMap(raw)
 				rows = append(rows, []string{
 					asStr(c["id"]), asStr(c["title"]), asStr(c["model_id"]),
-					yesNo(asBoolVal(c["pinned"])), fmt.Sprint(asNum(c["message_count"])), formatMS(c["created_at"]),
+					yesNo(asBoolVal(c["pinned"])), formatNumber(asNum(c["message_count"])), formatMS(c["created_at"]),
 				})
 			}
 			return rt.Table([]string{"id", "title", "model_id", "pinned", "messages", "created"}, rows)
@@ -854,10 +521,7 @@ func init() {
 		Endpoints:  []string{"GET /api/admin/users/{id}/conversations/{conversation}"},
 		Run: func(_ context.Context, rt *Runtime) error {
 			if rt.NArg() < 2 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("需要账户和对话 id")
-				}
-				return rt.Errorf("an account and a conversation id are required")
+				return rt.Fail(Text{EN: "an account and a conversation id are required", ZH: "需要账户和对话 id"})
 			}
 			uid, err := resolveUserRef(rt, rt.Arg(0))
 			if err != nil {
@@ -879,7 +543,7 @@ func init() {
 			}
 			fields = append(fields, [][2]string{
 				{"pinned", yesNo(asBoolVal(c["pinned"]))}, {"archived", yesNo(asBoolVal(c["archived"]))},
-				{"messages", fmt.Sprint(asNum(c["message_count"]))},
+				{"messages", formatNumber(asNum(c["message_count"]))},
 				{"created_at", formatMS(c["created_at"])}, {"updated_at", formatMS(c["updated_at"])},
 			}...)
 			if err := rt.Fields(fields); err != nil {
@@ -894,9 +558,9 @@ func init() {
 				msg := asMap(raw)
 				stats := asMap(msg["stats"])
 				rows = append(rows, []string{
-					fmt.Sprint(asNum(msg["seq"])), asStr(msg["role"]), asStr(msg["model_name"]),
+					formatNumber(asNum(msg["seq"])), asStr(msg["role"]), asStr(msg["model_name"]),
 					truncateForTable(asStr(msg["content"]), 60),
-					fmt.Sprint(asNum(stats["input_tokens"])), fmt.Sprint(asNum(stats["output_tokens"])),
+					formatNumber(asNum(stats["input_tokens"])), formatNumber(asNum(stats["output_tokens"])),
 					formatMS(msg["created_at"]),
 				})
 			}
@@ -931,6 +595,7 @@ func init() {
 			{Name: "--permissions", Hint: Text{EN: "comma-separated grant list, admins only", ZH: "逗号分隔的权限列表，仅对管理员有效"}, Value: "LIST"},
 			{Name: "--group", Hint: Text{EN: "group name or id", ZH: "分组名称或 id"}, Value: "REF"},
 			{Name: "--status", Hint: Text{EN: "active or disabled; default active", ZH: "active 或 disabled，默认 active"}, Value: "STATUS", Default: "active"},
+			{Name: "--reason", Hint: Text{EN: "why the account is banned, shown at sign-in, ≤500 chars; needs --status disabled", ZH: "封禁理由，登录时显示，≤500 字符；需要同时给出 --status disabled"}, Value: "TEXT"},
 		},
 		Examples: []string{
 			"user create station-bot --password '…' --role admin --permissions users",
@@ -939,6 +604,12 @@ func init() {
 		Permission: "users",
 		Endpoints:  []string{"POST /api/admin/users"},
 		Run: func(_ context.Context, rt *Runtime) error {
+			// The command declares one positional. A second bare word would
+			// otherwise be dropped, and "user create alice hunter22" would make a
+			// passwordless account while the operator believed it had a password.
+			if rt.NArg() > 1 {
+				return rt.Fail(Text{EN: "user create takes one name; give a password with --password", ZH: "user create 只接受一个用户名；密码请用 --password 给出"})
+			}
 			name, err := requireRef(rt, "the new account's name")
 			if err != nil {
 				return err
@@ -952,11 +623,20 @@ func init() {
 			body.str(rt, "nickname", "nickname")
 			body.str(rt, "role", "role")
 			body.str(rt, "status", "status")
+			if rt.Present("reason") {
+				if rt.String("status") != "disabled" {
+					return rt.Fail(Text{EN: "--reason needs --status disabled: a reason explains a ban", ZH: "--reason 需要与 --status disabled 一起使用：理由只用于封禁"})
+				}
+				body.str(rt, "reason", "ban_reason")
+			}
 			if rt.Present("permissions") {
 				body["admin_permissions"] = splitCSV(rt.String("permissions"))
 			}
-			if rt.Present("group") {
-				gid, err := resolveGroupRef(rt, rt.String("group"))
+			// A blank --group means no group, as leaving the flag off does. Resolving
+			// "" would match every group that has a name, and with one group on the
+			// instance the new account would be put in it.
+			if v := rt.String("group"); v != "" {
+				gid, err := resolveGroupRef(rt, v)
 				if err != nil {
 					return err
 				}
@@ -1067,21 +747,56 @@ func init() {
 			// date to move cards to, and an omitted flag would otherwise
 			// reach the server as a zero it reads as "in 1970".
 			if !rt.Present("expires-at") {
-				if rt.Session.Lang == "zh" {
-					return fmt.Errorf("需要 --expires-at：改期没有默认日期")
-				}
-				return fmt.Errorf("--expires-at is required: there is no default date to move cards to")
+				return rt.Fail(Text{EN: "--expires-at is required: there is no default date to move cards to", ZH: "需要 --expires-at：改期没有默认日期"})
 			}
 			body := bodyBuilder{}
 			body.int64v(rt, "expires-at", "expires_at")
 			if rt.Present("ids") {
-				body["card_ids"] = splitCSV(rt.String("ids"))
+				ids := splitCSV(rt.String("ids"))
+				// Refused rather than sent: an empty list reaches the server as null,
+				// which means every unused card, not no cards.
+				if len(ids) == 0 {
+					return rt.Fail(Text{EN: "--ids needs at least one card id: an empty list would move every unused card", ZH: "--ids 需要至少一个卡 id：空列表会改期全部未使用的卡"})
+				}
+				body["card_ids"] = ids
 			}
 			data, _, err := rt.Call(http.MethodPatch, "/api/admin/users/"+url.PathEscape(uid)+"/cards", map[string]any(body))
 			if err != nil {
 				return err
 			}
 			return rt.Table([]string{"moved"}, [][]string{{asStr(asMap(data)["moved"])}})
+		},
+	})
+
+	registerCommand(Command{
+		Name:       "user cards held",
+		Group:      "accounts",
+		Summary:    Text{EN: "List the cards an account holds", ZH: "列出账户手上的重置卡"},
+		Usage:      "user cards held <id|username>",
+		Args:       []Arg{{Name: "id|username", Hint: Text{EN: "account id or username", ZH: "账户 id 或用户名"}, Required: true}},
+		Examples:   []string{"user cards held alice", "user cards held 01ARZ3NDEKTSV4RRFFQ69G5FAV"},
+		Permission: "users",
+		Endpoints:  []string{"GET /api/admin/users/{id}/cards"},
+		Run: func(_ context.Context, rt *Runtime) error {
+			ref, err := requireRef(rt, "account id or username")
+			if err != nil {
+				return err
+			}
+			uid, err := resolveUserRef(rt, ref)
+			if err != nil {
+				return err
+			}
+			data, _, err := rt.Call(http.MethodGet, "/api/admin/users/"+url.PathEscape(uid)+"/cards", nil)
+			if err != nil {
+				return err
+			}
+			held := asMap(asMap(data)["cards"])
+			var rows [][]string
+			for _, raw := range asSlice(held["cards"]) {
+				c := asMap(raw)
+				rows = append(rows, []string{asStr(c["id"]), asStr(c["name"]), formatWindows(c["windows"]), asStr(c["source"]), formatMS(c["expires_at"]), formatMS(c["created_at"])})
+			}
+			return rt.Table([]string{"id", "name", "windows", "source", "expires", "created"}, rows)
 		},
 	})
 
@@ -1100,11 +815,14 @@ func init() {
 			{Name: "card-id", Hint: Text{EN: "the card to delete", ZH: "要删掉的卡 id"}, Required: true},
 		},
 		Examples: []string{
-			"user cards drop alice 01ARZ3NDEKTSV4RRFFQ69G5FAV",
-			"user cards drop 01M1VG5FEB5GSSPAYG0PGRWN6F 01ARZ3NDEKTSV4RRFFQ69G5FAV",
+			"user cards drop alice 01ARZ3NDEKTSV4RRFFQ69G5FAV --yes",
+			"user cards drop 01M1VG5FEB5GSSPAYG0PGRWN6F 01ARZ3NDEKTSV4RRFFQ69G5FAV --yes",
 		},
-		Permission: "users",
-		Endpoints:  []string{"DELETE /api/admin/users/{id}/cards/{card}"},
+		// Deletion is permanent and the account is not told, so it asks for
+		// --yes like every other delete in this file.
+		Destructive: true,
+		Permission:  "users",
+		Endpoints:   []string{"DELETE /api/admin/users/{id}/cards/{card}"},
 		Run: func(_ context.Context, rt *Runtime) error {
 			ref, err := requireRef(rt, "account id or username")
 			if err != nil {
@@ -1116,26 +834,14 @@ func init() {
 			}
 			cardID := rt.Arg(1)
 			if cardID == "" {
-				if rt.Session.Lang == "zh" {
-					return fmt.Errorf("需要一个卡 id")
-				}
-				return fmt.Errorf("a card id is required")
+				return rt.Fail(Text{EN: "a card id is required", ZH: "需要一个卡 id"})
 			}
 			_, _, err = rt.Call(http.MethodDelete,
 				"/api/admin/users/"+url.PathEscape(uid)+"/cards/"+url.PathEscape(cardID), nil)
-			return err
+			if err != nil {
+				return err
+			}
+			return rt.confirm(Text{EN: "deleted.", ZH: "已删除。"})
 		},
 	})
-}
-
-// truncateForTable clips display text by rune before it ever reaches
-// RenderTable — used for message content, which can be arbitrarily long
-// and would otherwise force every other column in the row down to the
-// floor width just to make room for it.
-func truncateForTable(s string, n int) string {
-	r := []rune(strings.ReplaceAll(s, "\n", " "))
-	if len(r) <= n {
-		return string(r)
-	}
-	return string(r[:n-1]) + "…"
 }

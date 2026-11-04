@@ -7,16 +7,26 @@
 
 import { computed, onMounted, ref } from 'vue';
 import { adminApi, type AdminModel, type HeldAttachments } from '@/admin/api';
+import { imageProblem, imageType, LOGO_TYPES, MAX_LOGO_BYTES, pickImage, readAsBase64 } from '@/admin/upload';
 import { pickJSONFile, saveAsFile } from '@/api/backup';
 import { ApiError } from '@/api/client';
+import type { SiteInfo } from '@/api/auth';
 import OaConfirmButton from '@/components/OaConfirmButton.vue';
 import OaIconButton from '@/components/OaIconButton.vue';
 import OaOverlay from '@/components/OaOverlay.vue';
 import AdminControlCard from './AdminControlCard.vue';
 import AdminWorkbench from './AdminWorkbench.vue';
 import type { WorkbenchGroup } from './workbench';
-import { useSettingsDraft } from './settingsDraft';
-import { IconHome, IconSpark, IconFile, IconKey, IconInfo, IconBell, IconMessage, IconSliders, IconTrash, IconImage, IconSun, IconMoon, IconClose } from '@/icons';
+import { SETTING_MAX_BYTES, overlongSetting, useSettingsDraft } from './settingsDraft';
+import { IconHome, IconSpark, IconFile, IconKey, IconInfo, IconBell, IconMessage, IconSliders, IconTrash, IconImage, IconClose } from '@/icons';
+import OaRangeField from '@/components/OaRangeField.vue';
+import BackgroundStage from './BackgroundStage.vue';
+import OaRow from '@/components/OaRow.vue';
+import { Palette } from 'lucide-vue-next';
+import { ACCENT_NAMES, ACCENTS, DEFAULT_ACCENT, accentPalette, normalizeHex, type AccentName } from '@/theme/color-utils';
+import { ACCENT_LABELS, BACKGROUND_TINTS } from '@/theme/accent-labels';
+import { useTheme } from '@/composables/useTheme';
+import type { SiteBackground } from '@/theme/theme';
 import OaNumberField from '@/components/OaNumberField.vue';
 import OaSelectField from '@/components/OaSelectField.vue';
 import OaSwitchField from '@/components/OaSwitchField.vue';
@@ -26,28 +36,36 @@ import { t, type StringKey } from '@/composables/useI18n';
 import { formatBytes } from '@/lib/format';
 import AdminFailure from './AdminFailure.vue';
 import { useAdminView } from './adminView';
-import { site } from '@/stores/session';
+import { refreshSite, site } from '@/stores/session';
+import { failureText } from './shared';
+import { FEEDBACK_FLASH_MS } from '@/lib/flash';
 
 const view = useAdminView();
-view.setTitle(t('adminSettingsTitle'), t('controlSettingsSubtitle'));
+view.setTitle(() => t('adminSettingsTitle'), () => t('controlSettingsSubtitle'));
 
 const SEARCH_GROUPS = {
   secIdentity: [
     'secIdentity', 'siteName', 'siteNameHint', 'signInNote', 'signInNoteHint', 'browserTitle', 'browserTitleHint',
-    'siteLogo', 'siteLogoHint',
+    'siteLogo', 'siteLogoHint', 'showSignupUserAgent', 'showSignupUserAgentHint', 'avatarProvider', 'avatarProviderHint',
   ],
   secLoginBg: [
     'secLoginBg', 'loginBgHint', 'authCardPosition', 'authCardPositionHint', 'authCardPositionCenter',
-    'authCardPositionLeft', 'authCardPositionRight', 'loginBgLandscape', 'loginBgPortrait',
+    'authCardPositionLeft', 'authCardPositionRight', 'authCardPositionLeftPanel', 'authCardPositionRightPanel', 'loginBgLandscape', 'loginBgPortrait',
     'loginBgLandscapeLight', 'loginBgLandscapeDark', 'loginBgPortraitLight', 'loginBgPortraitDark',
-    'loginBgFallbackNote',
+    'loginBgFallbackNote', 'bgHtmlEdit', 'bgHtmlTitle',
   ],
+  secSiteTheme: [
+    'secSiteTheme', 'siteThemeHint', 'siteThemeMode', 'siteThemeAccent', 'siteThemeTint', 'siteThemeEnforce',
+    'siteThemeEnforceHint', 'siteAsciiField', 'siteAsciiFieldHint',
+  ],
+  secAppBg: ['appBgTitle', 'appBgHint', 'dim', 'blur', 'panelTranslucency', 'panelBlur', 'bgHtmlEdit', 'bgHtmlTitle'],
   secPWA: [
     'secPWA', 'controlPWAHint', 'pwaName', 'pwaNameHint', 'pwaShortName', 'pwaShortNameHint', 'pwaDescription',
     'pwaDescriptionHint', 'pwaThemeColor', 'pwaThemeColorHint', 'pwaBackgroundColor', 'pwaBackgroundColorHint',
     'pwaIconUrl', 'pwaIconUrlHint',
   ],
   secAbout: ['controlAbout', 'aboutHeading', 'aboutHeadingHint', 'aboutText', 'aboutTextHint', 'aboutShowSoftwareInfo', 'aboutShowSoftwareInfoHint'],
+  secUpdates: ['controlUpdates', 'controlUpdatesHint', 'updateCheck', 'updateCheckHint'],
   secHomeNotice: [
     'homeNotice', 'homeNoticeHint', 'homeNoticeLine', 'homeNoticeBody', 'homeNoticeBodyHint', 'homeNoticeTone', 'homeNoticeToneHint',
     'homeNoticeToneInfo', 'homeNoticeToneWarning', 'homeNoticeDismissible', 'homeNoticeDismissibleHint',
@@ -60,7 +78,7 @@ const SEARCH_GROUPS = {
   ],
   secChat: [
     'secChat', 'instanceSystemPrompt', 'instanceSystemPromptHint', 'turnsResent', 'turnsResentHint',
-    'agentMaxRounds', 'agentMaxRoundsHint',
+    'chatAllowArchive', 'chatAllowArchiveHint',
   ],
   secLimits: [
     'secLimits', 'adminsIgnoreLimits', 'adminsIgnoreLimitsHint', 'maxConcurrentPerUser', 'maxConcurrentPerUserHint',
@@ -68,7 +86,7 @@ const SEARCH_GROUPS = {
   ],
   secAttachments: [
     'secAttachments', 'attachmentsHint', 'attachmentMaxMB', 'attachmentMaxMBHint', 'attachmentRetain',
-    'attachmentRetainHint',
+    'attachmentRetainHint', 'imageHistory', 'imageHistoryHint',
   ],
   secCleanup: [
     'secCleanup', 'cleanupHint', 'attachmentPurgeDays', 'attachmentPurgeDaysHint', 'attachmentPurgeDaily',
@@ -79,6 +97,11 @@ const SEARCH_GROUPS = {
     'apiKeys', 'apiEnabled', 'apiEnabledHint',
   ],
 } satisfies Record<string, StringKey[]>;
+// The bound on settings.AttachmentPurgeDays (internal/admin/instance.go). Its
+// own figure rather than a shared one: it happens to equal the card and
+// retention limits, and moving one of those must not move this.
+const MAX_PURGE_DAYS = 3650;
+
 const error = ref('');
 const loaded = ref(false);
 const models = ref<Pick<AdminModel, 'id' | 'display_name' | 'model_id' | 'enabled' | 'provider_name'>[]>([]);
@@ -91,34 +114,88 @@ const flashOK = ref(false);
 const saveLabel = ref('');
 const busy = ref(false);
 const purging = ref(false);
-const loginBackgrounds = ref<Record<string, string>>({});
-const uploadingVariant = ref('');
-const dragOverVariant = ref('');
+const backgrounds = ref<Record<string, SiteBackground>>({});
 const siteLogoUrl = ref('');
 const uploadingLogo = ref(false);
 const dragOverLogo = ref(false);
 
-const BG_VARIANTS = [
-  { id: 'landscape_light', label: 'loginBgLandscapeLight', modeIcon: IconSun },
-  { id: 'landscape_dark', label: 'loginBgLandscapeDark', modeIcon: IconMoon },
-  { id: 'portrait_light', label: 'loginBgPortraitLight', modeIcon: IconSun },
-  { id: 'portrait_dark', label: 'loginBgPortraitDark', modeIcon: IconMoon },
+const CARD_POSITIONS = [
+  { value: 'center', label: 'authCardPositionCenter' },
+  { value: 'left', label: 'authCardPositionLeft' },
+  { value: 'right', label: 'authCardPositionRight' },
+  { value: 'left-panel', label: 'authCardPositionLeftPanel' },
+  { value: 'right-panel', label: 'authCardPositionRightPanel' },
 ] as const;
+const THEME_MODES = [
+  { value: 'auto', label: 'themeAuto' },
+  { value: 'light', label: 'themeLight' },
+  { value: 'dark', label: 'themeDark' },
+] as const;
+// The same five tints a reader is offered in their own appearance settings,
+// after "built-in", which follows the control colour.
+const TINTS: Array<{ value: AccentName | ''; label: StringKey }> = [
+  { value: '', label: 'siteThemeDefault' },
+  ...BACKGROUND_TINTS,
+];
+
+const pageTheme = useTheme();
+
+const accentName = computed(() => {
+  const accent = form.value.themeAccent;
+  if (!accent) return t('siteThemeDefault');
+  if (accent === 'custom') return form.value.themeCustomAccent.toUpperCase() || t('customColour');
+  // Own keys only: the stored name is whatever the server accepted, and an
+  // inherited one such as "constructor" would otherwise label the row with a function.
+  const label = Object.hasOwn(ACCENT_LABELS, accent) ? ACCENT_LABELS[accent as AccentName] : undefined;
+  return t(label ?? 'siteThemeDefault');
+});
+
+function pickCustomAccent(value: string): void {
+  const hex = normalizeHex(value, null);
+  if (!hex) return;
+  form.value.themeAccent = 'custom';
+  form.value.themeCustomAccent = hex;
+}
+
+// A tint previews as the field colour it would paint, in the scheme the
+// operator is looking at; built-in is that of the chosen control colour.
+function tintSwatch(tint: AccentName | ''): string {
+  const accent = form.value.themeAccent;
+  const preset = accent || DEFAULT_ACCENT;
+  // Checked as an own key for the reason accentName gives: ?? would pass an
+  // inherited name's Object on, and the palette then fails on it.
+  const base = tint
+    ? ACCENTS[tint]
+    : accent === 'custom' && form.value.themeCustomAccent
+      ? form.value.themeCustomAccent
+      : Object.hasOwn(ACCENTS, preset) ? ACCENTS[preset as AccentName] : ACCENTS[DEFAULT_ACCENT];
+  return accentPalette(base, pageTheme.dark())['--ai-field-bg'] ?? '';
+}
+
+// The values the server seeds (internal/settings Defaults). The form starts from
+// them, and a key that was never saved reads the same here as it does there.
+const PWA_DEFAULT_COLOR = '#18181b';
+const TRIAL_TURNS_DEFAULT = 3;
+const MAX_TURNS_DEFAULT = 40;
+const MAX_CONCURRENT_DEFAULT = 4;
 
 const form = ref({
   siteName: '',
+  showSignupUserAgent: true,
+  avatarProvider: 'none',
   description: '',
   browserTitle: '',
   authCardPosition: 'center',
   pwaName: '',
   pwaShortName: '',
   pwaDescription: '',
-  pwaThemeColor: '#18181b',
-  pwaBackgroundColor: '#18181b',
+  pwaThemeColor: PWA_DEFAULT_COLOR,
+  pwaBackgroundColor: PWA_DEFAULT_COLOR,
   pwaIconUrl: '',
   aboutHeading: '',
   aboutText: '',
   aboutShowSoftwareInfo: true,
+  updateCheck: true,
   homeNotice: '',
   homeNoticeBody: '',
   homeNoticeTone: 'info',
@@ -127,23 +204,61 @@ const form = ref({
   landingMode: 'login',
   landingIntro: '',
   trialEnabled: false,
-  trialTurns: 3 as number | null,
+  trialTurns: TRIAL_TURNS_DEFAULT as number | null,
   trialModel: '',
   systemPrompt: '',
-  maxTurns: 40 as number | null,
-  agentMaxRounds: 8 as number | null,
+  maxTurns: MAX_TURNS_DEFAULT as number | null,
+  allowArchive: true,
   adminBypass: false,
-  maxConcurrent: 4 as number | null,
+  maxConcurrent: MAX_CONCURRENT_DEFAULT as number | null,
   usageDisplay: 'absolute',
   attachmentMaxMB: 6 as number | null,
   attachmentRetain: false,
+  imageHistory: true,
   purgeAfterDays: 0 as number | null,
   purgeDailyAt: '',
   orphanMinutes: 60 as number | null,
   apiEnabled: false,
+  themeMode: 'auto',
+  themeAccent: '',
+  themeCustomAccent: '',
+  themeTint: '',
+  themeDim: 0,
+  themeBlur: 0,
+  themeTranslucency: 20,
+  themePanelBlur: 12,
+  themeEnforce: false,
+  asciiField: true,
 });
 
 const enabledModels = computed(() => models.value.filter((entry) => entry.enabled));
+
+// The selects' choices, computed so a render does not hand each select a new
+// array, and so the labels follow a change of language.
+const avatarProviderChoices = computed(() => [
+  { value: 'none', label: t('avatarProviderNone') },
+  { value: 'gravatar', label: t('avatarGravatarFirst') },
+  { value: 'weavatar', label: t('avatarWeavatarFirst') },
+]);
+const landingModeChoices = computed(() => [
+  { value: 'login', label: t('landingLogin') },
+  { value: 'site', label: t('landingSite') },
+  { value: 'intro', label: t('landingIntro') },
+  { value: 'chat', label: t('landingChat') },
+]);
+const trialModelChoices = computed(() => [
+  { value: '', label: t('trialFirstAvailable') },
+  ...enabledModels.value.map((entry) => ({ value: entry.id, label: entry.display_name })),
+]);
+const noticeToneChoices = computed(() => [
+  { value: 'info', label: t('homeNoticeToneInfo') },
+  { value: 'warning', label: t('homeNoticeToneWarning') },
+]);
+const usageDisplayChoices = computed(() => [
+  { value: 'absolute', label: t('usageDisplayAbsolute') },
+  { value: 'remaining', label: t('usageDisplayRemaining') },
+  { value: 'used', label: t('usageDisplayUsed') },
+]);
 
 // The three landing modes want different fields, and showing all of them at
 // once invites setting a trial on a front door that is a sign-in card.
@@ -162,6 +277,8 @@ const heldLabel = computed(() => (held.value.held
 function collect(): Record<string, string> {
   return {
     'site.name': form.value.siteName.trim(),
+    'profile.show_signup_user_agent': String(form.value.showSignupUserAgent),
+    'profile.avatar_provider': form.value.avatarProvider,
     'site.description': form.value.description.trim(),
     'site.browser_title': form.value.browserTitle.trim(),
     'site.auth_card_position': form.value.authCardPosition,
@@ -174,6 +291,7 @@ function collect(): Record<string, string> {
     'about.title': form.value.aboutHeading.trim(),
     'about.body': form.value.aboutText.trim(),
     'about.show_software_info': String(form.value.aboutShowSoftwareInfo),
+    'update.check': String(form.value.updateCheck),
     'home.notice': form.value.homeNotice.trim(),
     'home.notice_body': form.value.homeNoticeBody.trim(),
     'home.notice_tone': form.value.homeNoticeTone,
@@ -182,28 +300,49 @@ function collect(): Record<string, string> {
     'landing.mode': form.value.landingMode,
     'landing.intro': form.value.landingIntro.trim(),
     'landing.trial_enabled': String(form.value.trialEnabled),
-    'landing.trial_turns': String(form.value.trialTurns ?? 3),
+    'landing.trial_turns': String(form.value.trialTurns ?? TRIAL_TURNS_DEFAULT),
     'landing.trial_model': form.value.trialModel,
     'quota.admins_bypass': String(form.value.adminBypass),
     'quota.max_concurrent': String(form.value.maxConcurrent ?? 4),
     'quota.usage_display': form.value.usageDisplay,
     'chat.default_system_prompt': form.value.systemPrompt.trim(),
-    'chat.max_turns': String(form.value.maxTurns ?? 40),
-    'chat.agent_max_rounds': String(form.value.agentMaxRounds ?? 8),
+    'chat.max_turns': String(form.value.maxTurns ?? MAX_TURNS_DEFAULT),
+    'chat.allow_archive': String(form.value.allowArchive),
     'api.enabled': String(form.value.apiEnabled),
     'attachments.max_mb': String(form.value.attachmentMaxMB ?? 6),
     'attachments.retain': String(form.value.attachmentRetain),
+    'images.history': String(form.value.imageHistory),
     'attachments.purge_after_days': String(form.value.purgeAfterDays ?? 0),
     'attachments.purge_daily_at': form.value.purgeDailyAt.trim(),
     'attachments.orphan_minutes': String(form.value.orphanMinutes ?? 60),
+    'theme.mode': form.value.themeMode,
+    'theme.accent': form.value.themeAccent,
+    'theme.custom_accent': form.value.themeAccent === 'custom' ? form.value.themeCustomAccent.trim() : '',
+    'theme.background_accent': form.value.themeTint,
+    'theme.wallpaper_dim': String(form.value.themeDim),
+    'theme.wallpaper_blur': String(form.value.themeBlur),
+    'theme.surface_translucency': String(form.value.themeTranslucency),
+    'theme.panel_blur': String(form.value.themePanelBlur),
+    'theme.enforce': String(form.value.themeEnforce),
+    'theme.ascii_field': String(form.value.asciiField),
   };
 }
 
-const { dirty, accept } = useSettingsDraft(collect);
+const { dirty, changes, accept } = useSettingsDraft(collect);
 
 async function save(): Promise<void> {
   if (!loaded.value || error.value || busy.value) return;
-  const values = collect();
+  // Only what this page changed: a field it merely displays must not write
+  // back a value another administrator may have changed since the page loaded.
+  const values = changes();
+  if (Object.keys(values).length === 0) return;
+  // One value past the server's limit refuses the whole save, every other
+  // change with it. Refusing here keeps those changes and says why.
+  if (overlongSetting(values)) {
+    flashOK.value = false;
+    flash.value = t('settingTooLong');
+    return;
+  }
   busy.value = true;
   saveLabel.value = t('saving');
   flash.value = '';
@@ -220,7 +359,7 @@ async function save(): Promise<void> {
         ...site.value,
         name,
         browser_title: form.value.browserTitle.trim() || name,
-        auth_card_position: form.value.authCardPosition as 'center' | 'left' | 'right',
+        auth_card_position: form.value.authCardPosition as NonNullable<SiteInfo['auth_card_position']>,
         about: {
           title: form.value.aboutHeading.trim(),
           body: form.value.aboutText.trim(),
@@ -228,10 +367,13 @@ async function save(): Promise<void> {
         },
       };
     }
+    // The theme is painted from /api/site, so this tab repaints in what was
+    // just saved rather than waiting for a reload.
+    void refreshSite().catch(() => {});
     saveLabel.value = t('saved');
-    window.setTimeout(() => { saveLabel.value = ''; }, 1500);
+    window.setTimeout(() => { saveLabel.value = ''; }, FEEDBACK_FLASH_MS);
   } catch (failure) {
-    flash.value = failure instanceof ApiError ? failure.message : String(failure);
+    flash.value = failureText(failure);
     saveLabel.value = '';
   } finally {
     busy.value = false;
@@ -246,7 +388,9 @@ function exportSettings(): void {
 }
 
 function importSettings(): void {
-  void pickJSONFile(1024 * 1024)
+  // The same limit the import endpoint reads, so a file it would refuse is
+  // refused here with a message that says so.
+  void pickJSONFile(256 * 1024)
     .then((document) => {
       if (document === null) return null;
       if (!document || typeof document !== 'object' || Array.isArray(document)) {
@@ -271,7 +415,7 @@ function importSettings(): void {
     })
     .catch((failure: unknown) => {
       flashOK.value = false;
-      flash.value = failure instanceof ApiError ? failure.message : String(failure);
+      flash.value = failureText(failure);
     });
 }
 
@@ -290,170 +434,48 @@ function purge(): void {
     })
     .catch((failure: unknown) => {
       flashOK.value = false;
-      flash.value = failure instanceof ApiError ? failure.message : String(failure);
+      flash.value = failureText(failure);
     })
     .finally(() => { purging.value = false; });
 }
 
-function detectFileType(file: File): string {
-  const type = file.type.toLowerCase();
-  if (type === 'image/jpeg' || type === 'image/jpg') return 'image/jpeg';
-  if (type === 'image/png') return 'image/png';
-  if (type === 'image/webp') return 'image/webp';
-  if (type === 'image/avif') return 'image/avif';
-  const name = file.name.toLowerCase();
-  if (name.endsWith('.jpg') || name.endsWith('.jpeg')) return 'image/jpeg';
-  if (name.endsWith('.png')) return 'image/png';
-  if (name.endsWith('.webp')) return 'image/webp';
-  if (name.endsWith('.avif')) return 'image/avif';
-  return '';
+function onBackgroundChanged(variant: string, value: SiteBackground | null): void {
+  const next = { ...backgrounds.value };
+  if (value) next[variant] = value;
+  else delete next[variant];
+  backgrounds.value = next;
+  // The sign-in pages and this very interface read /api/site; asking again
+  // is simpler than patching both shapes it carries.
+  void refreshSite().catch(() => {});
 }
 
-async function uploadFile(variant: string, file: File): Promise<void> {
-  const mime = detectFileType(file);
-  if (!mime) {
-    flashOK.value = false;
-    flash.value = t('loginBgFormats');
-    return;
-  }
-  if (file.size > 6 * 1024 * 1024) {
-    flashOK.value = false;
-    flash.value = t('loginBgFormats');
-    return;
-  }
-
-  uploadingVariant.value = variant;
-  flash.value = '';
-  try {
-    const base64 = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const res = String(reader.result ?? '');
-        const comma = res.indexOf(',');
-        resolve(comma !== -1 ? res.slice(comma + 1) : res);
-      };
-      reader.onerror = () => reject(new Error('Failed to read file'));
-      reader.readAsDataURL(file);
-    });
-
-    const res = await adminApi.uploadLoginBackground(variant, mime, base64);
-    loginBackgrounds.value = {
-      ...loginBackgrounds.value,
-      [variant]: res.url,
-    };
-    if (site.value) {
-      site.value = {
-        ...site.value,
-        login_background: {
-          ...(site.value.login_background ?? {}),
-          [variant]: res.url,
-        },
-      };
-    }
-    flashOK.value = true;
-    flash.value = t('loginBgUploaded');
-  } catch (failure) {
-    flashOK.value = false;
-    flash.value = failure instanceof ApiError ? failure.message : String(failure);
-  } finally {
-    uploadingVariant.value = '';
-    dragOverVariant.value = '';
-  }
+function onBackgroundStatus(message: string, ok: boolean): void {
+  flashOK.value = ok;
+  flash.value = message;
 }
 
-function chooseAndUpload(variant: string): void {
-  const input = document.createElement('input');
-  input.type = 'file';
-  input.accept = 'image/png,image/jpeg,image/webp,image/avif,.jpg,.jpeg,.png,.webp,.avif';
-  input.onchange = () => {
-    const file = input.files?.[0];
-    if (file) {
-      void uploadFile(variant, file);
-    }
-  };
-  input.click();
-}
-
-async function onDrop(variant: string, event: DragEvent): Promise<void> {
-  dragOverVariant.value = '';
-  const file = event.dataTransfer?.files?.[0];
-  if (file) {
-    await uploadFile(variant, file);
-  }
-}
-
-async function clearLoginBg(variant: string): Promise<void> {
-  uploadingVariant.value = variant;
-  flash.value = '';
-  try {
-    await adminApi.deleteLoginBackground(variant);
-    const updated = { ...loginBackgrounds.value };
-    delete updated[variant];
-    loginBackgrounds.value = updated;
-    if (site.value) {
-      const siteBgs = { ...(site.value.login_background ?? {}) };
-      delete siteBgs[variant];
-      site.value = { ...site.value, login_background: siteBgs };
-    }
-    flashOK.value = true;
-    flash.value = t('loginBgDeleted');
-  } catch (failure) {
-    flashOK.value = false;
-    flash.value = failure instanceof ApiError ? failure.message : String(failure);
-  } finally {
-    uploadingVariant.value = '';
-  }
-}
-
-function detectLogoType(file: File): string {
-  const type = file.type.toLowerCase();
-  if (type === 'image/jpeg' || type === 'image/jpg') return 'image/jpeg';
-  if (type === 'image/png') return 'image/png';
-  if (type === 'image/webp') return 'image/webp';
-  if (type === 'image/avif') return 'image/avif';
-  if (type === 'image/gif') return 'image/gif';
-  if (type === 'image/x-icon' || type === 'image/vnd.microsoft.icon') return 'image/x-icon';
-  if (type === 'image/svg+xml') return 'image/svg+xml';
-  const name = file.name.toLowerCase();
-  if (name.endsWith('.jpg') || name.endsWith('.jpeg')) return 'image/jpeg';
-  if (name.endsWith('.png')) return 'image/png';
-  if (name.endsWith('.webp')) return 'image/webp';
-  if (name.endsWith('.avif')) return 'image/avif';
-  if (name.endsWith('.gif')) return 'image/gif';
-  if (name.endsWith('.ico')) return 'image/x-icon';
-  if (name.endsWith('.svg')) return 'image/svg+xml';
-  return '';
-}
-
+// One logo change at a time. The preview accepts clicks and drops even while
+// an upload is in flight, and the response that arrives last decides which
+// image the page shows, which need not be the one the server kept.
 async function uploadLogoFile(file: File): Promise<void> {
-  const mime = detectLogoType(file);
-  if (!mime) {
+  if (uploadingLogo.value) return;
+  const problem = imageProblem(file, LOGO_TYPES, MAX_LOGO_BYTES, t('siteLogoFormats'));
+  const mime = imageType(file, LOGO_TYPES);
+  if (problem || !mime) {
     flashOK.value = false;
-    flash.value = t('siteLogoFormats');
-    return;
-  }
-  if (file.size > 4 * 1024 * 1024) {
-    flashOK.value = false;
-    flash.value = t('siteLogoFormats');
+    flash.value = problem;
     return;
   }
 
   uploadingLogo.value = true;
   flash.value = '';
   try {
-    const base64 = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const res = String(reader.result ?? '');
-        const comma = res.indexOf(',');
-        resolve(comma !== -1 ? res.slice(comma + 1) : res);
-      };
-      reader.onerror = () => reject(new Error('Failed to read file'));
-      reader.readAsDataURL(file);
-    });
+    const base64 = await readAsBase64(file);
 
     const res = await adminApi.uploadSiteLogo(mime, base64);
     siteLogoUrl.value = res.url;
+    // Only the logo changed, so the shared site copy takes that one field
+    // rather than being read again the way a background change is.
     if (site.value) {
       site.value = {
         ...site.value,
@@ -464,7 +486,8 @@ async function uploadLogoFile(file: File): Promise<void> {
     flash.value = t('siteLogoUploaded');
   } catch (failure) {
     flashOK.value = false;
-    flash.value = failure instanceof ApiError ? failure.message : String(failure);
+    // An Error's own message is the text to show; String() would prefix its class.
+    flash.value = failureText(failure);
   } finally {
     uploadingLogo.value = false;
     dragOverLogo.value = false;
@@ -472,16 +495,8 @@ async function uploadLogoFile(file: File): Promise<void> {
 }
 
 function chooseAndUploadLogo(): void {
-  const input = document.createElement('input');
-  input.type = 'file';
-  input.accept = 'image/png,image/jpeg,image/webp,image/svg+xml,image/x-icon,image/avif,image/gif,.jpg,.jpeg,.png,.webp,.svg,.ico,.avif,.gif';
-  input.onchange = () => {
-    const file = input.files?.[0];
-    if (file) {
-      void uploadLogoFile(file);
-    }
-  };
-  input.click();
+  if (uploadingLogo.value) return;
+  pickImage(LOGO_TYPES, (file) => void uploadLogoFile(file));
 }
 
 async function onDropLogo(event: DragEvent): Promise<void> {
@@ -493,6 +508,7 @@ async function onDropLogo(event: DragEvent): Promise<void> {
 }
 
 async function clearSiteLogo(): Promise<void> {
+  if (uploadingLogo.value) return;
   uploadingLogo.value = true;
   flash.value = '';
   try {
@@ -508,7 +524,8 @@ async function clearSiteLogo(): Promise<void> {
     flash.value = t('siteLogoDeleted');
   } catch (failure) {
     flashOK.value = false;
-    flash.value = failure instanceof ApiError ? failure.message : String(failure);
+    // An Error's own message is the text to show; String() would prefix its class.
+    flash.value = failureText(failure);
   } finally {
     uploadingLogo.value = false;
   }
@@ -534,6 +551,11 @@ function cancelDisableSoftwareInfo(): void {
 }
 
 async function load(): Promise<void> {
+  // Only a retry after a failed load lacks a baseline: the form holds defaults
+  // until one arrives, so Save and the status chip wait for it. A reload after
+  // an import keeps the form mounted, so the workbench keeps its category and
+  // search.
+  if (error.value) loaded.value = false;
   error.value = '';
   try {
     // The models come along because one of these settings is which model
@@ -542,23 +564,26 @@ async function load(): Promise<void> {
     const values = data.settings;
     models.value = modelsResult.models;
     held.value = data.attachments ?? { held: 0, bytes: 0 };
-    loginBackgrounds.value = data.login_background ?? {};
+    backgrounds.value = data.backgrounds ?? {};
     siteLogoUrl.value = data.logo_url ?? site.value?.logo_url ?? '';
 
     form.value = {
       siteName: values['site.name'] ?? '',
+      showSignupUserAgent: values['profile.show_signup_user_agent'] !== 'false',
+      avatarProvider: values['profile.avatar_provider'] ?? 'none',
       description: values['site.description'] ?? '',
       browserTitle: values['site.browser_title'] ?? '',
-      authCardPosition: (values['site.auth_card_position'] || 'center') as 'center' | 'left' | 'right',
+      authCardPosition: values['site.auth_card_position'] || 'center',
       pwaName: values['pwa.name'] ?? '',
       pwaShortName: values['pwa.short_name'] ?? '',
       pwaDescription: values['pwa.description'] ?? '',
-      pwaThemeColor: values['pwa.theme_color'] ?? '#18181b',
-      pwaBackgroundColor: values['pwa.background_color'] ?? '#18181b',
+      pwaThemeColor: values['pwa.theme_color'] ?? PWA_DEFAULT_COLOR,
+      pwaBackgroundColor: values['pwa.background_color'] ?? PWA_DEFAULT_COLOR,
       pwaIconUrl: values['pwa.icon_url'] ?? '',
       aboutHeading: values['about.title'] ?? '',
       aboutText: values['about.body'] ?? '',
       aboutShowSoftwareInfo: values['about.show_software_info'] !== 'false',
+      updateCheck: values['update.check'] !== 'false',
       homeNotice: values['home.notice'] ?? '',
       homeNoticeBody: values['home.notice_body'] ?? '',
       homeNoticeTone: values['home.notice_tone'] ?? 'info',
@@ -567,37 +592,48 @@ async function load(): Promise<void> {
       landingMode: values['landing.mode'] ?? 'login',
       landingIntro: values['landing.intro'] ?? '',
       trialEnabled: values['landing.trial_enabled'] === 'true',
-      trialTurns: Number(values['landing.trial_turns'] ?? 3),
+      trialTurns: Number(values['landing.trial_turns'] ?? TRIAL_TURNS_DEFAULT),
       trialModel: values['landing.trial_model'] ?? '',
       systemPrompt: values['chat.default_system_prompt'] ?? '',
-      maxTurns: Number(values['chat.max_turns'] ?? 40),
-      agentMaxRounds: Number(values['chat.agent_max_rounds'] ?? 8),
+      maxTurns: Number(values['chat.max_turns'] ?? MAX_TURNS_DEFAULT),
+      allowArchive: values['chat.allow_archive'] !== 'false',
       adminBypass: values['quota.admins_bypass'] === 'true',
-      maxConcurrent: values['quota.max_concurrent'] !== undefined ? Number(values['quota.max_concurrent']) : 4,
+      maxConcurrent: values['quota.max_concurrent'] !== undefined ? Number(values['quota.max_concurrent']) : MAX_CONCURRENT_DEFAULT,
       usageDisplay: values['quota.usage_display'] ?? 'absolute',
       attachmentMaxMB: Number(values['attachments.max_mb'] ?? 6),
       attachmentRetain: values['attachments.retain'] === 'true',
+      imageHistory: values['images.history'] !== 'false',
       purgeAfterDays: Number(values['attachments.purge_after_days'] ?? 0),
       purgeDailyAt: values['attachments.purge_daily_at'] ?? '',
       orphanMinutes: Number(values['attachments.orphan_minutes'] ?? 60),
       apiEnabled: values['api.enabled'] === 'true',
+      themeMode: values['theme.mode'] || 'auto',
+      themeAccent: values['theme.accent'] ?? '',
+      themeCustomAccent: values['theme.custom_accent'] ?? '',
+      themeTint: values['theme.background_accent'] ?? '',
+      themeDim: Number(values['theme.wallpaper_dim'] ?? 0),
+      themeBlur: Number(values['theme.wallpaper_blur'] ?? 0),
+      themeTranslucency: Number(values['theme.surface_translucency'] ?? 20),
+      themePanelBlur: Number(values['theme.panel_blur'] ?? 12),
+      themeEnforce: values['theme.enforce'] === 'true',
+      asciiField: values['theme.ascii_field'] !== 'false',
     };
     accept();
   } catch (failure) {
-    error.value = failure instanceof Error ? failure.message : String(failure);
+    error.value = failureText(failure);
   } finally {
     loaded.value = true;
   }
 }
 
 const categories: WorkbenchGroup[] = [
-  { id: 'site', label: 'controlSite', hint: 'controlSiteHint', icon: IconHome, sections: ['secIdentity', 'secLoginBg', 'secPWA', 'secLanding', 'secAbout', 'secHomeNotice', 'secFeedback'] },
+  { id: 'site', label: 'controlSite', hint: 'controlSiteHint', icon: IconHome, sections: ['secIdentity', 'secLoginBg', 'secSiteTheme', 'secAppBg', 'secPWA', 'secLanding', 'secAbout', 'secUpdates', 'secHomeNotice', 'secFeedback'] },
   { id: 'chat', label: 'controlChat', hint: 'controlChatHint', icon: IconSpark, sections: ['secChat', 'secLimits'] },
   { id: 'files', label: 'controlFiles', hint: 'controlFilesHint', icon: IconFile, sections: ['secAttachments', 'secCleanup'] },
   { id: 'integrations', label: 'controlIntegrations', hint: 'controlIntegrationsHint', icon: IconKey, sections: ['apiKeys', 'backupSettings'] },
 ];
 
-const columns: [string[], string[]] = [['secIdentity', 'secLoginBg', 'secPWA', 'secAbout', 'secChat', 'secAttachments', 'apiKeys'], ['secLanding', 'secHomeNotice', 'secFeedback', 'secLimits', 'secCleanup', 'backupSettings']];
+const columns: [string[], string[]] = [['secIdentity', 'secLoginBg', 'secSiteTheme', 'secAppBg', 'secPWA', 'secAbout', 'secUpdates', 'secChat', 'secAttachments', 'apiKeys'], ['secLanding', 'secHomeNotice', 'secFeedback', 'secLimits', 'secCleanup', 'backupSettings']];
 
 onMounted(load);
 </script>
@@ -616,6 +652,8 @@ onMounted(load);
   <AdminWorkbench v-else page="settings" :groups="categories" :terms="SEARCH_GROUPS" :columns="columns">
     <template #left="{ visible }">
       <AdminControlCard id="secIdentity" v-show="visible('secIdentity')" :title="t('secIdentity')" :icon="IconHome" :hint="t('controlIdentityHint')">
+        <OaSwitchField v-model="form.showSignupUserAgent" :label="t('showSignupUserAgent')" :hint="t('showSignupUserAgentHint')" />
+        <OaSelectField v-model="form.avatarProvider" :label="t('avatarProvider')" :hint="t('avatarProviderHint')" :options="avatarProviderChoices" />
         <OaTextField v-model="form.siteName" :label="t('siteName')" :hint="t('siteNameHint')" :max-length="60" />
         <OaTextField v-model="form.browserTitle" :label="t('browserTitle')" :hint="t('browserTitleHint')" :max-length="60" />
         <OaTextArea v-model="form.description" :label="t('signInNote')" :rows="2" :hint="t('signInNoteHint')" />
@@ -625,7 +663,7 @@ onMounted(load);
           <div class="oa-logo-setting-row">
             <div
               class="oa-logo-preview"
-              :class="{ empty: !siteLogoUrl, dragover: dragOverLogo }"
+              :class="{ dragover: dragOverLogo }"
               tabindex="0"
               role="button"
               :aria-label="t('siteLogo')"
@@ -638,7 +676,7 @@ onMounted(load);
             >
               <img v-if="siteLogoUrl" :src="siteLogoUrl" class="oa-logo-preview-img" alt="" />
               <div v-else class="oa-logo-empty">
-                <IconSpark :size="20" class="oa-logo-empty-icon" />
+                <IconSpark :size="20" />
               </div>
             </div>
             <div class="oa-logo-actions">
@@ -665,82 +703,115 @@ onMounted(load);
         </div>
       </AdminControlCard>
       <AdminControlCard id="secLoginBg" v-show="visible('secLoginBg')" :title="t('secLoginBg')" :icon="IconImage" :hint="t('loginBgHint')">
-        <OaSelectField
-          v-model="form.authCardPosition"
-          :label="t('authCardPosition')"
-          :hint="t('authCardPositionHint')"
-          :searchable="false"
-          :options="[
-            { value: 'center', label: t('authCardPositionCenter') },
-            { value: 'left', label: t('authCardPositionLeft') },
-            { value: 'right', label: t('authCardPositionRight') },
-          ]"
-        />
-        <p class="oa-field-hint">{{ t('loginBgFallbackNote') }}</p>
-        <div class="oa-login-bg-grid">
-          <div
-            v-for="v in BG_VARIANTS"
-            :key="v.id"
-            class="oa-login-bg-card"
-            :class="{ 'has-image': !!loginBackgrounds[v.id] }"
-          >
-            <div class="oa-login-bg-card-head">
-              <span class="oa-login-bg-card-title">
-                <component :is="v.modeIcon" :size="13" class="oa-login-bg-mode-icon" />
-                {{ t(v.label) }}
-              </span>
-            </div>
-            <div
-              class="oa-login-bg-preview"
-              :class="{
-                empty: !loginBackgrounds[v.id],
-                portrait: v.id.startsWith('portrait'),
-                landscape: v.id.startsWith('landscape'),
-                dragover: dragOverVariant === v.id,
-              }"
-              tabindex="0"
-              role="button"
-              :aria-label="t(v.label)"
-              @dragover.prevent="dragOverVariant = v.id"
-              @dragleave="dragOverVariant = ''"
-              @drop.prevent="onDrop(v.id, $event)"
-              @click="chooseAndUpload(v.id)"
-              @keydown.enter.prevent="chooseAndUpload(v.id)"
-              @keydown.space.prevent="chooseAndUpload(v.id)"
+        <OaRow :title="t('authCardPosition')" :meta="t('authCardPositionHint')" stacked>
+          <div class="oa-segment oa-auth-positions" role="group" :aria-label="t('authCardPosition')">
+            <button
+              v-for="entry in CARD_POSITIONS"
+              :key="entry.value"
+              type="button"
+              :aria-pressed="form.authCardPosition === entry.value"
+              @click="form.authCardPosition = entry.value"
             >
-              <img
-                v-if="loginBackgrounds[v.id]"
-                :src="loginBackgrounds[v.id]"
-                :alt="t(v.label)"
-                class="oa-login-bg-img"
-              />
-              <div v-else class="oa-login-bg-empty">
-                <IconImage :size="22" class="oa-login-bg-empty-icon" />
-                <span class="oa-login-bg-drop-hint">{{ t('loginBgDropHint') }}</span>
-                <span class="oa-login-bg-formats-hint">{{ t('loginBgFormats') }}</span>
-              </div>
-            </div>
-            <div class="oa-login-bg-actions">
-              <button
-                type="button"
-                class="oa-btn small"
-                :disabled="uploadingVariant === v.id"
-                @click="chooseAndUpload(v.id)"
-              >
-                {{ loginBackgrounds[v.id] ? t('loginBgReplace') : t('loginBgUpload') }}
-              </button>
-              <OaConfirmButton
-                v-if="loginBackgrounds[v.id]"
-                class="oa-btn small oa-btn-danger"
-                :label="t('loginBgClear')"
-                :armed-label="t('loginBgClearConfirm')"
-                :armed-title="t('loginBgClear')"
-                :resting-title="t('loginBgClear')"
-                :disabled="uploadingVariant === v.id"
-                @confirm="clearLoginBg(v.id)"
-              />
-            </div>
+              {{ t(entry.label) }}
+            </button>
           </div>
+        </OaRow>
+        <BackgroundStage
+          prefix=""
+          :backgrounds="backgrounds"
+          :card-position="form.authCardPosition"
+          @changed="onBackgroundChanged"
+          @status="onBackgroundStatus"
+        />
+      </AdminControlCard>
+      <AdminControlCard id="secSiteTheme" v-show="visible('secSiteTheme')" :title="t('secSiteTheme')" :icon="IconSpark" :hint="t('siteThemeHint')">
+        <OaRow :title="t('siteThemeMode')">
+          <div class="oa-segment" role="group" :aria-label="t('siteThemeMode')">
+            <button
+              v-for="entry in THEME_MODES"
+              :key="entry.value"
+              type="button"
+              :aria-pressed="form.themeMode === entry.value"
+              @click="form.themeMode = entry.value"
+            >
+              {{ t(entry.label) }}
+            </button>
+          </div>
+        </OaRow>
+        <OaRow :title="t('siteThemeAccent')" :meta="accentName" stacked>
+          <div class="oa-site-colours">
+            <button
+              type="button"
+              class="oa-site-colour builtin"
+              :class="{ active: form.themeAccent === '' }"
+              :title="t('siteThemeDefault')"
+              :aria-label="t('siteThemeDefault')"
+              :aria-pressed="form.themeAccent === ''"
+              @click="form.themeAccent = ''"
+            >
+              <IconSpark :size="13" />
+            </button>
+            <span class="oa-site-colours-rule" />
+            <button
+              v-for="name in ACCENT_NAMES"
+              :key="name"
+              type="button"
+              class="oa-site-colour"
+              :class="{ active: form.themeAccent === name }"
+              :style="{ backgroundColor: ACCENTS[name] }"
+              :title="t(ACCENT_LABELS[name]!)"
+              :aria-label="t(ACCENT_LABELS[name]!)"
+              :aria-pressed="form.themeAccent === name"
+              @click="form.themeAccent = name"
+            />
+            <label
+              class="oa-site-colour custom"
+              :class="{ active: form.themeAccent === 'custom' }"
+              :style="form.themeAccent === 'custom' && form.themeCustomAccent ? { backgroundColor: form.themeCustomAccent } : undefined"
+              :title="t('customColour')"
+            >
+              <Palette v-if="form.themeAccent !== 'custom'" :size="14" />
+              <input
+                type="color"
+                :aria-label="t('customColour')"
+                :value="form.themeCustomAccent || ACCENTS.violet"
+                @input="pickCustomAccent(($event.target as HTMLInputElement).value)"
+              >
+            </label>
+          </div>
+        </OaRow>
+        <OaRow :title="t('siteThemeTint')" :meta="t('backgroundHint')" stacked>
+          <div class="oa-background-grid oa-site-tints">
+            <button
+              v-for="entry in TINTS"
+              :key="entry.value"
+              type="button"
+              class="oa-background-choice"
+              :class="{ active: form.themeTint === entry.value }"
+              :aria-pressed="form.themeTint === entry.value"
+              @click="form.themeTint = entry.value"
+            >
+              <span class="oa-background-swatch" :style="{ background: tintSwatch(entry.value) }" />
+              <span>{{ t(entry.label) }}</span>
+            </button>
+          </div>
+        </OaRow>
+        <OaSwitchField v-model="form.themeEnforce" :label="t('siteThemeEnforce')" :hint="t('siteThemeEnforceHint')" />
+        <OaSwitchField v-model="form.asciiField" :label="t('siteAsciiField')" :hint="t('siteAsciiFieldHint')" />
+      </AdminControlCard>
+      <AdminControlCard id="secAppBg" v-show="visible('secAppBg')" :title="t('appBgTitle')" :icon="IconImage" :hint="t('appBgHint')">
+        <BackgroundStage
+          prefix="app_"
+          :backgrounds="backgrounds"
+          :look="{ dim: form.themeDim, blur: form.themeBlur, translucency: form.themeTranslucency, panelBlur: form.themePanelBlur }"
+          @changed="onBackgroundChanged"
+          @status="onBackgroundStatus"
+        />
+        <div class="oa-bg-sliders">
+          <OaRangeField v-model="form.themeDim" :label="t('dim')" :min="0" :max="100" :format="(value) => `${value}%`" />
+          <OaRangeField v-model="form.themeBlur" :label="t('blur')" :min="0" :max="40" :format="(value) => `${value}px`" />
+          <OaRangeField v-model="form.themeTranslucency" :label="t('panelTranslucency')" :min="0" :max="90" :format="(value) => `${value}%`" />
+          <OaRangeField v-model="form.themePanelBlur" :label="t('panelBlur')" :min="0" :max="40" :format="(value) => `${value}px`" />
         </div>
       </AdminControlCard>
       <AdminControlCard id="secPWA" v-show="visible('secPWA')" :title="t('secPWA')" :icon="IconImage" :hint="t('controlPWAHint')">
@@ -751,7 +822,7 @@ onMounted(load);
           v-model="form.pwaThemeColor"
           :label="t('pwaThemeColor')"
           :hint="t('pwaThemeColorHint')"
-          placeholder="#18181b"
+          :placeholder="PWA_DEFAULT_COLOR"
           monospace
           :max-length="7"
         />
@@ -759,7 +830,7 @@ onMounted(load);
           v-model="form.pwaBackgroundColor"
           :label="t('pwaBackgroundColor')"
           :hint="t('pwaBackgroundColorHint')"
-          placeholder="#18181b"
+          :placeholder="PWA_DEFAULT_COLOR"
           monospace
           :max-length="7"
         />
@@ -786,12 +857,16 @@ onMounted(load);
           @update:model-value="onToggleSoftwareInfo"
         />
       </AdminControlCard>
+      <AdminControlCard id="secUpdates" v-show="visible('secUpdates')" :title="t('controlUpdates')" :icon="IconInfo" :hint="t('controlUpdatesHint')">
+        <OaSwitchField v-model="form.updateCheck" :label="t('updateCheck')" :hint="t('updateCheckHint')" />
+      </AdminControlCard>
       <AdminControlCard id="secChat" v-show="visible('secChat')" :title="t('secChat')" :icon="IconSpark">
         <OaTextArea
           v-model="form.systemPrompt"
           :label="t('instanceSystemPrompt')"
           :rows="4"
           :hint="t('instanceSystemPromptHint')"
+          :max-bytes="SETTING_MAX_BYTES"
         />
         <OaNumberField
           v-model="form.maxTurns"
@@ -800,12 +875,10 @@ onMounted(load);
           :max="200"
           :hint="t('turnsResentHint')"
         />
-        <OaNumberField
-          v-model="form.agentMaxRounds"
-          :label="t('agentMaxRounds')"
-          :min="1"
-          :max="50"
-          :hint="t('agentMaxRoundsHint')"
+        <OaSwitchField
+          v-model="form.allowArchive"
+          :label="t('chatAllowArchive')"
+          :hint="t('chatAllowArchiveHint')"
         />
       </AdminControlCard>
       <AdminControlCard id="secAttachments" v-show="visible('secAttachments')" :title="t('secAttachments')" :icon="IconFile" :hint="t('attachmentsHint')">
@@ -821,6 +894,11 @@ onMounted(load);
           :label="t('attachmentRetain')"
           :hint="t('attachmentRetainHint')"
         />
+        <OaSwitchField
+          v-model="form.imageHistory"
+          :label="t('imageHistory')"
+          :hint="t('imageHistoryHint')"
+        />
       </AdminControlCard>
       <AdminControlCard id="apiKeys" v-show="visible('apiKeys')" :title="t('apiKeys')" :icon="IconKey">
         <OaSwitchField v-model="form.apiEnabled" :label="t('apiEnabled')" :hint="t('apiEnabledHint')" />
@@ -832,12 +910,7 @@ onMounted(load);
           v-model="form.landingMode"
           :label="t('landingMode')"
           :hint="t('landingModeHint')"
-          :options="[
-            { value: 'login', label: t('landingLogin') },
-            { value: 'site', label: t('landingSite') },
-            { value: 'intro', label: t('landingIntro') },
-            { value: 'chat', label: t('landingChat') },
-          ]"
+          :options="landingModeChoices"
         />
         <OaTextArea
           v-if="showIntro"
@@ -845,6 +918,7 @@ onMounted(load);
           :label="t('landingIntroHTML')"
           :rows="8"
           :hint="t('landingIntroHTMLHint')"
+          :max-bytes="SETTING_MAX_BYTES"
         />
         <OaSwitchField
           v-if="showTrialSwitch"
@@ -864,10 +938,7 @@ onMounted(load);
           v-if="showTrialDetail"
           v-model="form.trialModel"
           :label="t('trialModel')"
-          :options="[
-            { value: '', label: t('trialFirstAvailable') },
-            ...enabledModels.map((entry) => ({ value: entry.id, label: entry.display_name })),
-          ]"
+          :options="trialModelChoices"
         />
       </AdminControlCard>
       <AdminControlCard id="secHomeNotice" v-show="visible('secHomeNotice')" :title="t('homeNotice')" :icon="IconBell" :hint="t('controlNoticeHint')">
@@ -878,10 +949,7 @@ onMounted(load);
           :label="t('homeNoticeTone')"
           :hint="t('homeNoticeToneHint')"
           :searchable="false"
-          :options="[
-            { value: 'info', label: t('homeNoticeToneInfo') },
-            { value: 'warning', label: t('homeNoticeToneWarning') },
-          ]"
+          :options="noticeToneChoices"
         />
         <OaSwitchField
           v-model="form.homeNoticeDismissible"
@@ -913,11 +981,7 @@ onMounted(load);
           v-model="form.usageDisplay"
           :label="t('usageDisplay')"
           :hint="t('usageDisplayHint')"
-          :options="[
-            { value: 'absolute', label: t('usageDisplayAbsolute') },
-            { value: 'remaining', label: t('usageDisplayRemaining') },
-            { value: 'used', label: t('usageDisplayUsed') },
-          ]"
+          :options="usageDisplayChoices"
         />
       </AdminControlCard>
       <AdminControlCard id="secCleanup" v-show="visible('secCleanup')" :title="t('secCleanup')" :icon="IconTrash" :hint="t('cleanupHint')">
@@ -925,7 +989,7 @@ onMounted(load);
           v-model="form.purgeAfterDays"
           :label="t('attachmentPurgeDays')"
           :min="0"
-          :max="3650"
+          :max="MAX_PURGE_DAYS"
           :hint="t('attachmentPurgeDaysHint')"
         />
         <OaTextField
@@ -970,6 +1034,7 @@ onMounted(load);
   <OaOverlay
     v-if="showConfirmDisableModal"
     overlay-class="oa-modal-overlay"
+    :label="t('aboutDisableModalTitle')"
     @close="cancelDisableSoftwareInfo"
   >
     <div class="oa-auth-card oa-modal-card">
@@ -989,7 +1054,7 @@ onMounted(load);
       <h1 class="oa-auth-title">{{ t('aboutDisableModalTitle') }}</h1>
       <p class="oa-auth-sub">{{ t('aboutDisableModalDesc') }}</p>
 
-      <div class="oa-auth-form" style="margin-top: 18px; display: flex; gap: 8px; flex-direction: column;">
+      <div class="oa-auth-form oa-admin-auth-stack">
         <button
           type="button"
           class="oa-btn primary oa-btn-block"

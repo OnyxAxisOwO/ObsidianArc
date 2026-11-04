@@ -55,6 +55,8 @@ func TestTheOperatorsMistakeIsNotTheVisitorsFailure(t *testing.T) {
 	cases := map[string]error{
 		`{"success":false,"error-codes":["invalid-input-secret"]}`:   ErrUnavailable,
 		`{"success":false,"error-codes":["missing-input-secret"]}`:   ErrUnavailable,
+		`{"success":false,"error-codes":["internal-error"]}`:         ErrUnavailable,
+		`{"success":false,"error-codes":["bad-request"]}`:            ErrUnavailable,
 		`{"success":false,"error-codes":["invalid-input-response"]}`: ErrFailed,
 		`{"success":false,"error-codes":["timeout-or-duplicate"]}`:   ErrFailed,
 		`{"success":true}`: nil,

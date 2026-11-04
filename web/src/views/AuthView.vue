@@ -13,9 +13,10 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { safeNext, serverOwned } from '@/lib/next';
+import { GUARD_DEADLINE_MS, GuardTimeout, withDeadline } from '@/lib/deadline';
 import { completeSignIn, fetchPoWChallenge, login, logout, register, type LoginResult, type PoWSolution } from '@/api/auth';
 import { solvePoW, type PoWTask } from '@/lib/pow';
-import { signInURL } from '@/api/oauth';
+import { signInURL, startSignIn } from '@/api/oauth';
 import HomeNotice from '@/announce/HomeNotice.vue';
 import OaField from '@/components/OaField.vue';
 import OaThemeToggle from '@/components/OaThemeToggle.vue';
@@ -27,22 +28,39 @@ import type { GuardAction } from '@/plugins/types';
 import { t, type StringKey } from '@/composables/useI18n';
 import { ApiError } from '@/api/client';
 import { loginRefusalText, refusalText } from '@/lib/refusal';
-import { IconGithub, IconGoogle, IconKey, IconSpark, type OaIcon } from '@/icons';
+import { providerMark } from '@/lib/provider-marks';
+import { IconSpark } from '@/icons';
 import { adopt, forget, pendingSecondFactor, siteInfo } from '@/stores/session';
 import { useLoginBackground } from '@/composables/useLoginBackground';
+import OaBackdrop from '@/components/OaBackdrop.vue';
 
 const props = defineProps<{ mode: 'login' | 'register' }>();
 
 const router = useRouter();
 const route = useRoute();
 const site = computed(() => siteInfo.value);
-const { loginBgUrl } = useLoginBackground();
+const { loginBg, loginBgUrl, loginBgFrame } = useLoginBackground();
 
 // An instance with no accounts is being set up: the person in front of it is
 // about to become the administrator, and saying so removes the "did I just
 // make a normal account?" doubt.
 const setup = computed(() => site.value.setup_required);
 const registering = computed(() => props.mode === 'register' || setup.value);
+
+function switchMode(path: string): Promise<void> {
+  const update = async (): Promise<void> => {
+    await router.push({ path, query: route.query });
+    // The new fields must be painted before the browser captures their size.
+    await nextTick();
+    identifierField.value?.focus({ preventScroll: true });
+  };
+  if (!document.startViewTransition || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return update();
+  const transition = document.startViewTransition(update);
+  // Rapid navigation can skip a snapshot; the route must still finish.
+  void transition.ready.catch(() => {});
+  void transition.finished.catch(() => {});
+  return transition.updateCallbackDone;
+}
 
 const domains = computed(() => site.value.email_domains ?? []);
 const emailRequired = computed(() => !setup.value && (site.value.require_email ?? false));
@@ -82,39 +100,75 @@ const buttonLabel = ref('');
 
 const identifierField = ref<HTMLInputElement | null>(null);
 const passwordField = ref<HTMLInputElement | null>(null);
-const guard = ref<InstanceType<typeof OaTurnstile> | null>(null);
+// The Cloudflare widget. Named apart from the plugin guards below, which are
+// guards too but answer to guards(), not to this ref.
+const turnstile = ref<InstanceType<typeof OaTurnstile> | null>(null);
 
 let currentPoWTask: PoWTask | null = null;
 let powPromise: Promise<PoWSolution> | null = null;
 let powSolution: PoWSolution | null = null;
+// Bumped by every reset. An attempt that was started before a reset must not
+// start a worker, write a solution or clear the state of the attempt after it.
+let powGeneration = 0;
+// Whoever is waiting on a proof, released when it is abandoned: cancel() ends
+// the worker without settling the promise, and a submit awaiting it would stay
+// busy until reload.
+let proofWaiters: Array<() => void> = [];
 
 function startPoWIfNeeded(): void {
   if (!registering.value || !site.value.pow_on_signup) return;
   if (powSolution || powPromise) return;
 
-  powPromise = fetchPoWChallenge()
+  const generation = powGeneration;
+  const attempt = fetchPoWChallenge()
     .then((challenge) => {
+      if (generation !== powGeneration) throw new Error('proof of work abandoned');
       currentPoWTask = solvePoW(challenge);
       return currentPoWTask.promise;
     })
     .then((solution) => {
-      powSolution = solution;
+      if (generation === powGeneration) powSolution = solution;
       return solution;
     })
     .catch((err) => {
-      powPromise = null;
-      currentPoWTask = null;
+      if (generation === powGeneration) {
+        powPromise = null;
+        currentPoWTask = null;
+      }
       throw err;
     });
+  powPromise = attempt;
+  // Every waiter handles a failure itself; this keeps an unwaited one, such as
+  // a reset's, from being reported as unhandled.
+  attempt.catch(() => {});
 }
 
 function resetPoW(): void {
+  powGeneration += 1;
   if (currentPoWTask) {
     currentPoWTask.cancel();
     currentPoWTask = null;
   }
   powPromise = null;
   powSolution = null;
+  const waiters = proofWaiters;
+  proofWaiters = [];
+  for (const release of waiters) release();
+}
+
+/** The solved proof, or null when the attempt was abandoned while it was awaited. */
+function awaitProof(promise: Promise<PoWSolution>): Promise<PoWSolution | null> {
+  return new Promise((resolve, reject) => {
+    const release = (): void => resolve(null);
+    proofWaiters.push(release);
+    const settle = (): void => {
+      proofWaiters = proofWaiters.filter((entry) => entry !== release);
+    };
+    promise.then(
+      (solution) => { settle(); resolve(solution); },
+      (failure: unknown) => { settle(); reject(failure); },
+    );
+  });
 }
 
 watch(
@@ -133,6 +187,9 @@ watch(
 
 const stage = computed(() => (!registering.value && pendingSecondFactor.value ? 'code' : 'password'));
 const code = ref('');
+// The one-time code is six digits. The field takes one character more, so a
+// code typed with a space between the halves still fits.
+const TWO_FACTOR_DIGITS = 6;
 /** A recovery code instead of one from the app: a different field, not a
  *  different endpoint. */
 const recoveryMode = ref(false);
@@ -189,7 +246,7 @@ async function onCode(): Promise<void> {
 /** Six digits is the whole answer from an app, so there is nothing to wait for. */
 function onCodeInput(event: Event): void {
   code.value = (event.target as HTMLInputElement).value;
-  if (!recoveryMode.value && code.value.replace(/\D/g, '').length === 6) void onCode();
+  if (!recoveryMode.value && code.value.replace(/\D/g, '').length === TWO_FACTOR_DIGITS) void onCode();
 }
 
 function toggleRecovery(): void {
@@ -240,35 +297,93 @@ watch(activeGuards, (list) => {
 const providers = computed(() => (setup.value ? [] : site.value.oauth ?? []));
 const thirdPartyOnlySignup = computed(() => !!(site.value.oauth_only_signup || site.value.oidc_only_signup));
 
+// The text that was shown for a challenge refusal, kept as that exact string.
+// Comparing with a fresh t() would stop matching after a language switch, because
+// the shown text stays in the language it was shown in.
+let shownChallengeError = '';
+
+function showChallengeError(message: string): void {
+  shownChallengeError = message;
+  error.value = message;
+}
+
 function onTurnstileSolved(): void {
-  if (error.value === t('challengeRequired') || error.value === t('challengeFailed')) {
+  if (shownChallengeError && error.value === shownChallengeError) {
     error.value = '';
   }
+  shownChallengeError = '';
 }
 
-function onProviderClick(event: MouseEvent, providerId: string): void {
-  if (guarded.value) {
-    const token = guard.value?.token() ?? '';
-    if (!token) {
-      event.preventDefault();
-      error.value = t('challengeRequired');
+// A solution this close to running out is solved again rather than sent: the
+// start request is one redirect away, and the server refuses an expired one.
+const PROOF_SLACK_MS = 30_000;
+
+function proofIsFresh(solution: PoWSolution): boolean {
+  return solution.expires * 1000 - Date.now() > PROOF_SLACK_MS;
+}
+
+/**
+ * The proof of work for a provider sign-up. The one already being solved on this
+ * page is used if it is still good; a stale one is solved again. Whatever is
+ * taken is spent, because the start request uses up its salt.
+ */
+async function proofForProvider(): Promise<PoWSolution> {
+  if (powSolution && proofIsFresh(powSolution)) {
+    const solution = powSolution;
+    resetPoW();
+    return solution;
+  }
+  if (powSolution) resetPoW();
+  startPoWIfNeeded();
+  if (!powPromise) throw new Error('no proof of work is being solved');
+  const solution = await awaitProof(powPromise);
+  if (!solution) throw new Error('no proof of work is being solved');
+  resetPoW();
+  return solution;
+}
+
+// The link is a navigation with nothing on it the sign-up door checks, so the
+// click is taken over: the Turnstile token and the proof of work go on the
+// request the browser makes to the start. One click at a time, because a second
+// would spend the proof the first is still carrying.
+let providerPending = false;
+
+async function onProviderClick(event: MouseEvent, providerId: string): Promise<void> {
+  const proofNeeded = registering.value && !setup.value && !!site.value.pow_on_signup;
+  if (!guarded.value && !proofNeeded) return;
+  event.preventDefault();
+  if (providerPending) return;
+  providerPending = true;
+  try {
+    const token = guarded.value ? (turnstile.value?.token() ?? '') : '';
+    if (guarded.value && !token) {
+      showChallengeError(t('challengeRequired'));
       return;
     }
-    event.preventDefault();
-    window.location.assign(
-      signInURL(providerId, {
+    let pow: PoWSolution | undefined;
+    if (proofNeeded) {
+      try {
+        pow = await proofForProvider();
+      } catch (failure) {
+        error.value = refusalText(failure, domains.value);
+        return;
+      }
+    }
+    try {
+      await startSignIn(providerId, {
         next: safeNext(route.query['next']),
-        turnstile: token,
+        ...(token ? { turnstile: token } : {}),
         register: registering.value,
-      }),
-    );
+        ...(pow ? { pow } : {}),
+      });
+    } catch (failure) {
+      error.value = refusalText(failure, domains.value);
+    }
+  } finally {
+    providerPending = false;
   }
 }
 
-const MARKS: Record<string, OaIcon> = { github: IconGithub, google: IconGoogle };
-function mark(id: string): OaIcon {
-  return MARKS[id] ?? IconKey;
-}
 
 /**
  * Why a provider sign-in came back without signing anybody in.
@@ -285,6 +400,10 @@ const OAUTH_REFUSALS: Record<string, StringKey> = {
   provider: 'oauthProviderFailed',
   address_taken: 'oauthAddressTaken',
   signup_closed: 'oauthSignupClosed',
+  signup_challenge_required: 'oauthSignupChallengeRequired',
+  // A redirect carries no operator notice to show, so this is the plain sentence
+  // the sign-up form falls back to, which does not say which check refused.
+  signup_refused: 'signupRefused',
   registration_closed: 'registrationClosed',
   oidc_only: 'oauthOIDCOnly',
   third_party_only: 'oauthThirdPartyOnly',
@@ -292,6 +411,9 @@ const OAUTH_REFUSALS: Record<string, StringKey> = {
   disabled: 'accountBanned',
   ip_blocked: 'signupBlocked',
   throttled: 'oauthThrottled',
+  // A plugin's login guard turned the sign-in away. The guard's own words are
+  // not sent on a redirect, so this is the general sentence, as for sign-up.
+  login_refused: 'oauthLoginRefused',
   domain: 'oauthDomain',
   disposable_email: 'disposableEmailRejected',
   email_screening_unavailable: 'emailScreeningUnavailable',
@@ -299,21 +421,23 @@ const OAUTH_REFUSALS: Record<string, StringKey> = {
 };
 
 onMounted(() => {
-  if (typeof document !== 'undefined') {
-    document.body.classList.add('has-auth-page');
-  }
-  const code = route.query['oauth_error'];
-  if (typeof code === 'string' && code) {
+  document.body.classList.add('has-auth-page');
+  const oauthError = route.query['oauth_error'];
+  if (typeof oauthError === 'string' && oauthError) {
     const banReason = route.query['ban_reason'];
-    if (code === 'disabled' && typeof banReason === 'string' && banReason.trim()) {
+    if (oauthError === 'disabled' && typeof banReason === 'string' && banReason.trim()) {
       error.value = t('accountBannedWithReason', { reason: banReason.trim() });
     } else {
-      const known = OAUTH_REFUSALS[code];
-      error.value = known ? t(known) : pluginOAuthError(code) ?? t('oauthFailed');
+      // Own keys only: the code is whatever the query carried, and every object
+      // inherits some names (constructor), which would pass for a known refusal.
+      const known = Object.hasOwn(OAUTH_REFUSALS, oauthError) ? OAUTH_REFUSALS[oauthError] : undefined;
+      error.value = known ? t(known) : pluginOAuthError(oauthError) ?? t('oauthFailed');
     }
     // Out of the address bar: a reload should not raise a message about a
-    // sign-in that is long over.
-    void router.replace({ path: route.path, query: {} });
+    // sign-in that is long over. The page the sign-in was for stays, so the
+    // next try carries the visitor on to it.
+    const next = safeNext(route.query['next']);
+    void router.replace({ path: route.path, query: next ? { next } : {} });
   }
   // A partner or friend's link: the code the visitor arrived with is worth
   // more than an empty field they would have to go find again.
@@ -327,33 +451,49 @@ onMounted(() => {
 
 onUnmounted(() => {
   resetPoW();
-  if (typeof document !== 'undefined') {
-    document.body.classList.remove('has-auth-page');
-  }
+  document.body.classList.remove('has-auth-page');
 });
+
+// The server's sign-up rules (internal/user and internal/auth), mirrored so a
+// mistake in them is named on the spot. Passwords count characters, as the
+// server does.
+const USERNAME_RE = /^[A-Za-z0-9._-]{3,32}$/;
+const EMAIL_RE = /^[^@\s]+@[^@\s.]+\.[^@\s]+$/;
+const MIN_PASSWORD_CHARS = 8;
+// A review that takes longer than this is said so on the button. A quick answer
+// never shows the note at all, so it does not flash past.
+const REVIEW_NOTE_DELAY_MS = 900;
+
+// The checks made before anything is sent, in the order the form reads. The server
+// makes the same ones and is the one that decides; these only say the reason in
+// words straight away. Returns the sentence to show, or '' when the form may go.
+function formProblem(identity: string, secret: string): string {
+  if (!identity || !secret) return t('fillBothFields');
+  if (registering.value && emailRequired.value && !email.value.trim()) return t('emailRequiredHere');
+  const fieldError = registering.value ? fieldProblem(fields.value, fieldPlan.value) : null;
+  if (fieldError) return fieldError;
+  if (registering.value && inviteMode.value === 'invite' && !inviteCode.value.trim()) {
+    return t('inviteRequiredHere');
+  }
+  // The rules the server applies to a sign-up, checked here only so the reason
+  // is said in words. A refusal from the server would reach the reader as a
+  // generic sentence, because the server's codes for these are not separate.
+  if (registering.value) {
+    if (!USERNAME_RE.test(identity)) return t('usernameInvalid');
+    if ([...secret].length < MIN_PASSWORD_CHARS) return t('passwordTooShort');
+    if (email.value.trim() && !EMAIL_RE.test(email.value.trim())) return t('emailInvalid');
+  }
+  return '';
+}
 
 async function onSubmit(): Promise<void> {
   if (busy.value) return;
 
   const identity = identifier.value.trim();
   const secret = password.value;
-  if (!identity || !secret) {
-    error.value = t('fillBothFields');
-    return;
-  }
-  // Checked here as well as on the server, only so the answer is immediate.
-  // The server is the one that decides.
-  if (registering.value && emailRequired.value && !email.value.trim()) {
-    error.value = t('emailRequiredHere');
-    return;
-  }
-  const fieldError = registering.value ? fieldProblem(fields.value, fieldPlan.value) : null;
-  if (fieldError) {
-    error.value = fieldError;
-    return;
-  }
-  if (registering.value && inviteMode.value === 'invite' && !inviteCode.value.trim()) {
-    error.value = t('inviteRequiredHere');
+  const problem = formProblem(identity, secret);
+  if (problem) {
+    error.value = problem;
     return;
   }
 
@@ -362,12 +502,24 @@ async function onSubmit(): Promise<void> {
 
   let solution: PoWSolution | undefined;
   if (registering.value && site.value.pow_on_signup) {
+    // A solution that has run out is solved again, as proofForProvider does:
+    // the server refuses an expired one, and the reader would have to click
+    // a second time to get past it.
+    if (powSolution && !proofIsFresh(powSolution)) resetPoW();
     if (!powSolution) {
       buttonLabel.value = t('powSolving');
       if (!powPromise) startPoWIfNeeded();
       try {
         if (powPromise) {
-          solution = await powPromise;
+          const proof = await awaitProof(powPromise);
+          // The reader moved to another form while the proof was solving, so
+          // this sign-up is no longer what the form is asking for.
+          if (!proof) {
+            busy.value = false;
+            buttonLabel.value = '';
+            return;
+          }
+          solution = proof;
         }
       } catch (failure) {
         busy.value = false;
@@ -390,11 +542,14 @@ async function onSubmit(): Promise<void> {
   for (const { guard, config } of activeGuards.value) {
     buttonLabel.value = guard.checking();
     try {
-      guardTokens[guard.name] = await guard.token(guardAction.value, config, formEl.value ?? undefined);
+      guardTokens[guard.name] = await withDeadline(
+        guard.token(guardAction.value, config, formEl.value ?? undefined),
+        GUARD_DEADLINE_MS,
+      );
     } catch (failure: unknown) {
       busy.value = false;
       buttonLabel.value = '';
-      error.value = guard.failed(failure);
+      error.value = failure instanceof GuardTimeout ? t('guardTimeout') : guard.failed(failure);
       return;
     }
   }
@@ -403,7 +558,7 @@ async function onSubmit(): Promise<void> {
   // A review takes seconds. Saying so beats a button that sits on "creating
   // account" long enough to read as a form that has hung.
   const reviewNote = registering.value && site.value.signup_review
-    ? window.setTimeout(() => { buttonLabel.value = t('signupReviewing'); }, 900)
+    ? window.setTimeout(() => { buttonLabel.value = t('signupReviewing'); }, REVIEW_NOTE_DELAY_MS)
     : 0;
 
   try {
@@ -413,15 +568,15 @@ async function onSubmit(): Promise<void> {
           password: secret,
           email: email.value.trim(),
           fields: fieldValues(fields.value, fieldPlan.value),
-          turnstile: guard.value?.token() ?? '',
+          turnstile: turnstile.value?.token() ?? '',
           guards: guardTokens,
           inviteCode: inviteCode.value.trim(),
           ...(solution ? { pow: solution } : {}),
         })
-      : await login(identity, secret, guard.value?.token() ?? '', guardTokens);
+      : await login(identity, secret, turnstile.value?.token() ?? '', guardTokens);
 
     window.clearTimeout(reviewNote);
-    guard.value?.reset();
+    turnstile.value?.reset();
     if (!result.user) {
       busy.value = false;
       buttonLabel.value = '';
@@ -437,12 +592,14 @@ async function onSubmit(): Promise<void> {
     // A token is good for one submission, so a refusal for any reason — a
     // taken username as much as a failed challenge — leaves a spent token
     // behind that would fail the next attempt on its own.
-    guard.value?.reset();
+    turnstile.value?.reset();
     resetPoW();
     startPoWIfNeeded();
-    error.value = registering.value
+    const message = registering.value
       ? refusalText(failure, domains.value)
       : loginRefusalText(failure);
+    if (failure instanceof ApiError && failure.code === 'challenge_failed') showChallengeError(message);
+    else error.value = message;
     busy.value = false;
     buttonLabel.value = '';
     await nextTick();
@@ -456,218 +613,221 @@ async function onSubmit(): Promise<void> {
   <div
     class="oa-auth"
     :class="[
-      { 'has-login-bg': !!loginBgUrl },
+      { 'has-login-bg': !!loginBg },
       `position-${site.auth_card_position || 'center'}`,
     ]"
     :style="loginBgUrl ? { backgroundImage: `url(${loginBgUrl})` } : undefined"
   >
+    <OaBackdrop v-if="loginBgFrame" :key="loginBgFrame" :url="loginBgFrame" />
     <!-- The instance's standing notice, for somebody who has not signed in
          either: this is the first page most of them see. -->
     <HomeNotice floating />
     <form ref="formEl" class="oa-auth-card" novalidate @submit.prevent="stage === 'code' ? onCode() : onSubmit()">
-      <div class="oa-auth-brand">
-        <img v-if="site.logo_url" :src="site.logo_url" class="oa-auth-brand-logo" alt="">
-        <span v-else class="oa-auth-mark"><IconSpark :size="15" /></span>
-        <span>{{ site.name }}</span>
-      </div>
-
-      <template v-if="stage === 'code'">
-        <h1 class="oa-auth-title">{{ t('twoFactorSignInTitle') }}</h1>
-        <p class="oa-auth-sub">
-          {{ recoveryMode ? t('twoFactorSignInRecoveryBody') : t('twoFactorSignInBody') }}
-        </p>
-        <div class="oa-auth-form">
-          <OaField :label="recoveryMode ? t('twoFactorRecoveryLabel') : t('twoFactorCodeLabel')">
-            <input
-              ref="codeField"
-              class="oa-2fa-code"
-              :value="code"
-              type="text"
-              :inputmode="recoveryMode ? 'text' : 'numeric'"
-              :autocomplete="recoveryMode ? 'off' : 'one-time-code'"
-              spellcheck="false"
-              :maxlength="recoveryMode ? 16 : 7"
-              :placeholder="recoveryMode ? 'xxxxx-xxxxx' : '000000'"
-              @input="onCodeInput"
-            >
-          </OaField>
-          <label v-if="rememberDays > 0" class="oa-checkbox-field">
-            <input v-model="remember" type="checkbox">
-            <span>{{ t('twoFactorRemember', { days: rememberDays }) }}</span>
-          </label>
-          <p class="oa-auth-error" role="alert" :hidden="!error">{{ error }}</p>
-          <button
-            type="submit"
-            class="oa-btn primary oa-btn-block"
-            :disabled="busy || !code.trim()"
-            :data-busy="busy ? 'true' : undefined"
-          >
-            {{ busy ? t('twoFactorVerifying') : t('twoFactorVerify') }}
-          </button>
-        </div>
-        <p class="oa-auth-switch">
-          <button type="button" @click="toggleRecovery">
-            {{ recoveryMode ? t('twoFactorUseApp') : t('twoFactorUseRecovery') }}
-          </button>
-          <span> · </span>
-          <button type="button" @click="startOver">{{ t('twoFactorOtherAccount') }}</button>
-        </p>
-        <p v-if="recoveryMode" class="oa-auth-note">{{ t('twoFactorLostHelp') }}</p>
-      </template>
-
-      <template v-else>
-        <h1 class="oa-auth-title">
-          {{ setup ? t('firstAccountTitle') : registering ? t('createAccountTitle') : t('welcomeBack') }}
-        </h1>
-        <p class="oa-auth-sub">
-          {{
-            setup
-              ? t('firstAccountBody')
-              : registering && thirdPartyOnlySignup
-                ? t('oauthThirdPartyOnlyNotice')
-                : registering
-                  ? t('createAccountBody')
-                  : t('welcomeBackBody')
-          }}
-        </p>
-
-        <div v-if="registering && thirdPartyOnlySignup" class="oa-auth-form">
-          <OaTurnstile
-            v-if="guarded"
-            ref="guard"
-            :site-key="site.turnstile_site_key ?? ''"
-            @solved="onTurnstileSolved"
-          />
-          <p class="oa-auth-error" role="alert" :hidden="!error">{{ error }}</p>
-          <div class="oa-auth-providers">
-            <a
-              v-for="provider in providers"
-              :key="provider.id"
-              class="oa-btn primary oa-btn-block oa-auth-provider"
-              :href="signInURL(provider.id, { next: safeNext(route.query['next']), register: true })"
-              @click="onProviderClick($event, provider.id)"
-            >
-              <component :is="mark(provider.id)" :size="15" />
-              <span>{{ t('continueWith', { provider: provider.name }) }}</span>
-            </a>
-          </div>
+      <div class="oa-auth-content">
+        <div class="oa-auth-brand">
+          <img v-if="site.logo_url" :src="site.logo_url" class="oa-auth-brand-logo" alt="">
+          <span v-else class="oa-auth-mark"><IconSpark :size="15" /></span>
+          <span>{{ site.name }}</span>
         </div>
 
-        <div v-else class="oa-auth-form">
-          <OaField :label="identityLabel">
-            <input
-              ref="identifierField"
-              v-model="identifier"
-              type="text"
-              spellcheck="false"
-              :placeholder="identityLabel"
-              autocomplete="username"
-              maxlength="254"
-            >
-          </OaField>
-
-          <!-- The label carries whether it is optional; the hint carries which
-               addresses will be taken. Both are things you want before typing,
-               not after submitting. -->
-          <OaField
-            v-if="registering"
-            :label="emailRequired ? t('email') : t('emailOptional')"
-            :hint="emailHint"
-          >
-            <input
-              v-model="email"
-              type="email"
-              spellcheck="false"
-              :placeholder="domains.length ? `you@${domains[0]}` : 'you@example.com'"
-              autocomplete="email"
-              maxlength="254"
-              :required="emailRequired"
-            >
-          </OaField>
-
-          <OaAccountFields v-if="registering" v-model="fields" :plan="fieldPlan" />
-
-          <!-- Required in invite-only mode; otherwise a collapsed link, so a
-               field almost nobody fills in does not sit open on every visit. -->
-          <p v-if="registering && inviteMode === 'open' && !inviteOpen" class="oa-auth-switch">
-            <button type="button" @click="inviteOpen = true">{{ t('haveInviteCode') }}</button>
+        <template v-if="stage === 'code'">
+          <h1 class="oa-auth-title">{{ t('twoFactorSignInTitle') }}</h1>
+          <p class="oa-auth-sub">
+            {{ recoveryMode ? t('twoFactorSignInRecoveryBody') : t('twoFactorSignInBody') }}
           </p>
-          <OaField v-if="inviteVisible" :label="inviteMode === 'invite' ? t('inviteCodeLabel') : t('inviteCodeOptionalLabel')">
-            <input
-              v-model="inviteCode"
-              type="text"
-              spellcheck="false"
-              :placeholder="t('inviteCodePlaceholder')"
-              autocomplete="off"
-              maxlength="32"
-              :required="inviteMode === 'invite'"
+          <div class="oa-auth-form">
+            <OaField :label="recoveryMode ? t('twoFactorRecoveryLabel') : t('twoFactorCodeLabel')">
+              <input
+                ref="codeField"
+                class="oa-2fa-code"
+                :value="code"
+                type="text"
+                :inputmode="recoveryMode ? 'text' : 'numeric'"
+                :autocomplete="recoveryMode ? 'off' : 'one-time-code'"
+                spellcheck="false"
+                :maxlength="recoveryMode ? 16 : TWO_FACTOR_DIGITS + 1"
+                :placeholder="recoveryMode ? 'xxxxx-xxxxx' : '000000'"
+                @input="onCodeInput"
+              >
+            </OaField>
+            <label v-if="rememberDays > 0" class="oa-checkbox-field">
+              <input v-model="remember" type="checkbox">
+              <span>{{ t('twoFactorRemember', { days: rememberDays }) }}</span>
+            </label>
+            <p class="oa-auth-error" role="alert" :hidden="!error">{{ error }}</p>
+            <button
+              type="submit"
+              class="oa-btn primary oa-btn-block"
+              :disabled="busy || !code.trim()"
+              :data-busy="busy ? 'true' : undefined"
             >
-          </OaField>
+              {{ busy ? t('twoFactorVerifying') : t('twoFactorVerify') }}
+            </button>
+          </div>
+          <p class="oa-auth-switch">
+            <button type="button" @click="toggleRecovery">
+              {{ recoveryMode ? t('twoFactorUseApp') : t('twoFactorUseRecovery') }}
+            </button>
+            <span> · </span>
+            <button type="button" @click="startOver">{{ t('twoFactorOtherAccount') }}</button>
+          </p>
+          <p v-if="recoveryMode" class="oa-auth-note">{{ t('twoFactorLostHelp') }}</p>
+        </template>
 
-          <OaField :label="t('password')">
-            <input
-              ref="passwordField"
-              v-model="password"
-              type="password"
-              spellcheck="false"
-              :placeholder="registering ? t('passwordHint') : t('password')"
-              :autocomplete="registering ? 'new-password' : 'current-password'"
-              maxlength="256"
-            >
-          </OaField>
+        <template v-else>
+          <h1 class="oa-auth-title">
+            {{ setup ? t('firstAccountTitle') : registering ? t('createAccountTitle') : t('welcomeBack') }}
+          </h1>
+          <p class="oa-auth-sub">
+            {{
+              setup
+                ? t('firstAccountBody')
+                : registering && thirdPartyOnlySignup
+                  ? t('oauthThirdPartyOnlyNotice')
+                  : registering
+                    ? t('createAccountBody')
+                    : t('welcomeBackBody')
+            }}
+          </p>
 
-          <OaTurnstile
-            v-if="guarded"
-            ref="guard"
-            :site-key="site.turnstile_site_key ?? ''"
-            @solved="onTurnstileSolved"
-          />
-
-          <p class="oa-auth-error" role="alert" :hidden="!error">{{ error }}</p>
-
-          <button
-            type="submit"
-            class="oa-btn primary oa-btn-block"
-            :disabled="busy"
-            :data-busy="busy ? 'true' : undefined"
-          >
-            {{ buttonLabel || (registering ? t('createAccount') : t('signIn')) }}
-          </button>
-
-          <!-- Links rather than buttons, because each one is a navigation to
-               somebody else's site: the server answers with a redirect, which a
-               fetch could not follow anywhere useful. -->
-          <template v-if="providers.length">
-            <p class="oa-auth-or"><span>{{ t('orContinueWith') }}</span></p>
+          <div v-if="registering && thirdPartyOnlySignup" class="oa-auth-form">
+            <OaTurnstile
+              v-if="guarded"
+              ref="turnstile"
+              :site-key="site.turnstile_site_key ?? ''"
+              @solved="onTurnstileSolved"
+            />
+            <p class="oa-auth-error" role="alert" :hidden="!error">{{ error }}</p>
             <div class="oa-auth-providers">
               <a
                 v-for="provider in providers"
                 :key="provider.id"
-                class="oa-btn oa-auth-provider"
-                :href="signInURL(provider.id, { next: safeNext(route.query['next']), register: registering })"
+                class="oa-btn primary oa-btn-block oa-auth-provider"
+                :href="signInURL(provider.id, { next: safeNext(route.query['next']), register: true })"
                 @click="onProviderClick($event, provider.id)"
               >
-                <component :is="mark(provider.id)" :size="15" />
+                <component :is="providerMark(provider.id)" :size="15" />
                 <span>{{ t('continueWith', { provider: provider.name }) }}</span>
               </a>
             </div>
-          </template>
-        </div>
+          </div>
 
-        <p v-if="!setup" class="oa-auth-switch">
-          <template v-if="registering">
-            <span>{{ t('haveAccount') }}</span>
-            <button type="button" @click="router.push('/login')">{{ t('signIn') }}</button>
-          </template>
-          <template v-else-if="site.registration_enabled || thirdPartyOnlySignup">
-            <span>{{ t('noAccount') }}</span>
-            <button type="button" @click="router.push('/register')">{{ t('createOne') }}</button>
-          </template>
-          <template v-else>{{ t('registrationClosed') }}</template>
-        </p>
+          <div v-else class="oa-auth-form">
+            <OaField :label="identityLabel">
+              <input
+                ref="identifierField"
+                v-model="identifier"
+                type="text"
+                spellcheck="false"
+                :placeholder="identityLabel"
+                autocomplete="username"
+                maxlength="254"
+              >
+            </OaField>
 
-        <p v-if="site.description" class="oa-auth-note">{{ site.description }}</p>
-      </template>
+            <!-- The label carries whether it is optional; the hint carries which
+                 addresses will be taken. Both are things you want before typing,
+                 not after submitting. -->
+            <OaField
+              v-if="registering"
+              :label="emailRequired ? t('email') : t('emailOptional')"
+              :hint="emailHint"
+            >
+              <input
+                v-model="email"
+                type="email"
+                spellcheck="false"
+                :placeholder="domains.length ? `you@${domains[0]}` : 'you@example.com'"
+                autocomplete="email"
+                maxlength="254"
+                :required="emailRequired"
+              >
+            </OaField>
+
+            <OaAccountFields v-if="registering" v-model="fields" :plan="fieldPlan" />
+
+            <!-- Required in invite-only mode; otherwise a collapsed link, so a
+                 field almost nobody fills in does not sit open on every visit. -->
+            <p v-if="registering && inviteMode === 'open' && !inviteOpen" class="oa-auth-switch">
+              <button type="button" @click="inviteOpen = true">{{ t('haveInviteCode') }}</button>
+            </p>
+            <OaField v-if="inviteVisible" :label="inviteMode === 'invite' ? t('inviteCodeLabel') : t('inviteCodeOptionalLabel')">
+              <input
+                v-model="inviteCode"
+                type="text"
+                spellcheck="false"
+                :placeholder="t('inviteCodePlaceholder')"
+                autocomplete="off"
+                maxlength="32"
+                :required="inviteMode === 'invite'"
+              >
+            </OaField>
+
+            <OaField :label="t('password')">
+              <input
+                ref="passwordField"
+                v-model="password"
+                type="password"
+                spellcheck="false"
+                :placeholder="registering ? t('passwordHint') : t('password')"
+                :autocomplete="registering ? 'new-password' : 'current-password'"
+                maxlength="256"
+              >
+            </OaField>
+
+            <OaTurnstile
+              v-if="guarded"
+              ref="turnstile"
+              :site-key="site.turnstile_site_key ?? ''"
+              @solved="onTurnstileSolved"
+            />
+
+            <p class="oa-auth-error" role="alert" :hidden="!error">{{ error }}</p>
+
+            <button
+              type="submit"
+              class="oa-btn primary oa-btn-block"
+              :disabled="busy"
+              :data-busy="busy ? 'true' : undefined"
+            >
+              {{ buttonLabel || (registering ? t('createAccount') : t('signIn')) }}
+            </button>
+
+            <!-- Links rather than buttons, because each one is a navigation to
+                 somebody else's site: the server answers with a redirect, which a
+                 fetch could not follow anywhere useful. -->
+            <template v-if="providers.length">
+              <p class="oa-auth-or"><span>{{ t('orContinueWith') }}</span></p>
+              <div class="oa-auth-providers">
+                <a
+                  v-for="provider in providers"
+                  :key="provider.id"
+                  class="oa-btn oa-btn-block oa-auth-provider"
+                  :href="signInURL(provider.id, { next: safeNext(route.query['next']), register: registering })"
+                  @click="onProviderClick($event, provider.id)"
+                >
+                  <component :is="providerMark(provider.id)" :size="15" />
+                  <span>{{ t('continueWith', { provider: provider.name }) }}</span>
+                </a>
+              </div>
+            </template>
+          </div>
+
+          <p v-if="!setup" class="oa-auth-switch">
+            <template v-if="registering">
+              <span>{{ t('haveAccount') }}</span>
+              <button type="button" @click="switchMode('/login')">{{ t('signIn') }}</button>
+            </template>
+            <template v-else-if="site.registration_enabled || thirdPartyOnlySignup">
+              <span>{{ t('noAccount') }}</span>
+              <button type="button" @click="switchMode('/register')">{{ t('createOne') }}</button>
+            </template>
+            <template v-else>{{ t('registrationClosed') }}</template>
+          </p>
+
+          <p v-if="site.description" class="oa-auth-note">{{ site.description }}</p>
+        </template>
+      </div>
     </form>
   </div>
 

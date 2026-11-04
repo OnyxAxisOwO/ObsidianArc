@@ -6,6 +6,10 @@
 # What is under test is the refusal to drop a plugin: the running server's
 # last deploy left its plugin list beside its binary, and a build without one
 # of them would switch that feature off under the people using it.
+#
+# The version is spliced into a command the server's shell runs, and a git tag
+# name can carry quotes and $(...), so a version that is not plain has to stop
+# both the Makefile and the deploy before anything runs it.
 
 set -eu
 
@@ -24,17 +28,25 @@ case $(uname -m) in
   *) echo arm64 >"$work/dist/ARCH" ;;
 esac
 printf '#!/bin/sh\nshift\nexec sh -c "$1"\n' >"$tmp/bin/ssh"
-printf '#!/bin/sh\necho "docker $*"\n' >"$tmp/bin/docker"
+# The docker stand-in fails the step named by DOCKER_FAIL ("build" or "compose
+# up"), so a deploy that stops part way can be exercised.
+printf '#!/bin/sh\necho "docker $*"\ncase "$*" in *"${DOCKER_FAIL:-@}"*) exit 1 ;; esac\n' >"$tmp/bin/docker"
 chmod +x "$tmp/bin/ssh" "$tmp/bin/docker"
 
 # deploy <what the server has> <what the build carries> [DROP_PLUGINS] [the
-# file the server keeps its list in]
+# file the server keeps its list in, under $server] [docker step to fail]
 deploy() {
-  rm -f "$server/dist/PLUGINS" "$server/dist/PLUGIN_LIST"
-  if [ -n "$1" ]; then echo "$1" >"$server/dist/${4:-PLUGIN_LIST}"; fi
+  rm -f "$server/PLUGIN_LIST" "$server/dist/PLUGINS" "$server/dist/PLUGIN_LIST"
+  if [ -n "$1" ]; then echo "$1" >"$server/${4:-PLUGIN_LIST}"; fi
   echo "$2" >"$work/dist/PLUGIN_LIST"
+  run_deploy "${3:-}" "${5:-}"
+}
+
+# run_deploy <DROP_PLUGINS> <docker step to fail>: deploys whatever the server
+# and the build hold now, without setting either up again.
+run_deploy() {
   (cd "$work" && PATH="$tmp/bin:$PATH" DEPLOY_SSH="$tmp/bin/ssh" DEPLOY_HOST=host \
-    DEPLOY_DIR="$server" DROP_PLUGINS="${3:-}" sh "$script") >"$tmp/out" 2>&1
+    DEPLOY_DIR="$server" DROP_PLUGINS="$1" DOCKER_FAIL="$2" sh "$script") >"$tmp/out" 2>&1
 }
 
 fail() { echo "FAIL: $1" >&2; cat "$tmp/out" >&2; exit 1; }
@@ -45,19 +57,188 @@ grep -q "docker" "$tmp/out" && fail "the container was touched before the refusa
 
 deploy "alpha beta" "alpha" 1 || fail "DROP_PLUGINS=1 did not let the plugin go"
 deploy "alpha beta" "beta gamma alpha" || fail "a build carrying everything, and more, was refused"
+grep -qx "beta gamma alpha" "$server/PLUGIN_LIST" || fail "a successful deploy did not record what it runs"
 deploy "" "alpha" || fail "a first deploy, with no list on the server, was refused"
 deploy " " "alpha" || fail "a server whose list is empty was refused"
 
 # A server last deployed before the list was renamed still has the old file,
 # and a build that drops what it names is refused all the same.
-if deploy "alpha beta" "alpha" "" PLUGINS; then fail "the old list file was not read"; fi
+if deploy "alpha beta" "alpha" "" dist/PLUGINS; then fail "the old list file was not read"; fi
 grep -q "carries beta" "$tmp/out" || fail "the refusal from the old list file does not name the plugin"
-deploy "alpha beta" "alpha beta" "" PLUGINS || fail "a build carrying everything the old list names was refused"
+deploy "alpha beta" "alpha beta" "" dist/PLUGINS || fail "a build carrying everything the old list names was refused"
+
+# A deploy that stops part way must not move the record. The build's own list
+# is in dist/ by then, and the next deploy, without DROP_PLUGINS=1, must still
+# be refused for the plugin the running server carries.
+for failing in build "compose up"; do
+  if deploy "alpha beta" "alpha" 1 PLUGIN_LIST "$failing"; then fail "a deploy whose $failing step failed was reported as deployed"; fi
+  if run_deploy "" ""; then fail "a deploy after a failed $failing let the plugin go"; fi
+  grep -q "carries beta" "$tmp/out" || fail "the refusal after a failed $failing does not name the plugin"
+done
+
+# The same holds for a server still keeping its list under dist/. The failed
+# attempt's rm -rf dist takes that file, and the build's own dist/PLUGIN_LIST
+# then holds only what the new build carries.
+for failing in build "compose up"; do
+  if deploy "alpha beta" "alpha" 1 dist/PLUGINS "$failing"; then fail "a legacy deploy whose $failing step failed was reported as deployed"; fi
+  if run_deploy "" ""; then fail "a deploy after a failed $failing, from a server with its list under dist/, let the plugin go"; fi
+  grep -q "carries beta" "$tmp/out" || fail "the refusal after a failed $failing, from a server with its list under dist/, does not name the plugin"
+done
+
+# A first deploy that fails in docker build leaves the build's own list in
+# dist/. A server that runs no plugins must not have that list read back as
+# what it runs: the deploy writes the record before the build replaces dist/.
+if deploy "" "alpha" "" "" build; then fail "a build failed by docker was reported as deployed"; fi
+echo >"$work/dist/PLUGIN_LIST"
+run_deploy "" "" || fail "a failed attempt's build list was read as what the server runs"
+
+# ssh reads a host that begins with a dash as one of its options, so the deploy
+# has to stop before the transport is reached: the stand-in ssh would otherwise
+# run the remote half and echo docker's line.
+host_proof=$tmp/host-proof
+if (cd "$work" && PATH="$tmp/bin:$PATH" DEPLOY_SSH="$tmp/bin/ssh" DEPLOY_HOST="-oProxyCommand=touch '$host_proof'" \
+  DEPLOY_DIR="$server" sh "$script") >"$tmp/out" 2>&1; then
+  fail "a DEPLOY_HOST that begins with a dash was accepted"
+fi
+grep -q "DEPLOY_HOST is refused" "$tmp/out" || fail "the DEPLOY_HOST refusal does not say why"
+grep -q docker "$tmp/out" && fail "the transport ran for a DEPLOY_HOST that was refused"
+[ -e "$host_proof" ] && fail "a DEPLOY_HOST ran as an ssh option"
+echo "deploy.sh host guard: ok"
+
+# A tag name reaches the server's shell through dist/VERSION. A quote in it runs
+# its payload there, so the deploy has to stop before ssh is reached, and no
+# docker command may run for that version either.
+deploy_proof=$tmp/deploy-proof
+printf '%s\n' "v1'; touch '$deploy_proof'; echo '" >"$work/dist/VERSION"
+if deploy "" "alpha"; then fail "a version with a quote in it was deployed"; fi
+grep -q "not a plain version" "$tmp/out" || fail "the refusal does not say why"
+[ -e "$deploy_proof" ] && fail "a tag name ran as a command on the server"
+grep -q docker "$tmp/out" && fail "docker ran for a version that was refused"
+for v in v0.9.2 v0.9.2-64-g356a68e v0.9.2-64-g356a68e-dirty v1.3.0-rc.1-14-g1a2b3c4 356a68e dev; do
+  printf '%s\n' "$v" >"$work/dist/VERSION"
+  deploy "" "alpha" || fail "the plain version $v was refused"
+done
+# dist/ARCH is spliced into the same remote command, so it is held the same way.
+arch_proof=$tmp/arch-proof
+good_arch=$(cat "$work/dist/ARCH")
+printf '%s\n' "amd64'; touch '$arch_proof'; echo '" >"$work/dist/ARCH"
+if deploy "" "alpha"; then fail "an ARCH with a quote in it was deployed"; fi
+grep -q "not a platform name" "$tmp/out" || fail "the ARCH refusal does not say why"
+[ -e "$arch_proof" ] && fail "dist/ARCH ran as a command on the server"
+printf '%s\n' "$good_arch" >"$work/dist/ARCH"
+deploy "" "alpha" || fail "the plain ARCH $good_arch was refused"
+echo "deploy.sh version guard: ok"
+
+# The Makefile is the first place a tag name reaches a shell, so it refuses the
+# same things before any recipe runs.
+root=$(cd "$(dirname "$0")/.." && pwd)
+make_proof=$tmp/make-proof
+if make -s -C "$root" version VERSION="v1; touch '$make_proof'" >"$tmp/make.out" 2>&1; then
+  fail "make accepted a version that is shell syntax"
+fi
+[ -e "$make_proof" ] && fail "make ran a version as a command"
+grep -q "is refused" "$tmp/make.out" || fail "make does not say why it refused the version"
+for v in v0.9.2 v0.9.2-64-g356a68e-dirty v1.3.0-rc.1-14-g1a2b3c4 356a68e dev; do
+  make -s -C "$root" version VERSION="$v" >/dev/null 2>&1 || fail "make refused the plain version $v"
+done
+echo "Makefile version guard: ok"
 
 # The list and the directory of bundled packages must be able to sit side by
 # side on a case-insensitive file system.
 mkdir -p "$work/dist/plugins"
 echo alpha >"$work/dist/PLUGIN_LIST"
 [ -f "$work/dist/PLUGIN_LIST" ] && [ -d "$work/dist/plugins" ] || fail "the list and the packages directory collide"
+
+# The names in dist/PLUGIN_LIST are spliced into the command the server's shell
+# reads, inside quotes. A name with a quote in it ends them there and runs what
+# follows, which is how a package file's name would reach the server. The list
+# is held to plain characters before ssh is reached, so no docker command runs
+# for it either.
+plugin_proof=$tmp/plugin-proof
+if deploy "alpha" "alpha x'\`touch '$plugin_proof'\`'"; then fail "a plugin name with a quote in it was deployed"; fi
+grep -q "holds a name that is not plain" "$tmp/out" || fail "the plugin name refusal does not say why"
+[ -e "$plugin_proof" ] && fail "a plugin name ran as a command on the server"
+grep -q docker "$tmp/out" && fail "docker ran for a plugin list that was refused"
+if deploy "alpha" "*"; then fail "a glob in the plugin list was deployed"; fi
+deploy "alpha_1.2+x-y" "alpha_1.2+x-y" || fail "a plain plugin name was refused"
+echo "deploy.sh plugin name guard: ok"
+
+# The Makefile holds the same things before any recipe runs. The package recipe
+# copies the paths with an unquoted loop, and the names are echoed into
+# dist/PLUGIN_LIST, so a backquote in either one runs a command on the build
+# machine. PROOF comes from the environment because a package path is cut at its
+# last slash to get the name, so a path written into the payload would be lost.
+make_plugin_proof=$tmp/make-plugin-proof
+if PROOF=$make_plugin_proof make -s -C "$root" version PLUGINS='alpha`:>$$PROOF`' >"$tmp/make.out" 2>&1; then
+  fail "make accepted a plugin name that runs a command"
+fi
+[ -e "$make_plugin_proof" ] && fail "make ran a plugin name as a command"
+grep -q "is refused" "$tmp/make.out" || fail "make does not say why it refused the plugin name"
+make_package_proof=$tmp/make-package-proof
+if PROOF=$make_package_proof make -s -C "$root" version PACKAGES='pkgs/x`:>$$PROOF`-1.0.arcx' >"$tmp/make.out" 2>&1; then
+  fail "make accepted a package path that runs a command"
+fi
+[ -e "$make_package_proof" ] && fail "make ran a package path as a command"
+grep -q "is refused" "$tmp/make.out" || fail "make does not say why it refused the package path"
+make -s -C "$root" version PLUGINS="alpha_1.2+x-y" PACKAGES="../pkgs/alpha-1.0.arcx" >/dev/null 2>&1 \
+  || fail "make refused a plain plugin name and package path"
+echo "Makefile plugin name guard: ok"
+
+# The check must see each value as typed. Expanded first, a $(shell ...) in a value
+# runs while the makefile is parsed, and the check judges only what it printed; and
+# a newline, which the check must refuse, reaches the echo recipes as a second
+# shell command. Every payload must be refused before a recipe runs, so none
+# creates its file. They run from a directory of their own, not the tree, in case
+# one gets through; the newline payloads hold no slash, which the check refuses
+# for another reason.
+probe=$tmp/make-probe
+mkdir -p "$probe"
+# Run from a make that was given VERSION= on its command line (an overlay
+# build's does), the inherited MAKEFLAGS would hand that value to every make
+# below, and a command-line value outranks the environment one being tested.
+unset MAKEFLAGS MAKEOVERRIDES MFLAGS
+nl='
+'
+# make_refuses <the file a payload would create> <make arguments...>
+make_refuses() {
+  proof=$1
+  shift
+  rm -f "$probe/$proof"
+  if (cd "$probe" && make -f "$root/Makefile" "$@") >"$tmp/out" 2>&1; then
+    fail "make accepted $*"
+  fi
+  [ -e "$probe/$proof" ] && fail "make ran a value as a command: $*"
+  grep -q "is refused" "$tmp/out" || fail "make does not say why it refused $*"
+}
+make_refuses shell-proof version 'PLUGINS=$(shell touch shell-proof)'
+make_refuses shell-proof version 'PACKAGES=pkgs/$(shell touch shell-proof)-1.0.arcx'
+make_refuses shell-proof version 'VERSION=v1$(shell touch shell-proof)'
+make_refuses newline-proof version "PLUGINS=alpha${nl}touch newline-proof"
+make_refuses newline-proof version "PACKAGES=alpha-1.0.arcx${nl}touch newline-proof"
+make_refuses newline-proof package "PLUGINS=alpha${nl}touch newline-proof"
+rm -f "$probe/env-proof"
+if (cd "$probe" && VERSION='v1$(shell touch env-proof)' make -f "$root/Makefile" version) >"$tmp/out" 2>&1; then
+  fail "make accepted a VERSION from the environment that runs a command"
+fi
+[ -e "$probe/env-proof" ] && fail "make ran a VERSION from the environment as a command"
+(cd "$probe" && make -s -f "$root/Makefile" version PLUGINS=alpha PACKAGES=pkgs/alpha-1.0.arcx) >"$tmp/out" 2>&1 \
+  || fail "make refused a plain plugin name and package path"
+grep -q "plugins: alpha alpha" "$tmp/out" || fail "the plain plugin list is not printed"
+echo "Makefile value guard: ok"
+# ARCH is spliced into the package recipe's go build line and into dist/ARCH, so
+# the Makefile holds it to a platform name as well, from the command line and
+# from the environment, before any recipe runs.
+make_refuses arch-proof package 'ARCH=amd64$(shell touch arch-proof)'
+make_refuses arch-proof package 'ARCH=amd64;touch arch-proof'
+make_refuses newline-proof package "ARCH=amd64${nl}touch newline-proof"
+make_refuses arch-proof version 'ARCH=AMD64'
+rm -f "$probe/env-arch-proof"
+if (cd "$probe" && ARCH='amd64$(shell touch env-arch-proof)' make -f "$root/Makefile" version) >"$tmp/out" 2>&1; then
+  fail "make accepted an ARCH from the environment that runs a command"
+fi
+[ -e "$probe/env-arch-proof" ] && fail "make ran an ARCH from the environment as a command"
+(cd "$probe" && make -s -f "$root/Makefile" version ARCH=arm64) >"$tmp/out" 2>&1 \
+  || fail "make refused a plain ARCH"
+echo "Makefile ARCH guard: ok"
 
 echo "deploy.sh plugin guard: ok"

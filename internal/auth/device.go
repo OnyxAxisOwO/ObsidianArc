@@ -2,8 +2,6 @@ package auth
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -14,6 +12,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/mail"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/text"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
@@ -35,6 +34,19 @@ import (
 // short enough that a cookie nobody has presented in well over a year does
 // not go on describing a device forever.
 const deviceCookieDays = 400
+
+// A password holder can clear cookies and sign in again, and each sign-in is a
+// device this account has not seen: without a cap, that is one mail and one
+// security event per sign-in, for as long as they like. Past the cap the row is
+// still written, with first_seen set to now, so it counts toward the window it
+// arrived in and a sustained flood stays suppressed for as long as it lasts.
+// The account's own first device counts too while it is recent, so a brand-new
+// account gets one notice fewer in its first hour; a separate column to exclude
+// it would be a migration for that alone.
+const (
+	newDeviceNoticesPerWindow = 5
+	newDeviceNoticeWindow     = time.Hour
+)
 
 // DeviceCookieName is the session cookie's name with a suffix, the way the
 // remembered-browser cookie is: one cookie jar, three related names, and no
@@ -66,11 +78,6 @@ func (s *Service) SetDeviceCookie(w http.ResponseWriter, value string) {
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   deviceCookieDays * 24 * 60 * 60,
 	})
-}
-
-func hashDevice(value string) string {
-	sum := sha256.Sum256([]byte(value))
-	return hex.EncodeToString(sum[:])
 }
 
 // NewDeviceEvent is a sign-in worth telling somebody about: not the first
@@ -119,7 +126,7 @@ func (s *Service) recordDevice(
 		value = id.Secret(32)
 		cookieToSet = value
 	}
-	deviceID := hashDevice(value)
+	deviceID := secret.Digest(value)
 	now := time.Now().UnixMilli()
 	truncatedUA := text.Truncate(ua, MaxUserAgentChars)
 
@@ -157,6 +164,19 @@ func (s *Service) recordDevice(
 		// The account's very first device is not "new" — there was nothing
 		// on record yet for it to differ from.
 		newDevice = !learn && priorDevices > 0 && alreadyKnown == 0
+		if newDevice {
+			// Counted under the account's lock, so two sign-ins at once cannot
+			// both see the window one short.
+			var recent int64
+			if err := tx.QueryRow(ctx,
+				`SELECT COUNT(*) FROM user_devices WHERE user_id = ? AND first_seen > ?`,
+				account.ID, now-newDeviceNoticeWindow.Milliseconds()).Scan(&recent); err != nil {
+				return fmt.Errorf("auth: count recent devices: %w", err)
+			}
+			if recent >= newDeviceNoticesPerWindow {
+				newDevice = false
+			}
+		}
 
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO user_devices (user_id, device_id, first_seen, last_seen, last_ip, user_agent)
@@ -235,12 +255,12 @@ func (s *Service) learnDevice(ctx context.Context, w http.ResponseWriter, r *htt
 // succeeded, and a slow or failing subscriber must not turn it into a
 // failure the person seizes on retrying.
 func (s *Service) newDeviceEvent(ctx context.Context, account user.User, ip, ua string, at int64) {
-	if s.OnNewDevice == nil {
+	if s.Hooks.OnNewDevice == nil {
 		return
 	}
 	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	s.OnNewDevice(recordCtx, NewDeviceEvent{Account: account, IP: ip, UserAgent: ua, At: at})
+	s.Hooks.OnNewDevice(recordCtx, NewDeviceEvent{Account: account, IP: ip, UserAgent: ua, At: at})
 }
 
 // newDeviceMailWanted is the gate: the operator's switch, mail actually being

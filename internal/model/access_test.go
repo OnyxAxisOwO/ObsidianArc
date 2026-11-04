@@ -163,7 +163,7 @@ func TestGroupAccessTiers(t *testing.T) {
 		{ModelID: useModel.ID, Access: AccessUse},
 		{ModelID: viewModel.ID, Access: AccessView},
 	}
-	if err := f.models.SetGroupModels(ctx, restricted.ID, grants); err != nil {
+	if err := f.models.SetGroupModels(ctx, nil, restricted.ID, grants); err != nil {
 		t.Fatalf("set group models: %v", err)
 	}
 
@@ -248,5 +248,47 @@ func TestAllowAllModelsBehaviorPreserved(t *testing.T) {
 	}
 	if _, err := f.models.Authorize(ctx, open.ID, m2.ID, false); err != nil {
 		t.Errorf("authorize m2: %v", err)
+	}
+}
+
+// A misspelt level used to be stored as full use, so "viwe" for view granted
+// far more than was typed. It is refused, and the grants it would have
+// replaced survive because the write rolls back.
+func TestUnknownAccessIsRefused(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	upstream := f.provider(t, "Example")
+	viewModel := f.model(t, upstream.ID, "model-view")
+
+	restricted, err := f.groups.Create(ctx, nil, group.CreateInput{Name: "Restricted", AllowAllModels: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.models.SetGroupModels(ctx, nil, restricted.ID, []GroupGrant{{ModelID: viewModel.ID, Access: AccessView}}); err != nil {
+		t.Fatal(err)
+	}
+
+	err = f.models.SetGroupModels(ctx, nil, restricted.ID, []GroupGrant{{ModelID: viewModel.ID, Access: "viwe"}})
+	if !errors.Is(err, ErrInvalidAccess) {
+		t.Fatalf("a misspelt level gave %v, want ErrInvalidAccess", err)
+	}
+
+	grants, err := f.models.GroupModelGrants(ctx, restricted.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(grants) != 1 || grants[0].Access != AccessView {
+		t.Fatalf("grants after a refused write = %+v, want the earlier view grant", grants)
+	}
+
+	if err := f.models.SetModelGroups(ctx, viewModel.ID, []ModelGroupGrant{{GroupID: restricted.ID, Access: "reed"}}); !errors.Is(err, ErrInvalidAccess) {
+		t.Fatalf("model-side misspelling gave %v, want ErrInvalidAccess", err)
+	}
+	if err := CheckAccess("viwe"); !errors.Is(err, ErrInvalidAccess) {
+		t.Fatalf("CheckAccess(\"viwe\") = %v", err)
+	}
+	if err := CheckAccess("none"); err != nil {
+		t.Fatalf("CheckAccess(\"none\") = %v, want nil", err)
 	}
 }

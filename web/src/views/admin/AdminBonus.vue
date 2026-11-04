@@ -5,17 +5,23 @@
 // models it covers) and a place to grant into. Check-in is what pressing a
 // button once a day earns. The rules for both are in
 // docs/architecture/bonus-and-checkin.md; this screen edits them.
+//
+// A shared pool is a bar too, with one balance for everybody in place of
+// grants: the same panel edits its rules, and where a bar lists its grants a
+// pool shows its balance and the box that changes it.
 
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import {
   adminApi,
   type AdminModel, type BonusBarRow, type BonusGrantRow, type CheckinRuleBody, type CheckinSettings, type Group,
+  type AdminBonusPoolInput,
 } from '@/admin/api';
 import { ApiError } from '@/api/client';
 import OaBadge from '@/components/OaBadge.vue';
 import OaBadgeRow from '@/components/OaBadgeRow.vue';
 import OaCellStack from '@/components/OaCellStack.vue';
 import OaCheckList from '@/components/OaCheckList.vue';
+import OaConfirmButton from '@/components/OaConfirmButton.vue';
 import OaFormSection from '@/components/OaFormSection.vue';
 import OaNumberField from '@/components/OaNumberField.vue';
 import OaPanel from '@/components/OaPanel.vue';
@@ -24,7 +30,9 @@ import OaSwitchField from '@/components/OaSwitchField.vue';
 import OaTable from '@/components/OaTable.vue';
 import OaTextField from '@/components/OaTextField.vue';
 import type { Column, SortState } from '@/components/table-types';
-import { t, tn } from '@/composables/useI18n';
+import { t, tn, type StringKey } from '@/composables/useI18n';
+import { useLatestRequest } from '@/composables/useLatestRequest';
+import { maskProvider, maskUser } from '@/admin/safeMode';
 import { absoluteTime, relativeTime } from '@/lib/format';
 import { IconCheck, IconGift } from '@/icons';
 import AdminControlCard from './AdminControlCard.vue';
@@ -32,9 +40,27 @@ import AdminFailure from './AdminFailure.vue';
 import CheckinRewardEditor from './CheckinRewardEditor.vue';
 import ExpiryPresets from './ExpiryPresets.vue';
 import { useAdminView } from './adminView';
+import { toDateTimeLocal, failureText } from './shared';
 
 const view = useAdminView();
-view.setTitle(t('bonusTitle'), t('bonusSubtitle'));
+view.setTitle(() => t('bonusTitle'), () => t('bonusSubtitle'));
+
+// The server clamps a grant to this many days (internal/admin/bonus.go), so a
+// larger figure would be shortened without a word. The field stops at the same
+// figure for that reason.
+const MAX_GRANT_DAYS = 3650;
+
+// The refusals only a pool's panel can meet, in the reader's language. The
+// screen does not offer either move, so these are what a stale page sees.
+const POOL_REFUSALS: Record<string, StringKey> = {
+  bonus_shared_no_grants: 'poolErrSharedNoGrants',
+  bonus_kind_change: 'poolErrKindChange',
+  bonus_not_shared: 'poolErrNotShared',
+};
+
+function poolRefusal(code: string): string | undefined {
+  return Object.hasOwn(POOL_REFUSALS, code) ? t(POOL_REFUSALS[code]!) : undefined;
+}
 
 const bars = ref<BonusBarRow[]>([]);
 const models = ref<AdminModel[]>([]);
@@ -52,7 +78,7 @@ async function load(): Promise<void> {
     void adminApi.groups().then((r) => { groups.value = r.groups; }).catch(() => undefined);
     await loadCheckin();
   } catch (failure) {
-    error.value = failure instanceof Error ? failure.message : String(failure);
+    error.value = failureText(failure);
   } finally {
     loaded.value = true;
   }
@@ -63,13 +89,18 @@ async function load(): Promise<void> {
 interface BarForm {
   name: string;
   description: string;
-  kind: 'bonus' | 'reserve';
-  toggle_mode: 'user' | 'on' | 'off';
+  kind: BonusBarRow['kind'];
+  toggle_mode: BonusBarRow['toggle_mode'];
   default_on: boolean;
   show_total: boolean;
   model_ids: string[];
   expiry: string;
   active: boolean;
+  reset_period: '' | 'day' | 'week' | 'month';
+  reset_amount: number | null;
+  per_user_daily: number | null;
+  /** What a new pool starts with; not sent for one that exists. */
+  initial: number | null;
 }
 
 const panel = ref<'closed' | 'bar' | 'grant'>('closed');
@@ -77,20 +108,24 @@ const existing = ref<BonusBarRow | null>(null);
 const form = ref<BarForm>(blankForm());
 const busy = ref(false);
 const panelError = ref('');
+/**
+ * A refresh that fails after an action has already closed its panel. The
+ * panel's own error would be written where nothing is drawn, so this one is
+ * shown on the page.
+ */
+const pageError = ref('');
 const flash = ref('');
 
 function blankForm(): BarForm {
   return {
     name: '', description: '', kind: 'bonus', toggle_mode: 'user', default_on: true, show_total: true,
-    model_ids: [], expiry: '', active: true,
+    model_ids: [], expiry: '', active: true, reset_period: '', reset_amount: null, per_user_daily: null, initial: null,
   };
 }
 
 function toLocalInput(ms: number): string {
   if (!ms) return '';
-  const d = new Date(ms);
-  const pad = (n: number): string => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return toDateTimeLocal(ms);
 }
 
 function fromLocalInput(value: string): number {
@@ -109,10 +144,30 @@ function openBar(row: BonusBarRow | null): void {
       name: row.name, description: row.description, kind: row.kind, toggle_mode: row.toggle_mode,
       default_on: row.default_on, show_total: row.show_total, model_ids: [...row.model_ids],
       expiry: toLocalInput(row.default_expires_at), active: row.active,
+      reset_period: row.pool?.reset_period ?? '', reset_amount: row.pool?.reset_amount || null,
+      per_user_daily: row.pool?.per_user_daily || null, initial: null,
     }
     : blankForm();
+  adjust.value = { op: 'add', amount: null };
   panel.value = 'bar';
-  if (row) void loadGrants(row.id, 0);
+  if (row && row.kind !== 'shared') void loadGrants(row.id, 0);
+}
+
+// A pool's switch has 'only' and no 'off'; every other bar has the reverse.
+// Changing the type moves a switch the new type does not have to one it does.
+watch(() => form.value.kind, (kind) => {
+  if (kind === 'shared' && form.value.toggle_mode === 'off') form.value.toggle_mode = 'user';
+  if (kind !== 'shared' && form.value.toggle_mode === 'only') form.value.toggle_mode = 'user';
+});
+
+function poolBody(): AdminBonusPoolInput | undefined {
+  const f = form.value;
+  if (f.kind !== 'shared') return undefined;
+  return {
+    reset_period: f.reset_period, reset_amount: f.reset_period ? f.reset_amount ?? 0 : 0,
+    per_user_daily: f.per_user_daily ?? 0,
+    ...(existing.value ? {} : { amount: f.initial ?? 0 }),
+  };
 }
 
 async function saveBar(): Promise<void> {
@@ -123,13 +178,27 @@ async function saveBar(): Promise<void> {
       name: form.value.name, description: form.value.description, kind: form.value.kind,
       toggle_mode: form.value.toggle_mode, default_on: form.value.default_on, show_total: form.value.show_total,
       model_ids: form.value.model_ids, default_expires_at: fromLocalInput(form.value.expiry), active: form.value.active,
+      pool: poolBody(),
     });
     panel.value = 'closed';
-    bars.value = (await adminApi.bonusBars()).bars;
+    await refreshBars();
   } catch (failure) {
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    // Only a code the interface has a sentence for is translated; any other
+    // keeps the server's sentence, which an administrator may need verbatim.
+    panelError.value = (failure instanceof ApiError ? poolRefusal(failure.code) : undefined) ?? failureText(failure);
   } finally {
     busy.value = false;
+  }
+}
+
+// The save or delete is committed before this runs, so a failed read-back is
+// reported where the page is, not as a failed save in a panel that is closed.
+async function refreshBars(): Promise<void> {
+  pageError.value = '';
+  try {
+    bars.value = (await adminApi.bonusBars()).bars;
+  } catch (failure) {
+    pageError.value = failureText(failure);
   }
 }
 
@@ -139,28 +208,86 @@ async function removeBar(): Promise<void> {
   try {
     await adminApi.deleteBonusBar(existing.value.id);
     panel.value = 'closed';
-    bars.value = (await adminApi.bonusBars()).bars;
+    await refreshBars();
   } catch (failure) {
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    panelError.value = failureText(failure);
   } finally {
     busy.value = false;
   }
 }
 
+// A pool cannot become a bar nor a bar a pool (the server refuses it), so an
+// existing one is offered only the types it may change between.
 const kindChoices = computed(() => [
   { value: 'bonus', label: t('bonusKindBonus') },
   { value: 'reserve', label: t('bonusKindReserve') },
+  { value: 'shared', label: t('bonusKindShared') },
+].filter((c) => !existing.value || (c.value === 'shared') === (existing.value.kind === 'shared')));
+const modeChoices = computed(() => form.value.kind === 'shared'
+  ? [
+    { value: 'user', label: t('bonusModeUser') },
+    { value: 'on', label: t('bonusModeOn') },
+    { value: 'only', label: t('poolModeOnly') },
+  ]
+  : [
+    { value: 'user', label: t('bonusModeUser') },
+    { value: 'on', label: t('bonusModeOn') },
+    { value: 'off', label: t('bonusModeOff') },
+  ]);
+const allModes = computed<Record<string, string>>(() => ({
+  user: t('bonusModeUser'), on: t('bonusModeOn'), off: t('bonusModeOff'), only: t('poolModeOnly'),
+}));
+const resetChoices = computed(() => [
+  { value: '', label: t('poolResetNever') },
+  { value: 'day', label: t('poolResetDay') },
+  { value: 'week', label: t('poolResetWeek') },
+  { value: 'month', label: t('poolResetMonth') },
 ]);
-const modeChoices = computed(() => [
-  { value: 'user', label: t('bonusModeUser') },
-  { value: 'on', label: t('bonusModeOn') },
-  { value: 'off', label: t('bonusModeOff') },
-]);
-const modelItems = computed(() => models.value.map((m) => ({ value: m.id, label: m.display_name || m.model_id, sub: m.provider_name })));
+/** Check-in pays into an account's own grants, which a pool has none of. */
+const grantable = computed(() => bars.value.filter((bar) => bar.kind !== 'shared'));
+const modelItems = computed(() => models.value.map((m) => ({ value: m.id, label: m.display_name || m.model_id, sub: maskProvider(m.provider_name) })));
 
 function modeLabel(row: BonusBarRow): string {
   if (row.kind === 'reserve') return t('bonusKindReserve');
-  return modeChoices.value.find((c) => c.value === row.toggle_mode)?.label ?? row.toggle_mode;
+  return allModes.value[row.toggle_mode] ?? row.toggle_mode;
+}
+
+// --- a pool's balance --------------------------------------------------------
+
+const adjust = ref<{ op: 'add' | 'set'; amount: number | null }>({ op: 'add', amount: null });
+const adjustChoices = computed(() => [
+  { value: 'add', label: t('poolAdd') },
+  { value: 'set', label: t('poolSet') },
+]);
+
+function poolLine(row: BonusBarRow): string {
+  const pool = row.pool;
+  if (!pool) return '';
+  return t('poolBalance', { left: credits(Math.max(pool.amount - pool.used, 0)), total: credits(pool.amount), count: row.holders });
+}
+
+async function adjustPool(): Promise<void> {
+  const bar = existing.value;
+  if (!bar || adjust.value.amount === null) return;
+  busy.value = true;
+  panelError.value = '';
+  flash.value = '';
+  let left: number;
+  try {
+    const { pool } = await adminApi.adjustBonusPool(bar.id, adjust.value.op, adjust.value.amount);
+    left = Math.max(pool.amount - pool.used, 0);
+  } catch (failure) {
+    panelError.value = (failure instanceof ApiError ? poolRefusal(failure.code) : undefined) ?? failureText(failure);
+    return;
+  } finally {
+    busy.value = false;
+  }
+  // Committed by here: a failed read-back is reported on the page, as after a
+  // grant, so the operator is not sent to top up a second time.
+  flash.value = t('poolAdjusted', { left: credits(left) });
+  adjust.value = { op: 'add', amount: null };
+  await refreshBars();
+  existing.value = bars.value.find((row) => row.id === bar.id) ?? existing.value;
 }
 
 function credits(amount: number): string {
@@ -182,16 +309,32 @@ const columns = computed<Array<Column<BonusBarRow>>>(() => [
 const grants = ref<BonusGrantRow[]>([]);
 const grantsTotal = ref(0);
 const grantsError = ref('');
+const grantsLoading = ref(false);
+// Each request supersedes the ones before it: a page asked for before the
+// operator reopened the bar, or before a second press, must not land on the
+// list that is shown now.
+const grantsTicket = useLatestRequest();
 
 async function loadGrants(barID: string, offset: number): Promise<void> {
+  // A page already on its way asks for the same offset; a second press would
+  // fetch it again and append it twice.
+  if (offset && grantsLoading.value) return;
+  const mine = grantsTicket.begin();
+  grantsLoading.value = true;
   grantsError.value = '';
   try {
     const result = await adminApi.bonusGrants(barID, offset);
-    if (existing.value?.id !== barID) return;
-    grants.value = offset ? [...grants.value, ...result.grants] : result.grants;
+    if (!grantsTicket.isCurrent(mine) || existing.value?.id !== barID) return;
+    const known = new Set(grants.value.map((row) => row.id));
+    grants.value = offset
+      ? [...grants.value, ...result.grants.filter((row) => !known.has(row.id))]
+      : result.grants;
     grantsTotal.value = result.total;
   } catch (failure) {
-    grantsError.value = failure instanceof ApiError ? failure.message : String(failure);
+    if (!grantsTicket.isCurrent(mine)) return;
+    grantsError.value = failureText(failure);
+  } finally {
+    if (grantsTicket.isCurrent(mine)) grantsLoading.value = false;
   }
 }
 
@@ -202,19 +345,25 @@ function grantLine(row: BonusGrantRow): string {
     relativeTime(row.created_at),
   ];
   if (row.source === 'checkin') parts.push(t('bonusSourceCheckin'));
+  // What a plugin package granted is marked with its name (rewards.bonus).
+  else if (row.source.startsWith('plugin:')) parts.push(t('bonusSourcePlugin', { name: row.source.slice(7) }));
   if (row.note) parts.push(row.note);
   return parts.join(' · ');
 }
 
+// As with grant(): the revoke is committed before the reads run, so a failed
+// read-back is reported at the page, not as a failed revoke.
 async function revoke(row: BonusGrantRow): Promise<void> {
+  let revoked: number;
   try {
-    const { revoked } = await adminApi.revokeBonusGrant(row.id);
-    flash.value = t('bonusRevoked', { amount: credits(revoked) });
-    if (existing.value) await loadGrants(existing.value.id, 0);
-    bars.value = (await adminApi.bonusBars()).bars;
+    revoked = (await adminApi.revokeBonusGrant(row.id)).revoked;
   } catch (failure) {
-    grantsError.value = failure instanceof ApiError ? failure.message : String(failure);
+    grantsError.value = failureText(failure);
+    return;
   }
+  flash.value = t('bonusRevoked', { amount: credits(revoked) });
+  if (existing.value) await loadGrants(existing.value.id, 0);
+  await refreshBars();
 }
 
 // Starts on named accounts: granting to everyone is one press of a button and
@@ -250,13 +399,18 @@ async function grant(): Promise<void> {
     });
     flash.value = tn(result.granted, 'bonusGrantedOne', 'bonusGrantedOther');
     panel.value = 'bar';
-    bars.value = (await adminApi.bonusBars()).bars;
-    await loadGrants(bar.id, 0);
   } catch (failure) {
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    // A grant's refusals carry codes (no such name, bar switched off), which
+    // are worded in the reader's language here rather than the server's.
+    panelError.value = failureText(failure);
+    return;
   } finally {
     busy.value = false;
   }
+  // The grant is committed by here. A failed read-back is not a failed grant:
+  // reporting it as one sends the operator back to grant again, doubling it.
+  await refreshBars();
+  void loadGrants(bar.id, 0);
 }
 
 // --- check-in ----------------------------------------------------------------
@@ -265,10 +419,21 @@ const checkin = ref<CheckinSettings>({ enabled: false, timezone: 'Asia/Shanghai'
 const checkinError = ref('');
 const checkinFlash = ref('');
 const checkinBusy = ref(false);
+/**
+ * A failed read leaves the form on its empty defaults, and saving those would
+ * overwrite the stored rules. So the save is shut until a read succeeds; the
+ * bars beside it are a separate read and stay up either way.
+ */
+const checkinLoadError = ref('');
 
 async function loadCheckin(): Promise<void> {
-  const current = await adminApi.checkinSettings();
-  checkin.value = { ...current, rules: current.rules ?? [], daily: current.daily?.kind ? current.daily : { kind: '' } };
+  checkinLoadError.value = '';
+  try {
+    const current = await adminApi.checkinSettings();
+    checkin.value = { ...current, rules: current.rules ?? [], daily: current.daily?.kind ? current.daily : { kind: '' } };
+  } catch (failure) {
+    checkinLoadError.value = failureText(failure);
+  }
 }
 
 function addRule(): void {
@@ -287,7 +452,7 @@ async function saveCheckin(): Promise<void> {
     checkin.value = await adminApi.saveCheckinSettings(checkin.value);
     checkinFlash.value = t('checkinSaved');
   } catch (failure) {
-    checkinError.value = failure instanceof ApiError ? failure.message : String(failure);
+    checkinError.value = failureText(failure);
   } finally {
     checkinBusy.value = false;
   }
@@ -310,6 +475,7 @@ onMounted(load);
   <p v-else-if="!loaded" class="oa-table-empty">{{ t('loading') }}</p>
 
   <div v-else class="oa-workbench">
+    <p v-if="pageError" class="oa-field-hint" role="alert">{{ pageError }}</p>
     <div class="oa-workbench-grid">
       <AdminControlCard id="secBonusBars" class="oa-control-card-wide" :title="t('secBonusBars')" :hint="t('secBonusBarsHint')" :icon="IconGift">
         <OaTable
@@ -327,6 +493,7 @@ onMounted(load);
           </template>
           <template #cell-rules="{ row }">
             <OaBadgeRow>
+              <OaBadge v-if="row.kind === 'shared'">{{ t('bonusKindShared') }}</OaBadge>
               <OaBadge>{{ modeLabel(row) }}</OaBadge>
               <OaBadge v-if="!row.show_total" tone="muted">{{ t('bonusTotalHidden') }}</OaBadge>
               <OaBadge v-if="!row.active" tone="warning">{{ t('bonusInactive') }}</OaBadge>
@@ -337,11 +504,11 @@ onMounted(load);
 
       <AdminControlCard id="secCheckinAdmin" class="oa-control-card-wide" :title="t('secCheckinAdmin')" :hint="t('secCheckinAdminHint')" :icon="IconCheck">
         <template #actions>
-          <button type="button" class="oa-btn primary" :disabled="checkinBusy" @click="saveCheckin">{{ t('checkinSave') }}</button>
+          <button type="button" class="oa-btn primary" :disabled="checkinBusy || !!checkinLoadError" @click="saveCheckin">{{ t('checkinSave') }}</button>
         </template>
         <OaSwitchField v-model="checkin.enabled" :label="t('checkinEnabled')" :hint="t('checkinEnabledHint')" />
         <OaTextField v-model="checkin.timezone" :label="t('checkinTimezone')" :hint="t('checkinTimezoneHint')" placeholder="Asia/Shanghai" monospace />
-        <CheckinRewardEditor v-model="checkin.daily" :bars="bars" :label="t('checkinDailyHeading')" allow-none />
+        <CheckinRewardEditor v-model="checkin.daily" :bars="grantable" :label="t('checkinDailyHeading')" allow-none />
 
         <OaFormSection :title="t('checkinRulesHeading')" :hint="t('checkinRulesHint')" />
         <div v-for="(rule, index) in checkin.rules" :key="rule.id" class="oa-checkin-rule">
@@ -350,7 +517,7 @@ onMounted(load);
             <OaSelectField v-model="rule.basis" :label="t('checkinRuleBasis')" :options="basisChoices" :searchable="false" />
             <OaNumberField v-model="rule.days" :label="t('checkinRuleDays')" :min="1" :max="rule.basis === 'month' ? 31 : 366" />
           </div>
-          <CheckinRewardEditor v-model="rule.reward" :bars="bars" :label="t('checkinRewardKindField')" />
+          <CheckinRewardEditor v-model="rule.reward" :bars="grantable" :label="t('checkinRewardKindField')" />
           <div class="oa-checkin-rule-foot">
             <button type="button" class="oa-btn" @click="checkin.rules.splice(index, 1)">{{ t('checkinRemoveRule') }}</button>
           </div>
@@ -359,6 +526,7 @@ onMounted(load);
           <button type="button" class="oa-btn" @click="addRule">{{ t('checkinAddRule') }}</button>
         </div>
         <p v-if="checkinFlash" class="oa-field-hint" role="status">{{ checkinFlash }}</p>
+        <p v-if="checkinLoadError" class="oa-field-hint" role="alert">{{ checkinLoadError }}</p>
         <p v-if="checkinError" class="oa-field-hint" role="alert">{{ checkinError }}</p>
       </AdminControlCard>
     </div>
@@ -378,28 +546,47 @@ onMounted(load);
   >
     <OaTextField v-model="form.name" :label="t('bonusName')" :max-length="60" />
     <OaTextField v-model="form.description" :label="t('bonusDescription')" :hint="t('bonusDescriptionHint')" :max-length="500" />
-    <OaSelectField v-model="form.kind" :label="t('bonusKind')" :hint="t('bonusKindHint')" :options="kindChoices" :searchable="false" />
+    <OaSelectField v-model="form.kind" :label="t('bonusKind')" :hint="t('poolKindHint')" :options="kindChoices" :searchable="false" />
     <OaSelectField
-      v-if="form.kind === 'bonus'"
+      v-if="form.kind !== 'reserve'"
       v-model="form.toggle_mode"
       :label="t('bonusMode')"
-      :hint="t('bonusModeHint')"
+      :hint="form.kind === 'shared' ? t('poolModeHint') : t('bonusModeHint')"
       :options="modeChoices"
       :searchable="false"
     />
     <OaSwitchField
-      v-if="form.kind === 'bonus' && form.toggle_mode === 'user'"
+      v-if="form.kind !== 'reserve' && form.toggle_mode === 'user'"
       v-model="form.default_on"
       :label="t('bonusDefaultOn')"
       :hint="t('bonusDefaultOnHint')"
     />
     <OaSwitchField v-model="form.show_total" :label="t('bonusShowTotal')" :hint="t('bonusShowTotalHint')" />
     <OaCheckList v-model="form.model_ids" :label="t('bonusModelsLabel')" :hint="t('bonusModelsHint')" :items="modelItems" :empty-text="t('nothingYet')" />
-    <OaTextField v-model="form.expiry" type="datetime-local" :label="t('bonusDefaultExpiry')" :hint="t('bonusDefaultExpiryHint')" />
-    <ExpiryPresets permanent @pick="form.expiry = $event" />
+    <template v-if="form.kind === 'shared'">
+      <OaFormSection :title="t('poolHeading')" />
+      <OaSelectField v-model="form.reset_period" :label="t('poolReset')" :hint="t('poolResetHint')" :options="resetChoices" :searchable="false" />
+      <OaNumberField v-if="form.reset_period" v-model="form.reset_amount" :label="t('poolResetAmount')" :min="0" :step="1" />
+      <OaNumberField v-if="!existing" v-model="form.initial" :label="t('poolInitial')" :hint="form.reset_period ? t('poolInitialHint') : undefined" :min="0" :step="1" />
+      <OaNumberField v-model="form.per_user_daily" :label="t('poolDailyLimit')" :hint="t('poolDailyLimitHint')" :min="0" :step="0.1" />
+    </template>
+    <template v-else>
+      <OaTextField v-model="form.expiry" type="datetime-local" :label="t('bonusDefaultExpiry')" :hint="t('bonusDefaultExpiryHint')" />
+      <ExpiryPresets permanent @pick="form.expiry = $event" />
+    </template>
     <OaSwitchField v-if="existing" v-model="form.active" :label="t('bonusActive')" :hint="t('bonusActiveHint')" />
 
-    <template v-if="existing">
+    <template v-if="existing && existing.kind === 'shared'">
+      <OaFormSection :title="t('poolAdjust')" />
+      <p class="oa-field-hint">{{ poolLine(existing) }}</p>
+      <OaSelectField v-model="adjust.op" :label="t('poolAdjustOp')" :options="adjustChoices" :searchable="false" />
+      <OaNumberField v-model="adjust.amount" :label="t('poolAdjustAmount')" :hint="t('poolAdjustHint')" :step="1" />
+      <div class="oa-card-actions">
+        <button type="button" class="oa-btn" :disabled="busy || adjust.amount === null" @click="adjustPool">{{ t('poolAdjust') }}</button>
+      </div>
+      <p v-if="flash" class="oa-field-hint" role="status">{{ flash }}</p>
+    </template>
+    <template v-else-if="existing">
       <OaFormSection :title="t('bonusGrantsHeading')" />
       <div class="oa-card-actions">
         <button type="button" class="oa-btn" @click="openGrant">{{ t('bonusGrantAction') }}</button>
@@ -409,11 +596,21 @@ onMounted(load);
       <p v-else-if="!grants.length" class="oa-field-hint">{{ t('bonusNoGrants') }}</p>
       <div v-else class="oa-card-list">
         <div v-for="row in grants" :key="row.id" class="oa-card-row">
-          <OaCellStack :title="row.username" :sub="grantLine(row)" />
+          <OaCellStack :title="maskUser(row.username)" :sub="grantLine(row)" />
           <span class="oa-header-spacer" />
-          <button type="button" class="oa-btn" :disabled="row.amount <= row.used" @click="revoke(row)">{{ t('bonusRevoke') }}</button>
+          <!-- Taking back removes credits from a balance, so it is armed first,
+               and the armed label says how much is going. -->
+          <OaConfirmButton
+            class="oa-btn"
+            :label="t('bonusRevoke')"
+            :armed-label="t('bonusRevokeConfirm', { amount: credits(row.amount - row.used) })"
+            :armed-title="t('bonusRevokeConfirm', { amount: credits(row.amount - row.used) })"
+            :resting-title="t('bonusRevoke')"
+            :disabled="row.amount <= row.used"
+            @confirm="revoke(row)"
+          />
         </div>
-        <button v-if="grants.length < grantsTotal" type="button" class="oa-btn" @click="loadGrants(existing!.id, grants.length)">{{ t('bonusLoadMore') }}</button>
+        <button v-if="grants.length < grantsTotal" type="button" class="oa-btn" :disabled="grantsLoading" @click="loadGrants(existing!.id, grants.length)">{{ t('bonusLoadMore') }}</button>
       </div>
     </template>
   </OaPanel>
@@ -433,7 +630,7 @@ onMounted(load);
     <OaSelectField v-if="grantForm.to === 'group'" v-model="grantForm.group" :label="t('bonusGrantGroupField')" :options="groupChoices" />
     <OaTextField v-if="grantForm.to === 'named'" v-model="grantForm.names" :label="t('bonusGrantNamesField')" :hint="t('bonusGrantNamesHint')" />
     <OaNumberField v-model="grantForm.amount" :label="t('bonusGrantAmount')" :min="0" :step="0.1" />
-    <OaNumberField v-model="grantForm.days" :label="t('bonusGrantDays')" :hint="t('bonusGrantDaysHint')" :min="1" :max="3650" />
+    <OaNumberField v-model="grantForm.days" :label="t('bonusGrantDays')" :hint="t('bonusGrantDaysHint')" :min="1" :max="MAX_GRANT_DAYS" />
     <OaTextField v-model="grantForm.note" :label="t('bonusGrantNote')" :max-length="200" />
   </OaPanel>
 </template>

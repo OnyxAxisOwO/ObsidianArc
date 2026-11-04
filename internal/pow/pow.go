@@ -3,11 +3,12 @@
 //
 // The server issues a challenge derived from a random salt and a bounded secret
 // number. The client increments from 0 up to maxNumber until finding the matching
-// nonce. The challenge is authenticated via HMAC-SHA256 and salt replay is
-// guarded in memory.
+// nonce. The challenge is authenticated via HMAC-SHA256. Salt replay is guarded
+// in the database when the manager has a SaltStore, and in memory otherwise.
 package pow
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -29,6 +30,8 @@ var (
 	ErrInvalidNonce     = errors.New("pow: hash does not match challenge")
 	ErrReplayed         = errors.New("pow: challenge salt has already been used")
 	ErrRateLimited      = errors.New("pow: too many challenge requests")
+	// The challenge was issued at an easier tier than the server requires now.
+	ErrBelowTier = errors.New("pow: challenge was issued below the current difficulty")
 )
 
 // Challenge is the bounded puzzle issued to the client.
@@ -55,8 +58,22 @@ type Manager struct {
 	secretKey []byte
 	tracker   *Tracker
 
+	// Nil until UseSaltStore: spent salts then live in this process alone.
+	salts *SaltStore
+
 	mu        sync.Mutex
 	usedSalts map[string]int64 // salt -> expires (Unix seconds)
+	// When the replay table was last walked for expired salts. The walk is
+	// linear in the table and every accepted solution would otherwise pay for
+	// it under the lock all verifications share.
+	lastPruned int64
+}
+
+// UseSaltStore keeps spent salts in the database. Without it, an instance
+// refuses only the solutions it accepted itself, and a solution accepted by
+// another instance sharing the database would be accepted again.
+func (m *Manager) UseSaltStore(store *SaltStore) {
+	m.salts = store
 }
 
 func NewManager(secretKey []byte, tracker *Tracker) *Manager {
@@ -68,101 +85,6 @@ func NewManager(secretKey []byte, tracker *Tracker) *Manager {
 		tracker:   tracker,
 		usedSalts: make(map[string]int64),
 	}
-}
-
-// Tracker tracks request frequencies for rate limiting and dynamic difficulty scaling.
-type Tracker struct {
-	mu           sync.Mutex
-	ipRequests   map[string][]time.Time // IP -> timestamps within 10 min window
-	siteRequests []time.Time            // All timestamps within 10 min window
-	ipChallenge  map[string][]time.Time // IP -> timestamps within 1 min for challenge endpoint rate limit
-}
-
-func NewTracker() *Tracker {
-	return &Tracker{
-		ipRequests:  make(map[string][]time.Time),
-		ipChallenge: make(map[string][]time.Time),
-	}
-}
-
-// CheckChallengeRate limits the generation of challenges per IP (max 30/min).
-func (t *Tracker) CheckChallengeRate(ip string, now time.Time) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	cutoff := now.Add(-time.Minute)
-	list := t.ipChallenge[ip]
-	valid := list[:0]
-	for _, ts := range list {
-		if ts.After(cutoff) {
-			valid = append(valid, ts)
-		}
-	}
-	if len(valid) >= 30 {
-		t.ipChallenge[ip] = valid
-		return ErrRateLimited
-	}
-	t.ipChallenge[ip] = append(valid, now)
-	return nil
-}
-
-// RecordAttempt records a registration or challenge attempt for dynamic difficulty.
-func (t *Tracker) RecordAttempt(ip string, now time.Time) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	cutoff := now.Add(-10 * time.Minute)
-
-	// Clean site-wide history
-	validSite := t.siteRequests[:0]
-	for _, ts := range t.siteRequests {
-		if ts.After(cutoff) {
-			validSite = append(validSite, ts)
-		}
-	}
-	t.siteRequests = append(validSite, now)
-
-	// Clean IP history
-	list := t.ipRequests[ip]
-	validIP := list[:0]
-	for _, ts := range list {
-		if ts.After(cutoff) {
-			validIP = append(validIP, ts)
-		}
-	}
-	t.ipRequests[ip] = append(validIP, now)
-}
-
-// DetermineMaxNumber picks base or elevated difficulty based on 10-minute activity.
-func (t *Tracker) DetermineMaxNumber(ip string, baseMax, elevatedMax int64, threshold int, now time.Time) int64 {
-	if threshold <= 0 {
-		return baseMax
-	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	cutoff := now.Add(-10 * time.Minute)
-
-	// Check IP attempts
-	ipCount := 0
-	for _, ts := range t.ipRequests[ip] {
-		if ts.After(cutoff) {
-			ipCount++
-		}
-	}
-
-	// Check site-wide attempts
-	siteCount := 0
-	for _, ts := range t.siteRequests {
-		if ts.After(cutoff) {
-			siteCount++
-		}
-	}
-
-	if ipCount >= threshold || siteCount >= threshold {
-		return elevatedMax
-	}
-	return baseMax
 }
 
 func (m *Manager) Tracker() *Tracker {
@@ -207,12 +129,24 @@ func (m *Manager) Issue(maxNumber int64) (Challenge, error) {
 }
 
 // Verify validates a submitted solution against signature, expiration, bounds, hash, and replay.
-func (m *Manager) Verify(sol *Solution) error {
+func (m *Manager) Verify(ctx context.Context, sol *Solution) error {
+	return m.verify(ctx, sol, 0, time.Now())
+}
+
+// VerifyAt is Verify for a caller that knows the difficulty the server requires
+// now. A challenge stays valid for five minutes after it is issued, and activity
+// can raise the difficulty in that time; without this check, work done at the
+// base tier would keep counting after the elevated tier applies.
+func (m *Manager) VerifyAt(ctx context.Context, sol *Solution, requiredMax int64) error {
+	return m.verify(ctx, sol, requiredMax, time.Now())
+}
+
+func (m *Manager) verify(ctx context.Context, sol *Solution, requiredMax int64, at time.Time) error {
 	if sol == nil || sol.Challenge == "" || sol.Salt == "" || sol.Signature == "" {
 		return ErrMissingSolution
 	}
 
-	now := time.Now().Unix()
+	now := at.Unix()
 	if now > sol.Expires {
 		return ErrExpired
 	}
@@ -234,10 +168,32 @@ func (m *Manager) Verify(sol *Solution) error {
 		return ErrInvalidNonce
 	}
 
-	// Single-use salt guard
+	// The signature covers MaxNumber, so the tier it names is the one the
+	// challenge was issued at. Checked here, after the signature, and before the
+	// salt is spent, so a refused solution does not use up its challenge.
+	if sol.MaxNumber < requiredMax {
+		return ErrBelowTier
+	}
+
+	// Single-use salt guard. The store is asked first when there is one, so a
+	// solution spent on any instance sharing the database is refused here too.
+	if m.salts != nil {
+		fresh, err := m.salts.Spend(ctx, sol.Salt, sol.Expires)
+		if err != nil {
+			return err
+		}
+		if !fresh {
+			return ErrReplayed
+		}
+		return nil
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.pruneExpiredSaltsLocked(now)
+	if now-m.lastPruned >= 1 {
+		m.pruneExpiredSaltsLocked(now)
+		m.lastPruned = now
+	}
 
 	if _, exists := m.usedSalts[sol.Salt]; exists {
 		return ErrReplayed

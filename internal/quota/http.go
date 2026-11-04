@@ -1,9 +1,11 @@
 package quota
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/bonus"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 )
 
@@ -34,6 +36,18 @@ func (h *Handlers) mine(w http.ResponseWriter, r *http.Request) error {
 // carrying which window tripped and when it frees up — the only part a user
 // can act on.
 func TranslateError(err error) error {
+	var pool *bonus.PoolExhaustedError
+	if errors.As(err, &pool) {
+		reason := "empty"
+		message := "The shared pool that pays for this model has nothing left."
+		if pool.Capped {
+			reason = "daily_limit"
+			message = "You have used today's share of the pool that pays for this model."
+		}
+		return httpx.TooManyRequests("pool_exhausted", message).
+			WithDetails(map[string]any{"pool": pool.Name, "reason": reason, "resets_at": pool.ResetsAt}).
+			WithCause(err)
+	}
 	exceeded, ok := AsExceeded(err)
 	if !ok {
 		return nil

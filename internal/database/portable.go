@@ -38,7 +38,7 @@ var nonPortable = []struct {
 // migration's source, empty when it is portable. Comments may name the rules
 // they explain, so they are ignored.
 func PortabilityProblems(sql string) []string {
-	body := strings.ReplaceAll(stripSQLComments(sql), "%BLOB%", "")
+	body := strings.ReplaceAll(StripSQLComments(sql), "%BLOB%", "")
 	var out []string
 	for _, rule := range nonPortable {
 		if match := rule.pattern.FindString(body); match != "" {
@@ -48,13 +48,38 @@ func PortabilityProblems(sql string) []string {
 	return out
 }
 
-func stripSQLComments(sql string) string {
+// StripSQLComments drops each `--` comment, but not a `--` inside a quoted
+// string: a literal such as '--' must not hide the rest of its line from the
+// lint. The quote state carries across lines, as it does in splitStatements,
+// because a string literal may span them. The plugin test kit's lint of a
+// backend's queries uses it too, so both lints read a literal alike.
+func StripSQLComments(sql string) string {
 	var out strings.Builder
+	inString := false
 	for _, line := range strings.Split(sql, "\n") {
-		if index := strings.Index(line, "--"); index >= 0 {
-			line = line[:index]
+		cut := len(line)
+		for i := 0; i < len(line); i++ {
+			c := line[i]
+			if inString {
+				if c == '\'' {
+					if i+1 < len(line) && line[i+1] == '\'' {
+						i++
+					} else {
+						inString = false
+					}
+				}
+				continue
+			}
+			if c == '\'' {
+				inString = true
+				continue
+			}
+			if c == '-' && i+1 < len(line) && line[i+1] == '-' {
+				cut = i
+				break
+			}
 		}
-		out.WriteString(line)
+		out.WriteString(line[:cut])
 		out.WriteByte('\n')
 	}
 	return out.String()

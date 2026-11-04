@@ -10,8 +10,7 @@
 // Laid out like Availability, which has the same shape: a preview of what
 // readers see, then the policy that governs it.
 
-import { computed, onMounted, ref } from 'vue';
-import { ApiError } from '@/api/client';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { adminApi } from '@/admin/api';
 import { fetchLeaderboard, type Leaderboard } from '@/api/leaderboard';
 import OaNumberField from '@/components/OaNumberField.vue';
@@ -26,16 +25,25 @@ import AdminWorkbench from './AdminWorkbench.vue';
 import { useAdminView } from './adminView';
 import { useSettingsDraft } from './settingsDraft';
 import type { WorkbenchGroup } from './workbench';
+import { failureText, runLoad } from './shared';
+import { FEEDBACK_FLASH_MS } from '@/lib/flash';
 
 const view = useAdminView();
-view.setTitle(t('navLeaderboard'), t('leaderboardSubtitle'));
+view.setTitle(() => t('navLeaderboard'), () => t('leaderboardSubtitle'));
 
 const error = ref('');
 const loaded = ref(false);
 const busy = ref(false);
 const saveLabel = ref('');
+// Kept so a newer label is not cleared by an older timer (a second save
+// inside the 1.5s showed the button blank while it was still saving), and so
+// leaving the page cancels it.
+let saveLabelTimer = 0;
 const flash = ref('');
 const preview = ref<Leaderboard | null>(null);
+// A failed read of the preview is not an empty board: the two get different
+// lines, or an operator would take a broken endpoint for nobody playing.
+const previewFailed = ref(false);
 
 const form = ref({
   showUsers: false,
@@ -44,24 +52,31 @@ const form = ref({
   showModels: true,
 });
 
+// A blank box is not a value. It stays blank in the draft, so the page keeps
+// saying there are unsaved changes, and save waits for a number (sizeFilled);
+// writing the default here would store 20 under a box that still reads empty.
 function collect(): Record<string, string> {
   return {
     'leaderboard.show_users': String(form.value.showUsers),
     'leaderboard.identity': form.value.identity,
-    'leaderboard.size': String(form.value.size ?? 20),
+    'leaderboard.size': form.value.size === null ? '' : String(form.value.size),
     'leaderboard.show_models': String(form.value.showModels),
   };
 }
 
-const { dirty, accept } = useSettingsDraft(collect);
+const sizeFilled = computed(() => form.value.size !== null);
+
+const { dirty, changes, accept } = useSettingsDraft(collect);
 
 // What the preview is worth saying about: a board nobody has used yet looks
 // broken otherwise, and "there is nothing to rank" is the honest reading.
 const participants = computed(() => preview.value?.me.participants ?? 0);
 
 async function save(): Promise<void> {
-  if (!loaded.value || error.value || busy.value) return;
-  const values = collect();
+  if (!loaded.value || error.value || busy.value || !sizeFilled.value) return;
+  // Only what this page changed, so the save cannot undo another screen's edit.
+  const values = changes();
+  if (Object.keys(values).length === 0) return;
   busy.value = true;
   saveLabel.value = t('saving');
   flash.value = '';
@@ -69,12 +84,22 @@ async function save(): Promise<void> {
     await adminApi.saveSettings(values);
     accept(values);
     saveLabel.value = t('saved');
-    window.setTimeout(() => { saveLabel.value = ''; }, 1500);
-    // The preview is the readers' own endpoint, and identity is applied by
-    // the server, so it has to be re-asked rather than re-rendered.
-    preview.value = await fetchLeaderboard('week', 'tokens');
+    window.clearTimeout(saveLabelTimer);
+    saveLabelTimer = window.setTimeout(() => { saveLabel.value = ''; }, FEEDBACK_FLASH_MS);
+    try {
+      // The preview is the readers' own endpoint, and identity is applied by
+      // the server, so it has to be re-asked rather than re-rendered. A refresh
+      // that fails leaves the saved settings saved, so it is not reported as a
+      // failed save; the old preview simply stays on screen.
+      preview.value = await fetchLeaderboard('week', 'tokens');
+      previewFailed.value = false;
+    } catch {
+      // See above: the save already stands.
+    }
   } catch (failure) {
-    flash.value = failure instanceof ApiError ? failure.message : String(failure);
+    // Only a code the interface has a sentence for is translated; any other
+    // keeps the server's sentence, which an administrator may need verbatim.
+    flash.value = failureText(failure);
     saveLabel.value = '';
   } finally {
     busy.value = false;
@@ -82,8 +107,7 @@ async function save(): Promise<void> {
 }
 
 async function load(): Promise<void> {
-  error.value = '';
-  try {
+  await runLoad(async () => {
     const [settingsData, board] = await Promise.all([
       adminApi.settings(),
       // The same endpoint readers call. An administrator holding this grant
@@ -100,12 +124,9 @@ async function load(): Promise<void> {
       showModels: values['leaderboard.show_models'] !== 'false',
     };
     preview.value = board;
+    previewFailed.value = board === null;
     accept();
-  } catch (failure) {
-    error.value = failure instanceof Error ? failure.message : String(failure);
-  } finally {
-    loaded.value = true;
-  }
+  }, { error, loaded });
 }
 
 const categories: WorkbenchGroup[] = [
@@ -114,7 +135,16 @@ const categories: WorkbenchGroup[] = [
   { id: 'contents', label: 'controlBoardContents', hint: 'controlBoardContentsHint', icon: IconSliders, sections: ['secBoardContents'] },
 ];
 
+// Computed so a render does not hand the select a new array, and so the
+// labels follow a change of language.
+const identityChoices = computed(() => [
+  { value: 'nickname' as const, label: t('boardIdentityNickname') },
+  { value: 'anonymous' as const, label: t('boardIdentityAnonymous') },
+  { value: 'handle' as const, label: t('boardIdentityHandle') },
+]);
+
 onMounted(load);
+onBeforeUnmount(() => window.clearTimeout(saveLabelTimer));
 </script>
 
 <template>
@@ -122,7 +152,7 @@ onMounted(load);
     <span v-if="loaded && !error" class="oa-control-save-state" :class="{ dirty }" role="status">
       <span class="oa-dashboard-dot" />{{ dirty ? t('controlUnsaved') : t('controlSaved') }}
     </span>
-    <button type="button" class="oa-btn primary" :disabled="busy || !loaded || !!error" @click="save">
+    <button type="button" class="oa-btn primary" :disabled="busy || !loaded || !!error || !sizeFilled" @click="save">
       {{ saveLabel || t('save') }}
     </button>
   </Teleport>
@@ -140,7 +170,8 @@ onMounted(load);
       <template #actions><div class="oa-control-actions">
         <a href="/leaderboard" target="_blank" rel="noopener" class="oa-btn">{{ t('boardViewPage') }}</a>
       </div></template>
-      <p v-if="!preview || !participants" class="oa-table-empty">{{ t('nothingYet') }}</p>
+      <p v-if="previewFailed" class="oa-table-empty" role="alert">{{ t('couldNotLoad') }}</p>
+      <p v-else-if="!preview || !participants" class="oa-table-empty">{{ t('nothingYet') }}</p>
       <ol v-else class="oa-board-list">
         <li v-for="(entry, index) in preview.accounts" :key="index" class="oa-board-row">
           <span class="oa-board-rank" :data-rank="entry.rank">{{ entry.rank }}</span>
@@ -177,11 +208,7 @@ onMounted(load);
         :label="t('boardIdentity')"
         :hint="t('boardIdentityHint')"
         :searchable="false"
-        :options="[
-          { value: 'nickname', label: t('boardIdentityNickname') },
-          { value: 'anonymous', label: t('boardIdentityAnonymous') },
-          { value: 'handle', label: t('boardIdentityHandle') },
-        ]"
+        :options="identityChoices"
       />
     </AdminControlCard>
 
@@ -198,6 +225,7 @@ onMounted(load);
         :max="100"
         :hint="t('boardSizeHint')"
       />
+      <p v-if="!sizeFilled" class="oa-field-hint" role="alert">{{ t('settingNumberRequired') }}</p>
       <OaSwitchField
         v-model="form.showModels"
         :label="t('boardShowModels')"

@@ -42,6 +42,17 @@ func TestPortabilityLintCatchesEngineSpecificSQL(t *testing.T) {
 	}
 }
 
+// A `--` inside a string literal is text, not a comment, so the Postgres-only
+// spelling after it on the same line is still code and must be reported.
+func TestPortabilityLintSeesPastAQuotedDoubleDash(t *testing.T) {
+	if got := PortabilityProblems("SELECT '--' AS sep FROM t WHERE name ILIKE 'a%'"); len(got) == 0 {
+		t.Error("an ILIKE after a quoted '--' was hidden by the comment stripper")
+	}
+	if got := PortabilityProblems("-- it's a BIGSERIAL in a note\nCREATE TABLE t (id TEXT PRIMARY KEY)"); len(got) != 0 {
+		t.Errorf("a comment whose text has a quote was linted: %v", got)
+	}
+}
+
 // Every migration has to apply cleanly to a fresh database and be a no-op on
 // a second run. Broken ordering only shows up here.
 func TestMigrationsApplyInOrder(t *testing.T) {

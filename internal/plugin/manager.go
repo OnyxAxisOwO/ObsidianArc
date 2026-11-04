@@ -110,6 +110,10 @@ type Manager struct {
 	router atomic.Pointer[routeTable]
 	// Uploads the operator has looked at and not yet confirmed.
 	pending pendingUploads
+	// The installed packages whose archive could not be read at boot. Set by
+	// loadPackages; a package that is installed again, from a readable archive,
+	// is in pkgs and so stops being listed here.
+	unreadable atomic.Pointer[map[string]bool]
 }
 
 type record struct {
@@ -168,8 +172,28 @@ func (m *Manager) plugin(name string) (Plugin, bool) {
 	if l := (*m.pkgs.Load())[name]; l != nil {
 		return packagePlugin{l}, true
 	}
+	// Installed, but nothing of it loads: its archive could not be read at
+	// boot, or it collides with another's migrations. It can still be switched
+	// off and removed, which is what the operator needs to do with it. Keyed on
+	// the boot-time set rather than the recorded state, because a row for a
+	// plugin this build does not carry is not ours to stand in for.
+	if u := m.unreadable.Load(); u != nil && (*u)[name] {
+		return unreadablePlugin{name: name}, true
+	}
 	return nil, false
 }
+
+// unreadablePlugin stands in for an installed package whose archive cannot be read:
+// there are no migrations, purge scripts or seams to take away, only the record.
+type unreadablePlugin struct{ name string }
+
+func (u unreadablePlugin) Name() string { return u.name }
+
+func (u unreadablePlugin) Manifest() Manifest {
+	return Manifest{Title: Text{EN: u.name, ZH: u.name}}
+}
+
+func (unreadablePlugin) Setup(*Host) error { return nil }
 
 func (m *Manager) loadedPackage(name string) *loaded { return (*m.pkgs.Load())[name] }
 
@@ -183,6 +207,14 @@ func (m *Manager) Enabled(name string) bool {
 		return true
 	}
 	if (*m.states.Load())[name].State != StateEnabled {
+		return false
+	}
+	// A package whose archive could not be read at boot, or whose migrations
+	// collide with another's, has nothing loaded behind it. Switched on, it
+	// would be a gate open on nothing, so it is off.
+	// A row for a plugin this build does not carry is different: it is read
+	// as it stands, and there is simply nothing registered under it.
+	if stuck := m.unreadable.Load(); stuck != nil && (*stuck)[name] && (*m.pkgs.Load())[name] == nil {
 		return false
 	}
 	if l := (*m.pkgs.Load())[name]; l != nil && l.faulted() != "" {
@@ -278,7 +310,7 @@ func (m *Manager) traces(ctx context.Context, p Plugin) (bool, error) {
 			}
 		}
 	}
-	return m.settings.Stored(settingKeys(p.Name())), nil
+	return m.settings.Stored(m.settingKeys(p.Name())), nil
 }
 
 // read is the table as states: a removed row reads as available.
@@ -347,6 +379,7 @@ func (m *Manager) Install(ctx context.Context, actor Actor, name string, opts In
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := time.Now().UnixMilli()
+	var rec record
 	err = m.db.Tx(ctx, func(tx *database.Tx) error {
 		current, err := m.lock(ctx, tx, name)
 		if err != nil {
@@ -363,11 +396,8 @@ func (m *Manager) Install(ctx context.Context, actor Actor, name string, opts In
 		if err := m.settings.WriteMany(ctx, tx, values); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx,
-			`UPDATE plugin_installs SET state = ?, version = ?, installed_at = ?, installed_by = ?,
-			 updated_at = ?, updated_by = ? WHERE name = ?`,
-			string(state), p.Manifest().Version, now, actor.ID, now, actor.ID, name); err != nil {
-			return fmt.Errorf("plugin: install %s: %w", name, err)
+		if rec, err = writeInstallRow(ctx, tx, name, state, p.Manifest().Version, now, actor.ID); err != nil {
+			return err
 		}
 		return m.audit(ctx, tx, actor, name, decision)
 	})
@@ -375,9 +405,22 @@ func (m *Manager) Install(ctx context.Context, actor Actor, name string, opts In
 		return err
 	}
 	m.settings.Remember(values)
-	m.set(name, record{State: state, Version: p.Manifest().Version,
-		InstalledAt: now, InstalledBy: actor.ID, UpdatedAt: now, UpdatedBy: actor.ID})
+	m.set(name, rec)
 	return nil
+}
+
+// writeInstallRow marks name installed in state, and is the record the manager
+// keeps for it once the transaction commits. A compiled-in plugin and a package
+// are installed through it both, so a column added to plugin_installs is written
+// by one statement rather than two that can fall out of step.
+func writeInstallRow(ctx context.Context, tx *database.Tx, name string, state State, version string, now int64, actorID string) (record, error) {
+	if _, err := tx.Exec(ctx,
+		`UPDATE plugin_installs SET state = ?, version = ?, installed_at = ?, installed_by = ?,
+		 updated_at = ?, updated_by = ? WHERE name = ?`,
+		string(state), version, now, actorID, now, actorID, name); err != nil {
+		return record{}, fmt.Errorf("plugin: install %s: %w", name, err)
+	}
+	return record{State: state, Version: version, InstalledAt: now, InstalledBy: actorID, UpdatedAt: now, UpdatedBy: actorID}, nil
 }
 
 // Enable switches an installed plugin on.
@@ -393,6 +436,20 @@ func (m *Manager) Disable(ctx context.Context, actor Actor, name string) error {
 func (m *Manager) toggle(ctx context.Context, actor Actor, name string, to State, decision string) error {
 	if _, ok := m.plugin(name); !ok {
 		return ErrUnknown
+	}
+	// Switching on needs the backend compiled, and one given back while idle
+	// takes most of a minute to compile again. That happens before the lock is
+	// taken, so the other plugin operations do not wait behind it; the describe
+	// below then runs on code that is already warm.
+	//
+	// A backend that does not compile must refuse the switch. The install
+	// compiled it once, but a core upgrade or a restored backup can leave it
+	// unable to compile, and switching it on must not turn that into an outage
+	// of every guard it stands in front of. The install refuses the same way.
+	if l := m.loadedPackage(name); l != nil && to == StateEnabled && m.State(name) != StateEnabled && l.backend != nil {
+		if err := l.backend.Ready(ctx); err != nil {
+			return preflight("the backend does not load: %v", err)
+		}
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -446,13 +503,24 @@ func (m *Manager) toggle(ctx context.Context, actor Actor, name string, to State
 // from here on has to stop naming it before it goes. A failed uninstall
 // puts the state back.
 func (m *Manager) Uninstall(ctx context.Context, actor Actor, name string, purge bool) error {
+	// Which version is installed is read under the lock an update holds while it
+	// swaps the new one in. Read before it, a concurrent update would leave this
+	// uninstall purging and detaching the old version while the new one's seams
+	// and backend stay behind.
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	p, ok := m.plugin(name)
 	if !ok {
 		return ErrUnknown
 	}
+	// Refused before the plugin is switched off, so a refusal leaves it as it was.
+	// An unreadable archive has no purge scripts, migration records or settings
+	// to walk, so a purge would report success and leave them all behind for a
+	// reinstall to reuse.
+	if _, unreadable := p.(unreadablePlugin); unreadable && purge {
+		return preflight("%s's archive cannot be read, so its purge cannot remove its settings or tables; uninstall it without --purge", name)
+	}
 	pkg := m.loadedPackage(name)
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	before := (*m.states.Load())[name]
 	if before.State == StateEnabled {
 		off := before
@@ -498,8 +566,10 @@ func (m *Manager) Uninstall(ctx context.Context, actor Actor, name string, purge
 		}
 		// A package is not something an uninstall leaves behind for a
 		// reinstall to find: it goes, and what the operator dragged in is
-		// gone from the list. Its data stays unless they asked otherwise.
-		if pkg != nil {
+		// gone from the list. Its data stays unless they asked otherwise. This
+		// holds for an archive that could not be read at boot too, which has
+		// no loaded copy but still has its row.
+		if _, builtin := Lookup(name); !builtin {
 			if _, err := tx.Exec(ctx, `DELETE FROM plugin_packages WHERE name = ?`, name); err != nil {
 				return fmt.Errorf("plugin: remove package %s: %w", name, err)
 			}
@@ -544,16 +614,10 @@ func (m *Manager) audit(ctx context.Context, q database.Queryer, actor Actor, na
 	})
 }
 
-func settingKeys(name string) []string {
-	var out []string
-	for _, d := range settings.DefinitionsOf(name) {
-		out = append(out, d.Key)
-	}
-	return out
-}
-
 // settingKeys is the keys a plugin owns on this server, compiled in or
-// installed.
+// installed. Every caller goes through the manager's own registry, which holds
+// both kinds; a package cannot take a compiled-in name, so for those the answer
+// is the same.
 func (m *Manager) settingKeys(name string) []string {
 	var out []string
 	for _, d := range m.settings.DefinitionsOf(name) {
@@ -564,10 +628,19 @@ func (m *Manager) settingKeys(name string) []string {
 
 // checkSettings holds an install's first settings to the plugin's own
 // definitions: a key it does not define is refused rather than stored, and
-// each value passes the definition's validator.
+// each value passes the definition's validator. Only a compiled-in plugin is
+// installed through Install, so the process-wide definitions are the plugin's
+// own here; a package's are checked by checkAgainst with the manifest it
+// carries, because the package is not registered yet.
 func checkSettings(name string, values map[string]string) (map[string]string, error) {
 	return checkAgainst(settings.DefinitionsOf(name), values)
 }
+
+// maxSettingValueBytes bounds one plugin setting. Every value is held in memory
+// and read on the requests that need it, so the bound is set well below what a
+// settings row will take. It is the core settings' own bound, so a value the
+// backoffice warns about is the same value either endpoint refuses.
+const maxSettingValueBytes = settings.MaxValueBytes
 
 func checkAgainst(definitions []settings.Definition, values map[string]string) (map[string]string, error) {
 	defined := map[string]settings.Definition{}
@@ -580,7 +653,7 @@ func checkAgainst(definitions []settings.Definition, values map[string]string) (
 		if !ok {
 			return nil, &SettingError{Key: key, Reason: "not a setting of this plugin"}
 		}
-		if len(value) > 8*1024 {
+		if len(value) > maxSettingValueBytes {
 			return nil, &SettingError{Key: key, Reason: "too long"}
 		}
 		if d.Validate != nil {
@@ -616,6 +689,10 @@ type Info struct {
 	HasUI       bool     `json:"has_ui,omitempty"`
 	// Why a package that is installed is not running, when it is not.
 	Fault string `json:"fault,omitempty"`
+	// The setting keys the viewer of one answer may read and write, each by its
+	// own grant. Only a request knows who is asking, so the handlers fill this
+	// in; the manager's answers leave it empty.
+	WritableSettings []string `json:"writable_settings"`
 }
 
 // InstallRecord is who installed it and when, and the version they did.
@@ -715,17 +792,31 @@ func (m *Manager) info(p Plugin, r record) Info {
 	return info
 }
 
-func (m *Manager) contributions(p Plugin) Contributions {
-	name := p.Name()
-	c := Contributions{Settings: []SettingInfo{}, Fields: []string{}, Guards: []string{},
+// newContributions is a Contributions with every list empty rather than nil,
+// so the backoffice reads [] for a plugin that brought nothing of a kind.
+func newContributions() Contributions {
+	return Contributions{Settings: []SettingInfo{}, Fields: []string{}, Guards: []string{},
 		CaptchaModes: []string{}, AdminRoutes: []RouteInfo{}, PublicRoutes: []string{},
 		Commands: []string{}, Migrations: []string{}}
+}
+
+// settingInfo is one setting as the backoffice lists it. A secret's default is
+// left out: it is a credential the plugin shipped, and the plugin list is not
+// where a credential is shown. A compiled-in plugin and a package both list
+// their settings through it, so the rule is written once.
+func settingInfo(key, def string, secret bool) SettingInfo {
+	info := SettingInfo{Key: key, Secret: secret}
+	if !secret {
+		info.Default = def
+	}
+	return info
+}
+
+func (m *Manager) contributions(p Plugin) Contributions {
+	name := p.Name()
+	c := newContributions()
 	for _, d := range settings.DefinitionsOf(name) {
-		info := SettingInfo{Key: d.Key, Secret: d.Secret}
-		if !d.Secret {
-			info.Default = d.Default
-		}
-		c.Settings = append(c.Settings, info)
+		c.Settings = append(c.Settings, settingInfo(d.Key, d.Default, d.Secret))
 	}
 	for _, f := range user.Fields() {
 		if f.Plugin == name {
@@ -739,7 +830,11 @@ func (m *Manager) contributions(p Plugin) Contributions {
 	}
 	sort.Strings(c.CaptchaModes)
 	if dir := migrationsOf(p); dir != nil {
-		if versions, err := database.Versions(dir); err == nil {
+		// Listed for the screen only; a set that does not read is logged rather
+		// than hiding the rest of the plugin's contributions.
+		if versions, err := database.Versions(dir); err != nil {
+			slog.Warn("plugin: migrations could not be listed for the screen", "plugin", p.Name(), "error", err)
+		} else {
 			c.Migrations = versions
 		}
 	}

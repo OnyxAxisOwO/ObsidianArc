@@ -67,7 +67,7 @@ func TestAStaleLinkNeverWinsAgainstAMoveInFlight(t *testing.T) {
 		go func() {
 			defer workers.Done()
 			<-gate
-			_, _ = f.auth.UpdateProfile(ctx, account.ID, user.ProfileUpdate{Email: &to})
+			_, _ = f.auth.UpdateProfile(ctx, account.ID, user.ProfileUpdate{Email: &to}, "a-good-password")
 		}()
 		close(gate)
 		workers.Wait()

@@ -66,7 +66,7 @@ func init() {
 			windows := make([]window, 0, len(raw))
 			for _, v := range raw {
 				w := asMap(v)
-				pressure, has := windowPressure(w)
+				pressure, has := windowRatio(w)
 				pct := "-"
 				if has {
 					pct = fmt.Sprintf("%.0f%%", pressure*100)
@@ -74,8 +74,8 @@ func init() {
 				windows = append(windows, window{
 					cells: []string{
 						asStr(w["kind"]), yesNo(asBoolVal(w["enforced"])),
-						fmt.Sprint(asNum(w["used_requests"])), limitStr(w["limit_requests"]),
-						fmt.Sprint(asNum(w["used_tokens"])), limitStr(w["limit_tokens"]),
+						formatNumber(asNum(w["used_requests"])), limitStr(w["limit_requests"]),
+						formatNumber(asNum(w["used_tokens"])), limitStr(w["limit_tokens"]),
 						fmt.Sprintf("%.2f", asNum(w["used_credits"])), limitStr(w["limit_credits"]),
 						pct, formatMS(w["resets_at"]),
 					},
@@ -135,8 +135,9 @@ func init() {
 			m := asMap(data)
 			if !rt.effectiveJSON() {
 				totals := asMap(m["totals"])
-				fmt.Fprintf(rt.Out, "total: %v requests, %v tokens, %.2f credits, %v errors\n\n",
-					asNum(totals["requests"]), asNum(totals["total_tokens"]), asNum(totals["credits"]), asNum(totals["errors"]))
+				fmt.Fprintf(rt.Out, "total: %s requests, %s tokens, %.2f credits, %s errors\n\n",
+					formatNumber(asNum(totals["requests"])), formatNumber(asNum(totals["total_tokens"])),
+					asNum(totals["credits"]), formatNumber(asNum(totals["errors"])))
 			}
 			turns := asSlice(m["turns"])
 			rows := make([][]string, 0, len(turns))
@@ -144,7 +145,7 @@ func init() {
 				turn := asMap(v)
 				rows = append(rows, []string{
 					asStr(turn["id"]), asStr(turn["model_name"]), asStr(turn["status"]),
-					fmt.Sprint(asNum(turn["input_tokens"])), fmt.Sprint(asNum(turn["output_tokens"])),
+					formatNumber(asNum(turn["input_tokens"])), formatNumber(asNum(turn["output_tokens"])),
 					fmt.Sprintf("%.2f", asNum(turn["credits"])), formatMS(turn["started_at"]),
 				})
 			}
@@ -207,12 +208,7 @@ func init() {
 			if _, _, err := rt.Call(http.MethodPost, "/api/usage/cards/"+url.PathEscape(ref)+"/use", nil); err != nil {
 				return err
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已使用。\n")
-			} else {
-				rt.Printf("used.\n")
-			}
-			return nil
+			return rt.confirm(Text{EN: "used.", ZH: "已使用。"})
 		},
 	})
 
@@ -230,7 +226,7 @@ func init() {
 		},
 		Flags: []Flag{
 			{Name: "--code", Hint: Text{EN: "the redemption code", ZH: "兑换码"}, Value: "CODE", Sensitive: true},
-			{Name: "--turnstile", Hint: Text{EN: "challenge token, only if the instance requires one", ZH: "验证码 token，仅在实例要求时需要"}, Value: "TOKEN"},
+			{Name: "--turnstile", Hint: Text{EN: "challenge token, only if the instance requires one", ZH: "验证码 token，仅在实例要求时需要"}, Value: "TOKEN", Sensitive: true},
 		},
 		Examples:   []string{"credit redeem --code SPRING2026", "credit redeem --code SPRING2026 --json"},
 		SeeAlso:    []string{"credit cards"},
@@ -239,10 +235,7 @@ func init() {
 		Run: func(_ context.Context, rt *Runtime) error {
 			code := rt.String("code")
 			if code == "" {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("需要 --code")
-				}
-				return rt.Errorf("--code is required")
+				return rt.Fail(Text{EN: "--code is required", ZH: "需要 --code"})
 			}
 			body := map[string]any{"code": code}
 			if v := rt.String("turnstile"); v != "" {
@@ -263,12 +256,14 @@ func init() {
 	})
 }
 
-// windowPressure is web/src/api/usage.ts's windowPressure, ported: the
-// tightest ratio across whichever dimensions this window actually limits, as
-// 0-1. A window with no limit on any dimension (has == false) is not "0%
+// windowRatio is web/src/api/usage.ts's windowPressure, ported: the tightest
+// ratio across whichever dimensions this window actually limits, as 0-1 and not
+// capped. A window with no limit on any dimension (has == false) is not "0%
 // pressure" — it is not measurable at all, and credit show's sort treats the
 // two differently rather than showing an unenforced window as the safest one.
-func windowPressure(w map[string]any) (pressure float64, has bool) {
+// The account's own bars and the credit listing both read a window this way, so
+// the rule is written once, here.
+func windowRatio(w map[string]any) (ratio float64, has bool) {
 	consider := func(used, limit any) {
 		if limit == nil {
 			return
@@ -277,12 +272,12 @@ func windowPressure(w map[string]any) (pressure float64, has bool) {
 		if lim <= 0 {
 			return
 		}
-		if r := asNum(used) / lim; !has || r > pressure {
-			pressure, has = r, true
+		if r := asNum(used) / lim; !has || r > ratio {
+			ratio, has = r, true
 		}
 	}
 	consider(w["used_requests"], w["limit_requests"])
 	consider(w["used_tokens"], w["limit_tokens"])
 	consider(w["used_credits"], w["limit_credits"])
-	return pressure, has
+	return ratio, has
 }

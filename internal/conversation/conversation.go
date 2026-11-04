@@ -13,8 +13,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"math"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
@@ -33,10 +36,8 @@ type Conversation struct {
 	ID      string `json:"id"`
 	Title   string `json:"title"`
 	ModelID string `json:"model_id"`
-	// Which surface this transcript is, ModeChat or ModeWork. Set when the
-	// conversation is created and never after: a project supplies the
-	// default, and a transcript does not change character later because the
-	// project it sits in was edited.
+	// Always ModeChat now. The column stays because rows from the work
+	// surface still carry "work" in it, and those read back as chat.
 	Mode Mode `json:"mode"`
 	// The project it was started in, empty for the great majority that were
 	// not started in one.
@@ -48,23 +49,17 @@ type Conversation struct {
 	UpdatedAt    int64  `json:"updated_at"`
 }
 
-// Mode is which of the two surfaces a conversation belongs to.
-//
-// Chat is an ordinary conversation. Work is the one the model is handed
-// tools on, and its transcript is a record of what was done to the instance
-// rather than something anybody reads for the prose — which is the whole
-// reason the two do not share a rail.
+// Mode is the surface a conversation belongs to. Only chat is left; the type
+// and the Conversation field stay so the JSON shape does not change under
+// tabs built against it.
 type Mode string
 
-const (
-	ModeChat Mode = "chat"
-	ModeWork Mode = "work"
-)
+const ModeChat Mode = "chat"
 
 // Valid reports whether m is a mode this build knows. An unknown one reads
-// as chat rather than failing: a row written by a newer version should not
-// make an older one refuse to open the conversation.
-func (m Mode) Valid() bool { return m == ModeChat || m == ModeWork }
+// as chat rather than failing, which is also what turns an old "work" row
+// into an ordinary thread.
+func (m Mode) Valid() bool { return m == ModeChat }
 
 // Stats is what the turn cost and how fast it was, shown under the answer.
 // Every field is optional because plenty of endpoints report no token counts
@@ -82,17 +77,6 @@ type Stats struct {
 	Estimated bool `json:"estimated,omitempty"`
 }
 
-// ToolCall is one command a work turn ran, kept with the answer it
-// produced. The output is what the reader saw, already truncated by the
-// broker — this is a record of the turn, not a second copy of the database.
-type ToolCall struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Arguments string `json:"arguments,omitempty"`
-	Output    string `json:"output,omitempty"`
-	Failed    bool   `json:"failed,omitempty"`
-}
-
 type Message struct {
 	ID        string `json:"id"`
 	Seq       int    `json:"seq"`
@@ -100,14 +84,14 @@ type Message struct {
 	Content   string `json:"content"`
 	Reasoning string `json:"reasoning,omitempty"`
 	Error     string `json:"error,omitempty"`
+	// The code the error sentence was written for. The reader's screen
+	// translates the code, and the sentence is only the fallback.
+	ErrorCode string `json:"error_code,omitempty"`
 	ModelID   string `json:"model_id,omitempty"`
 	// Names the model as it was when the message was written, so a renamed or
 	// deleted model does not leave old turns unattributed.
-	ModelName string `json:"model_name,omitempty"`
-	Stats     *Stats `json:"stats,omitempty"`
-	// What the work surface ran to produce this answer, in the order it ran
-	// it. Empty on every chat turn, which is almost all of them.
-	ToolCalls   []ToolCall   `json:"tool_calls,omitempty"`
+	ModelName   string       `json:"model_name,omitempty"`
+	Stats       *Stats       `json:"stats,omitempty"`
 	Attachments []Attachment `json:"attachments,omitempty"`
 	CreatedAt   int64        `json:"created_at"`
 }
@@ -127,6 +111,9 @@ var (
 	ErrNotFound        = errors.New("conversation: not found")
 	ErrMessageNotFound = errors.New("conversation: no such message")
 	ErrTitleTooLong    = errors.New("conversation: title must be 120 characters or fewer")
+	// The project a conversation was asked to move into is not one of the
+	// owner's: gone, or somebody else's.
+	ErrProjectNotFound = errors.New("conversation: no such project")
 )
 
 const (
@@ -154,9 +141,6 @@ const conversationColumns = `id, title, model_id, mode, project_id, pinned, arch
 type NewConversation struct {
 	Title   string
 	ModelID string
-	// Empty reads as ModeChat, which is what every caller that predates the
-	// work surface means.
-	Mode Mode
 	// Empty for a conversation that belongs to no project.
 	ProjectID string
 }
@@ -165,16 +149,12 @@ func (s *Store) Create(ctx context.Context, q database.Queryer, userID string, i
 	if q == nil {
 		q = s.db
 	}
-	mode := in.Mode
-	if !mode.Valid() {
-		mode = ModeChat
-	}
 	now := time.Now().UnixMilli()
 	record := Conversation{
 		ID:        id.New(),
-		Title:     text.TrimAndTruncate(in.Title, MaxTitleChars),
+		Title:     text.TrimAndTruncate(text.Clean(in.Title), MaxTitleChars),
 		ModelID:   in.ModelID,
-		Mode:      mode,
+		Mode:      ModeChat,
 		ProjectID: in.ProjectID,
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -199,12 +179,34 @@ type ListFilter struct {
 	ProjectID *string
 }
 
-// ListWithFilter returns conversations matching the given filter.
-func (s *Store) ListWithFilter(ctx context.Context, userID string, filter ListFilter) ([]Conversation, error) {
-	limit := filter.Limit
-	if limit <= 0 {
-		limit = DefaultListLimit
+// clampLimit is the page bound every list path applies. The limit can arrive
+// from a query string, and without a ceiling one request reads and serialises
+// every row the account holds.
+func clampLimit(limit int) int {
+	if limit <= 0 || limit > MaxListLimit {
+		return DefaultListLimit
 	}
+	return limit
+}
+
+// scanConversations reads every row of a conversation query. The caller owns
+// rows and closes it.
+func scanConversations(rows *sql.Rows) ([]Conversation, error) {
+	out := []Conversation{}
+	for rows.Next() {
+		record, err := scanConversation(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, record)
+	}
+	return out, rows.Err()
+}
+
+// ListWithFilter returns conversations matching the given filter. Every
+// paginated and unpaginated list is built here, so a new filter lands once.
+func (s *Store) ListWithFilter(ctx context.Context, userID string, filter ListFilter) ([]Conversation, error) {
+	limit := clampLimit(filter.Limit)
 	offset := max(0, filter.Offset)
 
 	where := []string{"user_id = ?"}
@@ -233,49 +235,34 @@ func (s *Store) ListWithFilter(ctx context.Context, userID string, filter ListFi
 		return nil, fmt.Errorf("conversation: list: %w", err)
 	}
 	defer rows.Close()
-
-	out := []Conversation{}
-	for rows.Next() {
-		record, err := scanConversation(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, record)
-	}
-	return out, rows.Err()
+	return scanConversations(rows)
 }
 
-// List is a page of the conversations a user owns, newest first.
-// Defaults to non-archived conversations.
-func (s *Store) List(ctx context.Context, userID string, limit int) ([]Conversation, error) {
-	if limit <= 0 || limit > MaxListLimit {
-		limit = DefaultListLimit
-	}
-	f := false
-	return s.ListWithFilter(ctx, userID, ListFilter{Limit: limit, Archived: &f})
-}
-
-// ListForExport is every conversation a user owns, up to the caller's own
-// ceiling, with no page clamp. Includes both active and archived conversations.
-func (s *Store) ListForExport(ctx context.Context, userID string, limit int) ([]Conversation, error) {
+// ListForExport is one page of every conversation a user owns, archived ones
+// included, after afterID ("" for the first page), in ID order.
+//
+// An export reads the account a page at a time while the account is still in
+// use, so the page is keyed on the ID and not an offset. An ID never changes.
+// A turn bumps updated_at and a pin reorders the rail, and either would move a
+// conversation across an offset boundary, so the export would skip one or
+// repeat another. ULIDs sort in creation order, so the file comes out oldest
+// first.
+func (s *Store) ListForExport(ctx context.Context, userID, afterID string, limit int) ([]Conversation, error) {
+	// No ceiling, unlike the list paths: the caller is the backup, which picks
+	// its own page size and never passes a request's number through.
 	if limit <= 0 {
 		limit = MaxListLimit
 	}
-	return s.ListWithFilter(ctx, userID, ListFilter{Limit: limit})
-}
-
-// list is the helper behind paginated callers, defaulting to active conversations.
-func (s *Store) list(ctx context.Context, userID string, limit int, offsets ...int) ([]Conversation, error) {
-	offset := 0
-	if len(offsets) > 0 {
-		offset = max(0, offsets[0])
+	rows, err := s.db.Query(ctx,
+		`SELECT `+conversationColumns+` FROM conversations
+		 WHERE user_id = ? AND id > ?
+		 ORDER BY id LIMIT ?`,
+		userID, afterID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("conversation: list for export: %w", err)
 	}
-	f := false
-	return s.ListWithFilter(ctx, userID, ListFilter{
-		Limit:    limit,
-		Offset:   offset,
-		Archived: &f,
-	})
+	defer rows.Close()
+	return scanConversations(rows)
 }
 
 func (s *Store) Get(ctx context.Context, q database.Queryer, userID, conversationID string) (Conversation, error) {
@@ -291,6 +278,8 @@ type Update struct {
 	Title    *string
 	Pinned   *bool
 	Archived *bool
+	// Moves it into a project, or out of every project when empty.
+	ProjectID *string
 }
 
 func (s *Store) Update(ctx context.Context, userID, conversationID string, in Update) (Conversation, error) {
@@ -298,7 +287,7 @@ func (s *Store) Update(ctx context.Context, userID, conversationID string, in Up
 	args := []any{}
 
 	if in.Title != nil {
-		title := strings.TrimSpace(*in.Title)
+		title := strings.TrimSpace(text.Clean(*in.Title))
 		if utf8.RuneCountInString(title) > MaxTitleChars {
 			return Conversation{}, ErrTitleTooLong
 		}
@@ -313,19 +302,47 @@ func (s *Store) Update(ctx context.Context, userID, conversationID string, in Up
 		sets = append(sets, "archived = ?")
 		args = append(args, *in.Archived)
 	}
+	// The owner's project or none. Checked in the statement itself rather than
+	// read first: a project deleted, or never this person's, between a check
+	// and the write would otherwise become a foreign-key error, or worse a
+	// conversation filed under somebody else's project.
+	where := "id = ? AND user_id = ?"
+	var whereArgs []any
+	if in.ProjectID != nil {
+		if *in.ProjectID == "" {
+			sets = append(sets, "project_id = NULL")
+		} else {
+			sets = append(sets, "project_id = ?")
+			args = append(args, *in.ProjectID)
+			where += " AND EXISTS (SELECT 1 FROM projects WHERE id = ? AND user_id = ?)"
+			whereArgs = append(whereArgs, *in.ProjectID, userID)
+		}
+	}
 	if len(sets) == 0 {
 		return s.Get(ctx, nil, userID, conversationID)
 	}
 
-	// updated_at is deliberately not touched: renaming a conversation should
-	// not reorder the rail.
+	// updated_at is deliberately not touched: renaming a conversation, or
+	// filing it, should not reorder the rail.
 	args = append(args, conversationID, userID)
+	args = append(args, whereArgs...)
 	result, err := s.db.Exec(ctx,
-		`UPDATE conversations SET `+strings.Join(sets, ", ")+` WHERE id = ? AND user_id = ?`, args...)
+		`UPDATE conversations SET `+strings.Join(sets, ", ")+` WHERE `+where, args...)
 	if err != nil {
 		return Conversation{}, fmt.Errorf("conversation: update: %w", err)
 	}
-	if affected, _ := result.RowsAffected(); affected == 0 {
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return Conversation{}, fmt.Errorf("conversation: update rows: %w", err)
+	}
+	if affected == 0 {
+		// Which of the two conditions failed decides the answer: a missing
+		// conversation and a missing project are different mistakes.
+		if in.ProjectID != nil && *in.ProjectID != "" {
+			if _, err := s.Get(ctx, nil, userID, conversationID); err == nil {
+				return Conversation{}, ErrProjectNotFound
+			}
+		}
 		return Conversation{}, ErrNotFound
 	}
 	return s.Get(ctx, nil, userID, conversationID)
@@ -337,7 +354,13 @@ func (s *Store) Delete(ctx context.Context, userID, conversationID string) error
 	if err != nil {
 		return fmt.Errorf("conversation: delete: %w", err)
 	}
-	if affected, _ := result.RowsAffected(); affected == 0 {
+	// A driver that cannot report the count must not look like a missing row:
+	// that would answer 404 for a delete that may well have happened.
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("conversation: delete rows: %w", err)
+	}
+	if affected == 0 {
 		return ErrNotFound
 	}
 	return nil
@@ -348,14 +371,23 @@ func (s *Store) DeleteAll(ctx context.Context, userID string) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("conversation: delete all: %w", err)
 	}
-	removed, _ := result.RowsAffected()
+	removed, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("conversation: delete all rows: %w", err)
+	}
 	return removed, nil
 }
 
 // --- messages --------------------------------------------------------------
 
-const messageColumns = `m.id, m.seq, m.role, m.content, m.reasoning, m.error, m.model_id,
-	m.model_name, m.stats_json, m.tool_calls_json, m.created_at`
+const messageColumns = `m.id, m.seq, m.role, m.content, m.reasoning, m.error, m.error_code,
+	m.model_id, m.model_name, m.stats_json, m.created_at`
+
+// requestColumns is what a provider request is built from. The reasoning a
+// model showed is never sent back to it, and it runs to tens of kilobytes a
+// message: reading it for the forty messages a turn replays cost megabytes of
+// reads and decompression per turn, all of it dropped.
+const requestColumns = `m.id, m.seq, m.role, m.content, m.created_at`
 
 // Messages returns a conversation's transcript in order, with attachments
 // attached. Two queries rather than a join with fan-out, so a conversation
@@ -375,32 +407,75 @@ func (s *Store) Messages(ctx context.Context, q database.Queryer, userID, conver
 	}
 	defer rows.Close()
 
+	messages, err := scanMessages(rows)
+	if err != nil {
+		return nil, err
+	}
+	if len(messages) == 0 {
+		return messages, nil
+	}
+	return messages, attachTo(ctx, q, userID, conversationID, messages, 0, math.MaxInt32)
+}
+
+// MessagePage returns up to limit messages of a conversation after sequence
+// afterSeq, oldest first, with their attachments. It is how an export reads a
+// conversation a page at a time, so the rows of a long one are never all held
+// at once.
+func (s *Store) MessagePage(ctx context.Context, q database.Queryer, userID, conversationID string, afterSeq, limit int) ([]Message, error) {
+	if q == nil {
+		q = s.db
+	}
+	rows, err := q.Query(ctx,
+		`SELECT `+messageColumns+`
+		 FROM messages m
+		 WHERE m.conversation_id = ? AND m.user_id = ? AND m.seq > ?
+		 ORDER BY m.seq
+		 LIMIT ?`,
+		conversationID, userID, afterSeq, limit)
+	if err != nil {
+		return nil, fmt.Errorf("conversation: message page: %w", err)
+	}
+	defer rows.Close()
+
+	messages, err := scanMessages(rows)
+	if err != nil || len(messages) == 0 {
+		return messages, err
+	}
+	// Seq is unique within a conversation, so the page's own range picks out
+	// exactly its attachments and no others.
+	return messages, attachTo(ctx, q, userID, conversationID, messages,
+		messages[0].Seq, messages[len(messages)-1].Seq)
+}
+
+func scanMessages(rows *sql.Rows) ([]Message, error) {
 	messages := []Message{}
-	index := map[string]int{}
 	for rows.Next() {
 		record, err := scanMessage(rows)
 		if err != nil {
 			return nil, err
 		}
-		index[record.ID] = len(messages)
 		messages = append(messages, record)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	if len(messages) == 0 {
-		return messages, nil
+	return messages, rows.Err()
+}
+
+// attachTo fills in the attachments of messages whose seq lies in [fromSeq,
+// toSeq]. The messages must be the ones the caller read in that range.
+func attachTo(ctx context.Context, q database.Queryer, userID, conversationID string, messages []Message, fromSeq, toSeq int) error {
+	index := make(map[string]int, len(messages))
+	for position, message := range messages {
+		index[message.ID] = position
 	}
 
 	attachments, err := q.Query(ctx,
 		`SELECT a.id, a.message_id, a.mime, a.width, a.height, a.size, a.discarded_at
 		 FROM attachments a
 		 JOIN messages m ON m.id = a.message_id
-		 WHERE m.conversation_id = ? AND a.user_id = ?
+		 WHERE m.conversation_id = ? AND a.user_id = ? AND m.seq BETWEEN ? AND ?
 		 ORDER BY a.created_at`,
-		conversationID, userID)
+		conversationID, userID, fromSeq, toSeq)
 	if err != nil {
-		return nil, fmt.Errorf("conversation: attachments: %w", err)
+		return fmt.Errorf("conversation: attachments: %w", err)
 	}
 	defer attachments.Close()
 
@@ -412,14 +487,14 @@ func (s *Store) Messages(ctx context.Context, q database.Queryer, userID, conver
 		)
 		if err := attachments.Scan(&record.ID, &messageID, &record.Mime,
 			&record.Width, &record.Height, &record.Size, &discardedAt); err != nil {
-			return nil, fmt.Errorf("conversation: attachment scan: %w", err)
+			return fmt.Errorf("conversation: attachment scan: %w", err)
 		}
 		record.Discarded = discardedAt > 0
 		if position, ok := index[messageID]; ok {
 			messages[position].Attachments = append(messages[position].Attachments, record)
 		}
 	}
-	return messages, attachments.Err()
+	return attachments.Err()
 }
 
 // ForRequest is the part of a transcript the next turn re-sends: the newest
@@ -428,17 +503,16 @@ func (s *Store) Messages(ctx context.Context, q database.Queryer, userID, conver
 // Failed assistant turns are left out here, in the query — replaying "I could
 // not reach the API" as though the assistant had said it teaches the model
 // that refusing is a valid answer shape — and so is everything older than the
-// limit. Messages reads the whole transcript, which the chat gateway used to
-// do on every turn only to discard all but the tail in Go: a long
-// conversation cost its whole history in reads, JSON decoding and memory each
-// time a message was sent. The (conversation_id, seq) unique index answers
-// this one walking backwards from the newest row. A limit of zero or less
+// limit. Reading the whole transcript and keeping only the tail in Go would
+// cost the whole history in reads, JSON decoding and memory on every turn. The
+// (conversation_id, seq) unique index answers this one walking backwards from
+// the newest row. A limit of zero or less
 // means the whole usable transcript.
 func (s *Store) ForRequest(ctx context.Context, q database.Queryer, userID, conversationID string, limit int) ([]Message, error) {
 	if q == nil {
 		q = s.db
 	}
-	query := `SELECT ` + messageColumns + `
+	query := `SELECT ` + requestColumns + `
 		 FROM messages m
 		 WHERE m.conversation_id = ? AND m.user_id = ?
 		   AND NOT (m.role = ? AND (m.error <> '' OR m.content = ''))
@@ -456,9 +530,9 @@ func (s *Store) ForRequest(ctx context.Context, q database.Queryer, userID, conv
 
 	messages := []Message{}
 	for rows.Next() {
-		record, err := scanMessage(rows)
-		if err != nil {
-			return nil, err
+		var record Message
+		if err := rows.Scan(&record.ID, &record.Seq, &record.Role, &record.Content, &record.CreatedAt); err != nil {
+			return nil, fmt.Errorf("conversation: message scan: %w", err)
 		}
 		messages = append(messages, record)
 	}
@@ -473,22 +547,41 @@ func (s *Store) ForRequest(ctx context.Context, q database.Queryer, userID, conv
 		return messages, nil
 	}
 
-	index := make(map[string]int, len(messages))
-	marks := make([]string, 0, len(messages))
-	ids := make([]any, 0, len(messages)+1)
+	// The pictures are asked for a batch of messages at a time. One placeholder
+	// per message fails once a long transcript has more of them than a driver
+	// takes in one statement, and the turn fails with it. A subquery with the
+	// same filter would avoid the list, but it could pick a different window
+	// from the messages read above if a message is appended in between, and
+	// the pictures of the older ones would be lost.
+	for start := 0; start < len(messages); start += requestPictureBatch {
+		if err := s.requestPictures(ctx, q, userID, messages[start:min(start+requestPictureBatch, len(messages))]); err != nil {
+			return nil, err
+		}
+	}
+	return messages, nil
+}
+
+// requestPictureBatch is how many messages one picture query names.
+const requestPictureBatch = 500
+
+// requestPictures attaches the pictures of batch to its messages, in place.
+// A picture whose message is not in the batch is not in the index and is
+// skipped.
+func (s *Store) requestPictures(ctx context.Context, q database.Queryer, userID string, batch []Message) error {
+	index := make(map[string]int, len(batch))
+	ids := make([]any, 0, len(batch)+1)
 	ids = append(ids, userID)
-	for position, message := range messages {
+	for position, message := range batch {
 		index[message.ID] = position
-		marks = append(marks, "?")
 		ids = append(ids, message.ID)
 	}
 	attachments, err := q.Query(ctx,
 		`SELECT a.id, a.message_id, a.mime, a.width, a.height, a.size, a.discarded_at
 		 FROM attachments a
-		 WHERE a.user_id = ? AND a.message_id IN (`+strings.Join(marks, ", ")+`)
+		 WHERE a.user_id = ? AND a.message_id IN (`+database.Placeholders(len(batch))+`)
 		 ORDER BY a.created_at`, ids...)
 	if err != nil {
-		return nil, fmt.Errorf("conversation: attachments for request: %w", err)
+		return fmt.Errorf("conversation: attachments for request: %w", err)
 	}
 	defer attachments.Close()
 	for attachments.Next() {
@@ -499,14 +592,14 @@ func (s *Store) ForRequest(ctx context.Context, q database.Queryer, userID, conv
 		)
 		if err := attachments.Scan(&record.ID, &messageID, &record.Mime,
 			&record.Width, &record.Height, &record.Size, &discardedAt); err != nil {
-			return nil, fmt.Errorf("conversation: attachment scan: %w", err)
+			return fmt.Errorf("conversation: attachment scan: %w", err)
 		}
 		record.Discarded = discardedAt > 0
 		if position, ok := index[messageID]; ok {
-			messages[position].Attachments = append(messages[position].Attachments, record)
+			batch[position].Attachments = append(batch[position].Attachments, record)
 		}
 	}
-	return messages, attachments.Err()
+	return attachments.Err()
 }
 
 // AppendInput is one message to add. Seq is assigned by the store so two
@@ -518,13 +611,15 @@ type AppendInput struct {
 	Content        string
 	Reasoning      string
 	Error          string
-	ModelID        string
+	// The stable code for Error, stored beside it so a reader's screen can
+	// translate the code rather than show the stored English.
+	ErrorCode string
+	ModelID   string
 	// The model's name at the time. Stored rather than joined, so deleting a
 	// model does not unattribute every answer it ever gave.
 	ModelName     string
 	ProviderID    string
 	Stats         *Stats
-	ToolCalls     []ToolCall
 	AttachmentIDs []string
 }
 
@@ -532,8 +627,8 @@ func (s *Store) Append(ctx context.Context, q database.Queryer, in AppendInput) 
 	// A caller that already has a transaction passes it in and gets the same
 	// lock inside that one; appendIn takes it first, before the maximum is
 	// read, so the two paths cannot disagree about the order.
-	if q != nil {
-		return s.appendIn(ctx, q, in)
+	if tx, ok := q.(*database.Tx); ok {
+		return s.appendIn(ctx, tx, in)
 	}
 
 	// The sequence number is read and then written, so the two have to be one
@@ -543,7 +638,8 @@ func (s *Store) Append(ctx context.Context, q database.Queryer, in AppendInput) 
 	// ux_messages_seq turns the loser into a unique-constraint error: the
 	// reader gets a turn that failed for no reason they can act on, and
 	// because the append returns before the usage is recorded, the turn never
-	// reaches the ledger either.
+	// reaches the ledger either. A non-transaction handle is not used directly
+	// for the same reason: its lock would be committed on its own at once.
 	var record Message
 	err := s.db.Tx(ctx, func(tx *database.Tx) error {
 		var err error
@@ -556,16 +652,33 @@ func (s *Store) Append(ctx context.Context, q database.Queryer, in AppendInput) 
 	return record, nil
 }
 
-func (s *Store) appendIn(ctx context.Context, q database.Queryer, in AppendInput) (Message, error) {
-	// The lock, first, before the maximum below is read. A no-op update is the
-	// portable spelling AGENTS.md names for a row lock: it changes nothing,
-	// the engine does not optimise it away, and a second appender waits here
-	// instead of reading the same maximum. On PostgreSQL it is a row lock; on
-	// SQLite it is the write transaction the whole append now runs inside.
-	if _, err := q.Exec(ctx,
+// lockConversation takes the conversation's row lock for the rest of the
+// transaction, before anything is read that the write depends on. A no-op update
+// is the portable spelling AGENTS.md names for a row lock: it changes nothing,
+// the engine does not optimise it away, and a second writer waits here. On
+// PostgreSQL it is a row lock; on SQLite it is the write transaction the whole
+// change runs inside.
+func lockConversation(ctx context.Context, q database.Queryer, userID, conversationID string) error {
+	result, err := q.Exec(ctx,
 		`UPDATE conversations SET updated_at = updated_at WHERE id = ? AND user_id = ?`,
-		in.ConversationID, in.UserID); err != nil {
-		return Message{}, fmt.Errorf("conversation: lock for append: %w", err)
+		conversationID, userID)
+	if err != nil {
+		return fmt.Errorf("conversation: lock: %w", err)
+	}
+	// The owner is in the WHERE clause, so zero rows means the conversation is
+	// gone or belongs to someone else. Without this check the caller's insert
+	// would still go through, filed under the caller's id in a stranger's thread.
+	if affected, rowsErr := result.RowsAffected(); rowsErr == nil && affected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) appendIn(ctx context.Context, q database.Queryer, in AppendInput) (Message, error) {
+	// The lock, first, before the maximum below is read, so a second appender
+	// waits here instead of reading the same maximum.
+	if err := lockConversation(ctx, q, in.UserID, in.ConversationID); err != nil {
+		return Message{}, err
 	}
 
 	var next int
@@ -577,17 +690,20 @@ func (s *Store) appendIn(ctx context.Context, q database.Queryer, in AppendInput
 		return Message{}, fmt.Errorf("conversation: next seq: %w", err)
 	}
 
+	// A NUL byte fails the whole INSERT on PostgreSQL, so it is removed before
+	// the limits count the text. Every writer goes through here, and a model's
+	// answer is the text no caller can refuse first.
 	record := Message{
 		ID:        id.New(),
 		Seq:       next,
 		Role:      in.Role,
-		Content:   text.TrimAndTruncate(in.Content, MaxContentChars),
-		Reasoning: text.TrimAndTruncate(in.Reasoning, MaxReasoningChars),
-		Error:     text.TrimAndTruncate(in.Error, MaxErrorChars),
+		Content:   text.TrimAndTruncate(text.Clean(in.Content), MaxContentChars),
+		Reasoning: text.TrimAndTruncate(text.Clean(in.Reasoning), MaxReasoningChars),
+		Error:     text.TrimAndTruncate(text.Clean(in.Error), MaxErrorChars),
+		ErrorCode: in.ErrorCode,
 		ModelID:   in.ModelID,
 		ModelName: in.ModelName,
 		Stats:     in.Stats,
-		ToolCalls: in.ToolCalls,
 		CreatedAt: time.Now().UnixMilli(),
 	}
 
@@ -600,22 +716,15 @@ func (s *Store) appendIn(ctx context.Context, q database.Queryer, in AppendInput
 		stats = string(encoded)
 	}
 
-	tools := ""
-	if len(in.ToolCalls) > 0 {
-		encoded, err := json.Marshal(in.ToolCalls)
-		if err != nil {
-			return Message{}, fmt.Errorf("conversation: encode tool calls: %w", err)
-		}
-		tools = string(encoded)
-	}
-
+	// tool_calls_json keeps its default: nothing writes it now, and rows that a
+	// removed surface wrote keep what they had.
 	_, err = q.Exec(ctx,
 		`INSERT INTO messages (id, conversation_id, user_id, seq, role, content, reasoning,
-		 error, model_id, model_name, provider_id, stats_json, tool_calls_json, created_at)
+		 error, error_code, model_id, model_name, provider_id, stats_json, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		record.ID, in.ConversationID, in.UserID, record.Seq, record.Role, record.Content,
-		record.Reasoning, record.Error, nullable(in.ModelID), record.ModelName,
-		nullable(in.ProviderID), stats, tools, record.CreatedAt)
+		record.Reasoning, record.Error, record.ErrorCode, nullable(in.ModelID), record.ModelName,
+		nullable(in.ProviderID), stats, record.CreatedAt)
 	if err != nil {
 		return Message{}, fmt.Errorf("conversation: append: %w", err)
 	}
@@ -638,8 +747,21 @@ func (s *Store) appendIn(ctx context.Context, q database.Queryer, in AppendInput
 // editing an earlier turn and regenerating an answer the same operation: the
 // replies to a question that no longer exists go with it.
 func (s *Store) TruncateFrom(ctx context.Context, q database.Queryer, userID, conversationID, messageID string) error {
-	if q == nil {
-		q = s.db
+	// A plain handle is not used directly, for the same reason as in Append:
+	// the lock below would commit on its own at once, and the position read and
+	// the delete after it would run unlocked.
+	if _, ok := q.(*database.Tx); !ok {
+		return s.db.Tx(ctx, func(tx *database.Tx) error {
+			return s.TruncateFrom(ctx, tx, userID, conversationID, messageID)
+		})
+	}
+
+	// The position read below and the delete after it are a check and a write,
+	// so the conversation is locked first: a turn appending at the same moment
+	// must not commit a message between the two that the delete then removes
+	// without the reader having chosen it.
+	if err := lockConversation(ctx, q, userID, conversationID); err != nil {
+		return err
 	}
 
 	var seq int
@@ -706,14 +828,18 @@ func (s *Store) UpdateMessage(ctx context.Context, q database.Queryer, userID, c
 	if q == nil {
 		q = s.db
 	}
-	trimmed := text.TrimAndTruncate(content, MaxContentChars)
+	trimmed := text.TrimAndTruncate(text.Clean(content), MaxContentChars)
 	result, err := q.Exec(ctx,
 		`UPDATE messages SET content = ? WHERE id = ? AND conversation_id = ? AND user_id = ?`,
 		trimmed, messageID, conversationID, userID)
 	if err != nil {
 		return Message{}, fmt.Errorf("conversation: update message: %w", err)
 	}
-	if affected, _ := result.RowsAffected(); affected == 0 {
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return Message{}, fmt.Errorf("conversation: update message rows: %w", err)
+	}
+	if affected == 0 {
 		return Message{}, ErrMessageNotFound
 	}
 	if err := s.touch(ctx, q, conversationID, userID); err != nil {
@@ -756,7 +882,7 @@ func (s *Store) SetTitle(ctx context.Context, q database.Queryer, userID, conver
 		q = s.db
 	}
 	_, err := q.Exec(ctx, `UPDATE conversations SET title = ? WHERE id = ? AND user_id = ? AND title = ''`,
-		text.TrimAndTruncate(title, MaxTitleChars), conversationID, userID)
+		text.TrimAndTruncate(text.Clean(title), MaxTitleChars), conversationID, userID)
 	if err != nil {
 		return fmt.Errorf("conversation: set title: %w", err)
 	}
@@ -766,13 +892,37 @@ func (s *Store) SetTitle(ctx context.Context, q database.Queryer, userID, conver
 // DeriveTitle names a conversation by its opening line, which is what a user
 // recognises it by. Stored rather than derived on read, so a rename sticks.
 func DeriveTitle(content string) string {
-	collapsed := strings.Join(strings.Fields(content), " ")
-	return text.TrimAndTruncate(collapsed, 60)
+	// Only the opening can reach the title, and splitting the whole message
+	// into words would allocate for every one of them. The scan walks the
+	// message once and stops as soon as it has sixty-one characters of
+	// collapsed text, one more than the title keeps, so the cut lands in text
+	// that runs on past it, as it would for the whole message. It does not stop
+	// after a fixed number of bytes: whitespace it drops does not count, so a
+	// message that opens with a long run of newlines still gets its title from
+	// the words after the run.
+	var b strings.Builder
+	pending, runes := false, 0
+	for i := 0; i < len(content) && runes <= 60; {
+		r, size := utf8.DecodeRuneInString(content[i:])
+		i += size
+		if unicode.IsSpace(r) {
+			pending = b.Len() > 0
+			continue
+		}
+		if pending {
+			b.WriteByte(' ')
+			pending = false
+			runes++
+		}
+		b.WriteString(content[i-size : i])
+		runes++
+	}
+	return text.TrimAndTruncate(b.String(), 60)
 }
 
 // --- scanning ---------------------------------------------------------------
 
-type rowScanner interface{ Scan(dest ...any) error }
+type rowScanner = database.RowScanner
 
 func scanConversation(row rowScanner) (Conversation, error) {
 	var (
@@ -804,10 +954,9 @@ func scanMessage(row rowScanner) (Message, error) {
 		record  Message
 		modelID sql.NullString
 		stats   string
-		tools   string
 	)
 	err := row.Scan(&record.ID, &record.Seq, &record.Role, &record.Content, &record.Reasoning,
-		&record.Error, &modelID, &record.ModelName, &stats, &tools, &record.CreatedAt)
+		&record.Error, &record.ErrorCode, &modelID, &record.ModelName, &stats, &record.CreatedAt)
 	if err != nil {
 		if database.IsNotFound(err) {
 			return Message{}, ErrMessageNotFound
@@ -817,17 +966,10 @@ func scanMessage(row rowScanner) (Message, error) {
 	record.ModelID = modelID.String
 	if stats != "" {
 		var decoded Stats
-		if json.Unmarshal([]byte(stats), &decoded) == nil {
+		if err := json.Unmarshal([]byte(stats), &decoded); err != nil {
+			slog.Warn("message stats do not decode; the answer shows without them", "message", record.ID, "error", err)
+		} else {
 			record.Stats = &decoded
-		}
-	}
-	// A row this build cannot read is a row written by a newer one: the
-	// answer still opens, without its tool history, rather than the whole
-	// conversation failing to load over a record of what it did.
-	if tools != "" {
-		var decoded []ToolCall
-		if json.Unmarshal([]byte(tools), &decoded) == nil {
-			record.ToolCalls = decoded
 		}
 	}
 	return record, nil

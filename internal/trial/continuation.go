@@ -24,10 +24,11 @@ import (
 // stored on this side: the token is the state, and it is unforgeable rather
 // than trusted.
 //
-// This makes the limit real for a client that participates. Someone who
-// discards the token starts a fresh trial each time, which is why it is not
-// the only bound — the per-address budget and the instance-wide ceiling in
-// trial.go are what hold when the token is thrown away.
+// This holds for a client that hands back each new token. The token is not
+// single-use: a client that replays an earlier one is counted as on its second
+// turn every time, and a client that discards the token starts a fresh trial.
+// Nothing on this side remembers a token, so the per-address budget and the
+// instance-wide ceiling in trial.go are what bound both.
 
 const continuationTTL = 2 * time.Hour
 

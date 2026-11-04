@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -46,6 +47,36 @@ func (in *instance) doWithExtraCookies(method, path string, as *session, extra .
 	recorder := httptest.NewRecorder()
 	in.handler.ServeHTTP(recorder, request)
 	return recorder
+}
+
+// startConnect asks for the connect flow the way the settings screen does: the
+// account's session, and its password as the proof. It returns the state cookie
+// the callback has to come back with, and the state the provider's address
+// carries. The cookie is found by its path, which is the one the flow sets.
+func (in *instance) startConnect(provider string, as *session, password, next string) (*http.Cookie, string) {
+	in.t.Helper()
+	response := in.do(http.MethodPost, "/api/auth/oauth/connections/"+provider,
+		map[string]string{"password": password, "next": next}, as)
+	if response.Code != http.StatusOK {
+		in.t.Fatalf("start the connect flow: %d %s", response.Code, response.Body.String())
+	}
+	var answer struct {
+		Redirect string `json:"redirect"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &answer); err != nil {
+		in.t.Fatalf("connect answer %q: %v", response.Body.String(), err)
+	}
+	target, err := url.Parse(answer.Redirect)
+	if err != nil {
+		in.t.Fatalf("parse authorise url: %v", err)
+	}
+	for _, cookie := range response.Result().Cookies() {
+		if cookie.Path == "/api/auth/oauth" {
+			return cookie, target.Query().Get("state")
+		}
+	}
+	in.t.Fatal("the connect answer set no state cookie")
+	return nil, ""
 }
 
 func TestOIDCBindingPolicyThroughTheWiring(t *testing.T) {
@@ -97,26 +128,14 @@ func TestOIDCBindingPolicyThroughTheWiring(t *testing.T) {
 	}
 
 	// A GitHub connection would not satisfy this policy.
-	if code := in.do(http.MethodGet, "/api/auth/oauth/start/github?link=1", nil, founder).Code; code != http.StatusForbidden {
+	if code := in.do(http.MethodPost, "/api/auth/oauth/connections/github",
+		map[string]string{"password": "a-good-password"}, founder).Code; code != http.StatusForbidden {
 		t.Fatalf("a non-OIDC connect route reached past the gate: %d", code)
 	}
 
 	// The OIDC connect flow itself is always reachable, and completing it
 	// lifts the gate.
-	start := in.do(http.MethodGet, "/api/auth/oauth/start/oidc?link=1", nil, founder)
-	if start.Code != http.StatusFound {
-		t.Fatalf("start oidc link: %d %s", start.Code, start.Body.String())
-	}
-	cookies := start.Result().Cookies()
-	if len(cookies) == 0 {
-		t.Fatalf("no state cookie from start: %+v", cookies)
-	}
-	stateCookie := cookies[0]
-	target, err := url.Parse(start.Header().Get("Location"))
-	if err != nil {
-		t.Fatalf("parse authorise url: %v", err)
-	}
-	nonce := target.Query().Get("state")
+	stateCookie, nonce := in.startConnect("oidc", founder, "a-good-password", "")
 
 	callbackPath := "/api/auth/oauth/callback/oidc?code=c&state=" + nonce
 	callback := in.doWithExtraCookies(http.MethodGet, callbackPath, founder, stateCookie)
@@ -158,13 +177,7 @@ func TestOIDCBindingConnectHonoursNext(t *testing.T) {
 		t.Fatalf("configure: %d %s", response.Code, response.Body.String())
 	}
 
-	start := in.do(http.MethodGet, "/api/auth/oauth/start/oidc?link=1&next="+url.QueryEscape("/bind-oidc?next=%2Fsettings"), nil, founder)
-	if start.Code != http.StatusFound {
-		t.Fatalf("start: %d %s", start.Code, start.Body.String())
-	}
-	stateCookie := start.Result().Cookies()[0]
-	target, _ := url.Parse(start.Header().Get("Location"))
-	nonce := target.Query().Get("state")
+	stateCookie, nonce := in.startConnect("oidc", founder, "a-good-password", "/bind-oidc?next=%2Fsettings")
 
 	callback := in.doWithExtraCookies(http.MethodGet, "/api/auth/oauth/callback/oidc?code=c&state="+nonce, founder, stateCookie)
 	location := callback.Header().Get("Location")

@@ -1,5 +1,6 @@
-/* Page-level shell. Everything below the app root is styled by chat.css and
-   workspace.css, which own the design tokens this file consumes. */
+@use 'mixins' as *;
+/* Page-level shell. Everything below the app root is styled by _chat.scss and
+   _workspace.scss, which own the design tokens this file consumes. */
 
 html,
 body {
@@ -42,11 +43,31 @@ textarea:placeholder-shown::selection {
   background-image: var(--ai-wallpaper);
   background-size: cover;
   background-position: center;
-  filter: blur(var(--ai-wallpaper-blur, 0px));
+  filter: var(--ai-wallpaper-filter, none);
 }
 
 .has-wallpaper body::after {
   background: rgba(0, 0, 0, var(--ai-wallpaper-dim, 0));
+}
+
+/* A wallpaper that is a page (OaBackdrop), between the picture layer and the
+   dim, taking the same blur. Fixed and behind, like the layers around it;
+   it takes no pointer, so nothing meant for the interface lands in it. */
+.oa-backdrop-frame {
+  position: fixed;
+  z-index: -1;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  pointer-events: none;
+}
+
+.oa-backdrop-frame.is-wallpaper {
+  inset: calc(-2 * var(--ai-wallpaper-blur, 0px));
+  width: calc(100% + 4 * var(--ai-wallpaper-blur, 0px));
+  height: calc(100% + 4 * var(--ai-wallpaper-blur, 0px));
+  filter: var(--ai-wallpaper-filter, none);
 }
 
 /* The surfaces sit on the wallpaper rather than hiding it. */
@@ -71,7 +92,7 @@ textarea:placeholder-shown::selection {
 /* The rail is matched through .ai-chat-wide, like the transcript beside it.
    Not because the narrow layout needs excluding — though it does, since there
    the rail is an overlay over content rather than a card on the wallpaper —
-   but because chat.css redeclares its background at the same weight this
+   but because _chat.scss redeclares its background at the same weight this
    selector would otherwise have, and wins on being the later file. */
 .has-wallpaper .ai-chat-wide .ai-chat-sidebar,
 .has-wallpaper .ai-chat-wide .ai-chat-main,
@@ -80,7 +101,11 @@ textarea:placeholder-shown::selection {
 .has-wallpaper .oa-admin-main {
   background: color-mix(in srgb, var(--ai-surface-container) var(--ai-surface-opacity, 100%), transparent);
   /* A whole filter rather than a length, so that "no blur" is `none` and not
-     `blur(0px)`: the second one still promotes the card to its own layer. */
+     `blur(0px)`: the second one still promotes the card to its own layer.
+     A known cost, kept on purpose: behind an html wallpaper that animates,
+     every card re-blurs what is behind it on every frame. Dropping the blur
+     there would quietly switch off a setting the operator chose, so the
+     price is the operator's to weigh, not this rule's to refuse. */
   -webkit-backdrop-filter: var(--ai-surface-filter, none);
   backdrop-filter: var(--ai-surface-filter, none);
 }
@@ -97,8 +122,8 @@ textarea:placeholder-shown::selection {
   background: color-mix(in srgb, var(--ai-surface-container) 38%, transparent);
   /* Saturation back up after the blur washes it out — without it a material
      is a sheet of grey plastic instead of the colour behind it, softened. */
-  -webkit-backdrop-filter: blur(20px) saturate(1.6);
-  backdrop-filter: blur(20px) saturate(1.6);
+  -webkit-backdrop-filter: $frosted-filter;
+  backdrop-filter: $frosted-filter;
 }
 
 .has-wallpaper .oa-header .oa-brand {
@@ -157,9 +182,7 @@ textarea:placeholder-shown::selection {
 .oa-boot-spinner {
   width: 20px;
   height: 20px;
-  border: 2px solid var(--ai-outline-variant);
-  border-radius: 50%;
-  border-top-color: var(--ai-primary);
+  @include spinner-ring;
   animation: ai-chat-spin 0.8s linear infinite;
 }
 

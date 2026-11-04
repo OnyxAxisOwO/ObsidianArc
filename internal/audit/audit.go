@@ -1,0 +1,374 @@
+// Package audit keeps the administrators' audit trail: one row for every
+// backoffice write, and for the few reads that expose somebody else's data.
+//
+// The admin module writes it from the one wrapper every backoffice route is
+// mounted behind, so a new endpoint is audited by being an endpoint. This
+// package only stores and reads; it does not know which routes exist.
+package audit
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/text"
+)
+
+// Entry is one administrative action. Actor and target names are snapshots,
+// so the row still reads after either account is renamed or deleted.
+type Entry struct {
+	ID            string `json:"id"`
+	At            int64  `json:"at"`
+	ActorID       string `json:"actor_id"`
+	ActorUsername string `json:"actor_username"`
+	ActorRole     string `json:"actor_role"`
+	Method        string `json:"method"`
+	// The route pattern without its method, "/api/admin/users/{id}": what the
+	// page translates into words and what the filter groups by. Path is the
+	// address that was actually asked for.
+	Route       string `json:"route"`
+	Path        string `json:"path"`
+	TargetID    string `json:"target_id"`
+	TargetLabel string `json:"target_label"`
+	Status      int    `json:"status"`
+	DurationMS  int64  `json:"duration_ms"`
+	// "web", or "console:web" / "console:ssh" for a command typed into the
+	// console, which reaches the same routes in process.
+	Via       string `json:"via"`
+	IP        string `json:"ip"`
+	UserAgent string `json:"user_agent"`
+	// The request body with every credential masked, or a line saying what
+	// was sent when it was not JSON. Empty in a listing; Get fills it.
+	Request string   `json:"request,omitempty"`
+	Changes []Change `json:"changes,omitempty"`
+}
+
+// Change is one value a handler saw move: what it was and what it became.
+// Secret says the field is a credential, and From and To are then empty.
+type Change struct {
+	Field  string `json:"field"`
+	From   string `json:"from"`
+	To     string `json:"to"`
+	Secret bool   `json:"secret,omitempty"`
+}
+
+const (
+	MaxPageSize = 200
+	// What the request column keeps. A settings import can be a quarter of a
+	// megabyte, and the trail is read a page at a time.
+	maxRequestChars = 16 * 1024
+	maxValueChars   = 512
+	// Each text field is cut to its limit before it is stored, so one long value
+	// cannot refuse the whole entry, and the trail keeps what happened.
+	maxActorUsernameChars = 80
+	maxActorRoleChars     = 20
+	maxMethodChars        = 10
+	maxRouteChars         = 200
+	maxPathChars          = 400
+	maxTargetChars        = 120
+	maxViaChars           = 20
+	maxIPChars            = 80
+	maxUserAgentChars     = 300
+	// The retention bounds the setting accepts, in days. The floor is what
+	// keeps a delegated operator — or a hurried super administrator — from
+	// erasing last week by setting it to one.
+	DefaultRetentionDays = 180
+	MinRetentionDays     = 30
+	MaxRetentionDays     = 3650
+)
+
+type Store struct{ db *database.DB }
+
+func NewStore(db *database.DB) *Store { return &Store{db: db} }
+
+// Record writes one entry. Every text field is cleaned before it is cut,
+// since a username, a user agent and a request body all come from outside
+// and PostgreSQL refuses a whole row for one bad byte.
+func (s *Store) Record(ctx context.Context, q database.Queryer, e Entry) error {
+	if q == nil {
+		q = s.db
+	}
+	if e.ID == "" {
+		e.ID = id.New()
+	}
+	if e.At == 0 {
+		e.At = time.Now().UnixMilli()
+	}
+	clean := func(value string, limit int) string {
+		return text.TrimAndTruncate(strings.TrimSpace(text.Clean(value)), limit)
+	}
+	e.ActorUsername = clean(e.ActorUsername, maxActorUsernameChars)
+	e.ActorRole = clean(e.ActorRole, maxActorRoleChars)
+	e.Method = clean(e.Method, maxMethodChars)
+	e.Route = clean(e.Route, maxRouteChars)
+	e.Path = clean(e.Path, maxPathChars)
+	e.TargetID = clean(e.TargetID, maxTargetChars)
+	e.TargetLabel = clean(e.TargetLabel, maxTargetChars)
+	e.Via = clean(e.Via, maxViaChars)
+	e.IP = clean(e.IP, maxIPChars)
+	e.UserAgent = clean(e.UserAgent, maxUserAgentChars)
+	e.Request = text.Truncate(text.Clean(e.Request), maxRequestChars)
+	if e.Method == "" || e.Route == "" {
+		return fmt.Errorf("audit: method and route are required")
+	}
+
+	changes := ""
+	if len(e.Changes) > 0 {
+		for i := range e.Changes {
+			e.Changes[i].Field = clean(e.Changes[i].Field, 120)
+			e.Changes[i].From = text.Truncate(text.Clean(e.Changes[i].From), maxValueChars)
+			e.Changes[i].To = text.Truncate(text.Clean(e.Changes[i].To), maxValueChars)
+		}
+		encoded, err := json.Marshal(e.Changes)
+		if err != nil {
+			return fmt.Errorf("audit: encode changes: %w", err)
+		}
+		changes = string(encoded)
+	}
+
+	_, err := q.Exec(ctx, `INSERT INTO admin_audit
+		(id, at, actor_id, actor_username, actor_role, method, route, path,
+		 target_id, target_label, status, duration_ms, via, ip, user_agent,
+		 request, changes)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		e.ID, e.At, e.ActorID, e.ActorUsername, e.ActorRole, e.Method, e.Route, e.Path,
+		e.TargetID, e.TargetLabel, e.Status, e.DurationMS, e.Via, e.IP, e.UserAgent,
+		e.Request, changes)
+	if err != nil {
+		return fmt.Errorf("audit: record: %w", err)
+	}
+	return nil
+}
+
+type Filter struct {
+	ActorID  string
+	Route    string
+	Method   string
+	TargetID string
+	// "ok" for answers under 400, "failed" for the rest.
+	Outcome string
+	Via     string
+	Since   int64
+	Until   int64
+	Limit   int
+	Offset  int
+}
+
+func (f Filter) where() (string, []any) {
+	conditions := []string{}
+	args := []any{}
+	add := func(clause string, value any) {
+		conditions = append(conditions, clause)
+		args = append(args, value)
+	}
+	if f.ActorID != "" {
+		add("actor_id = ?", f.ActorID)
+	}
+	if f.Route != "" {
+		add("route = ?", f.Route)
+	}
+	if f.Method != "" {
+		add("method = ?", f.Method)
+	}
+	if f.TargetID != "" {
+		add("target_id = ?", f.TargetID)
+	}
+	switch f.Outcome {
+	case "ok":
+		add("status < ?", 400)
+	case "failed":
+		add("status >= ?", 400)
+	}
+	if f.Via != "" {
+		add("via = ?", f.Via)
+	}
+	if f.Since > 0 {
+		add("at >= ?", f.Since)
+	}
+	if f.Until > 0 {
+		add("at < ?", f.Until)
+	}
+	if len(conditions) == 0 {
+		return "", args
+	}
+	return " WHERE " + strings.Join(conditions, " AND "), args
+}
+
+const listColumns = `id, at, actor_id, actor_username, actor_role, method, route, path,
+	target_id, target_label, status, duration_ms, via, ip, user_agent`
+
+// List pages through the trail, newest first. The request and the changes
+// are left out: a page of fifty settings imports would be megabytes, and
+// they are read one entry at a time.
+func (s *Store) List(ctx context.Context, f Filter) ([]Entry, int64, error) {
+	where, args := f.where()
+	var total int64
+	if err := s.db.QueryRow(ctx, `SELECT COUNT(*) FROM admin_audit`+where, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("audit: count: %w", err)
+	}
+	limit := f.Limit
+	if limit <= 0 || limit > MaxPageSize {
+		limit = 50
+	}
+	rows, err := s.db.Query(ctx,
+		`SELECT `+listColumns+` FROM admin_audit`+where+` ORDER BY at DESC, id DESC LIMIT ? OFFSET ?`,
+		append(append([]any{}, args...), limit, max(0, f.Offset))...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("audit: list: %w", err)
+	}
+	defer rows.Close()
+
+	entries := []Entry{}
+	for rows.Next() {
+		var e Entry
+		if err := rows.Scan(&e.ID, &e.At, &e.ActorID, &e.ActorUsername, &e.ActorRole,
+			&e.Method, &e.Route, &e.Path, &e.TargetID, &e.TargetLabel, &e.Status,
+			&e.DurationMS, &e.Via, &e.IP, &e.UserAgent); err != nil {
+			return nil, 0, fmt.Errorf("audit: scan: %w", err)
+		}
+		entries = append(entries, e)
+	}
+	return entries, total, rows.Err()
+}
+
+// ErrNotFound is Get's answer for an id that is not in the trail, or no
+// longer is.
+var ErrNotFound = fmt.Errorf("audit: no such entry")
+
+func (s *Store) Get(ctx context.Context, entryID string) (Entry, error) {
+	var e Entry
+	var changes string
+	err := s.db.QueryRow(ctx,
+		`SELECT `+listColumns+`, request, changes FROM admin_audit WHERE id = ?`, entryID).
+		Scan(&e.ID, &e.At, &e.ActorID, &e.ActorUsername, &e.ActorRole,
+			&e.Method, &e.Route, &e.Path, &e.TargetID, &e.TargetLabel, &e.Status,
+			&e.DurationMS, &e.Via, &e.IP, &e.UserAgent, &e.Request, &changes)
+	if database.IsNotFound(err) {
+		return Entry{}, ErrNotFound
+	}
+	if err != nil {
+		return Entry{}, fmt.Errorf("audit: get: %w", err)
+	}
+	if changes != "" {
+		if err := json.Unmarshal([]byte(changes), &e.Changes); err != nil {
+			return Entry{}, fmt.Errorf("audit: decode changes: %w", err)
+		}
+	}
+	// Older entries may predate a redaction rule. Apply current rules when
+	// serving them without rewriting the evidence kept in the database.
+	if json.Valid([]byte(e.Request)) {
+		e.Request = Redact([]byte(e.Request), nil)
+	}
+	return e, nil
+}
+
+type Option struct {
+	Value string `json:"value"`
+	Label string `json:"label"`
+	Count int64  `json:"count"`
+}
+
+// Facets is what the filters offer and the figures above the trail: the
+// administrators and the actions that actually appear in the window, so the
+// page offers a list of things that happened rather than every route there is.
+type Facets struct {
+	Actors []Option `json:"actors"`
+	Routes []Option `json:"routes"`
+	Total  int64    `json:"total"`
+	Failed int64    `json:"failed"`
+	// How long the trail is kept, so the page can say where it ends.
+	RetentionDays int `json:"retention_days"`
+}
+
+func (s *Store) Facets(ctx context.Context, since int64) (Facets, error) {
+	out := Facets{Actors: []Option{}, Routes: []Option{}}
+	window, args := "", []any{}
+	if since > 0 {
+		window, args = " WHERE at >= ?", []any{since}
+	}
+
+	// One pass over the window, grouped by who and what. The actors, the
+	// actions and both figures are all sums of these groups, so the trail is
+	// scanned once rather than once per list; with no window that scan is the
+	// whole trail, which is what made four of them expensive.
+	rows, err := s.db.Query(ctx,
+		`SELECT actor_id, MAX(actor_username), method, route, COUNT(*),
+		        SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END)
+		 FROM admin_audit`+window+` GROUP BY actor_id, method, route`, args...)
+	if err != nil {
+		return out, fmt.Errorf("audit: facets: %w", err)
+	}
+	defer rows.Close()
+	actors := map[string]*Option{}
+	routes := map[string]*Option{}
+	for rows.Next() {
+		var actorID, username, method, route string
+		var count, failed int64
+		if err := rows.Scan(&actorID, &username, &method, &route, &count, &failed); err != nil {
+			return out, fmt.Errorf("audit: facets: %w", err)
+		}
+		out.Total += count
+		out.Failed += failed
+		actor := actors[actorID]
+		if actor == nil {
+			actor = &Option{Value: actorID}
+			actors[actorID] = actor
+		}
+		actor.Count += count
+		actor.Label = max(actor.Label, username)
+		// The method rides in the label, "PATCH /api/admin/users/{id}", so one
+		// route answering two methods is two actions in the list. The value is
+		// the same text; the handler splits it back.
+		action := method + " " + route
+		if routes[action] == nil {
+			routes[action] = &Option{Value: action, Label: action}
+		}
+		routes[action].Count += count
+	}
+	if err := rows.Err(); err != nil {
+		return out, fmt.Errorf("audit: facets: %w", err)
+	}
+	for _, actor := range actors {
+		if actor.Label == "" {
+			actor.Label = actor.Value
+		}
+		out.Actors = append(out.Actors, *actor)
+	}
+	for _, action := range routes {
+		out.Routes = append(out.Routes, *action)
+	}
+	// Most used first; a tie goes by the value, so two methods on one path
+	// that were used as often keep one order from one load to the next.
+	byCount := func(list []Option) {
+		sort.Slice(list, func(i, j int) bool {
+			if list[i].Count != list[j].Count {
+				return list[i].Count > list[j].Count
+			}
+			return list[i].Value < list[j].Value
+		})
+	}
+	byCount(out.Actors)
+	byCount(out.Routes)
+	return out, nil
+}
+
+// Prune removes what is older than the retention. It is the only way a row
+// leaves the trail: there is no endpoint that deletes one.
+func (s *Store) Prune(ctx context.Context, before time.Time) (int64, error) {
+	result, err := s.db.Exec(ctx, `DELETE FROM admin_audit WHERE at < ?`, before.UnixMilli())
+	if err != nil {
+		return 0, fmt.Errorf("audit: prune: %w", err)
+	}
+	// A count the driver cannot give is reported as an error. Zero would read
+	// as a prune that found nothing to remove.
+	removed, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("audit: prune: %w", err)
+	}
+	return removed, nil
+}

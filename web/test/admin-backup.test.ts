@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, h, nextTick, type App } from 'vue';
+import { ApiError } from '../src/api/client';
 import { adminApi, type AdminBackup } from '../src/admin/api';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { IconArchive } from '../src/icons';
 import { searchAdminFeatures, visibleAdminPages, type AdminPageSpec } from '../src/views/admin/features';
 import { provideAdminView } from '../src/views/admin/adminView';
 import AdminBackupPage from '../src/views/admin/AdminBackup.vue';
+import { button } from './helpers';
 
 let app: App | undefined;
 let host: HTMLElement;
@@ -44,13 +46,13 @@ beforeEach(async () => {
 afterEach(() => {
   app?.unmount();
   app = undefined;
-  document.body.textContent = '';
   if (visibilityDescriptor) Object.defineProperty(document, 'visibilityState', visibilityDescriptor);
   else Reflect.deleteProperty(document, 'visibilityState');
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
 
+// Microtasks only: some tests here run under fake timers, and settling must not advance a clock the test is driving.
 async function settle(): Promise<void> {
   await Promise.resolve();
   await nextTick();
@@ -73,13 +75,6 @@ function fieldInput(label: string): HTMLInputElement {
   const input = field?.querySelector<HTMLInputElement>('input');
   if (!input) throw new Error(`Missing field: ${label}`);
   return input;
-}
-
-function button(root: ParentNode, label: string): HTMLButtonElement {
-  const found = [...root.querySelectorAll<HTMLButtonElement>('button')]
-    .find((node) => node.textContent?.trim() === label);
-  if (!found) throw new Error(`Missing button: ${label}`);
-  return found;
 }
 
 describe('admin instance backup', () => {
@@ -112,6 +107,7 @@ describe('admin instance backup', () => {
     await settle();
 
     expect(save).toHaveBeenCalledWith({
+      type: 's3',
       enabled: true,
       endpoint: backup.endpoint,
       bucket: backup.bucket,
@@ -119,11 +115,33 @@ describe('admin instance backup', () => {
       prefix: 'weekly',
       access_key_id: '',
       secret_access_key: '',
+      webdav_url: '',
+      webdav_username: '',
+      webdav_password: '',
       interval_hours: backup.interval_hours,
       retention_hours: backup.retention_hours,
     });
     expect(fieldInput(t('backupAccessKey')).value).toBe('');
     expect(fieldInput(t('backupSecretKey')).value).toBe('');
+  });
+
+  it('asks for the credentials again when the storage destination moves', async () => {
+    vi.spyOn(adminApi, 'backup').mockResolvedValue(backup);
+    vi.spyOn(adminApi, 'saveBackup').mockRejectedValue(new ApiError(
+      400,
+      'backup_credentials_needed',
+      'A new storage endpoint, bucket, region or WebDAV URL needs its credentials entered again.',
+    ));
+    await mountBackup();
+
+    const endpoint = fieldInput(t('backupEndpoint'));
+    endpoint.value = 'https://attacker.example.com';
+    endpoint.dispatchEvent(new Event('input', { bubbles: true }));
+    await nextTick();
+    button(actions, t('save')).click();
+    await settle();
+
+    expect(host.textContent).toContain(t('backupCredentialsNeeded'));
   });
 
   it('shows Never for timestamps that have no recorded run', async () => {
@@ -168,6 +186,21 @@ describe('admin instance backup', () => {
     await vi.advanceTimersByTimeAsync(5000);
     await settle();
     expect(host.textContent).toContain(t('backupStatusSuccess'));
+  });
+
+  it('keeps the Run label while a storage test is pending, since no backup has started', async () => {
+    vi.spyOn(adminApi, 'backup').mockResolvedValue(backup);
+    let finishTest!: (value: { ok: true }) => void;
+    vi.spyOn(adminApi, 'testBackup').mockReturnValue(new Promise((resolve) => { finishTest = resolve; }));
+    await mountBackup();
+
+    button(host, t('backupTest')).click();
+    await settle();
+
+    // button() looks the label up exactly, so a Running label here fails it.
+    expect(button(host, t('backupRun')).disabled).toBe(true);
+    finishTest({ ok: true });
+    await settle();
   });
 
   it('only shows save hint when configuration is dirty, clearing it on save', async () => {
@@ -321,5 +354,46 @@ describe('admin instance backup', () => {
     expect(host.textContent).toContain(t('backupStatusRunning'));
     const pre = host.querySelector('.oa-backup-log-body');
     expect(pre?.textContent).toContain('[12:00:01] Uploading...');
+  });
+});
+
+describe('a blank interval or retention on the backup page', () => {
+  function typeInto(label: string, value: string): void {
+    const input = fieldInput(label);
+    input.value = value;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  // A cleared box used to be saved as its default (24 hours, 168 hours) while
+  // the box stayed empty on screen. The save now waits for a number instead.
+  it('keeps the save shut while a box is blank, and writes neither default in its place', async () => {
+    vi.spyOn(adminApi, 'backup').mockResolvedValue(backup);
+    const save = vi.spyOn(adminApi, 'saveBackup').mockResolvedValue(undefined);
+    await mountBackup();
+
+    typeInto(t('backupInterval'), '');
+    await settle();
+
+    expect(button(actions, t('save')).disabled).toBe(true);
+    expect(host.textContent).toContain(t('settingNumberRequired'));
+    button(actions, t('save')).click();
+    await settle();
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('saves the number typed in its place, with the other box as it stood', async () => {
+    vi.spyOn(adminApi, 'backup').mockResolvedValue(backup);
+    const save = vi.spyOn(adminApi, 'saveBackup').mockResolvedValue(undefined);
+    await mountBackup();
+
+    typeInto(t('backupRetention'), '');
+    await settle();
+    typeInto(t('backupRetention'), '336');
+    await settle();
+
+    expect(button(actions, t('save')).disabled).toBe(false);
+    button(actions, t('save')).click();
+    await settle();
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ interval_hours: 24, retention_hours: 336 }));
   });
 });

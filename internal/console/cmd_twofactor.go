@@ -41,6 +41,11 @@ func init() {
 			}); err != nil {
 				return err
 			}
+			// Under --json the Fields call above has printed the whole response.
+			// The table below would print it a second time.
+			if rt.effectiveJSON() {
+				return nil
+			}
 			var rows [][]string
 			for _, raw := range asSlice(a["admins_without"]) {
 				m := asMap(raw)
@@ -84,12 +89,7 @@ func init() {
 			if _, _, err := rt.Call(http.MethodDelete, "/api/admin/users/"+url.PathEscape(uid)+"/two-factor", nil); err != nil {
 				return err
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已关闭该账户的两步验证。\n")
-			} else {
-				rt.Printf("two-step sign-in is off for that account.\n")
-			}
-			return nil
+			return rt.confirm(Text{EN: "two-step sign-in is off for that account.", ZH: "已关闭该账户的两步验证。"})
 		},
 	})
 }

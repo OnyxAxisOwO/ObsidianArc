@@ -123,19 +123,50 @@ func (h *Handlers) grantCards(w http.ResponseWriter, r *http.Request) error {
 	return httpx.WriteJSON(w, http.StatusCreated, map[string]any{"cards": granted})
 }
 
+// userCards is the held-cards half of showUser, for the panel to refresh after
+// it grants, moves or revokes one: those change usage_cards alone, so asking
+// for the whole account again re-reads usage and limits nobody changed.
+//
+// It answers to showUser's rule rather than the route's users grant alone:
+// what an administrator holds is their own allowance, and a delegate who
+// could not open their panel must not read it here instead.
+func (h *Handlers) userCards(w http.ResponseWriter, r *http.Request) error {
+	userID, err := pathID(r, "id")
+	if err != nil {
+		return err
+	}
+	if err := h.authoriseSessionAction(r, userID); err != nil {
+		return err
+	}
+	held, err := h.cards.Held(r.Context(), userID)
+	if err != nil {
+		return httpx.Internal(err)
+	}
+	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"cards": held})
+}
+
 // rescheduleCards moves the expiry on cards an account already holds.
 //
 // Separate from granting rather than a flag on it: "here is another card" and
 // "the one you have lasts longer" are different answers to the same request,
 // and an operator who meant the second should not be able to produce the
 // first by mistyping a field.
+//
+// A delegate may still grant an administrator cards, which only adds to what
+// they hold. Moving one takes away from the administrator, so it takes the
+// same CanManageAdmin test every other action that reaches an administrator
+// takes (sessions, keys, password resets), and revokeCard below does too.
 func (h *Handlers) rescheduleCards(w http.ResponseWriter, r *http.Request) error {
 	userID, err := pathID(r, "id")
 	if err != nil {
 		return err
 	}
-	if _, err := h.users.ByID(r.Context(), nil, userID); err != nil {
+	target, err := h.users.ByID(r.Context(), nil, userID)
+	if err != nil {
 		return translateUserError(err)
+	}
+	if target.IsAdmin() && !auth.MustUser(r.Context()).CanManageAdmin(target) {
+		return permissionDenied()
 	}
 
 	var body struct {
@@ -169,8 +200,15 @@ func (h *Handlers) revokeCard(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	if _, err := h.users.ByID(r.Context(), nil, userID); err != nil {
+	target, err := h.users.ByID(r.Context(), nil, userID)
+	if err != nil {
 		return translateUserError(err)
+	}
+	// The same refusal as rescheduleCards: withdrawing an administrator's card
+	// is taking something away from them, which a delegate may do only to an
+	// administrator it could manage anyway.
+	if target.IsAdmin() && !auth.MustUser(r.Context()).CanManageAdmin(target) {
+		return permissionDenied()
 	}
 	if err := h.cards.Revoke(r.Context(), userID, cardID); err != nil {
 		return card.TranslateError(err)

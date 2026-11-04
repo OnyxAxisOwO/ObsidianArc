@@ -28,7 +28,9 @@ func TestPortableStatementsPass(t *testing.T) {
 	problems := lintSource(t, "const a = `SELECT id FROM users WHERE username_lower = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`\n"+
 		"const b = `INSERT INTO t (id) VALUES (?) ON CONFLICT (id) DO UPDATE SET id = excluded.id`\n"+
 		"var c = \"UPDATE t SET n = COALESCE(n, 0) + 1 WHERE id = ?\"\n"+
-		"var notSQL = \"datetime is a word in a sentence\"\n")
+		"var notSQL = \"datetime is a word in a sentence\"\n"+
+		"const ddl = `CREATE TABLE IF NOT EXISTS t (id TEXT PRIMARY KEY)`\n"+
+		"var prose = \"create a user for the account\"\n")
 	if len(problems) != 0 {
 		t.Fatalf("portable SQL was flagged: %v", problems)
 	}
@@ -40,8 +42,12 @@ func TestEngineSpecificSpellingsAreFlaggedWhereverTheStatementIsWritten(t *testi
 		// Joined with + the statement is one string, and is read as one.
 		"var c = \"SELECT ifnull(n, 0) \" + \"FROM t\"\n"+
 		"const d = `SELECT n::text FROM t`\n"+
-		"const e = `-- the comment may say INSERT OR IGNORE\nSELECT 1 FROM t`\n")
-	want := []string{"main.go:3", "main.go:4", "main.go:5", "main.go:6"}
+		"const e = `-- the comment may say INSERT OR IGNORE\nSELECT 1 FROM t`\n"+
+		// A statement that is not a query is read too: a PRAGMA and DDL used to
+		// pass unlooked-at, since only the DML words started a statement.
+		"const f = `PRAGMA journal_mode = WAL`\n"+
+		"const g = `CREATE TABLE t (d TEXT DEFAULT (datetime('now')))`\n")
+	want := []string{"main.go:3", "main.go:4", "main.go:5", "main.go:6", "main.go:9", "main.go:10"}
 	for _, prefix := range want {
 		found := false
 		for _, p := range problems {

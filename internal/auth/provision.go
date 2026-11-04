@@ -44,7 +44,13 @@ type ProvisionInput struct {
 	ExplicitUsername bool
 	// Password is an optional or required password chosen on third-party registration.
 	// When non-empty, the account receives this password and can log in with it.
+	// Hashed inside the caller's transaction unless PasswordHash is given.
 	Password string
+	// PasswordHash is Password already hashed by HashPassword, before the caller
+	// opened its transaction. Argon2 under the instance lock holds every other
+	// writer for as long as the hash waits for a slot, so a caller that can hash
+	// first should, and then Password is left empty.
+	PasswordHash string
 	// The address, from whichever of the two places it came: proved by the
 	// provider, or typed by the person when this instance asked for one the
 	// provider could not supply.
@@ -63,6 +69,10 @@ type ProvisionInput struct {
 	UA       string
 	// Empty unless the person was asked and answered — see Missing.Invite.
 	InviteCode string
+	// The place in the invite guessing budget the caller reserved for this
+	// request when it carries a code (see ReserveInviteGuess). Nil reserves one
+	// inside Provision instead, so a caller that reserved none is still counted.
+	InviteGuess *Attempt
 }
 
 // Missing is what an instance requires that a provider cannot answer.
@@ -143,11 +153,8 @@ func (s *Service) Provision(ctx context.Context, tx *database.Tx, in ProvisionIn
 		if err := s.checkFields(in.Fields); err != nil {
 			return user.User{}, err
 		}
-		if allowed, retryAfter := s.signups.allow(
-			s.settings.Int(settings.SignupsPerMinute, 0),
-			s.settings.Int(settings.SignupsPerHour, 0),
-		); !allowed {
-			return user.User{}, &SignupThrottleError{RetryAfter: retryAfter}
+		if err := s.checkSignupRate(ctx, tx); err != nil {
+			return user.User{}, err
 		}
 		if err := s.checkSignupIP(ctx, tx, in.IP); err != nil {
 			return user.User{}, err
@@ -159,7 +166,7 @@ func (s *Service) Provision(ctx context.Context, tx *database.Tx, in ProvisionIn
 	// hands the use back by rolling back with everything else.
 	var grant *InviteGrant
 	if !first {
-		grant, err = s.consumeInvite(ctx, tx, in.InviteCode)
+		grant, err = s.spendInvite(ctx, tx, in.InviteCode, in.IP, in.InviteGuess)
 		if err != nil {
 			return user.User{}, err
 		}
@@ -170,18 +177,8 @@ func (s *Service) Provision(ctx context.Context, tx *database.Tx, in ProvisionIn
 		if err := user.ValidateUsername(in.Username); err != nil {
 			return user.User{}, err
 		}
-		usernameTaken, emailTaken, heldField, err := s.users.Exists(ctx, tx, in.Username, in.Email, in.Fields)
-		if err != nil {
+		if err := s.refuseTaken(ctx, tx, in.Username, in.Email, in.Fields); err != nil {
 			return user.User{}, err
-		}
-		if usernameTaken {
-			return user.User{}, user.ErrUsernameTaken
-		}
-		if emailTaken {
-			return user.User{}, user.ErrEmailTaken
-		}
-		if heldField != "" {
-			return user.User{}, takenError(heldField)
 		}
 		username = in.Username
 	} else {
@@ -220,8 +217,8 @@ func (s *Service) Provision(ctx context.Context, tx *database.Tx, in ProvisionIn
 		role = user.RoleSuperAdmin
 	}
 
-	var passwordHash string
-	if in.Password != "" {
+	passwordHash := in.PasswordHash
+	if passwordHash == "" && in.Password != "" {
 		if err := ValidatePassword(in.Password); err != nil {
 			return user.User{}, err
 		}
@@ -247,6 +244,7 @@ func (s *Service) Provision(ctx context.Context, tx *database.Tx, in ProvisionIn
 		// into the completion form is held back exactly as the sign-up form
 		// holds one back, because it is exactly as unproven.
 		Unverified:      !first && !in.EmailVerified && s.VerificationRequired(),
+		EmailProven:     in.EmailVerified,
 		SignupIP:        in.IP,
 		SignupUserAgent: in.UA,
 	})
@@ -261,6 +259,9 @@ func (s *Service) Provision(ctx context.Context, tx *database.Tx, in ProvisionIn
 	// leaves a gap in which the next queued sign-up passes a throttle this
 	// one should already have moved.
 	s.signups.record()
+	if err := recordAccountCreation(ctx, tx); err != nil {
+		return user.User{}, err
+	}
 	// RewardInvite is deliberately not called here: this method runs inside
 	// tx, a transaction it was handed rather than one it owns, and the use
 	// applyInvite just recorded through it is not visible outside tx until

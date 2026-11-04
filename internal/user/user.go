@@ -20,6 +20,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugingate"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/text"
@@ -62,7 +63,13 @@ type User struct {
 	// Whether the address above has been confirmed. True for every
 	// account that predates verification, and for one with no address:
 	// there is nothing to confirm and nothing to hold back.
-	EmailVerified bool  `json:"email_verified"`
+	EmailVerified bool `json:"email_verified"`
+	// When the address was shown to belong to this account, by a mailed
+	// link or code or by a provider that checks addresses; 0 if it never
+	// was. Not EmailVerified, which is also true wherever confirmation is
+	// switched off: this is what may be relied on to say that somebody
+	// signing in elsewhere with the same address is the same person.
+	EmailProvenAt int64 `json:"-"`
 	CreatedAt     int64 `json:"created_at"`
 	UpdatedAt     int64 `json:"updated_at"`
 	LastLoginAt   int64 `json:"last_login_at"`
@@ -110,15 +117,14 @@ func (u User) DisplayName() string {
 }
 
 var (
-	ErrNotFound          = errors.New("user: not found")
-	ErrUsernameTaken     = errors.New("user: username already taken")
-	ErrEmailTaken        = errors.New("user: email already registered")
-	ErrInvalidUsername   = errors.New("user: username must be 3-32 characters of letters, digits, dot, dash or underscore")
-	ErrInvalidEmail      = errors.New("user: email address is not valid")
-	ErrNicknameTooLong   = errors.New("user: nickname must be 32 characters or fewer")
-	ErrBioTooLong        = errors.New("user: bio must be 500 characters or fewer")
-	ErrAvatarTooLong     = errors.New("user: avatar is too large")
-	ErrLastAdminDemotion = errors.New("user: the last administrator cannot be demoted or disabled")
+	ErrNotFound        = errors.New("user: not found")
+	ErrUsernameTaken   = errors.New("user: username already taken")
+	ErrEmailTaken      = errors.New("user: email already registered")
+	ErrInvalidUsername = errors.New("user: username must be 3-32 characters of letters, digits, dot, dash or underscore")
+	ErrInvalidEmail    = errors.New("user: email address is not valid")
+	ErrNicknameTooLong = errors.New("user: nickname must be 32 characters or fewer")
+	ErrBioTooLong      = errors.New("user: bio must be 500 characters or fewer")
+	ErrAvatarTooLong   = errors.New("user: avatar is too large")
 )
 
 const (
@@ -178,7 +184,7 @@ func NewStore(db *database.DB) *Store { return &Store{db: db} }
 const baseColumns = `id, username, email, nickname, avatar, bio, role, group_id, status,
 	email_verified, created_at, updated_at, last_login_at, signup_ip, signup_user_agent,
 	api_restricted, api_restricted_until, api_restriction_source, group_expires_at, admin_permissions, last_active_at,
-	two_factor_at, ban_reason`
+	two_factor_at, ban_reason, email_proven_at`
 
 type CreateInput struct {
 	Username string
@@ -191,9 +197,11 @@ type CreateInput struct {
 	// Set false only when this account must confirm its address before
 	// it can spend anything.
 	Unverified bool
-	GroupID    string
-	Status     Status
-	BanReason  string
+	// The address arrived already proved, by a provider that checks them.
+	EmailProven bool
+	GroupID     string
+	Status      Status
+	BanReason   string
 	// The address this account was created from, for the per-address
 	// registration limit. Empty where it could not be resolved.
 	SignupIP        string
@@ -226,6 +234,13 @@ func (s *Store) Create(ctx context.Context, q database.Queryer, in CreateInput) 
 	}
 
 	now := time.Now().UnixMilli()
+	status := orDefault(in.Status, StatusActive)
+	// The rule UpdateAdminFields keeps, applied at birth as well: an account
+	// created active has no reason to show anybody.
+	banReason := strings.TrimSpace(in.BanReason)
+	if status != StatusDisabled {
+		banReason = ""
+	}
 	record := User{
 		ID:        id.New(),
 		Username:  username,
@@ -233,8 +248,8 @@ func (s *Store) Create(ctx context.Context, q database.Queryer, in CreateInput) 
 		Nickname:  nickname,
 		Role:      orDefault(in.Role, RoleUser),
 		GroupID:   in.GroupID,
-		Status:    orDefault(in.Status, StatusActive),
-		BanReason: strings.TrimSpace(in.BanReason),
+		Status:    status,
+		BanReason: banReason,
 		// An account with no address has nothing to confirm, so it is
 		// never held back for not having confirmed it.
 		EmailVerified: !in.Unverified || email == "",
@@ -249,6 +264,9 @@ func (s *Store) Create(ctx context.Context, q database.Queryer, in CreateInput) 
 		APIRestricted:        in.APIRestricted,
 		APIRestrictedUntil:   in.APIRestrictedUntil,
 		APIRestrictionSource: in.APIRestrictionSource,
+	}
+	if in.EmailProven && email != "" {
+		record.EmailProvenAt = now
 	}
 
 	// Every defined field is written, empty where no value was given: the
@@ -270,14 +288,16 @@ func (s *Store) Create(ctx context.Context, q database.Queryer, in CreateInput) 
 		record.ID, record.Username, strings.ToLower(record.Username),
 		record.Email, strings.ToLower(record.Email), in.PasswordHash, record.Nickname,
 		record.Role, nullable(record.GroupID), record.Status, record.EmailVerified,
-		record.CreatedAt, record.UpdatedAt, in.SignupIP, record.SignupUserAgent, record.APIRestricted,
-		record.APIRestrictedUntil, record.APIRestrictionSource, record.BanReason,
+		record.CreatedAt, record.UpdatedAt, record.SignupIP, record.SignupUserAgent, record.APIRestricted,
+		record.APIRestrictedUntil, record.APIRestrictionSource, record.BanReason, record.EmailProvenAt,
+		signupRateKey(record.SignupIP),
 	}
 	_, err = q.Exec(ctx, `INSERT INTO users
 		(id, username, username_lower, email, email_lower, password_hash, nickname, avatar, bio,
 		 role, group_id, status, email_verified, created_at, updated_at, last_login_at, signup_ip,
-		 signup_user_agent, api_restricted, api_restricted_until, api_restriction_source, ban_reason`+fieldColumns+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?`+fieldMarks+`)`,
+		 signup_user_agent, api_restricted, api_restricted_until, api_restriction_source, ban_reason,
+		 email_proven_at, signup_rate_key`+fieldColumns+`)
+		VALUES (?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?`+fieldMarks+`)`,
 		append(args, fieldArgs...)...)
 	if err != nil {
 		// Both engines report a violated unique index without naming a
@@ -287,6 +307,30 @@ func (s *Store) Create(ctx context.Context, q database.Queryer, in CreateInput) 
 		return User{}, s.translateUniqueViolation(err, email != "")
 	}
 	return record, nil
+}
+
+// MarkEmailProven records that a provider which checks addresses has vouched
+// for the account's current one. Matched on the address, so a proof for an
+// address the account has since left lands nowhere.
+//
+// It also sets email_verified, as following a verification link does (see
+// internal/auth/verify.go). Recording the proof alone left an account that had
+// proved its address still reporting it unconfirmed, and mailing it a link.
+func (s *Store) MarkEmailProven(ctx context.Context, q database.Queryer, userID, email string) error {
+	if q == nil {
+		q = s.db
+	}
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" {
+		return nil
+	}
+	_, err := q.Exec(ctx,
+		`UPDATE users SET email_verified = ?, email_proven_at = ? WHERE id = ? AND email_lower = ? AND email_proven_at = 0`,
+		true, time.Now().UnixMilli(), userID, email)
+	if err != nil {
+		return fmt.Errorf("user: mark email proven: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) ByID(ctx context.Context, q database.Queryer, userID string) (User, error) {
@@ -503,8 +547,12 @@ func (s *Store) UpdateProfile(ctx context.Context, q database.Queryer, userID st
 		if err := ValidateEmail(value); err != nil {
 			return User{}, err
 		}
-		sets = append(sets, "email = ?", "email_lower = ?")
-		args = append(args, value, strings.ToLower(value))
+		// Proof belongs to an address, so moving to another one gives it up.
+		// Both engines read the old row on the right of SET, so email_lower
+		// here is the address being left.
+		sets = append(sets, "email_proven_at = CASE WHEN email_lower = ? THEN email_proven_at ELSE 0 END",
+			"email = ?", "email_lower = ?")
+		args = append(args, strings.ToLower(value), value, strings.ToLower(value))
 	}
 	if len(in.Fields) > 0 {
 		values, err := s.CheckFields(in.Fields)
@@ -575,13 +623,32 @@ func (s *Store) UpdateAdminFields(ctx context.Context, q database.Queryer, userI
 		sets = append(sets, "group_expires_at = ?")
 		args = append(args, *in.GroupExpiresAt)
 	}
+	// A reason explains a ban and nothing else. The rule lives here rather
+	// than in the handler because the plugin host reaches this function too,
+	// and a rule only the backoffice keeps would not hold for it: an account
+	// that is active once this write lands carries no reason, whatever was
+	// sent with it.
+	reason := in.BanReason
 	if in.Status != nil {
+		status := orDefault(*in.Status, StatusActive)
 		sets = append(sets, "status = ?")
-		args = append(args, orDefault(*in.Status, StatusActive))
+		args = append(args, status)
+		if status == StatusActive {
+			empty := ""
+			reason = &empty
+		}
 	}
-	if in.BanReason != nil {
-		sets = append(sets, "ban_reason = ?")
-		args = append(args, strings.TrimSpace(*in.BanReason))
+	if reason != nil {
+		if in.Status != nil {
+			sets = append(sets, "ban_reason = ?")
+			args = append(args, strings.TrimSpace(*reason))
+		} else {
+			// Only the reason is changing, so whether it stands depends on the
+			// status the row already has. The CASE reads that status in the same
+			// statement, so the two cannot disagree the way a read here could.
+			sets = append(sets, "ban_reason = CASE WHEN status = ? THEN ? ELSE '' END")
+			args = append(args, StatusDisabled, strings.TrimSpace(*reason))
+		}
 	}
 	if len(in.Fields) > 0 {
 		values, err := s.CheckFields(in.Fields)
@@ -644,6 +711,28 @@ func (s *Store) SetPasswordHash(ctx context.Context, q database.Queryer, userID,
 	return nil
 }
 
+// ReplacePasswordHash stores hash in place of verified, and only while verified
+// is still the stored hash; it reports whether it did. A sign-in that rehashes
+// computes the new hash after its check, so a password changed in that span is
+// already stored by the time this runs. An unconditional write would put the
+// old password's hash back over the change.
+func (s *Store) ReplacePasswordHash(ctx context.Context, q database.Queryer, userID, verified, hash string) (bool, error) {
+	if q == nil {
+		q = s.db
+	}
+	result, err := q.Exec(ctx,
+		`UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ? AND password_hash = ?`,
+		hash, time.Now().UnixMilli(), userID, verified)
+	if err != nil {
+		return false, fmt.Errorf("user: replace password hash: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("user: replace password hash: %w", err)
+	}
+	return affected == 1, nil
+}
+
 func (s *Store) MarkLogin(ctx context.Context, userID string, at int64) error {
 	_, err := s.db.Exec(ctx, `UPDATE users SET last_login_at = ? WHERE id = ?`, at, userID)
 	if err != nil {
@@ -659,8 +748,16 @@ type ListFilter struct {
 	Role    Role
 	Status  Status
 	GroupID string
-	Limit   int
-	Offset  int
+	// Matches the username and nickname only. The email address and any
+	// searchable plugin field are left out, so a caller that may not read them
+	// cannot confirm one by searching for it.
+	NameOnly bool
+	// Username, when set, matches that username exactly, ignoring case. It is
+	// a lookup rather than a search: the search is newest-first and paged, so
+	// an older account can be unreachable by its own name through it.
+	Username string
+	Limit    int
+	Offset   int
 }
 
 func (s *Store) List(ctx context.Context, filter ListFilter) ([]User, int, error) {
@@ -697,14 +794,6 @@ func (s *Store) List(ctx context.Context, filter ListFilter) ([]User, int, error
 	return out, total, rows.Err()
 }
 
-// escapeLike neutralises the wildcards inside a value an operator typed, so
-// a search for "_" matches an underscore rather than every account.
-func escapeLike(value string) string {
-	value = strings.ReplaceAll(value, "\\", "\\\\")
-	value = strings.ReplaceAll(value, "%", "\\%")
-	return strings.ReplaceAll(value, "_", "\\_")
-}
-
 func (filter ListFilter) clauses(fields []Field) (string, []any) {
 	conditions := []string{}
 	args := []any{}
@@ -716,17 +805,27 @@ func (filter ListFilter) clauses(fields []Field) (string, []any) {
 		// The escape character is declared rather than assumed: SQLite has
 		// none by default, so without it an operator searching for "_" gets
 		// every account back and reads it as a match.
-		pattern := "%" + escapeLike(strings.ToLower(search)) + "%"
-		match := `username_lower LIKE ? ESCAPE '\' OR email_lower LIKE ? ESCAPE '\'` +
-			` OR LOWER(nickname) LIKE ? ESCAPE '\'`
-		args = append(args, pattern, pattern, pattern)
-		for _, f := range fields {
-			if f.Searchable {
-				match += ` OR LOWER(` + f.Key + `) LIKE ? ESCAPE '\'`
-				args = append(args, pattern)
+		pattern := "%" + database.EscapeLike(strings.ToLower(search)) + "%"
+		var match string
+		if filter.NameOnly {
+			match = `username_lower LIKE ? ESCAPE '\' OR LOWER(nickname) LIKE ? ESCAPE '\'`
+			args = append(args, pattern, pattern)
+		} else {
+			match = `username_lower LIKE ? ESCAPE '\' OR email_lower LIKE ? ESCAPE '\'` +
+				` OR LOWER(nickname) LIKE ? ESCAPE '\'`
+			args = append(args, pattern, pattern, pattern)
+			for _, f := range fields {
+				if f.Searchable {
+					match += ` OR LOWER(` + f.Key + `) LIKE ? ESCAPE '\'`
+					args = append(args, pattern)
+				}
 			}
 		}
 		conditions = append(conditions, "("+match+")")
+	}
+	if name := strings.ToLower(strings.TrimSpace(filter.Username)); name != "" {
+		conditions = append(conditions, "username_lower = ?")
+		args = append(args, name)
 	}
 	if filter.Role != "" {
 		conditions = append(conditions, "role = ?")
@@ -797,18 +896,120 @@ func (s *Store) CountActiveAdmins(ctx context.Context, q database.Queryer, exclu
 }
 
 func (s *Store) Delete(ctx context.Context, q database.Queryer, userID string) error {
+	// Standalone, the three deletes must commit together: a failure on the user
+	// row after the rollup went would leave an account with its history erased.
 	if q == nil {
-		q = s.db
+		return s.db.Tx(ctx, func(tx *database.Tx) error {
+			return s.Delete(ctx, tx, userID)
+		})
 	}
 	// Personal invite codes carry owner_id rather than a foreign key with
 	// ON DELETE CASCADE, because admin-issued codes use '' rather than NULL.
 	if _, err := q.Exec(ctx, `DELETE FROM invite_codes WHERE owner_id = ?`, userID); err != nil {
 		return fmt.Errorf("user: delete invite codes: %w", err)
 	}
+	// usage_records cascades from users, but the hourly rollup has no foreign
+	// key (an ALTER cannot add one on SQLite). Totals for any window of an hour
+	// or more read the rollup, so without this the deleted account's spend would
+	// keep counting there after the raw rows are gone.
+	if _, err := q.Exec(ctx, `DELETE FROM usage_rollup_hourly WHERE user_id = ?`, userID); err != nil {
+		return fmt.Errorf("user: delete usage rollup: %w", err)
+	}
 	if _, err := q.Exec(ctx, `DELETE FROM users WHERE id = ?`, userID); err != nil {
 		return fmt.Errorf("user: delete: %w", err)
 	}
 	return nil
+}
+
+// CountByGroup is how many accounts each group holds, in one query. The groups
+// page wants every count at once; a List per group would sweep memberships on
+// every call and read the table once per group.
+func (s *Store) CountByGroup(ctx context.Context, q database.Queryer) (map[string]int, error) {
+	if q == nil {
+		q = s.db
+	}
+	rows, err := q.Query(ctx, `SELECT COALESCE(group_id, ''), COUNT(*) FROM users GROUP BY COALESCE(group_id, '')`)
+	if err != nil {
+		return nil, fmt.Errorf("user: count by group: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[string]int{}
+	for rows.Next() {
+		var groupID string
+		var count int
+		if err := rows.Scan(&groupID, &count); err != nil {
+			return nil, fmt.Errorf("user: count by group scan: %w", err)
+		}
+		out[groupID] = count
+	}
+	return out, rows.Err()
+}
+
+// ProfilesByID reads many accounts by id, keyed by id, a batch at a time.
+// Their membership is not resolved, unlike ByID: this is for showing who an
+// account is (its names and picture), not for deciding what it may do. An id
+// with no account is simply absent.
+func (s *Store) ProfilesByID(ctx context.Context, q database.Queryer, ids []string) (map[string]User, error) {
+	if q == nil {
+		q = s.db
+	}
+	out := make(map[string]User, len(ids))
+	for start := 0; start < len(ids); start += profileBatch {
+		batch := ids[start:min(start+profileBatch, len(ids))]
+		args := make([]any, len(batch))
+		for i, id := range batch {
+			args[i] = id
+		}
+		rows, err := q.Query(ctx,
+			`SELECT `+s.columns()+` FROM users WHERE id IN (`+database.Placeholders(len(batch))+`)`,
+			args...)
+		if err != nil {
+			return nil, fmt.Errorf("user: profiles by id: %w", err)
+		}
+		for rows.Next() {
+			record, err := s.scan(rows)
+			if err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out[record.ID] = record
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// profileBatch keeps one statement's placeholders far under what either
+// engine accepts.
+const profileBatch = 500
+
+// AdminAccounts is every account that holds an administrator role, keyed by id,
+// in one query. A list of limits asks, for each account-scoped one, whether it
+// names an administrator; asking per limit read the same few rows over and over.
+func (s *Store) AdminAccounts(ctx context.Context, q database.Queryer) (map[string]User, error) {
+	if q == nil {
+		q = s.db
+	}
+	rows, err := q.Query(ctx, `SELECT `+s.columns()+` FROM users WHERE role IN (?, ?)`, RoleAdmin, RoleSuperAdmin)
+	if err != nil {
+		return nil, fmt.Errorf("user: admin accounts: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[string]User{}
+	for rows.Next() {
+		record, err := s.scan(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[record.ID] = record
+	}
+	return out, rows.Err()
 }
 
 // MoveGroupMembers reassigns everyone in one group, which is what a group
@@ -857,7 +1058,7 @@ func (s *Store) JoinColumns(alias string) string {
 // rather than reading one column as another.
 func (s *Store) ScanRow(row interface{ Scan(dest ...any) error }) (User, error) { return s.scan(row) }
 
-type rowScanner interface{ Scan(dest ...any) error }
+type rowScanner = database.RowScanner
 
 // scan reads what columns selects, then fills extra from whatever the query
 // selected after it.
@@ -874,7 +1075,7 @@ func (s *Store) scan(row rowScanner, extra ...any) (User, error) {
 		&record.CreatedAt, &record.UpdatedAt, &record.LastLoginAt, &record.SignupIP,
 		&record.SignupUserAgent, &record.APIRestricted, &record.APIRestrictedUntil,
 		&record.APIRestrictionSource, &record.GroupExpiresAt, &permissions, &record.LastActiveAt,
-		&record.TwoFactorAt, &record.BanReason}
+		&record.TwoFactorAt, &record.BanReason, &record.EmailProvenAt}
 	for i := range values {
 		dest = append(dest, &values[i])
 	}
@@ -925,10 +1126,10 @@ func orDefault[T ~string](value, fallback T) T {
 }
 
 func (s *Store) translateUniqueViolation(err error, hadEmail bool) error {
-	message := strings.ToLower(err.Error())
-	if !strings.Contains(message, "unique") && !strings.Contains(message, "duplicate") {
+	if !database.IsUnique(err) {
 		return fmt.Errorf("user: write: %w", err)
 	}
+	message := strings.ToLower(err.Error())
 	if key := s.takenField(message); key != "" {
 		return &FieldError{Key: key, Reason: ErrFieldTaken}
 	}
@@ -942,6 +1143,20 @@ func (s *Store) translateUniqueViolation(err error, hadEmail bool) error {
 	default:
 		return ErrUsernameTaken
 	}
+}
+
+// signupRateKey is the key an account's sign-up address is counted under. An
+// IPv6 address stands for its /64, the same as every other rate limit in the
+// server, because one subscriber holds the whole block: counted as typed, each
+// address in it would be a separate count and the per-address limit would not
+// hold. The address itself stays exact in signup_ip, which an administrator
+// reads and a session is matched by. An empty address stays empty, so it is
+// never counted.
+func signupRateKey(ip string) string {
+	if strings.TrimSpace(ip) == "" {
+		return ip
+	}
+	return httpx.RateKey(ip)
 }
 
 // CountFromIP is how many accounts one address has created since a moment.
@@ -965,7 +1180,7 @@ func (s *Store) CountFromIP(ctx context.Context, q database.Queryer, ip string, 
 
 	var count int
 	err := q.QueryRow(ctx,
-		`SELECT COUNT(*) FROM users WHERE signup_ip = ? AND created_at >= ?`, ip, since).Scan(&count)
+		`SELECT COUNT(*) FROM users WHERE signup_rate_key = ? AND created_at >= ?`, signupRateKey(ip), since).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("user: count from ip: %w", err)
 	}

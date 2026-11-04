@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
-	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
 )
 
@@ -51,6 +50,12 @@ func NewKeys(db *database.DB, box *secret.Box) *Keys {
 // every hardware profile handles without thinking, and the thing being
 // protected is a token that lives an hour.
 const keyBits = 2048
+
+// activeSigningKeyID is the primary key of the signing key a fresh database
+// receives. The fixed id makes a second first-use insert conflict with the
+// first instead of adding another active row. It does not stop rows written
+// under the old random ids; load() sorts those behind this one.
+const activeSigningKeyID = "active"
 
 // signer returns the key, generating and storing one the first time anything
 // needs it.
@@ -93,16 +98,21 @@ func (k *Keys) signer(ctx context.Context) (*rsa.PrivateKey, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("idp: seal signing key: %w", err)
 	}
+	// The fixed id means two instances starting together both insert, and the
+	// second insert is a no-op rather than a second active row. With a random
+	// id per insert both rows would survive, and which one an instance read
+	// back depended on created_at, a stamp taken before the commit and so not
+	// ordered the way the commits are.
 	if _, err := k.db.Exec(ctx,
-		`INSERT INTO oauth_signing_keys (id, kid, private_key, created_at) VALUES (?, ?, ?, ?)`,
-		id.New(), kid, sealed, time.Now().UnixMilli()); err != nil {
+		`INSERT INTO oauth_signing_keys (id, kid, private_key, created_at) VALUES (?, ?, ?, ?)
+		 ON CONFLICT (id) DO NOTHING`,
+		activeSigningKeyID, kid, sealed, time.Now().UnixMilli()); err != nil {
 		return nil, "", fmt.Errorf("idp: store signing key: %w", err)
 	}
 
-	// Read back rather than trusting the insert: two instances starting at
-	// once against one database both generate a key, and both must end up
-	// signing with whichever one is actually stored — otherwise each rejects
-	// what the other signed.
+	// Read back rather than trusting the insert: when two instances start at
+	// once only one insert lands, and both must sign with the row that is
+	// stored, or each rejects what the other signed.
 	stored, storedKid, err := k.load(ctx)
 	if err != nil {
 		return nil, "", err
@@ -116,9 +126,13 @@ func (k *Keys) load(ctx context.Context) (*rsa.PrivateKey, string, error) {
 		kid    string
 		sealed []byte
 	)
-	// Oldest first, so the answer is stable when a second row exists.
+	// The active row goes first. An instance upgraded from a version that
+	// inserted random ids finds no active row and keeps the oldest one, which
+	// is the key it has always signed with.
 	if err := k.db.QueryRow(ctx,
-		`SELECT kid, private_key FROM oauth_signing_keys ORDER BY created_at LIMIT 1`).
+		`SELECT kid, private_key FROM oauth_signing_keys
+		 ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END, created_at, id LIMIT 1`,
+		activeSigningKeyID).
 		Scan(&kid, &sealed); err != nil {
 		return nil, "", err
 	}

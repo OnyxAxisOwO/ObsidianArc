@@ -39,7 +39,7 @@ group edit Default --terminal false
 | 邀请码 (Invites) | `invite list` `create`（含 `--partner`）`revoke` `uses` `stats` | 管理员 (`invites`) |
 | 服务商与模型 (Catalogue) | `provider list` `show` `create` `edit` `delete` `detect` · `model list` `show` `create` `edit` `delete` `order` `import` | 管理员 (`providers`/`models`) |
 | 运维 (Operations) | `dash` `res` · `health status` `probe` `reset` · `usage summary` `breakdown` `rpm` `records` `reset` · `quota list` `set` `delete` · `code list` `create` `redemptions` `delete` · `log list` `facets` `prune` | 管理员 (`dashboard`/`resources`/`availability`/`usage`/`codes`/`logs`) |
-| 实例 (Instance) | `setting list` `get` `set` `import` · `notice list` `create` `edit` `delete` · `security events` `review` `two-factor` · `attachment purge` · `meta` `refs` `member-options` | 管理员 (`settings`/`announcements`/`security`) |
+| 实例 (Instance) | `setting list` `get` `set` `import` · `notice list` `create` `edit` `delete` · `security events` `review` `two-factor` · `audit list` `show` `actions` · `attachment purge` · `meta` `refs` `member-options` | 管理员 (`settings`/`announcements`/`security`/`audit`) |
 | 用户反馈 (Feedback) | 处理别人的反馈：`feedback list` `show` `reply` `resolve` `reopen` `delete` | 管理员 (`feedback`) |
 | | 自己的反馈：`feedback send` `mine` `thread` `answer` `unread` | 所有用户 |
 | 会话 (Session) | `help` `clear` `exit` `whoami` `version` `history` `watch` `lang` `format` `echo` | 所有用户 |
@@ -57,6 +57,7 @@ group edit Default --terminal false
 几个值得一提的：
 
 - `usage breakdown user --model <模型>`：某个模型有哪些人在用；`usage breakdown model --user <用户>`：某个人在用哪些模型；`usage breakdown model --metric users`：按使用人数排出最受欢迎的模型。
+- `quota set`：先读出当前策略再保存；读出之后若有别人改过这条策略，保存会被拒绝（`policy_changed`），重新执行一次即可，不会把对方改的窗口覆盖掉。
 - `chat edit <对话> <序号> --content "…"`：改写对话里的某条消息，序号就是 `chat show` 打印的 `seq`。只改记录，不会重新发给模型。
 - `feedback mine` / `feedback thread <id>`：看自己的反馈和回复，读过之后账户菜单上的小红点就会消失。
 - `invite create --partner NAME --code CODE --group REF --group-days N-M`：生成一个合作方专属码，默认老用户也能领取；`me invite claim <码>` 是任何账户领取这类码（或显式开放了「老用户也能领取」的批量码）的入口，见[邀请码](./invites)。
@@ -95,6 +96,8 @@ permission denied: this command needs the "models" grant
 
 所有不可逆的命令（每一个 `delete`、`user passwd`、`log prune`、`attachment purge`、`health reset`、`usage reset`、`setting import`）都必须显式加 `--yes`（或 `-y`）才会执行。缺少时命令拒绝执行并说明原因，不会有确认弹窗。
 
+`usage reset --scope all` 不接受 `--id`；要重置单个账户请用 `--scope user --id <用户>`。未知的 `--scope` 在发出任何请求之前就会被拒绝。
+
 ## 网页终端
 
 右上角账户菜单 →**终端**。它在对话旁边打开成一栏，和设置、API 密钥这些面板一样：对话列表会让出位置，而不是被盖住。面板可以拖宽，右上角的按钮可以切到全屏。
@@ -128,7 +131,7 @@ ssh 用户名@你的域名 -p 2222
 
 **连上的是终端，不是服务器。** 这个监听端口只能执行终端命令，没有 shell，没有文件传输，没有端口转发——服务端代码里根本没有通向 `os/exec` 的路径。
 
-谁能通过 SSH 登录，和谁能打开网页终端是同一条规则：管理员，以及用户组允许使用终端的普通账号。认证使用和网页登录相同的密码，共用同一套失败次数限制，所以在两个入口猜密码花的是同一份预算。不允许的账号会被拒绝，提示和密码错误完全一致，没法借此探测谁有权限。每条命令执行前都会重新读取账号，权限被收回、账号被停用或组里关掉了终端，下一条命令就会断开。
+谁能通过 SSH 登录，和谁能打开网页终端是同一条规则：管理员，以及用户组允许使用终端的普通账号。认证使用和网页登录相同的密码，共用同一套失败次数限制，所以在两个入口猜密码花的是同一份预算。不允许的账号会被拒绝，提示和密码错误完全一致，没法借此探测谁有权限。每条命令执行前都会重新读取账号，权限被收回、账号被停用或组里关掉了终端，下一条命令就会断开。改密码或管理员重置密码同样会结束已经打开的 SSH 连接：每条命令执行前都会核对登录时所用密码的摘要，与账号现在的密码对不上，下一条命令就会断开，并提示重新登录。这也包括在 SSH 里执行 `me passwd`：修改本身会成功，但同一条连接的下一条命令会断开，需要用新密码重新登录。
 
 也可以只跑一条命令，这让终端可以被脚本调用：
 
@@ -136,7 +139,7 @@ ssh 用户名@你的域名 -p 2222
 ssh 用户名@你的域名 -p 2222 'key list --json' | jq '.keys[].name'
 ```
 
-所有命令都支持 `--json`，输出的是 API 的原始载荷。
+能产生结果的命令都支持 `--json`。`help`（列表、说明与搜索）、`history`、`echo`、`help ssh` 与 `help keys` 只输出文本；`clear`、`exit`、`quit`、`lang` 与 `format` 接受这个参数，但在 `--json` 下不输出任何结果。多数命令输出的是 API 的原始载荷，`version` 输出 `{"version": ...}`；`setting get`、`app show`、`group show`、`provider show`、`model show` 只输出所显示的那一条记录，`health probe` 输出一个由 `{event, data}` 组成的数组。
 
 主机密钥在首次启动时生成并保存在数据目录（`ssh_host_ed25519_key`，权限 0600），指纹会打印在启动日志里，也可以用 `help ssh` 查看——首次连接时请核对。数据目录丢失会导致指纹变化，客户端的 known_hosts 校验会因此报警。
 
@@ -149,6 +152,8 @@ ssh 用户名@你的域名 -p 2222 'key list --json' | jq '.keys[].name'
 纯查询类的会话命令（`help`、`whoami`、`version` 等）不记录。
 
 在[安全](../admin/overview)页或用 `security events --event console_command` 查看。
+
+命令调用的后台接口还会写入[管理员审计日志](../admin/logs-and-auditing#管理员审计日志)，来源标为 `console:web` 或 `console:ssh`，可用 `audit list` 查看。
 
 ## help
 

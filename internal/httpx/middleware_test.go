@@ -38,7 +38,7 @@ func TestTheChallengeOriginIsAllowedOnlyWhileAChallengeIsConfigured(t *testing.T
 	for _, directive := range []string{
 		"script-src 'self' " + origin,
 		"connect-src 'self' " + origin,
-		"frame-src " + origin,
+		"frame-src 'self' " + origin,
 	} {
 		if !strings.Contains(granted, directive) {
 			t.Errorf("missing %q in %s", directive, granted)
@@ -119,10 +119,51 @@ func TestBothChallengeOriginsCompose(t *testing.T) {
 		"script-src 'self' " + turnstile + " " + service,
 		"connect-src 'self' " + turnstile + " " + service,
 		"img-src 'self' data: blob: " + service,
-		"frame-src " + turnstile,
+		"frame-src 'self' " + turnstile,
 	} {
 		if !strings.Contains(granted, directive) {
 			t.Errorf("missing %q in %s", directive, granted)
+		}
+	}
+}
+
+// What a plugin may widen the policy by is an origin, or blob:. A wildcard, a
+// bare scheme or a keyword is a grant to the whole web (or to eval) and an
+// origin with a path is not one, so none of them is written — whoever asked.
+func TestOnlyOriginsWidenThePolicy(t *testing.T) {
+	good := []string{
+		"https://a.example.com", "http://localhost:8080", "https://cdn-1.example.org:8443",
+		"http://127.0.0.1:3000", "https://[::1]:8443", "blob:",
+	}
+	bad := []string{
+		"*", "https:", "http:", "data:", "'unsafe-eval'", "'unsafe-inline'", "'self'", "'none'",
+		"https://*", "https://*.example.com", "*.example.com", "https://example.com/path", "https://example.com/",
+		"https://example.com?x=1", "https://user@example.com", "ftp://example.com", "wss://example.com",
+		"https://", "https://.example.com", "https://example..com", "javascript:alert(1)", "blob:https://example.com/x",
+	}
+	for _, origin := range good {
+		if !ValidOrigin(origin) {
+			t.Errorf("%q was refused", origin)
+		}
+	}
+	for _, origin := range bad {
+		if ValidOrigin(origin) {
+			t.Errorf("%q was accepted", origin)
+		}
+	}
+
+	handler := SecurityHeaders(false, nil, nil, func() []string { return append(append([]string{}, bad...), good...) })(
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	policy := recorder.Header().Get("Content-Security-Policy")
+	for _, directive := range []string{
+		"script-src 'self' " + strings.Join(good, " ") + ";",
+		"connect-src 'self' " + strings.Join(good, " ") + ";",
+		"img-src 'self' data: blob: " + strings.Join(good, " ") + " " + avatarImageSources + ";",
+	} {
+		if !strings.Contains(policy, directive) {
+			t.Errorf("the policy does not carry exactly the good origins; want %q in\n%s", directive, policy)
 		}
 	}
 }
@@ -144,5 +185,42 @@ func TestPluginOriginsCannotInjectADirective(t *testing.T) {
 	}
 	if strings.Contains(granted, "b.example.com") || strings.Contains(granted, "script-src *") {
 		t.Errorf("an origin with a separator reached the header: %s", granted)
+	}
+}
+
+// A browser sends Sec-Fetch-Site on every write, so an origin the operator
+// listed in ALLOWED_ORIGINS would never be reached if the header were checked
+// first. The list is the operator's explicit exception; it has to win.
+func TestAnAllowedOriginPassesEvenWhenTheBrowserCallsItCrossSite(t *testing.T) {
+	const allowed = "https://other.example"
+	reached := false
+	handler := SameOrigin([]string{allowed})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		reached = true
+	}))
+
+	post := func(origin, site string) int {
+		request := httptest.NewRequest(http.MethodPost, "https://app.example/api/x", nil)
+		request.Header.Set("Origin", origin)
+		request.Header.Set("Sec-Fetch-Site", site)
+		recorder := httptest.NewRecorder()
+		reached = false
+		handler.ServeHTTP(recorder, request)
+		if reached {
+			return http.StatusOK
+		}
+		return recorder.Code
+	}
+
+	if got := post(allowed, "cross-site"); got != http.StatusOK {
+		t.Fatalf("allowlisted cross-site origin: status %d, want 200", got)
+	}
+	if got := post(allowed+"/", "same-site"); got != http.StatusOK {
+		t.Fatalf("allowlisted same-site origin with trailing slash: status %d, want 200", got)
+	}
+	if got := post("https://evil.example", "cross-site"); got != http.StatusForbidden {
+		t.Fatalf("unlisted cross-site origin: status %d, want 403", got)
+	}
+	if got := post("", "cross-site"); got != http.StatusForbidden {
+		t.Fatalf("cross-site request with no Origin: status %d, want 403", got)
 	}
 }

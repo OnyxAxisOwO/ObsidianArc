@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -23,6 +22,8 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/pow"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/server/testconfig"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/server/testrequest"
 )
 
 // The authorization surface, exercised as HTTP rather than as function calls.
@@ -42,23 +43,29 @@ type instance struct {
 // mail configured, say — without every other test paying for it.
 func newInstance(t *testing.T, tweak ...func(*config.Config)) *instance {
 	t.Helper()
+	return newInstanceAt(t, "test", stubReleaseFeed(t, http.StatusServiceUnavailable, ""), tweak...)
+}
+
+// stubReleaseFeed stands in for GitHub's release endpoint. Every test server
+// is given one, so an endpoint that consults the feed never reaches the real
+// internet, whichever test happens to call it.
+func stubReleaseFeed(t *testing.T, status int, body string) string {
+	t.Helper()
+	feed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(feed.Close)
+	return feed.URL
+}
+
+// newInstanceAt is newInstance with the build's version and release feed
+// chosen by the test, for the checks that depend on either.
+func newInstanceAt(t *testing.T, version, feed string, tweak ...func(*config.Config)) *instance {
+	t.Helper()
 	dir := t.TempDir()
 
-	cfg := config.Config{
-		Addr:     ":0",
-		DataDir:  dir,
-		LogLevel: "error",
-		Database: config.Database{
-			Driver: "sqlite", DSN: filepath.Join(dir, "server.db"),
-			MaxOpenConns: 4, MaxIdleConns: 2,
-		},
-		Session: config.Session{TTL: time.Hour, CookieName: "obsidian_session", TouchInterval: time.Hour},
-		// Deliberately cheap: these tests hash a password on nearly every
-		// case, and the cost function is not what is under test.
-		Password:  config.Password{Memory: 8 * 1024, Iterations: 1, Parallelism: 1, SaltLength: 16, KeyLength: 32, MaxParallel: 4},
-		Upstream:  config.Upstream{DialTimeout: time.Second, ResponseHeaderTimeout: 2 * time.Second, MaxIdleConns: 2, IdleConnTimeout: time.Second},
-		SecretKey: []byte("a-test-instance-secret-value-here"),
-	}
+	cfg := testconfig.Config(dir)
 
 	for _, apply := range tweak {
 		apply(&cfg)
@@ -74,7 +81,7 @@ func newInstance(t *testing.T, tweak ...func(*config.Config)) *instance {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	app, err := New(ctx, Deps{Config: cfg, DB: db, Version: "test", Started: time.Now()})
+	app, err := New(ctx, Deps{Config: cfg, DB: db, Version: version, Started: time.Now(), UpdateFeed: feed})
 	if err != nil {
 		t.Fatalf("build server: %v", err)
 	}
@@ -84,33 +91,19 @@ func newInstance(t *testing.T, tweak ...func(*config.Config)) *instance {
 type session struct {
 	cookie *http.Cookie
 	userID string
+	// What the account registered with, for the steps that ask for it again.
+	password string
 }
 
 // do issues a request. A session sends its cookie; every unsafe method
 // carries the same-origin header a browser would.
 func (in *instance) do(method, path string, body any, as *session) *httptest.ResponseRecorder {
 	in.t.Helper()
-
-	var reader io.Reader
-	if body != nil {
-		encoded, err := json.Marshal(body)
-		if err != nil {
-			in.t.Fatalf("encode body: %v", err)
-		}
-		reader = bytes.NewReader(encoded)
-	}
-
-	request := httptest.NewRequest(method, path, reader)
-	if body != nil {
-		request.Header.Set("Content-Type", "application/json")
-	}
-	if method != http.MethodGet && method != http.MethodHead {
-		request.Header.Set("Sec-Fetch-Site", "same-origin")
-	}
+	var cookie *http.Cookie
 	if as != nil {
-		request.AddCookie(as.cookie)
+		cookie = as.cookie
 	}
-
+	request := testrequest.New(in.t, method, path, body, cookie, "", nil)
 	recorder := httptest.NewRecorder()
 	in.handler.ServeHTTP(recorder, request)
 	return recorder
@@ -131,7 +124,7 @@ func (in *instance) register(username, password string) *session {
 
 	for _, cookie := range response.Result().Cookies() {
 		if cookie.Name == "obsidian_session" && cookie.Value != "" {
-			return &session{cookie: cookie, userID: payload.User.ID}
+			return &session{cookie: cookie, userID: payload.User.ID, password: password}
 		}
 	}
 	in.t.Fatalf("register %s returned no session cookie", username)
@@ -162,6 +155,7 @@ func TestAdminRoutesRequireAnAdministrator(t *testing.T) {
 		body   any
 	}{
 		{http.MethodGet, "/api/admin/dashboard", nil},
+		{http.MethodPost, "/api/admin/assistant", map[string]any{}},
 		{http.MethodGet, "/api/admin/invites", nil},
 		{http.MethodPost, "/api/admin/invites", map[string]any{"count": 1}},
 		{http.MethodDelete, "/api/admin/invites/01ARZ3NDEKTSV4RRFFQ69G5FAV", nil},
@@ -213,10 +207,12 @@ func TestAdminRoutesRequireAnAdministrator(t *testing.T) {
 		{http.MethodPost, "/api/admin/bonus/bars/01ARZ3NDEKTSV4RRFFQ69G5FAV/grants", map[string]any{"all": true, "amount": 1}},
 		{http.MethodGet, "/api/admin/bonus/bars/01ARZ3NDEKTSV4RRFFQ69G5FAV/grants", nil},
 		{http.MethodDelete, "/api/admin/bonus/grants/01ARZ3NDEKTSV4RRFFQ69G5FAV", nil},
+		{http.MethodPost, "/api/admin/bonus/bars/01ARZ3NDEKTSV4RRFFQ69G5FAV/pool", map[string]any{"amount": 1}},
 		{http.MethodGet, "/api/admin/codes", nil},
 		{http.MethodPost, "/api/admin/codes", map[string]any{"code": "X", "cards": 1}},
 		{http.MethodGet, "/api/admin/codes/01ARZ3NDEKTSV4RRFFQ69G5FAV/redemptions", nil},
 		{http.MethodDelete, "/api/admin/codes/01ARZ3NDEKTSV4RRFFQ69G5FAV", nil},
+		{http.MethodGet, "/api/admin/users/01ARZ3NDEKTSV4RRFFQ69G5FAV/cards", nil},
 		{http.MethodPost, "/api/admin/users/01ARZ3NDEKTSV4RRFFQ69G5FAV/cards", map[string]any{"cards": 1}},
 		{http.MethodPatch, "/api/admin/users/01ARZ3NDEKTSV4RRFFQ69G5FAV/cards", map[string]any{"expires_at": 1}},
 		{http.MethodDelete, "/api/admin/users/01ARZ3NDEKTSV4RRFFQ69G5FAV/cards/01ARZ3NDEKTSV4RRFFQ69G5FAV", nil},
@@ -232,6 +228,7 @@ func TestAdminRoutesRequireAnAdministrator(t *testing.T) {
 		{http.MethodPut, "/api/admin/backup", map[string]any{"enabled": false, "endpoint": "", "bucket": "", "region": "", "prefix": "", "interval_hours": 24, "retention_days": 7}},
 		{http.MethodPost, "/api/admin/backup/test", map[string]any{}},
 		{http.MethodPost, "/api/admin/backup/run", map[string]any{}},
+		{http.MethodGet, "/api/admin/update", nil},
 		{http.MethodGet, "/api/admin/users/01ARZ3NDEKTSV4RRFFQ69G5FAV/conversations/01ARZ3NDEKTSV4RRFFQ69G5FAV", nil},
 		{http.MethodGet, "/api/admin/users/01ARZ3NDEKTSV4RRFFQ69G5FAV/keys", nil},
 		{http.MethodDelete, "/api/admin/users/01ARZ3NDEKTSV4RRFFQ69G5FAV/keys/01ARZ3NDEKTSV4RRFFQ69G5FAV", nil},
@@ -268,6 +265,9 @@ func TestAdminRoutesRequireAnAdministrator(t *testing.T) {
 		{http.MethodDelete, "/api/admin/login-background/landscape_light", nil},
 		{http.MethodPut, "/api/admin/logo", map[string]any{"mime": "image/png", "data": "AA=="}},
 		{http.MethodDelete, "/api/admin/logo", nil},
+		{http.MethodGet, "/api/admin/audit", nil},
+		{http.MethodGet, "/api/admin/audit/facets", nil},
+		{http.MethodGet, "/api/admin/audit/01ARZ3NDEKTSV4RRFFQ69G5FAV", nil},
 	}
 
 	// The list above is the whole route table, not a sample of it. A new
@@ -668,6 +668,52 @@ func TestKeyCannotBePinnedToAnUnavailableModel(t *testing.T) {
 	}
 }
 
+// A model switched off after a key was pinned to it is a state the operator
+// reaches on purpose, so refusing the edit is a client answer. It used to fall
+// through to the server's 500, which read as a fault in the server.
+func TestKeyCannotBePinnedToADisabledModel(t *testing.T) {
+	in := newInstance(t)
+	admin := in.register("keyholder", "a-good-password")
+	if res := in.do(http.MethodPut, "/api/admin/settings",
+		map[string]string{"api.enabled": "true"}, admin); res.Code != http.StatusOK {
+		t.Fatalf("enable the API: %d %s", res.Code, res.Body.String())
+	}
+
+	provider := decode[map[string]any](t, in.do(http.MethodPost, "/api/admin/providers", map[string]any{
+		"name": "Upstream", "kind": "openai",
+		"base_url": "https://api.example.com/v1", "api_key": "sk-test-key-0123",
+	}, admin))["provider"].(map[string]any)["id"].(string)
+	created := in.do(http.MethodPost, "/api/admin/models", map[string]any{
+		"provider_id": provider, "model_id": "vendor/pinned", "display_name": "Pinned", "enabled": true,
+	}, admin)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create the model: %d %s", created.Code, created.Body.String())
+	}
+	catalogueID := decode[map[string]any](t, created)["model"].(map[string]any)["id"].(string)
+
+	key := decode[map[string]any](t, in.do(http.MethodPost, "/api/keys",
+		map[string]any{"name": "pinned", "model_id": catalogueID}, admin))
+	keyID := key["key"].(map[string]any)["id"].(string)
+
+	if res := in.do(http.MethodPatch, "/api/admin/models/"+catalogueID,
+		map[string]any{"enabled": false}, admin); res.Code != http.StatusOK {
+		t.Fatalf("disable the model: %d %s", res.Code, res.Body.String())
+	}
+
+	edited := in.do(http.MethodPatch, "/api/keys/"+keyID,
+		map[string]any{"model_ids": []string{catalogueID}}, admin)
+	if edited.Code != http.StatusForbidden {
+		t.Fatalf("editing a key pinned to a disabled model gave %d %s, want 403",
+			edited.Code, edited.Body.String())
+	}
+	reissued := in.do(http.MethodPost, "/api/keys",
+		map[string]any{"name": "again", "model_id": catalogueID}, admin)
+	if reissued.Code != http.StatusForbidden {
+		t.Fatalf("pinning a new key to a disabled model gave %d %s, want 403",
+			reissued.Code, reissued.Body.String())
+	}
+}
+
 func TestAdministratorCanRestrictAndRestoreAnAccountsAPI(t *testing.T) {
 	in := newInstance(t)
 	administrator := in.register("founder", "a-good-password")
@@ -1015,16 +1061,34 @@ func TestPoWChallengeAndRegistrationFlow(t *testing.T) {
 		t.Fatalf("expected pow_replayed, got: %d %s", regReplay.Code, regReplay.Body.String())
 	}
 
-	// 9. Admin switches mode to "disabled" -> register without PoW succeeds.
+	// 9. Admin switches mode to "off" -> register without PoW succeeds.
 	in.do(http.MethodPut, "/api/admin/settings", map[string]string{
-		"registration.captcha_mode": "disabled",
+		"registration.captcha_mode": "off",
 	}, admin)
 	regDisabled := in.do(http.MethodPost, "/api/auth/register", map[string]any{
 		"username": "user3",
 		"password": "valid-password",
 	}, nil)
 	if regDisabled.Code != http.StatusCreated {
-		t.Fatalf("register with disabled captcha mode: %d %s", regDisabled.Code, regDisabled.Body.String())
+		t.Fatalf("register with captcha mode off: %d %s", regDisabled.Code, regDisabled.Body.String())
+	}
+
+	// 10. A mode this server does not answer for — a typo, a plugin's that is
+	// off, a value from a newer build — is not "off". The server falls back to
+	// Turnstile to keep a challenge, and that fallback has to be checked: it
+	// used to draw the widget and verify nothing, because the Turnstile switch
+	// had never been turned on by somebody who chose another mode. With no
+	// Turnstile keys here the challenge cannot be passed, which is the point.
+	in.do(http.MethodPut, "/api/admin/settings", map[string]string{
+		"registration.captcha_mode": "disabled",
+	}, admin)
+	regUnknown := in.do(http.MethodPost, "/api/auth/register", map[string]any{
+		"username": "user4",
+		"password": "valid-password",
+	}, nil)
+	if regUnknown.Code != http.StatusServiceUnavailable || !strings.Contains(regUnknown.Body.String(), "challenge_unavailable") {
+		t.Fatalf("register under an unknown captcha mode: %d %s, want the fallback challenge enforced",
+			regUnknown.Code, regUnknown.Body.String())
 	}
 }
 

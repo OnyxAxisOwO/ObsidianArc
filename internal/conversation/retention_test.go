@@ -101,6 +101,16 @@ func TestPurgeOwedAfterAnOutageIsStillRun(t *testing.T) {
 	}
 }
 
+// A run recorded while the clock was ahead, or before a correction, is later
+// than now. Counting it as this morning's run skipped every purge until the
+// real clock caught up with it, which could be days.
+func TestPurgeIsNotHeldBackByALastRunFromTheFuture(t *testing.T) {
+	futureRun := at(10, 3, 0).UnixMilli()
+	if got := DecidePurge("03:00", at(4, 12, 0), futureRun); got != DecisionRun {
+		t.Errorf("with a last run six days ahead: %v, want run", got)
+	}
+}
+
 // --- what a sweep actually does ---------------------------------------------
 
 func TestSweepDropsBytesByAgeAndKeepsTheRecord(t *testing.T) {

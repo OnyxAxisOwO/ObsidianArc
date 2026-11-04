@@ -1,6 +1,9 @@
-/* Styles for src/workspace.js: the header bar and settings drawer wrapped
-   around src/chat.js. Consumes the same --ai-* custom properties chat.css
-   defines, so the two never disagree about palette. */
+@use 'mixins' as *;
+/* Styles for the workspace shell: the header bar and settings drawer wrapped
+   around the chat surface. Consumes the same --ai-* custom properties
+   _chat.scss defines, so the two never disagree about palette. */
+
+@use 'mixins';
 
 .oa-workspace {
   display: flex;
@@ -38,8 +41,7 @@
 }
 
 .oa-brand:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+  @include mixins.focus-ring;
 }
 
 .oa-brand-logo {
@@ -53,6 +55,84 @@
 
 .oa-header-spacer {
   flex: 1;
+}
+
+/* Every control in the header is one size. The shared .oa-icon-btn is 34px,
+   which is right in a panel head; up here it stood beside a 30px account
+   chip, and the row read as things of different heights that happened to
+   share a line. Only the header's own controls are named, by the slot they
+   sit in: a selector reaching every .oa-icon-btn under .oa-header would also
+   reach into the dropdowns that hang from it. */
+.oa-header-leading > .oa-icon-btn,
+.oa-header-slot > .oa-icon-btn,
+.oa-header-slot > .oa-chip-group > .oa-icon-btn,
+.oa-header-tools > .oa-icon-btn,
+.oa-header-tools > .oa-chip-group > .oa-icon-btn {
+  width: 32px;
+  height: 32px;
+
+  /* One glyph size too. The rail toggle, the bell and the theme were drawn
+     at 17px and the image lab and the back chevron at 16, and side by side
+     that pixel showed. */
+  > svg {
+    width: 16px;
+    height: 16px;
+  }
+}
+
+/* The utilities share one fill instead of each being a loose circle. No
+   padding and no gap: a 32px button in a 32px pill lights up as exactly the
+   pill's end cap, so hovering the first or last one draws no shape the pill
+   does not already have. */
+.oa-header-tools {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  border-radius: 999px;
+  background: var(--ai-surface-container);
+}
+
+/* Vue leaves a comment where a v-if renders nothing, and :empty ignores
+   comments, so a pill whose every control is switched off disappears. */
+.oa-header-tools:empty {
+  display: none;
+}
+
+/* Positioned so they paint over the frosted layer below, which is
+   positioned itself. */
+.oa-header-tools > * {
+  position: relative;
+}
+
+/* On a wallpaper the pill is the material, not each control in it: the
+   wallpaper rule in _base.scss frosts every header .oa-icon-btn, and inside
+   the pill that drew three blurred discs on a blurred pill. This comes before
+   the shared hover rule below and matches it in weight, so a button still
+   lights up under the pointer.
+
+   The blur sits on a pseudo-element rather than on the pill: backdrop-filter
+   makes its element a stacking context, and the bell's dropdown, which hangs
+   inside the pill, would then be stacked inside it — under the chat beside
+   it — instead of above the page as every other menu is. */
+.has-wallpaper .oa-header-tools .oa-icon-btn {
+  background: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.has-wallpaper .oa-header-tools {
+  background: transparent;
+}
+
+.has-wallpaper .oa-header-tools::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--ai-surface-container) 38%, transparent);
+  -webkit-backdrop-filter: $frosted-filter;
+  backdrop-filter: $frosted-filter;
 }
 
 .oa-chat-root {
@@ -92,6 +172,12 @@
 .oa-icon-btn:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* Icon controls are circles that take keyboard focus. Without this rule they
+   fell back to the browser's outline, which the pills and fields do not use. */
+.oa-icon-btn:focus-visible {
+  @include mixins.focus-ring;
 }
 
 /* Pills, filled, no outline. A border and a fill are two ways of saying the
@@ -152,8 +238,7 @@
 }
 
 .oa-btn:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+  @include mixins.focus-ring;
 }
 
 .oa-btn:disabled {
@@ -165,44 +250,6 @@
 
 .oa-chip-group {
   position: relative;
-}
-
-.oa-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 220px;
-  padding: 7px 10px 7px 12px;
-  /* The only <button> in the app that nothing else reset, so it wore the
-     browser's default 2px outset border — which is what made a soft pill
-     read as a hard-edged box. */
-  border: none;
-  border-radius: 999px;
-  background: var(--ai-surface-container-low);
-  color: var(--ai-text);
-  font-size: 12.5px;
-  cursor: pointer;
-  transition: background-color 0.12s ease;
-}
-
-.oa-chip:hover,
-.oa-chip[aria-expanded='true'] {
-  background-color: var(--ai-state-hover);
-}
-
-.oa-chip.placeholder {
-  color: var(--ai-text-secondary);
-}
-
-.oa-chip-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* A short list of one-word choices, so the default width is all gap. */
-.oa-menu.oa-menu-compact {
-  min-width: 150px;
 }
 
 .oa-menu {
@@ -221,23 +268,35 @@
   box-shadow: var(--ai-shadow-md);
   /* Grows out of the corner it hangs from rather than appearing whole. */
   transform-origin: top right;
+}
+
+/* The model popover is not an OaMenu, but it opens and closes the same way;
+   one declaration keeps the two from drifting apart in timing. Blur and
+   scale share a curve so the menu comes into focus as it grows. */
+.oa-menu,
+.ai-model-pop {
   opacity: 0;
   transform: scale(0.12) translateZ(0);
+  filter: blur(12px);
   will-change: transform, opacity;
   backface-visibility: hidden;
   -webkit-backface-visibility: hidden;
   isolation: isolate;
   transition:
     opacity 0.12s cubic-bezier(0.4, 0, 1, 1),
-    transform 0.14s cubic-bezier(0.4, 0, 1, 1);
+    transform 0.14s cubic-bezier(0.4, 0, 1, 1),
+    filter 0.14s cubic-bezier(0.4, 0, 1, 1);
 }
 
-.oa-menu.open {
+.oa-menu.open,
+.ai-model-pop.open {
   opacity: 1;
   transform: scale(1) translateZ(0);
+  filter: none;
   transition:
-    opacity 0.18s cubic-bezier(0.16, 1, 0.3, 1),
-    transform 0.26s cubic-bezier(0.12, 0.9, 0.2, 1);
+    opacity 0.18s var(--ai-ease-out),
+    transform 0.26s cubic-bezier(0.12, 0.9, 0.2, 1),
+    filter 0.26s cubic-bezier(0.12, 0.9, 0.2, 1);
 }
 
 .oa-menu-left {
@@ -246,10 +305,17 @@
   transform-origin: top left;
 }
 
+/* The open state is named too: it sets its own transition at a higher
+   specificity, so without it a menu still grew open under reduced motion
+   and only its closing stopped animating. */
 @media (prefers-reduced-motion: reduce) {
-  .oa-menu {
+  .oa-menu,
+  .oa-menu.open,
+  .ai-model-pop,
+  .ai-model-pop.open {
     transition: none;
     transform: none;
+    filter: none;
   }
 }
 
@@ -298,29 +364,27 @@
 
 .oa-menu-item-title {
   font-size: 12.5px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  @include ellipsis;
 }
 
-.oa-menu-item-sub {
+/* The one line under a menu row's name, wherever the row comes from: an
+   OaMenuItem or a model in the model popover. The account menu's handle is
+   not one of them: it is an identifier, set in the figures' monospace. */
+.oa-menu-item-sub,
+.ai-pop-model-sub {
   font-size: 10.5px;
   color: var(--ai-text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  @include ellipsis;
 }
 
-.oa-menu-manage {
-  margin-top: 4px;
-  color: var(--ai-text-secondary);
-  font-size: 11.5px;
-}
-
-.oa-menu-empty {
+/* The inline empty line: flush with the rows it stands in for. An empty
+   project in the rail is the same line; it is 12px like the project's own
+   rows, and the half pixel less it once had had no reason behind it. Its
+   colour is the shared empty line's, in _chat.scss. */
+.oa-menu-empty,
+.ai-project-empty-convs {
   margin: 4px 8px;
   font-size: 12px;
-  color: var(--ai-text-secondary);
 }
 
 /* --- the select, and the list it opens -------------------------------------- */
@@ -338,9 +402,7 @@
 
 .oa-select-label {
   display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  @include ellipsis;
 }
 
 /* Placed by script, from the trigger's rectangle, because the list is
@@ -349,8 +411,9 @@
    or captures its positioning. ui/select.ts carries the full reason.
 
    Above .oa-modal-overlay at 50, because a select can be inside a modal, and
-   below the confetti at 60, which has no pointer events and is over
-   everything by design. Everything else comes from .oa-menu. */
+   below the confetti at 60, which has no pointer events and sits over the
+   page. Toasts and the other layers that must stay on top are numbered above
+   it. Everything else comes from .oa-menu. */
 .oa-select-menu {
   position: fixed;
   /* So the min-width script sets from the trigger is the width the list ends
@@ -383,10 +446,7 @@
   padding: 6px;
   box-sizing: border-box;
   scrollbar-width: none;
-}
-
-.oa-select-scroll::-webkit-scrollbar {
-  display: none;
+  @include hidden-scrollbar;
 }
 
 .oa-select-scroll-wrap .oa-overlay-track {
@@ -412,64 +472,6 @@
 }
 
 /* --- settings drawer -------------------------------------------------------- */
-
-.oa-drawer-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 29;
-  background: rgba(0, 0, 0, 0.35);
-  opacity: 0;
-  transition: opacity 0.2s ease;
-}
-
-.oa-drawer-overlay.open {
-  opacity: 1;
-}
-
-.oa-drawer {
-  position: fixed;
-  z-index: 30;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  display: flex;
-  flex-direction: column;
-  width: min(420px, 100vw);
-  box-sizing: border-box;
-  background: var(--ai-surface-card);
-  box-shadow: var(--ai-shadow-md);
-  transform: translateX(100%);
-  transition: transform 0.24s cubic-bezier(0.2, 0, 0, 1);
-}
-
-.oa-drawer.open {
-  transform: translateX(0);
-}
-
-.oa-drawer-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-  padding: 14px 10px 14px 18px;
-}
-
-.oa-drawer-title {
-  flex: 1;
-  margin: 0;
-  font-size: 15px;
-  font-weight: 700;
-}
-
-.oa-drawer-body {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 16px 18px 24px;
-}
 
 .oa-drawer-subhead {
   margin: 4px 0 -4px;
@@ -500,9 +502,7 @@
 }
 
 .oa-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+  @include flex-column;
   font-size: 12.5px;
 }
 
@@ -538,7 +538,20 @@
   border: none;
   border-radius: 999px;
   background: transparent;
+  /* The thumb ring below is the focus indication; without this the browser
+     outlines the whole 28px box, which no other field in the project does. */
+  outline: none;
   cursor: pointer;
+}
+
+/* The field-wide hover fill and focus ring match a slider at the same
+   specificity and come later, so they would paint the whole 28px box. These
+   out-rank them for sliders alone, which leaves every other field's cascade
+   as it was. */
+.oa-range-field input[type="range"]:hover,
+.oa-range-field input[type="range"]:focus {
+  background-color: transparent;
+  box-shadow: none;
 }
 
 .oa-range-field input[type="range"]::-webkit-slider-runnable-track {
@@ -581,6 +594,7 @@
   background: var(--ai-primary);
 }
 
+/* A range gets its focus halo on the thumb, never a filled input rectangle. */
 .oa-range-field input[type="range"]:focus-visible::-webkit-slider-thumb,
 .oa-range-field input[type="range"]:active::-webkit-slider-thumb {
   box-shadow: 0 0 0 4px var(--ai-focus-shadow);
@@ -676,15 +690,19 @@
 .oa-field input:focus,
 .oa-field textarea:focus,
 .oa-field .oa-select:focus-visible {
-  outline: none;
-  background-color: var(--ai-field-bg-hover);
-  box-shadow: 0 0 0 3px var(--ai-focus-shadow);
+  @include field-focus;
 }
 
 .oa-input-row {
   display: flex;
   gap: 6px;
   align-items: center;
+}
+
+/* The row is a flex box, so its own `display` would beat the UA's [hidden]
+   rule and the redeem row would never close. Same trap as .oa-icon-btn. */
+.oa-input-row[hidden] {
+  display: none;
 }
 
 .oa-input-row input {
@@ -710,178 +728,6 @@
   width: 15px;
   height: 15px;
   accent-color: var(--ai-primary);
-}
-
-.oa-model-list {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.oa-model-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 4px 4px 6px;
-  border-radius: 10px;
-}
-
-.oa-model-row.active {
-  background: var(--ai-badge-bg);
-}
-
-.oa-model-row-info {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-width: 0;
-  gap: 0;
-}
-
-.oa-model-row-title {
-  font-size: 12.5px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.oa-model-row-sub {
-  font-size: 10.5px;
-  color: var(--ai-text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.oa-detect-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: -6px;
-  padding: 10px;
-  border-radius: 12px;
-  background: var(--ai-surface-container-low);
-}
-
-/* `display` on the class would otherwise beat the UA's [hidden] rule, which
-   has the same specificity and loses on source order (author styles always
-   win over the UA stylesheet). */
-.oa-detect-panel[hidden],
-.oa-detect-actions[hidden] {
-  display: none;
-}
-
-.oa-detect-status {
-  margin: 0;
-  font-size: 12px;
-  color: var(--ai-text-secondary);
-}
-
-.oa-detect-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  max-height: 200px;
-  overflow-y: auto;
-}
-
-.oa-detect-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 2px;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.oa-detect-known {
-  padding: 1px 8px;
-  border-radius: 999px;
-  background: var(--ai-badge-bg);
-  color: var(--ai-badge-text);
-  font-size: 10px;
-}
-
-/* The same row as a button, for the model editor, where a row is picked
-   rather than ticked. */
-button.oa-detect-row {
-  width: 100%;
-  border: 0;
-  border-radius: 8px;
-  background: none;
-  color: inherit;
-  font: inherit;
-}
-
-button.oa-detect-row:disabled {
-  cursor: default;
-  color: var(--ai-text-secondary);
-}
-
-button.oa-detect-row:not(:disabled):hover {
-  background: var(--ai-surface-container);
-}
-
-/* Reasoning tiers: a name, the value that goes on the wire, and a budget.
-   Three inputs on one line rather than three stacked fields, because the list
-   is read down its first column — the names — and stacking would bury
-   that under a label for every cell. */
-.oa-thinking-tiers {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.oa-thinking-tier {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.oa-thinking-tier input {
-  min-width: 0;
-}
-
-.oa-thinking-name {
-  flex: 3 1 0;
-}
-
-.oa-thinking-value,
-.oa-thinking-budget {
-  flex: 2 1 0;
-}
-
-.oa-detect-actions {
-  display: flex;
-  gap: 6px;
-  justify-content: flex-end;
-}
-
-.oa-advanced {
-  padding-top: 10px;
-}
-
-.oa-advanced > summary {
-  font-size: 12.5px;
-  font-weight: 600;
-  cursor: pointer;
-  list-style: none;
-}
-
-.oa-advanced > summary::-webkit-details-marker {
-  display: none;
-}
-
-.oa-advanced > summary::before {
-  content: '▸ ';
-}
-
-.oa-advanced[open] > summary::before {
-  content: '▾ ';
-}
-
-.oa-advanced > * + * {
-  margin-top: 12px;
 }
 
 /* --- accent color picker -------------------------------------------------- */
@@ -916,65 +762,8 @@ button.oa-detect-row:not(:disabled):hover {
   border-radius: 50%;
 }
 
-.oa-color-custom-row {
-  margin-top: -2px;
-}
-
-.oa-color-custom-row input[type="color"] {
-  appearance: none;
-  -webkit-appearance: none;
-  flex: 0 0 34px;
-  width: 34px;
-  height: 34px;
-  padding: 0;
-  border: none;
-  background: none;
-  cursor: pointer;
-}
-
-.oa-color-custom-row input[type="color"]::-webkit-color-swatch-wrapper {
-  padding: 0;
-}
-
-/* Round, like the ten beside it. It was the one square swatch in a row of
-   circles, and its selected state was a border thickening rather than the
-   ring the others grow — two different answers to "this is the one". */
-.oa-color-custom-row input[type="color"]::-webkit-color-swatch {
-  border: 1px solid var(--ai-outline-variant);
-  border-radius: 50%;
-}
-
-.oa-color-custom-row input[type="color"]::-moz-color-swatch {
-  border: 1px solid var(--ai-outline-variant);
-  border-radius: 50%;
-}
-
-.oa-color-custom-row input[type="color"] {
-  position: relative;
-  border-radius: 50%;
-  transition: transform 0.14s ease;
-}
-
-.oa-color-custom-row input[type="color"]:hover {
-  transform: scale(1.06);
-}
-
-/* The same ring the dots use, drawn outside the swatch rather than eating
-   into it. */
-.oa-color-custom-row.active input[type="color"] {
-  box-shadow: 0 0 0 2px var(--ai-primary);
-}
-
-.oa-color-custom-row input[type="text"] {
-  text-transform: uppercase;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-}
-
 @media (max-width: 480px) {
   .oa-brand {
     display: none;
-  }
-  .oa-chip {
-    max-width: 140px;
   }
 }

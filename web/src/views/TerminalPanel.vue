@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// The web terminal: CONTRACT.md #0/#5.
+// The web terminal.
 //
 // A panel beside the chat, opened from the account menu, for every account
 // whose group allows it. What each account can run is the server's answer,
@@ -15,6 +15,10 @@
 // disposing every tab's in-flight fetch when the panel goes away. Command
 // execution, history and ANSI decoding all live one layer down.
 
+// Imported here rather than by index.scss so that Vite emits it as this
+// chunk's stylesheet and loads it before the chunk runs: the terminal never
+// paints unstyled, and a reader who never opens it never downloads it.
+import '@/styles/_terminal.scss';
 import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, ref, type Raw } from 'vue';
 import { useRouter } from 'vue-router';
 import { useEventListener } from '@vueuse/core';
@@ -103,12 +107,29 @@ function closeTab(id: string): void {
     activeId.value = fallback?.id ?? '';
   }
   // A terminal with no tabs is a broken terminal, not an empty state —
-  // CONTRACT.md #5.2 is explicit that closing the last one opens a fresh one.
+  // Closing the last tab opens a fresh one.
   if (tabs.value.length === 0) createTab();
 }
 
 function activate(id: string): void {
   activeId.value = id;
+}
+
+/**
+ * Arrow keys move between tabs the way a tablist does: the neighbour is
+ * selected and keeps focus. A tab's parent is its pill, not the tablist, so the
+ * neighbour is looked up from the tablist that owns every tab.
+ */
+function stepTab(event: KeyboardEvent, id: string, direction: 1 | -1): void {
+  const index = tabs.value.findIndex((tab) => tab.id === id);
+  const next = tabs.value[index + direction];
+  if (!next) return;
+  activate(next.id);
+  const tablist = (event.currentTarget as HTMLElement).closest<HTMLElement>('[role="tablist"]');
+  const target = tablist?.querySelectorAll<HTMLElement>('.oa-terminal-tab')[index + direction];
+  // Focus after the redraw: the newly shown pane takes focus for its prompt
+  // when it mounts, which would otherwise pull it off the tab.
+  void nextTick(() => target?.focus());
 }
 
 // A plain string `ref` on a node inside a `v-for` collects into an array —
@@ -163,13 +184,21 @@ function sshConnectHint(username: string, addr: string): string {
   return t('terminalSSHHint', { user: username, host: window.location.hostname || 'host', addr });
 }
 
-// Alt, never Ctrl: CONTRACT.md #5.2 asks for tab shortcuts, and Ctrl+T/Ctrl+W
+// `key` is what Option makes of the letter on macOS (Option+T is a dagger), so
+// it is read only when it is a letter, and the physical key stands in for it
+// otherwise.
+function letterOf(event: KeyboardEvent): string {
+  if (/^[a-z]$/i.test(event.key)) return event.key.toLowerCase();
+  return event.code.replace(/^Key/, '').toLowerCase();
+}
+
+// Alt, never Ctrl: tab shortcuts are Alt-based, and Ctrl+T/Ctrl+W
 // are the browser's own tab commands — binding them here would either do
 // nothing (the browser wins) or, worse, occasionally win and close the
 // browser tab the terminal is running in.
 useEventListener(window, 'keydown', (event: KeyboardEvent) => {
   if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
-  const key = event.key.toLowerCase();
+  const key = letterOf(event);
   if (key === 't') {
     event.preventDefault();
     createTab();
@@ -218,34 +247,54 @@ onBeforeUnmount(() => {
 
     <div class="oa-terminal" :style="cssVars">
       <div class="oa-terminal-tabstrip">
-        <div class="oa-terminal-tabs">
+        <!-- role=tab is only valid inside a tablist, and this strip is the one
+             that holds the tabs. -->
+        <div class="oa-terminal-tabs" role="tablist" :aria-label="t('terminalTabList')">
+          <!-- The pill is a presentational group, and the tab is only its label:
+               ARIA gives a tab presentational children alone, so the × and the
+               rename field sit beside the tab rather than inside it. -->
           <div
             v-for="tab in tabs"
             :key="tab.id"
-            class="oa-terminal-tab"
+            class="oa-terminal-tab-group"
+            role="presentation"
             :class="{ active: tab.id === activeId, running: tab.session.running.value }"
-            :title="tabLabel(tab)"
-            @click="activate(tab.id)"
-            @dblclick="startRename(tab)"
             @mousedown.middle.prevent="closeTab(tab.id)"
           >
-            <span v-if="tab.session.running.value" class="oa-terminal-tab-dot" aria-hidden="true" />
+            <!-- v-show, not v-if: the tab element must survive a rename so the
+                 label it holds is the same node when the rename ends. -->
+            <div
+              v-show="renamingId !== tab.id"
+              class="oa-terminal-tab"
+              role="tab"
+              :tabindex="tab.id === activeId ? 0 : -1"
+              :aria-selected="tab.id === activeId"
+              :title="tabLabel(tab)"
+              @click="activate(tab.id)"
+              @dblclick="startRename(tab)"
+              @keydown.enter.self.prevent="activate(tab.id)"
+              @keydown.space.self.prevent="activate(tab.id)"
+              @keydown.left.self.prevent="stepTab($event, tab.id, -1)"
+              @keydown.right.self.prevent="stepTab($event, tab.id, 1)"
+              @keydown.f2.self.prevent="startRename(tab)"
+            >
+              <span v-if="tab.session.running.value" class="oa-terminal-tab-dot" aria-hidden="true" />
+              <span class="oa-terminal-tab-label">{{ tabLabel(tab) }}</span>
+            </div>
             <span v-if="renamingId === tab.id" class="oa-terminal-tab-rename">
               <input
                 :ref="setRenameInputRef"
                 v-model="renameDraft"
                 :aria-label="t('terminalRenameTab')"
-                @click.stop
                 @keydown.enter.prevent="commitRename(tab)"
                 @keydown.escape.prevent="cancelRename"
                 @blur="commitRename(tab)"
               >
             </span>
-            <span v-else class="oa-terminal-tab-label">{{ tabLabel(tab) }}</span>
             <OaIconButton
               class="oa-icon-btn oa-terminal-tab-close"
               :label="t('terminalCloseTab')"
-              @click.stop="closeTab(tab.id)"
+              @click="closeTab(tab.id)"
             >
               <IconClose :size="10" />
             </OaIconButton>
@@ -259,8 +308,8 @@ onBeforeUnmount(() => {
           </OaIconButton>
         </div>
 
-        <!-- A marker, not a sentence — CONTRACT.md's own `SSH` / `READ-ONLY`
-             precedent for `OaBadge`. Present only once the server confirms the
+        <!-- A marker, not a sentence: drawn as an OaBadge, the way the other short labels are.
+             Present only once the server confirms the
              listener is actually up. -->
         <span
           v-if="spec?.ssh.enabled"
@@ -302,6 +351,7 @@ onBeforeUnmount(() => {
         :key="activeTab.id"
         :session="activeTab.session"
         :font-size="prefs.fontSize"
+        :letter-spacing="prefs.letterSpacing"
         :timestamps="prefs.timestamps"
         @measure="(cols) => reportColumns(activeTab!.id, cols)"
       />

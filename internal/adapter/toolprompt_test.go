@@ -245,7 +245,7 @@ func TestEmulatedAnswerMayCarrySeveralCalls(t *testing.T) {
 	result, err := testRegistry().Chat(context.Background(),
 		Provider{Kind: KindOpenAI, BaseURL: server.URL, APIKey: "k"},
 		ChatRequest{
-			Model: toollessModel(), Tools: toolFixture(),
+			Model: toollessModel(), Tools: append(toolFixture(), toolsNamed("clock")...),
 			Messages: []Message{{Role: RoleUser, Parts: []Part{{Kind: PartText, Text: "time?"}}}},
 		}, out.sink)
 	if err != nil {

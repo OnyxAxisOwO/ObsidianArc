@@ -6,6 +6,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/invite"
 )
 
@@ -17,22 +18,27 @@ import (
 func translateInviteError(err error) error {
 	switch {
 	case errors.Is(err, invite.ErrNotFound):
-		return httpx.NotFound("No such invite code.")
+		return httpx.NotFoundCode("invite_not_found", "No such invite code.")
 	case errors.Is(err, invite.ErrCodeTaken):
 		return httpx.Conflict("invite_code_taken", "That code already exists.")
 	case errors.Is(err, invite.ErrCodeFormat):
 		return httpx.BadRequestCode("invite_code_format",
 			"A custom code must be 4-32 characters of A-Z and 0-9.")
 	case errors.Is(err, invite.ErrNamedBatch):
-		return httpx.BadRequest("A batch of more than one code is generated; it cannot be given a code of its own.")
+		return httpx.BadRequestCode("invite_batch_code", "A batch of more than one code is generated; it cannot be given a code of its own.")
 	case errors.Is(err, invite.ErrInvalidCount):
-		return httpx.BadRequest("Count must be between 1 and %d.", invite.MaxBatch)
+		return httpx.BadRequestCode("invite_count_range", "Count must be between 1 and %d.", invite.MaxBatch).
+			WithDetails(map[string]any{"max": invite.MaxBatch})
 	case errors.Is(err, invite.ErrInvalidMaxUses):
-		return httpx.BadRequest("Max uses must be between 0 and %d.", invite.MaxMaxUses)
+		return httpx.BadRequestCode("invite_max_uses_range", "Max uses must be between 0 and %d.", invite.MaxMaxUses).
+			WithDetails(map[string]any{"max": invite.MaxMaxUses})
 	case errors.Is(err, invite.ErrInvalidGroupDays):
-		return httpx.BadRequest("Group days must be between 0 and %d, and group_days_max must be 0 or at least group_days.", invite.MaxGroupDays)
+		return httpx.BadRequestCode("invite_group_days_range", "Group days must be between 0 and %d, group_days_max must be 0 or at least group_days, and a range must start at 1 or more.", invite.MaxGroupDays).
+			WithDetails(map[string]any{"max": invite.MaxGroupDays})
 	case errors.Is(err, invite.ErrGroupRequired):
-		return httpx.BadRequest("group_days_max requires a group to be set.")
+		return httpx.BadRequestCode("invite_group_days_needs_group", "group_days_max requires a group to be set.")
+	case errors.Is(err, invite.ErrInvalidKind):
+		return httpx.BadRequestCode("invite_kind", "The kind must be batch or partner.")
 	case errors.Is(err, invite.ErrPartnerFields):
 		return httpx.BadRequestCode("invite_partner_fields",
 			"A partner code needs a count of 1, a custom code, a name (1-%d characters) and a group.",
@@ -81,8 +87,8 @@ func (h *Handlers) createInvites(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	if body.GroupID != "" {
-		if !isValidID(body.GroupID) {
-			return httpx.BadRequest("Malformed group id.")
+		if !id.Valid(body.GroupID) {
+			return httpx.BadRequestCode("malformed_group_id", "Malformed group id.")
 		}
 		if _, err := h.groups.ByID(r.Context(), nil, body.GroupID); err != nil {
 			return translateGroupError(err)
@@ -126,7 +132,14 @@ func (h *Handlers) inviteUses(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return httpx.Internal(err)
 	}
-	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"uses": uses})
+	// total lets a reader tell the list is the newest page of a longer one; the
+	// list itself is capped, and an audit that reads only it would be quietly
+	// incomplete.
+	total, err := h.invites.UsesTotal(r.Context(), codeID)
+	if err != nil {
+		return httpx.Internal(err)
+	}
+	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"uses": uses, "total": total})
 }
 
 func (h *Handlers) inviteStats(w http.ResponseWriter, r *http.Request) error {

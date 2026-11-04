@@ -35,7 +35,7 @@ func (s *Store) RecentSignups(ctx context.Context, q database.Queryer, email str
 	// A domain-scoped sample cannot be pushed out by unrelated registrations
 	// during a busy hour. Escaping matters because address validation permits
 	// wildcard characters that otherwise change the query's meaning.
-	pattern := "%@" + escapeLike(strings.ToLower(email[at+1:]))
+	pattern := "%@" + database.EscapeLike(strings.ToLower(email[at+1:]))
 	rows, err := q.Query(ctx,
 		`SELECT username, email, status, api_restricted, api_restricted_until,
 			api_restriction_source, created_at FROM users

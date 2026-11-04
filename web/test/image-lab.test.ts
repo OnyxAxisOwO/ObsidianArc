@@ -1,12 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, h, nextTick, shallowRef, type App } from 'vue';
 import { createRouter, createWebHistory } from 'vue-router';
+import * as authApi from '@/api/auth';
 import * as imagesApi from '@/api/images';
+import { ApiError } from '@/api/client';
+import * as powLib from '@/lib/pow';
+import * as registry from '@/plugins/registry';
+import { currentUser, site, siteInfo } from '@/stores/session';
 import * as chatImage from '@/chat/image';
 import { models } from '@/chat/useModels';
 import { providePanelHost } from '@/composables/usePanelHost';
 import { changeLanguage, t } from '@/composables/useI18n';
 import ImageLabPanel from '@/views/ImageLabPanel.vue';
+import { settle } from './helpers';
 
 let app: App | undefined;
 let host: HTMLElement;
@@ -53,16 +59,8 @@ afterEach(() => {
   app = undefined;
   host.remove();
   panels.remove();
-  document.body.textContent = '';
   vi.restoreAllMocks();
 });
-
-async function settle(): Promise<void> {
-  for (let i = 0; i < 3; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await nextTick();
-  }
-}
 
 async function mountImageLab(): Promise<void> {
   await router.push('/image-lab');
@@ -248,5 +246,340 @@ describe('Image Lab reference image drag and drop', () => {
 
     expect(panels.querySelectorAll('.oa-reference').length).toBe(1);
     expect(panels.querySelector('.oa-reference-count')?.textContent).toBe('1/5');
+  });
+});
+
+describe('Image Lab challenges', () => {
+  async function submit(text: string): Promise<void> {
+    await mountImageLab();
+    const field = panels.querySelector('#image-lab-prompt') as HTMLTextAreaElement;
+    field.value = text;
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    await settle();
+    (panels.querySelector('.oa-panel-foot .oa-btn.primary') as HTMLButtonElement).click();
+    await settle();
+  }
+
+  afterEach(() => {
+    site.value = null;
+    currentUser.value = null;
+  });
+
+  it('asks for nothing while the operator has switched nothing on', async () => {
+    const generate = vi.spyOn(imagesApi, 'generateImages').mockResolvedValue({ created: 1, images: [] });
+    await submit('a sunset');
+    expect(generate).toHaveBeenCalledOnce();
+    const sent = generate.mock.calls[0]![0];
+    expect(sent).not.toHaveProperty('pow');
+    expect(sent).not.toHaveProperty('turnstile');
+    expect(sent).not.toHaveProperty('guards');
+  });
+
+  it('solves a fresh proof of work for the picture and sends it', async () => {
+    site.value = { ...siteInfo.value, pow_on_images: true };
+    const challenge = { challenge: 'c', salt: 's', maxNumber: 10, expires: 1, signature: 'g' };
+    const solution = { ...challenge, nonce: 4 };
+    const fetchChallenge = vi.spyOn(authApi, 'fetchPoWChallenge').mockResolvedValue(challenge);
+    vi.spyOn(powLib, 'solvePoW').mockReturnValue({ promise: Promise.resolve(solution), cancel: () => {} });
+    const generate = vi.spyOn(imagesApi, 'generateImages').mockResolvedValue({ created: 1, images: [] });
+
+    await submit('a sunset');
+
+    expect(fetchChallenge).toHaveBeenCalledOnce();
+    expect(generate.mock.calls[0]![0].pow).toEqual(solution);
+  });
+
+  it('asks an administrator for the same proof as anybody else', async () => {
+    currentUser.value = { role: 'admin' } as any;
+    site.value = { ...siteInfo.value, pow_on_images: true };
+    const challenge = { challenge: 'c', salt: 's', maxNumber: 10, expires: 1, signature: 'g' };
+    const solution = { ...challenge, nonce: 4 };
+    const fetchChallenge = vi.spyOn(authApi, 'fetchPoWChallenge').mockResolvedValue(challenge);
+    vi.spyOn(powLib, 'solvePoW').mockReturnValue({ promise: Promise.resolve(solution), cancel: () => {} });
+    const generate = vi.spyOn(imagesApi, 'generateImages').mockResolvedValue({ created: 1, images: [] });
+
+    await submit('a sunset');
+
+    expect(fetchChallenge).toHaveBeenCalledOnce();
+    expect(generate.mock.calls[0]![0].pow).toEqual(solution);
+  });
+
+  it('says it is checking while a guard works, and gives up on one that never answers', async () => {
+    vi.spyOn(registry, 'guards').mockReturnValue([{
+      guard: {
+        name: 'slow', active: () => true, checking: () => 'CHECKING NOW', failed: () => 'FAILED',
+        token: () => new Promise<string>(() => {}),
+      },
+      config: {},
+    }]);
+    const generate = vi.spyOn(imagesApi, 'generateImages').mockResolvedValue({ created: 1, images: [] });
+    await mountImageLab();
+    const field = panels.querySelector('#image-lab-prompt') as HTMLTextAreaElement;
+    field.value = 'a sunset';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    await settle();
+    // Only now, so mounting and settling keep their real timers.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    // Microtasks only: setTimeout is faked for this block, so settle()'s macrotask
+    // would never return. Six rounds cover the promise hops the open panel takes.
+    const flush = async () => { for (let i = 0; i < 6; i++) { await Promise.resolve(); await nextTick(); } };
+    try {
+      (panels.querySelector('.oa-panel-foot .oa-btn.primary') as HTMLButtonElement).click();
+      await flush();
+      expect(panels.querySelector('.ai-chat-pending')?.textContent).toContain('CHECKING NOW');
+      vi.advanceTimersByTime(60_000);
+      await flush();
+    } finally {
+      vi.useRealTimers();
+    }
+    await settle();
+    expect(generate).not.toHaveBeenCalled();
+    expect(panels.textContent).toContain(t('guardTimeout'));
+    expect(panels.querySelector('.ai-chat-pending')).toBeNull();
+  });
+
+  it('does not call the server without the Cloudflare token it was asked for', async () => {
+    site.value = { ...siteInfo.value, turnstile_on_images: true, turnstile_site_key: 'site' };
+    const generate = vi.spyOn(imagesApi, 'generateImages').mockResolvedValue({ created: 1, images: [] });
+
+    await submit('a sunset');
+
+    expect(generate).not.toHaveBeenCalled();
+    expect(panels.textContent).toContain(t('challengeRequired'));
+  });
+
+  it('says a rate limit is a rate limit, not a failed check', async () => {
+    site.value = { ...siteInfo.value, pow_on_images: true };
+    vi.spyOn(authApi, 'fetchPoWChallenge').mockRejectedValue(
+      new ApiError(429, 'pow_rate_limited', 'Too many proofs of work.'),
+    );
+    const generate = vi.spyOn(imagesApi, 'generateImages').mockResolvedValue({ created: 1, images: [] });
+
+    await submit('a sunset');
+
+    expect(generate).not.toHaveBeenCalled();
+    expect(panels.textContent).toContain(t('powRateLimited'));
+    expect(panels.textContent).not.toContain(t('challengeFailed'));
+  });
+
+  it('sends the references attached when Generate was pressed, even if the panel closes during the proof of work', async () => {
+    site.value = { ...siteInfo.value, pow_on_images: true };
+    const challenge = { challenge: 'c', salt: 's', maxNumber: 10, expires: 1, signature: 'g' };
+    vi.spyOn(authApi, 'fetchPoWChallenge').mockResolvedValue(challenge);
+    let finishProof!: (value: unknown) => void;
+    vi.spyOn(powLib, 'solvePoW').mockReturnValue({
+      promise: new Promise((resolve) => { finishProof = resolve; }),
+      cancel: () => {},
+    } as any);
+    const generate = vi.spyOn(imagesApi, 'generateImages').mockResolvedValue({ created: 1, images: [] });
+    await mountImageLab();
+
+    const container = panels.querySelector('.oa-image-lab-generate') as HTMLElement;
+    container.dispatchEvent(createPasteEvent([createFile('screenshot.png', 'image/png')]));
+    await settle();
+    const field = panels.querySelector('#image-lab-prompt') as HTMLTextAreaElement;
+    field.value = 'a sunset';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    await settle();
+    (panels.querySelector('.oa-panel-foot .oa-btn.primary') as HTMLButtonElement).click();
+    await settle();
+
+    app!.unmount();
+    app = undefined;
+    finishProof({ ...challenge, nonce: 4 });
+    await settle();
+
+    expect(generate).toHaveBeenCalledOnce();
+    expect(generate.mock.calls[0]![0].images).toEqual(['base64-screenshot.png']);
+  });
+});
+
+describe('Image Lab gallery refresh', () => {
+  it('runs a refresh that was asked for while the first read was still in flight', async () => {
+    let finishFirstRead!: (value: unknown) => void;
+    const list = vi.spyOn(imagesApi, 'listImageGenerations')
+      .mockImplementationOnce(() => new Promise((resolve) => { finishFirstRead = resolve; }) as never)
+      .mockResolvedValue({ generations: [] });
+    vi.spyOn(imagesApi, 'generateImages').mockResolvedValue({
+      created: 1,
+      images: [{ id: 'new', url: '/api/attachments/new', mime: 'image/png' }],
+    });
+    await mountImageLab();
+
+    const field = panels.querySelector('#image-lab-prompt') as HTMLTextAreaElement;
+    field.value = 'a sunset';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    await settle();
+    (panels.querySelector('.oa-panel-foot .oa-btn.primary') as HTMLButtonElement).click();
+    await settle();
+    // The picture is saved while the first read is still running, so that read
+    // may not list it. The refresh it asked for must not be lost.
+    expect(list).toHaveBeenCalledOnce();
+
+    finishFirstRead({ generations: [] });
+    await settle();
+
+    expect(list).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('Image Lab reference pictures on the wire', () => {
+  it('sends each reference picture once, as images, and not again as image', async () => {
+    const generate = vi.spyOn(imagesApi, 'generateImages').mockResolvedValue({ created: 1, images: [] });
+    await mountImageLab();
+    panels.querySelector('.oa-image-lab-generate')!.dispatchEvent(
+      createDragEvent('drop', [createFile('photo.png', 'image/png')]),
+    );
+    await settle();
+    const field = panels.querySelector('#image-lab-prompt') as HTMLTextAreaElement;
+    field.value = 'a sunset';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    await settle();
+    (panels.querySelector('.oa-panel-foot .oa-btn.primary') as HTMLButtonElement).click();
+    await settle();
+
+    expect(generate).toHaveBeenCalledOnce();
+    const sent = generate.mock.calls[0]![0];
+    expect(sent.images).toEqual(['base64-photo.png']);
+    expect(sent).not.toHaveProperty('image');
+  });
+});
+
+describe('Image Lab pictures as they arrive', () => {
+  function drop(files: File[]): void {
+    const container = panels.querySelector('.oa-image-lab-generate') as HTMLElement;
+    container.dispatchEvent(createDragEvent('drop', files));
+  }
+
+  it('keeps the refusal for a picture that failed when a later one in the same drop is kept', async () => {
+    await mountImageLab();
+    vi.mocked(chatImage.prepareImage).mockImplementationOnce(async () => {
+      throw new chatImage.ImageError('unsupported', 'That picture is too large.');
+    });
+
+    drop([createFile('huge.png', 'image/png'), createFile('small.png', 'image/png')]);
+    await settle();
+
+    expect(panels.querySelectorAll('.oa-reference')).toHaveLength(1);
+    expect(panels.querySelector('.oa-drawer-flash')?.textContent).toContain('That picture is too large.');
+  });
+
+  it('never keeps more pictures than the limit when two drops overlap', async () => {
+    await mountImageLab();
+
+    drop(['a', 'b', 'c', 'd'].map((name) => createFile(`${name}.png`, 'image/png')));
+    drop(['e', 'f', 'g', 'h'].map((name) => createFile(`${name}.png`, 'image/png')));
+    await settle();
+
+    expect(panels.querySelectorAll('.oa-reference')).toHaveLength(5);
+  });
+
+  it('revokes a picture that finishes preparing after the panel has closed', async () => {
+    await mountImageLab();
+    let finish!: (value: unknown) => void;
+    vi.mocked(chatImage.prepareImage).mockImplementationOnce(
+      () => new Promise((resolve) => { finish = resolve; }) as never,
+    );
+    const original = URL.revokeObjectURL;
+    const revoke = vi.fn();
+    Object.assign(URL, { revokeObjectURL: revoke });
+    try {
+      drop([createFile('late.png', 'image/png')]);
+      await settle();
+      app!.unmount();
+      app = undefined;
+
+      finish({ mime: 'image/png', data: 'late', width: 1, height: 1, bytes: 4, previewURL: 'blob:mock/late.png' });
+      await settle();
+
+      expect(revoke).toHaveBeenCalledWith('blob:mock/late.png');
+    } finally {
+      Object.assign(URL, { revokeObjectURL: original });
+    }
+  });
+
+  it('names a download by the type the picture came back as, and keeps that name', async () => {
+    vi.spyOn(imagesApi, 'generateImages').mockResolvedValue({
+      created: 1, images: [{ b64_json: 'AAAA', mime: 'image/jpeg' }],
+    });
+    await mountImageLab();
+    const field = panels.querySelector('#image-lab-prompt') as HTMLTextAreaElement;
+    field.value = 'a sunset';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    await settle();
+    (panels.querySelector('.oa-panel-foot .oa-btn.primary') as HTMLButtonElement).click();
+    await settle();
+
+    const link = (): HTMLAnchorElement => panels.querySelector<HTMLAnchorElement>('.oa-image-lab-actions a')!;
+    const name = link().getAttribute('download');
+    expect(name).toMatch(/^image-\d+-0\.jpg$/);
+
+    field.value = 'a sunset, again';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    await settle();
+    expect(link().getAttribute('download')).toBe(name);
+
+    // The lightbox opened from the result is named the same way, not .png.
+    panels.querySelector<HTMLElement>('.oa-image-lab-img')!.click();
+    await settle();
+    expect(document.querySelector('.oa-lightbox-actions a')?.getAttribute('download')).toBe(name);
+  });
+});
+
+describe('Image Lab gallery paging', () => {
+  it('asks for the next page by the last picture id as well as its time', async () => {
+    // A full page, so the panel offers another. Every picture shares one
+    // millisecond, which is the case a time-only cursor cannot page through.
+    const rows: any[] = Array.from({ length: 20 }, (_, i) => ({
+      id: `gen-${String(i).padStart(2, '0')}`,
+      user_id: 'me',
+      attachment_id: `att-${i}`,
+      url: `/api/attachments/att-${i}`,
+      model_id: 'mock-painter',
+      prompt: `prompt ${i}`,
+      revised_prompt: '',
+      size: '',
+      style: '',
+      created_at: 1000,
+    }));
+    const list = vi
+      .spyOn(imagesApi, 'listImageGenerations')
+      .mockResolvedValueOnce({ generations: rows })
+      .mockResolvedValueOnce({ generations: [] });
+
+    await mountImageLab();
+    const historyTab = [...document.querySelectorAll<HTMLButtonElement>('.oa-image-lab-tab')].find(
+      (button) => button.textContent?.trim() === t('imageLabTabGallery'),
+    );
+    historyTab!.click();
+    await settle();
+    document.querySelector<HTMLButtonElement>('.oa-gallery-load-more button')!.click();
+    await settle();
+
+    expect(list).toHaveBeenLastCalledWith({ limit: 20, before: 1000, beforeId: 'gen-19' });
+  });
+});
+
+describe('Image Lab gallery names', () => {
+  it('names a JPEG gallery card and its lightbox download .jpg, not .png', async () => {
+    vi.spyOn(imagesApi, 'listImageGenerations').mockResolvedValue({
+      generations: [{
+        id: 'gen-1', user_id: 'me', attachment_id: 'att-1', url: '/api/attachments/att-1',
+        model_id: 'mock-painter', prompt: 'a lamp', revised_prompt: '', size: '', style: '',
+        created_at: 1000, mime: 'image/jpeg',
+      }],
+    });
+    await mountImageLab();
+    const historyTab = [...document.querySelectorAll<HTMLButtonElement>('.oa-image-lab-tab')].find(
+      (button) => button.textContent?.trim() === t('imageLabTabGallery'),
+    );
+    historyTab!.click();
+    await settle();
+
+    expect(document.querySelector('.oa-gallery-actions a')?.getAttribute('download')).toBe('image-gen-1.jpg');
+
+    document.querySelector<HTMLElement>('.oa-gallery-img-wrap')!.click();
+    await settle();
+    expect(document.querySelector('.oa-lightbox-actions a')?.getAttribute('download')).toBe('image-gen-1.jpg');
   });
 });

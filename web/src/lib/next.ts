@@ -14,7 +14,12 @@
 export function safeNext(raw: unknown): string {
   if (typeof raw !== 'string') return '';
   const value = raw.trim();
-  if (!value.startsWith('/') || value.startsWith('//') || value.startsWith('/\\')) return '';
+  if (!value.startsWith('/') || value.startsWith('//')) return '';
+  // Anywhere in the value, not only the front: a URL parser deletes TAB, CR
+  // and LF before it looks at the string, so "/<TAB>/evil.example" is
+  // "//evil.example" by the time it is followed, and a backslash is read as a
+  // slash wherever it falls.
+  if (/[\u0000-\u001f\u007f\\]/.test(value)) return '';
   return value;
 }
 
@@ -27,5 +32,14 @@ export function safeNext(raw: unknown): string {
  * request the other site is waiting on. It needs a real navigation.
  */
 export function serverOwned(path: string): boolean {
-  return path.startsWith('/oauth/authorize') || path.startsWith('/api/');
+  // Only the path the server itself sends a visitor back to. Anything under
+  // /api/ is also a server address, but no flow names one as a destination,
+  // and a top-level navigation to it carries the session cookie: letting a
+  // sign-in link pick one would turn the link into a request made as the
+  // reader, for whatever that endpoint does on a GET.
+  //
+  // A fragment names the same server page as a query does, so `#` counts too;
+  // a longer name such as /oauth/authorizeX is not that page and stays with the
+  // router.
+  return /^\/oauth\/authorize(?:[?#]|$)/.test(path);
 }

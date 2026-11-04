@@ -6,9 +6,17 @@
 // same radius, same surface, same hover tint — so moving between chatting and
 // administering does not feel like moving between two applications.
 
+// For its side effect, and first: it adds the backoffice's English to the
+// dictionary, and every screen below reads it. Imported here rather than by
+// the router so it lands in this chunk instead of a file of its own.
+import '@/i18n.admin';
+// The same for what only the backoffice draws: Vite emits it as this chunk's
+// stylesheet and loads it before the chunk runs, so these screens never
+// paint unstyled, and a reader who never opens them never downloads it.
+import '@/styles/admin.scss';
 import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useMediaQuery } from '@vueuse/core';
-import { useRoute, useRouter } from 'vue-router';
+import { useRoute, useRouter, type RouteLocationRaw } from 'vue-router';
 import { health } from '@/api/client';
 import OaIconButton from '@/components/OaIconButton.vue';
 import OaResizer from '@/components/OaResizer.vue';
@@ -18,7 +26,7 @@ import { t } from '@/composables/useI18n';
 import {
   IconArchive, IconChart, IconChevron, IconCpu, IconFile, IconGift, IconHome, IconKey, IconLayers, IconLock,
   IconMenu, IconMessage, IconPulse, IconSend, IconServer, IconSliders, IconSpark,
-  IconPuzzle, IconTrophy,
+  IconPuzzle, IconShield, IconTrophy,
   IconUsers,
 } from '@/icons';
 import AppShell from '@/layouts/AppShell.vue';
@@ -35,8 +43,11 @@ import ChatLayout from '@/layouts/ChatLayout.vue';
 import { provideAdminView } from './adminView';
 import { pageLabel, searchAdminFeatures, type AdminPageSpec, visibleAdminPages } from './features';
 import { plugins } from '@/plugins/registry';
+import { BACKOFFICE_PANEL_PARAM, provideBackofficePanels } from '@/composables/usePanelExit';
+import { resolveSidePanel } from '@/views/panels';
 
 import AdminDashboard from './AdminDashboard.vue';
+import AdminAssistant from './AdminAssistant.vue';
 import AdminUsers from './AdminUsers.vue';
 import AdminGroups from './AdminGroups.vue';
 import AdminProviders from './AdminProviders.vue';
@@ -49,6 +60,7 @@ import AdminResources from './AdminResources.vue';
 import AdminCodes from './AdminCodes.vue';
 import AdminInvites from './AdminInvites.vue';
 import AdminLogs from './AdminLogs.vue';
+import AdminAudit from './AdminAudit.vue';
 import AdminSecurity from './AdminSecurity.vue';
 import AdminSettings from './AdminSettings.vue';
 import AdminAnnouncements from './AdminAnnouncements.vue';
@@ -56,11 +68,14 @@ import AdminFeedback from './AdminFeedback.vue';
 import AdminSafeMode from './AdminSafeMode.vue';
 import AdminBackup from './AdminBackup.vue';
 import AdminPlugins from './AdminPlugins.vue';
+import AdminUpdateDialog from './AdminUpdateDialog.vue';
+import { loadUpdateStatus } from '@/admin/update';
 
 // Labels are looked up at render rather than stored, because this table is
 // evaluated at import time — before the language is known.
 const PAGES: AdminPageSpec[] = [
   { slug: '', label: 'navDashboard', icon: IconHome, component: markRaw(AdminDashboard) },
+  { slug: 'assistant', label: 'navAssistant', icon: IconSpark, component: markRaw(AdminAssistant), permission: '', keywords: ['AI', '助手', 'assistant', 'agent'] },
   { slug: 'users', label: 'navUsers', icon: IconUsers, component: markRaw(AdminUsers) },
   { slug: 'groups', label: 'navGroups', icon: IconLayers, component: markRaw(AdminGroups) },
   { slug: 'providers', label: 'navProviders', icon: IconServer, component: markRaw(AdminProviders) },
@@ -73,6 +88,10 @@ const PAGES: AdminPageSpec[] = [
   { slug: 'codes', label: 'navCodes', icon: IconKey, component: markRaw(AdminCodes) },
   { slug: 'invites', label: 'navInvites', icon: IconSend, component: markRaw(AdminInvites) },
   { slug: 'logs', label: 'navLogs', icon: IconFile, component: markRaw(AdminLogs) },
+  {
+    slug: 'audit', label: 'navAudit', icon: IconShield, component: markRaw(AdminAudit),
+    keywords: ['审计', '操作记录', '管理员操作', 'audit', 'admin actions', 'who changed'],
+  },
   { slug: 'security', label: 'navSecurity', icon: IconLock, component: markRaw(AdminSecurity) },
   { slug: 'backup', label: 'navBackup', icon: IconArchive, component: markRaw(AdminBackup), permission: '*' },
   { slug: 'settings', label: 'navSettings', icon: IconSliders, component: markRaw(AdminSettings) },
@@ -154,7 +173,7 @@ function scrollToSection(id: string): void {
 
 function onPageClick(slug: string): void {
   if ((segments.value[0] ?? '') === slug && route.hash) {
-    void router.push({ path: slug ? `/admin/${slug}` : '/admin' });
+    void router.push({ path: slug ? `/admin/${slug}` : '/admin', query: route.query });
     bodyScroll.value?.scroller?.scrollTo({ top: 0, behavior: 'smooth' });
   }
 }
@@ -199,12 +218,23 @@ function keepRail(node: unknown): void {
 const segments = computed(() => route.path.replace(/^\/admin\/?/, '').split('/').filter(Boolean));
 const current = computed(() => pages.value.find((entry) => entry.slug === (segments.value[0] ?? '')) ?? PAGES[0]!);
 
+// Where a link to a page, or to a section of one, goes. The page on screen
+// keeps the address's query, because a side panel is named there
+// (usePanelExit): choosing the page again must not close it. Another page is a
+// new page, and a panel open over this one does not follow it.
+function pageLink(page: AdminPageSpec, hash = ''): RouteLocationRaw {
+  const path = page.slug ? `/admin/${page.slug}` : '/admin';
+  if (page !== current.value) return hash ? { path, hash } : path;
+  return { path, query: route.query, hash };
+}
+
 // A section's grant is its slug unless it says otherwise, and any one of a
 // comma-separated list opens it — the plugins screen is three grants. The
 // backup page spans the whole instance, so its `*` marker is reserved for
 // the super admin.
 const allowed = computed(() => {
   const needs = current.value.permission ?? (current.value.slug || 'dashboard');
+  if (needs === '') return isAdmin.value;
   return needs === '*' ? isSuperAdmin.value : needs.split(',').some((grant) => canAdmin(grant.trim()));
 });
 
@@ -282,8 +312,12 @@ onBeforeUnmount(() => {
   leave();
 });
 
-const title = ref('');
-const subtitle = ref('');
+// The heading is held as a getter and drawn through it, so the shell's own
+// title and every page's are translated at render, as PAGES is. A string
+// stored here would keep the language it was written in.
+const NO_HEADING = (): string => '';
+const title = ref<() => string>(NO_HEADING);
+const subtitle = ref<() => string>(NO_HEADING);
 const reloadCount = ref(0);
 /** Which way the body arrives: further down the rail, back up it, or fresh. */
 const direction = ref<'forward' | 'back' | 'rise'>('rise');
@@ -299,7 +333,7 @@ const railState = useRailCollapse('obsidian-arc-admin-rail-collapsed');
 provideAdminView({
   setTitle(next, hint) {
     title.value = next;
-    subtitle.value = hint ?? '';
+    subtitle.value = hint ?? NO_HEADING;
   },
   reload() {
     reloadCount.value += 1;
@@ -313,6 +347,22 @@ provideAdminView({
   },
 });
 
+// A panel from the account menu or a link, drawn beside this page. The address
+// keeps the page's own path, query and hash, and only the panel's parameter
+// comes and goes, so the page underneath is never taken away (usePanelExit).
+const sidePanel = computed(() => resolveSidePanel(route.query[BACKOFFICE_PANEL_PARAM]));
+
+provideBackofficePanels({
+  show(name) {
+    void router.push({ path: route.path, query: { ...route.query, [BACKOFFICE_PANEL_PARAM]: name }, hash: route.hash });
+  },
+  hide() {
+    const query = { ...route.query };
+    delete query[BACKOFFICE_PANEL_PARAM];
+    void router.replace({ path: route.path, query, hash: route.hash });
+  },
+});
+
 // Changing views should never leave a stale heading or a set of buttons
 // belonging to the previous section. Remounting the page on the key below
 // takes care of the body; these two are the shell's own.
@@ -320,15 +370,23 @@ watch(current, (next, previous) => {
   const from = pages.value.indexOf(previous);
   const to = pages.value.indexOf(next);
   direction.value = to > from ? 'forward' : to < from ? 'back' : 'rise';
-  title.value = pageLabel(next);
-  subtitle.value = '';
+  title.value = () => pageLabel(next);
+  subtitle.value = NO_HEADING;
 });
 
 const bodyKey = computed(() => `${current.value.slug}:${reloadCount.value}`);
 
+// The release notice waits for the same things the page does: a super
+// administrator, past the two-step gates. Asking before the visit is open
+// would be refused, and a refusal is not an answer worth remembering.
+const updateReady = computed(() => isSuperAdmin.value && visit.value === 'open' && !gated.value);
+watch(updateReady, (ready) => {
+  if (ready) void loadUpdateStatus();
+}, { immediate: true });
+
 onMounted(() => {
   void checkVisit();
-  title.value = pageLabel(current.value);
+  title.value = () => pageLabel(current.value);
   // Which build is running, from the server rather than from the bundle: the
   // two can differ behind a stale cache, and the server's answer is the one
   // that matters.
@@ -350,9 +408,11 @@ onMounted(() => {
 </script>
 
 <template>
-  <!-- Reached directly rather than from inside the app: the chat is drawn
-       behind the refusal so it sits over the product rather than over a boot
-       spinner that will now never resolve. -->
+  <!-- Refused here rather than redirected by the router: an administrator's
+       link opened by somebody else should say so over the product, not bounce
+       them silently to the chat. The chat is drawn behind the refusal so that,
+       reached directly rather than from inside the app, it sits over the
+       product rather than over a boot spinner that will now never resolve. -->
   <template v-if="!isAdmin">
     <ChatLayout />
     <UnauthorizedModal />
@@ -404,7 +464,7 @@ onMounted(() => {
             :key="entry.slug"
             class="oa-admin-nav"
             :class="{ active: entry === current && !route.hash }"
-            :to="entry.slug ? `/admin/${entry.slug}` : '/admin'"
+            :to="pageLink(entry)"
           >
             <component :is="entry.icon" :size="15" />
             <span>{{ pageLabel(entry) }}</span>
@@ -418,7 +478,7 @@ onMounted(() => {
             class="oa-admin-search-group"
           >
             <RouterLink
-              :to="group.page.slug ? `/admin/${group.page.slug}` : '/admin'"
+              :to="pageLink(group.page)"
               class="oa-admin-nav oa-admin-group-head"
               :class="{ active: group.page === current && !route.hash }"
               @click="onPageClick(group.page.slug)"
@@ -431,7 +491,7 @@ onMounted(() => {
               <RouterLink
                 v-for="item in group.items"
                 :key="item.id"
-                :to="{ path: group.page.slug ? `/admin/${group.page.slug}` : '/admin', hash: `#${item.id}` }"
+                :to="pageLink(group.page, `#${item.id}`)"
                 class="oa-admin-subnav-item"
                 :class="{ active: group.page === current && route.hash === `#${item.id}` }"
                 @click="onItemClick(group.page.slug, item.id)"
@@ -468,13 +528,19 @@ onMounted(() => {
            and a heading above an empty page is what made it look lost. -->
       <div v-if="(current.slug || !allowed) && !gated && visit === 'open'" class="oa-admin-head" :ref="attachActions">
         <div>
-          <h1 class="oa-admin-title">{{ title }}</h1>
-          <p class="oa-admin-subtitle" :hidden="!subtitle">{{ subtitle }}</p>
+          <h1 class="oa-admin-title">{{ title() }}</h1>
+          <p class="oa-admin-subtitle" :hidden="!subtitle()">{{ subtitle() }}</p>
         </div>
         <span class="oa-admin-head-spacer" />
       </div>
 
+      <component
+        v-if="current.slug === 'assistant' && allowed && !gated && visit === 'open'"
+        :is="current.component"
+        :key="bodyKey"
+      />
       <OaScrollArea
+        v-else
         ref="bodyScroll"
         wrap-class="oa-admin-body-wrap"
         scroll-class="oa-admin-body"
@@ -496,5 +562,15 @@ onMounted(() => {
         </div>
       </OaScrollArea>
     </div>
+    <AdminUpdateDialog v-if="updateReady" />
+
+    <!-- Teleported into this shell's row, as the chat's panels are into theirs,
+         so it is a column beside the page and not a page of its own. -->
+    <component
+      v-if="sidePanel"
+      :is="sidePanel.component"
+      :key="sidePanel.name"
+      v-bind="sidePanel.props"
+    />
   </AppShell>
 </template>

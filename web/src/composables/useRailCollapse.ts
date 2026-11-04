@@ -12,7 +12,7 @@
 
 import { ref, type Ref } from 'vue';
 
-export interface CollapsibleRail {
+interface CollapsibleRail {
   collapsed: Ref<boolean>;
   toggle(): void;
 }

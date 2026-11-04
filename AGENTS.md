@@ -1,23 +1,39 @@
 # Working on Obsidian Arc
 
+## Keep implementation and deployment direct
+
+The owner prefers the smallest direct solution. Do not add speculative
+fallbacks, automatic backups, rollback frameworks, repeated validation,
+extra safety tests or defensive branches without a concrete observed need
+or an explicit request. Fix actual failures at their cause. Routine UI
+deployments reuse the checks already completed for that source and do not
+run unrelated core, plugin, race or safety suites. Do not expand the work
+into reliability infrastructure or a general cleanup.
+
+
 ## Deployment identity
 
 **Chat and Arc are separate systems.** Chat is the independent chat software;
 Arc is the AI chat application. Never treat their services, containers,
 ports, data, or deployment directories as interchangeable.
 
-When the user asks to deploy **Arc**, deploy to the Arc Docker Compose project
-(`/data/obsidian-arc` on the production host) and operate only the
-`obsidian-arc-server` container and its PostgreSQL companion. Build it on the
-local machine with `make deploy DEPLOY_HOST=…`, not on the server: the
+When the user asks to deploy **Arc**, first identify the instance and verify
+its current hosting against that instance repository's `AGENTS.md`, latest
+deployment record and live version. Do not assume every instance uses Docker.
+For a Docker deployment, use the Arc Compose project (`/data/obsidian-arc`
+on that host) and operate only the `obsidian-arc-server` container and its
+PostgreSQL companion. Build it on the local machine with
+`make deploy DEPLOY_HOST=…`, not on the server: the
 server's own `docker compose up --build` compiles the frontend and the binary
 there, which is minutes on that host and seconds here. `make deploy` ships a
 cross-compiled binary and replaces the server container alone.
 
 **Axis AI's production instance runs plugins that are not in this
 repository.** They live in `../AxisAI` (`/Users/onyxaxis/Documents/GitHub/AxisAI`),
-which lays them over this tree and calls this Makefile, so production is
-deployed with `make deploy DEPLOY_HOST=…` *there*. Deploying from here ships
+which lays them over this tree and calls this Makefile. Build and deploy from
+that instance repository using its current deployment procedure; its native
+deployment must not be replaced by this repository's Docker deploy target.
+For Docker instances, run `make deploy DEPLOY_HOST=…` *there*. Deploying from here ships
 the core alone, which switches those features off under the people using
 them; `scripts/deploy.sh` refuses when the running server carries a plugin
 the build does not, and `DROP_PLUGINS=1` is for the day one is meant to go.
@@ -59,7 +75,10 @@ installed from the backoffice without a rebuild, running as WebAssembly in a
 sandbox instead of as code with the server's own hands. It is pure Go, so the
 binary stays static and cross-compiles, and it costs 2.8 MB of that binary,
 also written down in `docs/ARCHITECTURE.md`. A fifth is that conversation
-again.
+again. Merging concurrent requests for one heavy aggregation is
+`internal/flight`, a page of code with `singleflight`'s behaviour, rather than
+`x/sync` as a direct dependency; the module is still linked, indirectly,
+through pgx's pool.
 
 ## Plugins: what only some instances want
 
@@ -121,7 +140,10 @@ here hold for it unchanged; what differs is where the code comes from.
   plugin module imports only what the entry already has — `@/api/client`,
   `@/icons`, `@/lib/*`, and `pluginStrings` from `plugins/registry.ts` — never
   `views/admin/`, or the bundler splits a shared chunk out and the file count
-  in `test/bundle.test.ts` catches it.
+  in `test/bundle.test.ts` catches it. A plugin component uses the Composition
+  API: the core is built with the Options API compiled out (`optionsAPI: false`
+  in `web/vite.config.ts`), so `data` and `methods` would be ignored without
+  any error.
 - **A plugin's strings are its own**, in `pluginStrings(en, zh)`, typed the way
   `i18n.ts` is. They never go into the core dictionaries.
 - **Tests come with it**, in the plugin's own package: `servertest` builds a
@@ -135,6 +157,10 @@ here hold for it unchanged; what differs is where the code comes from.
 ```bash
 make test     # go vet, gofmt, go test ./..., vue-tsc --noEmit, vitest
 ```
+
+`make test` rebuilds the frontend first when anything under `web/src` is newer
+than the embedded build, so the bundle and first-paint checks never read a
+stale one; it does not reinstall packages.
 
 All of it must pass, and `.github/workflows/ci.yml` runs it again on every
 push — on Linux, against a real PostgreSQL, and building the Docker image. It
@@ -160,7 +186,12 @@ The stylesheet for everything that is not the chat is
 `web/src/styles/_surfaces.scss`. It was called admin.css; it holds
 `.oa-panel`, `.oa-field`, `.oa-table` and `.oa-icon-btn`, which the settings,
 keys and About screens all use, so do not treat it as the backoffice's private
-file.
+file. What only the backoffice draws is in `web/src/styles/admin.scss` (its
+partials `_admin-controls`, `_admin-surfaces`, `_dashboard`, `_analytics`,
+`_workbench`), imported by `AdminPage.vue` so it arrives with the backoffice's
+chunk; the terminal's is `_terminal.scss`, imported by `TerminalPanel.vue`. A
+rule belongs there only if every selector in it needs a class nothing outside
+that chunk renders, and `test/bundle.test.ts` holds that.
 
 All five partials arrived as the standalone build's stylesheets, renamed and
 not reformatted: the port was meant to be pixel-for-pixel identical, and
@@ -212,9 +243,17 @@ tx.Exec(ctx,
      ON CONFLICT (key) DO UPDATE SET updated_at = settings.updated_at`, ...)
 ```
 
-Live examples: `apikey.Store.Issue`, `conversation.Store.Upload`,
-`auth.Service.Register`, `admin.lockAdminPopulation`. Use one of those two
-spellings rather than inventing a third.
+Live examples: `apikey.Store.IssueModels` and `conversation.Store.Upload`
+lock the owner's row; `settings.Lock` is the instance-wide spelling, and
+`auth.Service.Register` and `admin.lockAdminPopulation` call it rather than
+repeating its key. Use one of those two spellings rather than inventing a
+third.
+
+One exception is written down: the sign-in, second-step, current-password,
+invite-code guess budgets (`internal/auth/limiter.go`) and the trial's hourly
+budgets (`internal/trial`) are counted in each process's memory, so N processes give each budget N times its size.
+`docs/ARCHITECTURE.md` says so in its security table. A new budget does not
+join them without the same entry.
 
 ### A transaction never spans a provider call
 
@@ -270,7 +309,19 @@ English fallback. Never loosen that type to make a build pass.
 
 Deliberately English: API values and enums (`'openai'`, `'5h'`), protocol names
 shown on purpose (`reasoning_effort`, `Base URL`), format placeholders
-(`'sk-…'`), and the language picker's own `English` / `中文`.
+(`'sk-…'`), and the language picker's own `English` / `中文`. Mail the server
+sends (the new-device notice, the address check) is English too: a message has
+no code for a browser to translate, and the server does not know the reader's
+language.
+
+English that only the backoffice says lives in `web/src/i18n.admin.ts`, which
+travels with the backoffice's chunk instead of on everyone's first paint. Its
+keys are still `StringKey`s, so `zh` must still translate them and still read
+through `t()`; a key any other screen uses stays in `i18n.ts`, and
+`test/bundle.test.ts` fails the build when one is in the wrong file. A
+backoffice page's own words go there too, never into a dictionary of the
+page's own: `pluginStrings` is for plugins. A word the core dictionary already
+has is taken from `t()`, never copied.
 
 Module-level label tables evaluate at import time, before the language is
 known. Store `StringKey`s and resolve at render, as `PAGES` in
@@ -364,8 +415,9 @@ installs, updates and removes).
   `wasm.Limits.IdleEvict` idle (three minutes): warm, a package is ~60 MB
   resident, and what they serve is used now and then. So nothing may keep a
   compiled module alive beside the backend — no cache that cannot drop an
-  entry (`wasm.ShareCompiledCode` is for tests, and only `servertest` calls
-  it), no call at boot that compiles what will not be used. An update or a
+  entry (`wasm.ShareCompiledCode` is for tests: `servertest` and the tests of
+  `internal/plugin/wasm` and `internal/plugin` call it, the server never
+  does), no call at boot that compiles what will not be used. An update or a
   removal must give its code back, and a test holds that eviction and calls
   race safely.
 - **What a backend chose to say and what it failed to say are kept apart.**
@@ -400,30 +452,59 @@ installs, updates and removes).
 change moves one of those numbers, re-measure and update it in the same change.
 They drifted to nearly double once because nobody re-ran the build.
 
-Current: 25.8 MB binary (this repository ships no plugin; 2.8 MB of it is
-the plugin runtime); 229.26 kB on the wire to open the chat, against a target
-of 135. The target used to be 80 and the figure used to be 59.5;
-adopting Vue moved both, and `docs/ARCHITECTURE.md` says so rather than
-quietly restating a target the build cannot meet.
+Current: 28.14 MB binary (this repository ships no plugin; 2.8 MB of it is
+the plugin runtime, 0.41 MB the brotli copies of the frontend the
+build writes for the server to send, and 0.41 MB the embedded zone database); to open the chat, 174.64 kB on the wire
+to a browser that takes brotli and 207.94 kB to one that takes only gzip, which
+is the figure the budget holds (the build's own gzip column is not quoted:
+Node's zlib gives a few hundred bytes more or less on another CPU),
+against a target of 135. The target used to be 80 and
+the figure used to be 59.5; adopting Vue moved both, and
+`docs/ARCHITECTURE.md` says so rather than quietly restating a target the
+build cannot meet.
 
-The backoffice, the terminal, the Chinese dictionary, the LaTeX renderer and
-the public front page are separate chunks, fetched only by the readers who
-need them — so a static import reaching into `views/admin/`,
-`views/TerminalPanel.vue`, `terminal/`, `views/FrontPage.vue`, `i18n.zh` or
-`chat/math` from the main graph silently undoes one of those
-splits. `web/src/lib/format.ts` holds
+The backoffice, the terminal, the Chinese dictionary, the backoffice's
+Chinese, the LaTeX renderer, the public front page and the landing page are
+separate chunks, fetched only by the readers who need them, and the
+backoffice's English and the stylesheets of the backoffice, the terminal, the
+front page and the landing page travel with their chunks — so a static import reaching into
+`views/admin/`, `views/TerminalPanel.vue`, `terminal/`, `views/FrontPage.vue`,
+`views/LandingView.vue`, `i18n.zh`, `i18n.admin`, `i18n.admin.zh`,
+`styles/admin.scss` or `chat/math` from the main graph — or `i18n.admin.zh`
+from the backoffice's — silently undoes one of those splits. The Chinese
+dictionary is 20.84 kB on the wire; the backoffice's Chinese, 38.49 kB, is
+fetched only when a Chinese reader opens the backoffice or an administrator
+switches to Chinese inside it, and the backoffice's route waits for it so its
+first render is already translated. `web/src/lib/format.ts` holds
 `formatUptime` for exactly that reason: one import of one four-line helper
 used to pull the whole backoffice back into the main bundle.
 
-`test/bundle.test.ts` asserts the build produces exactly seven files, plus one
-per directory under `web/src/plugins/` — each plugin's own chunk. Route-level
+The account menu's content and stylesheet load when it is first opened; the
+folder list's content and stylesheet load when the account has folders or
+starts one. Their triggers and shared row styles stay on the entry. These
+are deliberate splits: the merged rail and grouped menu otherwise exceeded
+the existing 208 kB build budget. Neither split changes that budget.
+
+`test/bundle.test.ts` asserts the build produces exactly eighteen files (the
+entry's, the backoffice's, the terminal's, the front page's and the landing
+page's script and stylesheet, the Chinese dictionary and the backoffice's
+Chinese, the maths renderer, the vendors' model marks, and the account
+menu's and folder list's script and stylesheet), plus one per directory under `web/src/plugins/` — each plugin's own chunk. Route-level
 lazy loading produces a dozen and is switched off for everything but the
 backoffice, the terminal and the front page; if that count changes, it should be because
 somebody decided it should.
 
 Responses are compressed by `httpx.Compress`, on an allowlist of content
 types. Adding `text/event-stream` to it would buffer streamed answers into
-silence, so the list is the one place to be careful.
+silence, so the list is the one place to be careful. The fingerprinted assets
+are the exception: the build compresses them once with brotli (quality 11,
+into `dist/precompressed/`), `internal/web` sends that copy to a client that
+accepts br, and the compressor leaves a response that already names its
+encoding alone. Gzip is not precompressed: Node's zlib picks its matching code
+by CPU, so a gzip copy built on one machine is not the size of one built on
+another and the quoted first paint could not be reproduced in CI. Go's
+compressor gives the same bytes everywhere, so gzip is made as it goes out.
+The first-paint budget is still counted in gzip, whatever brotli saves.
 
 ## Versions
 
@@ -457,8 +538,9 @@ whether an upgrade is safe:
 - **Patch** — a fix that changes no contract.
 
 Until 1.0.0 the first of those is not promised: a minor release may break any
-of it, and says so in `CHANGELOG.md`. A patch release still changes no
-contract. `v0.9.0` is the first version, tagged over a history of more than
+of it, and says so in `CHANGELOG.md`. Before 1.0.0, minor releases group substantial milestones; patches may
+include small backward-compatible UI additions and refinements, as well as
+fixes. A patch release still changes no existing contract. `v0.9.0` is the first version, tagged over a history of more than
 two hundred builds that carried only the moment they were compiled
 (`v2026.09.29.15.44.24`) and never a tag, which is why it is not `v0.1.0`:
 the number says where the project is, not that it started today.
@@ -483,7 +565,11 @@ Cutting a release is a decision, never a side effect of deploying:
 3. Tag that commit — `git tag -a v1.2.3 -m v1.2.3` — and `git push origin
    v1.2.3`. A pushed tag is never moved or reused; a mistake is fixed by the
    next patch.
-4. Deploy from the tag with a clean tree. What the server reports must be
+4. Create a GitHub Release from that tag, its body the version's section of
+   `CHANGELOG.md`: `gh release create v1.2.3 --title v1.2.3 --notes-file <file>`.
+   The backoffice's update notice reads `releases/latest` and shows this body,
+   so a tag without a release is a version no administrator is told about.
+5. Deploy from the tag with a clean tree. What the server reports must be
    exactly `v1.2.3`.
 
 A release candidate is `v1.3.0-rc.1`; `git describe` follows it like any other

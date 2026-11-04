@@ -12,6 +12,7 @@ import (
 )
 
 type systemBackupInput struct {
+	Type            string `json:"type"`
 	Enabled         bool   `json:"enabled"`
 	Endpoint        string `json:"endpoint"`
 	Bucket          string `json:"bucket"`
@@ -19,6 +20,9 @@ type systemBackupInput struct {
 	Prefix          string `json:"prefix"`
 	AccessKeyID     string `json:"access_key_id"`
 	SecretAccessKey string `json:"secret_access_key"`
+	WebDAVURL       string `json:"webdav_url"`
+	WebDAVUsername  string `json:"webdav_username"`
+	WebDAVPassword  string `json:"webdav_password"`
 	IntervalHours   int    `json:"interval_hours"`
 	RetentionHours  int    `json:"retention_hours"`
 	RetentionDays   int    `json:"retention_days"`
@@ -43,15 +47,15 @@ func (h *Handlers) saveSystemBackup(w http.ResponseWriter, r *http.Request) erro
 	if err := httpx.DecodeJSON(w, r, &input, 16<<10); err != nil {
 		return err
 	}
-	retentionHours := input.RetentionHours
-	if retentionHours == 0 && input.RetentionDays > 0 {
-		retentionHours = input.RetentionDays * 24
-	}
+	// Days are passed through rather than converted here: Store.Save owns
+	// the conversion, so the two spellings cannot drift apart.
 	cfg := systembackup.Config{
-		Enabled: input.Enabled, Endpoint: input.Endpoint, Bucket: input.Bucket,
+		Type: input.Type, Enabled: input.Enabled, Endpoint: input.Endpoint, Bucket: input.Bucket,
 		Region: input.Region, Prefix: input.Prefix, AccessKeyID: input.AccessKeyID,
-		SecretKey: input.SecretAccessKey, IntervalHours: input.IntervalHours,
-		RetentionHours: retentionHours,
+		SecretKey: input.SecretAccessKey, WebDAVURL: input.WebDAVURL,
+		WebDAVUsername: input.WebDAVUsername, WebDAVPassword: input.WebDAVPassword,
+		IntervalHours: input.IntervalHours, RetentionHours: input.RetentionHours,
+		RetentionDays: input.RetentionDays,
 	}
 	if err := h.SystemBackup.Save(r.Context(), cfg); err != nil {
 		return backupAPIError(err)
@@ -86,7 +90,13 @@ func backupAPIError(err error) error {
 		return httpx.Conflict("backup_running", "An instance backup is already running.")
 	}
 	if errors.Is(err, systembackup.ErrNotConfigured) {
-		return httpx.BadRequest("Enter a storage endpoint, bucket, and credentials first.")
+		return httpx.BadRequestCode("backup_not_configured", "Enter storage credentials and configuration first.")
+	}
+	// A code rather than only a sentence: the Backup page words this refusal in
+	// the reader's language, which a message written here cannot do.
+	if errors.Is(err, systembackup.ErrCredentialsNeededForMove) {
+		return httpx.BadRequestCode("backup_credentials_needed",
+			"A new storage endpoint, bucket, region or WebDAV URL needs its credentials entered again.")
 	}
 	var validation *systembackup.ValidationError
 	if errors.As(err, &validation) {
@@ -95,8 +105,5 @@ func backupAPIError(err error) error {
 	if strings.HasPrefix(err.Error(), "system backup:") {
 		return httpx.Internal(err)
 	}
-	// Storage errors exclude response bodies and signed headers, so returning
-	// their short protocol message makes the connection test useful without
-	// exposing either credential.
 	return httpx.Unavailable("Backup storage request failed: " + err.Error())
 }

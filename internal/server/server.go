@@ -7,27 +7,27 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/OnyxAxisOwO/ObsidianArc/internal/bonus"
-	"github.com/OnyxAxisOwO/ObsidianArc/internal/checkin"
 	"log/slog"
 	"net/http"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/admin"
-	"github.com/OnyxAxisOwO/ObsidianArc/internal/agent"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/announcement"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/apikey"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/audit"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/backup"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/bonus"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/card"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/chat"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/checkin"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/compat"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/console"
@@ -58,6 +58,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/systembackup"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/trial"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/turnstile"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/update"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/usage"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/usercheck"
@@ -69,6 +70,10 @@ type Deps struct {
 	DB      *database.DB
 	Version string
 	Started time.Time
+	// Where the update check asks for the newest release. Empty is the
+	// project's own feed; tests point it at a server they control, so that
+	// nothing they run reaches the internet.
+	UpdateFeed string
 }
 
 // Server is the assembled application. It owns the modules so that background
@@ -84,11 +89,14 @@ type Server struct {
 	quota          *quota.Service
 	requests       *reqlog.Store
 	idp            *idp.Store
+	oauth          *oauth.Store
 	notify         *notify.Store
+	audit          *audit.Store
 	bonus          *bonus.Store
 	invites        *invite.Store
 	instanceBackup *systembackup.Service
 	health         *health.Checker
+	plugins        *plugin.Manager
 	// nil when no SSH address is configured, which is the default.
 	ssh *consolessh.Server
 	// What the console dispatches into: the API with no Attach in front of
@@ -131,7 +139,8 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		return nil, err
 	}
 	authService := auth.NewService(db, users, groups, settingsService, mailer, cfg)
-	authService.ScreenEmail = userCheckManager.Check
+	authService.Hooks.ScreenEmail = userCheckManager.Check
+	authService.Hooks.ScreenEmailCharges = userCheckManager.Charges
 
 	// Provider API keys are encrypted with a key derived from the instance
 	// secret; the box is the only thing that can read them back.
@@ -156,6 +165,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	usageStore := usage.NewStore(db)
 	requestLog := reqlog.NewStore(db)
 	securityLog := securityevents.NewStore(db)
+	auditTrail := audit.NewStore(db)
 
 	// Which compiled-in plugins are installed and switched on. Loaded before
 	// anything below reads a setting or an account, since both lists depend
@@ -184,6 +194,9 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	bonusStore := bonus.NewStore(db)
 	quotaService.SetBonus(bonusStore)
 	checkinService := checkin.NewService(db, settingsService, bonusStore, cards)
+	// A pool's day is the check-in's day, so the site has one idea of when a
+	// day ends.
+	bonusStore.Location = checkinService.Location
 	projects := project.NewStore(db)
 
 	chatService := chat.NewService(db, conversations, models, registry, settingsService)
@@ -200,7 +213,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// The one check that decides whether an account may spend anything, and
 	// the release that undoes what it claimed. Shared with the API surface
 	// rather than written twice: two copies of a limit are two limits.
-	guard := func(ctx context.Context, account user.User, chosen model.Model) (func(), error) {
+	guard := func(ctx context.Context, account user.User, chosen model.Model, pictures int) (func(), error) {
 		// An unconfirmed address is checked here rather than at sign-in: the
 		// point is that it must not spend anything, and locking someone out
 		// of the interface entirely would leave them nowhere to press
@@ -232,6 +245,14 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		// reservation carries the moment it was charged and is given back
 		// there rather than wherever the answer happened to finish.
 		tokens, credits := chosen.WorstCase()
+		// An image call is billed once for each picture it returns, so the
+		// reservation has to be for every picture it may ask for. One picture
+		// reserved and four billed overdraws the window by the difference.
+		// Tokens stay as they are: an image turn records none, so nothing
+		// is charged to the per-minute token window for the extra pictures.
+		if pictures > 1 {
+			credits *= float64(pictures)
+		}
 		estimate := quota.Estimate{Tokens: tokens, Credits: credits}
 		autoReset, err := preferences.Bool(ctx, account.ID, user.AutoUseResetCard)
 		if err != nil {
@@ -268,7 +289,9 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			freeSlot()
 			// Detached: the request context is cancelled the moment the
 			// browser goes away, and a reservation that is never given back
-			// is an allowance quietly lost until the window rolls over.
+			// is an allowance quietly lost until the window rolls over. Its own
+			// budget rather than chat.SaveBudget: this gives back a reservation
+			// the quota wiring took, which chat neither takes nor records.
 			refundCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 			defer cancel()
 			if err := quotaService.Release(refundCtx, userID, reserved); err != nil {
@@ -284,7 +307,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	chatService.Authorize = func(
 		ctx context.Context, req chat.TurnRequest, resolved model.Resolved,
 	) (chat.Release, error) {
-		return guard(ctx, req.User, resolved.Model)
+		return guard(ctx, req.User, resolved.Model, req.Pictures)
 	}
 	recordTurn := func(ctx context.Context, record chat.TurnRecord) {
 		if err := users.MarkActive(ctx, record.User.ID, record.FinishedAt.UnixMilli()); err != nil {
@@ -334,7 +357,13 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	authService.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
+	if cfg.TrustCloudflare {
+		proxyTrust = proxyTrust.WithCloudflare()
+	}
+	// Every handler that limits or logs by address asks this one function, so
+	// none of them can read the forwarded headers under a different trust.
+	clientIP := func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
+	authService.Hooks.ClientIP = clientIP
 	if cfg.TrustProxy && len(cfg.TrustedProxies) == 0 {
 		slog.WarnContext(ctx, "trusting forwarded headers from any private address; "+
 			"set OBSIDIAN_TRUSTED_PROXIES to the proxy's address if it is reachable directly")
@@ -366,16 +395,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// What readers are told about liveness, decided here because it is the
 	// operator's policy and neither the model package nor the health one has
 	// any business reading settings.
-	//
-	// Cached for half a minute: this runs on every model listing, which the
-	// chat asks for on load, and the underlying figure moves on a ten-minute
-	// sweep. Thirty seconds is far fresher than the data behind it.
-	var (
-		livenessMu   sync.Mutex
-		livenessAt   time.Time
-		livenessRev  uint64
-		livenessSeen map[string]model.Liveness
-	)
+	var liveness livenessCache
 	modelHandlers.Liveness = func(ctx context.Context) map[string]model.Liveness {
 		show := settingsService.Bool(settings.HealthShowUsers)
 		warnBelow := settingsService.Int(settings.HealthWarnBelow, 0)
@@ -383,210 +403,69 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			return nil
 		}
 
-		livenessMu.Lock()
-		defer livenessMu.Unlock()
-		revision := healthStore.Revision()
-		if time.Since(livenessAt) < 30*time.Second && livenessRev == revision {
-			return livenessSeen
-		}
-
-		window := time.Duration(settingsService.Int(settings.HealthWindowMins, 30)) * time.Minute
-		// A reader's window is the day, not the sweep's: "unstable" should
-		// mean the model has been unreliable, not that it missed once in the
-		// last half hour.
-		if window < 24*time.Hour {
-			window = 24 * time.Hour
-		}
-		since := time.Now().Add(-window).UnixMilli()
-		if resetAt := int64(settingsService.Int(settings.HealthResetAt, 0)); resetAt > since {
-			since = resetAt
-		}
-		rates, err := healthStore.Rates(ctx, since)
-		if err != nil {
-			slog.ErrorContext(ctx, "liveness for readers", "error", err)
-			return livenessSeen
-		}
-		// The published figure is the last hour, not the day: it is what a
-		// reader choosing a model right now wants to know, and a day of good
-		// answers hides a model that has just gone down. The warning keeps the
-		// day, so one bad minute does not flag a model as unstable.
-		hourSince := max(time.Now().Add(-time.Hour).UnixMilli(), since)
-		hourRates, err := healthStore.Rates(ctx, hourSince)
-		if err != nil {
-			slog.ErrorContext(ctx, "liveness for readers", "error", err)
-			return livenessSeen
-		}
-
-		seen := make(map[string]model.Liveness, len(rates))
-		for modelID, rate := range rates {
-			// Both the published figure and its configured warning describe
-			// observed evidence, so one real sample is enough. Automatic
-			// disabling keeps its separate evidence floor: that action changes
-			// availability rather than merely telling readers what was observed.
-			share := rate.Share()
-			entry := model.Liveness{
-				Unstable: warnBelow > 0 && share*100 < float64(warnBelow),
+		return liveness.get(ctx, healthStore.Revision(), func(ctx context.Context) (map[string]model.Liveness, error) {
+			window := time.Duration(settingsService.Int(settings.HealthWindowMins, settings.DefaultHealthWindowMins)) * time.Minute
+			// A reader's window is the day, not the sweep's: "unstable" should
+			// mean the model has been unreliable, not that it missed once in the
+			// last half hour.
+			if window < 24*time.Hour {
+				window = 24 * time.Hour
 			}
-			if hour, ok := hourRates[modelID]; show && ok && hour.Total > 0 {
-				value := hour.Share()
-				entry.Uptime = &value
+			since := time.Now().Add(-window).UnixMilli()
+			if resetAt := int64(settingsService.Int(settings.HealthResetAt, 0)); resetAt > since {
+				since = resetAt
 			}
-			seen[modelID] = entry
-		}
-		livenessSeen, livenessAt, livenessRev = seen, time.Now(), revision
-		return seen
+			rates, err := healthStore.Rates(ctx, since)
+			if err != nil {
+				return nil, err
+			}
+			// The published figure is the last hour, not the day: it is what a
+			// reader choosing a model right now wants to know, and a day of good
+			// answers hides a model that has just gone down. The warning keeps the
+			// day, so one bad minute does not flag a model as unstable.
+			hourSince := max(time.Now().Add(-time.Hour).UnixMilli(), since)
+			hourRates, err := healthStore.Rates(ctx, hourSince)
+			if err != nil {
+				return nil, err
+			}
+
+			seen := make(map[string]model.Liveness, len(rates))
+			for modelID, rate := range rates {
+				// Both the published figure and its configured warning describe
+				// observed evidence, so one real sample is enough. Automatic
+				// disabling keeps its separate evidence floor: that action changes
+				// availability rather than merely telling readers what was observed.
+				share := rate.Share()
+				entry := model.Liveness{
+					Unstable: warnBelow > 0 && share*100 < float64(warnBelow),
+				}
+				if hour, ok := hourRates[modelID]; show && ok && hour.Total > 0 {
+					value := hour.Share()
+					entry.Uptime = &value
+				}
+				seen[modelID] = entry
+			}
+			return seen, nil
+		})
 	}
 	modelHandlers.Routes(mux)
 
-	mux.HandleFunc("GET /api/uptime", httpx.Wrap(func(w http.ResponseWriter, r *http.Request) error {
-		account, ok := auth.UserFrom(r.Context())
-		if !ok {
-			return httpx.Unauthorized("Sign in to view uptime.")
-		}
-		show := settingsService.Bool(settings.HealthShowUsers)
-		if !account.CanAdmin("availability") && !show {
-			return httpx.Forbidden("Uptime is not visible to users.")
-		}
-
-		resetAt := int64(settingsService.Int(settings.HealthResetAt, 0))
-		// The card compares the last hour with a fixed day of history, so
-		// changing the probe policy must not change either displayed window.
-		now := time.Now()
-		windowStart := now.Add(-24 * time.Hour).UnixMilli()
-		since := windowStart
-		if resetAt > since {
-			since = resetAt
-		}
-		rates, err := healthStore.Rates(r.Context(), since)
-		if err != nil {
-			return httpx.Internal(err)
-		}
-		hourSince := max(now.Add(-time.Hour).UnixMilli(), resetAt)
-		hourRates, err := healthStore.Rates(r.Context(), hourSince)
-		if err != nil {
-			return httpx.Internal(err)
-		}
-		timeline, err := healthStore.Timeline(r.Context(), windowStart, resetAt, 24)
-		if err != nil {
-			return httpx.Internal(err)
-		}
-
-		var (
-			modelList []model.Model
-		)
-		if account.CanAdmin("availability") {
-			modelList, err = models.ListAll(r.Context(), "")
-		} else {
-			modelList, err = models.ListForUser(r.Context(), account.GroupID, false)
-		}
-		if err != nil {
-			return httpx.Internal(err)
-		}
-
-		type modelUptimeItem struct {
-			ID          string             `json:"id"`
-			DisplayName string             `json:"display_name"`
-			Provider    string             `json:"provider_name,omitempty"`
-			Enabled     bool               `json:"enabled"`
-			Uptime      *float64           `json:"uptime,omitempty"`
-			UptimeHour  *float64           `json:"uptime_hour,omitempty"`
-			State       string             `json:"state"`
-			Total       int                `json:"total"`
-			History     []health.TimePoint `json:"history"`
-		}
-
-		warnBelow := settingsService.Int(settings.HealthWarnBelow, 0)
-		result := make([]modelUptimeItem, 0, len(modelList))
-		for _, m := range modelList {
-			if account.CanAdmin("availability") && !m.Enabled && !m.AutoDisabled {
-				continue
-			}
-			// A model marked hidden is withdrawn from the people using the
-			// site; the card is what they read, and an administrator looking
-			// at it would otherwise see rows the model list never shows.
-			if m.Hidden {
-				continue
-			}
-			rate, hasRate := rates[m.ID]
-			item := modelUptimeItem{
-				ID:          m.ID,
-				DisplayName: m.DisplayName,
-				Enabled:     m.Enabled,
-				State:       "unknown",
-			}
-			if account.CanAdmin("availability") {
-				item.Provider = m.ProviderName
-			}
-			if m.AutoDisabled {
-				item.State = "down"
-			}
-			if hasRate && rate.Total > 0 {
-				share := rate.Share()
-				item.Uptime = &share
-				item.Total = rate.Total
-			}
-			// The card's status badge ("operational", "degraded", "outage")
-			// evaluates against the recent one-hour window matching the hourly
-			// percentage shown beside it, rather than the 24-hour aggregate.
-			if hourRate, hasHour := hourRates[m.ID]; hasHour && hourRate.Total > 0 {
-				share := hourRate.Share()
-				item.UptimeHour = &share
-				if m.AutoDisabled {
-					item.State = "down"
-				} else if hourRate.OK == 0 {
-					// With recent evidence present, zero answers is an outage rather
-					// than degraded service.
-					item.State = "down"
-				} else if share >= 0.99 {
-					item.State = "up"
-				} else if (warnBelow > 0 && share*100 < float64(warnBelow)) || (warnBelow <= 0 && share < 0.95) {
-					item.State = "degraded"
-				} else {
-					item.State = "up"
-				}
-			}
-
-			pts, hasPts := timeline[m.ID]
-			if !hasPts || len(pts) == 0 {
-				span := (now.UnixMilli() - windowStart) / 24
-				if span <= 0 {
-					span = 1
-				}
-				pts = make([]health.TimePoint, 24)
-				for i := 0; i < 24; i++ {
-					pts[i] = health.TimePoint{At: windowStart + int64(i)*span + span/2, Total: 0}
-				}
-			}
-			item.History = pts
-
-			result = append(result, item)
-		}
-
-		uptimeStart := deps.Started
-		if resetAt > 0 && resetAt > uptimeStart.UnixMilli() {
-			uptimeStart = time.UnixMilli(resetAt)
-		}
-		sec := int64(time.Since(uptimeStart).Seconds())
-		if sec < 0 {
-			sec = 0
-		}
-
-		resp := map[string]any{
-			"models": result,
-		}
-		if account.CanAdmin("availability") || settingsService.Bool(settings.AboutShowSoftwareInfo) {
-			resp["uptime_sec"] = sec
-		} else {
-			resp["uptime_sec"] = 0
-		}
-
-		return httpx.WriteJSON(w, http.StatusOK, resp)
-	}))
+	mux.HandleFunc("GET /api/uptime", uptimeHandler(settingsService, healthStore, models, deps.Started))
 	// One client for every Turnstile check, so registration, key creation and
 	// a burst challenge reuse connections to Cloudflare.
 	challengeClient := &http.Client{}
+	// Every gate checks against the one secret, read per request so a rotated
+	// key takes effect without a restart; only what switches each gate on
+	// differs.
+	challengeGate := func(enabled func() bool) turnstile.Gate {
+		return turnstile.Gate{
+			Client:  challengeClient,
+			Enabled: enabled,
+			Secret:  func() string { return settingsService.Get(settings.TurnstileSecretKey) },
+		}
+	}
 	chatHandlers := chat.NewHandlers(chatService, conversations)
-	// Scoped by owner, so somebody else'''s project is reported as absent
+	// Scoped by owner, so somebody else's project is reported as absent
 	// rather than as forbidden — which is also all the query knows.
 	chatHandlers.ProjectAllowed = func(ctx context.Context, actor user.User, projectID string) error {
 		if _, err := projects.Get(ctx, nil, actor.ID, projectID); err != nil {
@@ -615,13 +494,15 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		return int64(settingsService.Int(settings.AttachmentMaxMB, 6)) * 1024 * 1024
 	}
 	chatHandlers.Security = securityLog
-	chatHandlers.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
-	chatHandlers.ChatChallenge = turnstile.Gate{
-		Client: challengeClient,
-		Enabled: func() bool {
-			return settingsService.Int(settings.ChatChallengeRequests, 0) > 0
-		},
-		Secret: func() string { return settingsService.Get(settings.TurnstileSecretKey) },
+	chatHandlers.ClientIP = clientIP
+	chatHandlers.ChatChallenge = challengeGate(func() bool {
+		return settingsService.Int(settings.ChatChallengeRequests, 0) > 0
+	})
+	chatHandlers.ImageChallenge = challengeGate(func() bool { return settingsService.Bool(settings.TurnstileOnImages) })
+	chatHandlers.ImageHistoryEnabled = func() bool { return settingsService.Bool(settings.ImageHistory) }
+	chatHandlers.ImagePoWEnabled = func() bool { return settingsService.Bool(settings.PoWOnImages) }
+	chatHandlers.ImageGuards = func(ctx context.Context, tokens map[string]string, ip, username string) error {
+		return authService.CheckGuards(ctx, auth.GuardImages, tokens, ip, username)
 	}
 	chatHandlers.ChatChallengePolicy = func() securityevents.ChatPolicy {
 		return securityevents.ChatPolicy{
@@ -638,23 +519,20 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	usageHandlers := usage.NewHandlers(usageStore)
 	usageHandlers.Routes(mux)
 	leaderboardHandlers := leaderboard.NewHandlers(settingsService, usageStore, users, models)
-	leaderboardHandlers.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
+	leaderboardHandlers.ClientIP = clientIP
 	leaderboardHandlers.Routes(mux)
 
 	cardHandlers := card.NewHandlers(cards)
 	// What spending a card actually buys. The card package does not know the
 	// counters exist; this is the one line that connects the two.
-	cardHandlers.OnSpend = func(ctx context.Context, account user.User, c card.Card) error {
-		return quotaService.ResetWindows(ctx, []string{account.ID}, c.Windows)
-	}
+	cardHandlers.OnSpend = cardSpentReset(quotaService)
+	// The lock every reservation takes before it can spend a card. A spend
+	// takes it first too, or the two can wait on each other.
+	cardHandlers.LockReset = quota.LockAllowanceBoundary
 	// So the limit on guessing at redemption codes counts one host's attempts
 	// together, not just one account's.
-	cardHandlers.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
-	cardHandlers.Challenge = turnstile.Gate{
-		Client:  challengeClient,
-		Enabled: func() bool { return settingsService.Bool(settings.TurnstileOnRedeem) },
-		Secret:  func() string { return settingsService.Get(settings.TurnstileSecretKey) },
-	}
+	cardHandlers.ClientIP = clientIP
+	cardHandlers.Challenge = challengeGate(func() bool { return settingsService.Bool(settings.TurnstileOnRedeem) })
 	cardHandlers.Routes(mux)
 	bonusHandlers := bonus.NewHandlers(bonusStore)
 	bonusHandlers.Display = settingsService.UsageDisplay
@@ -667,32 +545,45 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// auth.RequireUser alone, like notify's and card's own account-facing
 	// routes — see internal/invite/http.go.
 	inviteHandlers := invite.NewHandlers(invites)
+	inviteHandlers.ClientIP = clientIP
+	inviteHandlers.ReserveGuess = authService.ReserveInviteGuess
 	inviteHandlers.Routes(mux)
 
-	// Programmatic access. The key store is what an account manages from the
-	// interface; the compatibility surface is what the key is then presented
-	// to, and the two are separate because one is a browser screen and the
-	// other is not a browser at all.
-	authService.Challenge = turnstile.Gate{
-		Client:  challengeClient,
-		Enabled: func() bool { return settingsService.Bool(settings.TurnstileOnSignup) },
-		Secret:  func() string { return settingsService.Get(settings.TurnstileSecretKey) },
-	}
-	authService.LoginChallenge = turnstile.Gate{
-		Client:  challengeClient,
-		Enabled: func() bool { return settingsService.Bool(settings.TurnstileOnLogin) },
-		Secret:  func() string { return settingsService.Get(settings.TurnstileSecretKey) },
-	}
-	powKey, err := secret.DeriveKey(cfg.SecretKey, "obsidian-arc/pow-challenge")
+	authService.Challenge = challengeGate(settingsService.SignupTurnstileOn)
+	authService.LoginChallenge = challengeGate(func() bool { return settingsService.Bool(settings.TurnstileOnLogin) })
+	// Derived under its own purpose, and never replaced by the raw secret when
+	// the derivation fails: the raw secret used as the challenge key would sign
+	// with a key that was never meant for this, so a failure stops the boot.
+	powKey, err := secret.DeriveKey(cfg.SecretKey, secret.PurposePowChallenge)
 	if err != nil {
-		powKey = cfg.SecretKey
+		return nil, fmt.Errorf("derive the proof-of-work key: %w", err)
 	}
 	powManager := pow.NewManager(powKey, pow.NewTracker())
+	powManager.UseSaltStore(pow.NewSaltStore(db))
 	authService.PoW = powManager
+	chatHandlers.ImagePoW = powManager
+	chatHandlers.ImagePoWTier = authService.RequiredPoWMax
 
-	authService.OnChallengeFailure = func(ctx context.Context, event, ip, username, reason string) {
+	// Exactly when a Turnstile widget can appear, which is when the page's
+	// policy lets one load. A key with every switch off draws nothing, and an
+	// instance that draws nothing keeps the policy it had before the feature
+	// existed.
+	turnstileDrawn := func() bool {
+		mode := settingsService.RegistrationCaptchaMode()
+		turnstileOnSignup := mode == settings.CaptchaModeTurnstile || mode == settings.CaptchaModeBoth
+		return settingsService.Get(settings.TurnstileSiteKey) != "" &&
+			(turnstileOnSignup ||
+				settingsService.Bool(settings.TurnstileOnLogin) ||
+				settingsService.Bool(settings.TurnstileOnAPIKey) ||
+				settingsService.Bool(settings.TurnstileOnRedeem) ||
+				settingsService.Bool(settings.TurnstileOnFeedback) ||
+				settingsService.Bool(settings.TurnstileOnImages) ||
+				settingsService.Int(settings.ChatChallengeRequests, 0) > 0)
+	}
+
+	authService.Hooks.OnChallengeFailure = func(ctx context.Context, event, source, ip, username, reason string) {
 		ev := securityevents.Event{
-			Event: event, Severity: securityevents.SeverityWarning,
+			Event: event, Source: source, Severity: securityevents.SeverityWarning,
 			Username: username, IP: ip, Decision: "refuse",
 			Reason: reason,
 		}
@@ -706,9 +597,6 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// programmatic surface stays closed until the configured time passes.
 	reviewer := screening.Reviewer{
 		Registry: registry,
-		CustomPrompt: func() string {
-			return settingsService.Get(settings.SignupReviewPrompt)
-		},
 		Resolve: func(ctx context.Context) (adapter.Provider, adapter.ModelSpec, error) {
 			record, err := models.ByID(ctx, settingsService.Get(settings.SignupReviewModel))
 			if err != nil {
@@ -744,7 +632,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		}
 		return out, nil
 	}
-	authService.ReviewSignup = func(ctx context.Context, in auth.RegisterInput, fromAddress int) (auth.SignupReview, error) {
+	authService.Hooks.ReviewSignup = func(ctx context.Context, in auth.RegisterInput, fromAddress int) (auth.SignupReview, error) {
 		if !settingsService.Bool(settings.SignupReview) ||
 			settingsService.Get(settings.SignupReviewModel) == "" {
 			return auth.SignupReview{Decision: auth.SignupAllow}, nil
@@ -771,17 +659,16 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			Ran: true, Decision: auth.SignupDecision(verdict.Decision), Reason: verdict.Reason,
 		}
 		if verdict.Decision == screening.DecisionRestrict {
-			hours := settingsService.Int(settings.SignupReviewRestrictHours, 24)
-			if hours > 0 {
-				out.RestrictedUntil = time.Now().Add(time.Duration(hours) * time.Hour).UnixMilli()
-			}
+			// Asked of the auth service rather than recomputed here, so the window
+			// and its rule for zero hours live in one place.
+			out.RestrictedUntil = authService.SignupRestrictedUntil()
 		}
 		return out, err
 	}
 	// Switching the second step on or off and spending a recovery code are
 	// what somebody asks about after an account has been taken over, so they
 	// are kept where the other decisions about who gets in are.
-	authService.OnTwoFactor = func(ctx context.Context, event auth.TwoFactorEvent) {
+	authService.Hooks.OnTwoFactor = func(ctx context.Context, event auth.TwoFactorEvent) {
 		severity := securityevents.SeverityInfo
 		if event.Kind == "disabled" || event.Kind == "recovery_used" {
 			severity = securityevents.SeverityWarning
@@ -807,7 +694,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// A sign-in from a device the account had not used before: logged where
 	// the operator looks after a takeover, and told to the owner, who is the
 	// one person who can say it was not them.
-	authService.OnNewDevice = func(ctx context.Context, event auth.NewDeviceEvent) {
+	authService.Hooks.OnNewDevice = func(ctx context.Context, event auth.NewDeviceEvent) {
 		if err := securityLog.Record(ctx, nil, securityevents.Event{
 			Event: securityevents.EventNewDevice, Severity: securityevents.SeverityInfo,
 			UserID: event.Account.ID, Username: event.Account.Username,
@@ -828,8 +715,14 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// takes on internal/invite directly — see auth.InviteGrant's comment —
 	// translating between that package's own Grant and auth's local
 	// InviteGrant, which is otherwise identical.
-	authService.ConsumeInvite = func(ctx context.Context, tx *database.Tx, code string) (*auth.InviteGrant, error) {
+	authService.Hooks.ConsumeInvite = func(ctx context.Context, tx *database.Tx, code string) (*auth.InviteGrant, error) {
 		grant, err := invites.Consume(ctx, tx, code, time.Now().UnixMilli())
+		// Only a rejected code is the guesser's to be charged for. A database
+		// error from the same call is passed on as itself, so it is not
+		// counted against the address's invite budget.
+		if errors.Is(err, invite.ErrInvalid) {
+			return nil, auth.ErrInviteInvalid
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -837,42 +730,16 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			CodeID: grant.CodeID, OwnerID: grant.OwnerID, GroupID: grant.GroupID, GroupDays: grant.GroupDays,
 		}, nil
 	}
-	authService.RecordInviteUse = func(ctx context.Context, tx *database.Tx, grant auth.InviteGrant, userID string) error {
+	authService.Hooks.RecordInviteUse = func(ctx context.Context, tx *database.Tx, grant auth.InviteGrant, userID string) error {
 		return invites.RecordUse(ctx, tx, grant.CodeID, userID, grant.OwnerID, grant.GroupDays)
 	}
-	authService.RewardInvite = func(ctx context.Context, userID string, verificationRequired bool) {
+	authService.Hooks.RewardInvite = func(ctx context.Context, userID string, verificationRequired bool) {
 		if err := invites.Reward(ctx, userID, verificationRequired); err != nil {
 			slog.ErrorContext(ctx, "could not resolve an invite reward", "error", err, "user", userID)
 		}
 	}
-	authService.OnSignupReview = func(ctx context.Context, in auth.RegisterInput, account *user.User, review auth.SignupReview) {
-		event := securityevents.Event{
-			Event: securityevents.EventSignupReview, Severity: securityevents.SeverityInfo,
-			Username: in.Username, IP: in.IP, Source: "ai", Decision: string(review.Decision),
-			Reason: review.Reason,
-		}
-		if account != nil {
-			event.UserID = account.ID
-		}
-		if review.Decision == auth.SignupRestrict {
-			event.Severity = securityevents.SeverityWarning
-		} else if review.Decision == auth.SignupRefuse {
-			event.Severity = securityevents.SeverityDanger
-		}
-		if err := securityLog.Record(ctx, nil, event); err != nil {
-			slog.ErrorContext(ctx, "could not record signup review", "error", err)
-		}
-		// Only what the reviewer held back: a notice for every approval
-		// would be a notice per sign-up, and nobody reads those.
-		if review.Decision == auth.SignupRestrict || review.Decision == auth.SignupRefuse {
-			if err := notifyStore.Push(ctx, nil, notify.Notification{
-				Audience: notify.AudienceAdmins, Permission: "security",
-				Kind: "signup_flagged", Params: map[string]any{"username": in.Username},
-				Link: "/admin/security",
-			}); err != nil {
-				slog.ErrorContext(ctx, "could not notify a flagged signup", "error", err)
-			}
-		}
+	authService.Hooks.OnSignupReview = func(ctx context.Context, in auth.RegisterInput, account *user.User, review auth.SignupReview) {
+		recordSignupReview(ctx, db, securityLog, notifyStore, in, account, review)
 	}
 
 	adminTryReview := func(ctx context.Context, in admin.ReviewTrial) (string, string, error) {
@@ -889,13 +756,13 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		return string(verdict.Decision), verdict.Reason, err
 	}
 
+	// Programmatic access. The key store is what an account manages from the
+	// interface; the compatibility surface is what the key is then presented
+	// to, and the two are separate because one is a browser screen and the
+	// other is not a browser at all.
 	apiKeyHandlers := apikey.NewHandlers(keys)
-	apiKeyHandlers.Challenge = turnstile.Gate{
-		Client:  challengeClient,
-		Enabled: func() bool { return settingsService.Bool(settings.TurnstileOnAPIKey) },
-		Secret:  func() string { return settingsService.Get(settings.TurnstileSecretKey) },
-	}
-	apiKeyHandlers.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
+	apiKeyHandlers.Challenge = challengeGate(func() bool { return settingsService.Bool(settings.TurnstileOnAPIKey) })
+	apiKeyHandlers.ClientIP = clientIP
 	apiKeyHandlers.Allowed = func(r *http.Request) error {
 		account, ok := auth.UserFrom(r.Context())
 		if !ok {
@@ -915,6 +782,13 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		if errors.Is(err, model.ErrNotFound) || errors.Is(err, model.ErrNotPermitted) {
 			return httpx.BadRequest("That model is not available to this account.")
 		}
+		// A disabled model, or a route whose target is off, is a state the
+		// operator can reach at any time, so it is a refusal rather than a
+		// server fault. Routing it through model.TranslateError gives the same
+		// answer the chat turn gives.
+		if errors.Is(err, model.ErrDisabled) {
+			return model.TranslateError(err)
+		}
 		if err != nil {
 			return httpx.Internal(err)
 		}
@@ -926,6 +800,8 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// admin surface because it is the user's copy of their own history, not
 	// the operator's copy of the instance.
 	backupHandlers := backup.NewHandlers(backup.NewService(db, conversations, preferences))
+	// The chat's write gate, so an import is held to the same rule as a message.
+	backupHandlers.Writable = chatHandlers.Uploadable
 	backupHandlers.Routes(mux)
 
 	projectHandlers := project.NewHandlers(projects)
@@ -934,17 +810,18 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	compatHandlers := compat.NewHandlers(settingsService, users, groups, models, keys, registry)
 	compatHandlers.Guard = guard
 	compatHandlers.OnTurn = recordTurn
+	// Read per request, like the browser's, so raising the limit reaches /v1
+	// without a restart.
+	compatHandlers.MaxUploadBytes = func() int64 {
+		return int64(settingsService.Int(settings.AttachmentMaxMB, 6)) * 1024 * 1024
+	}
 	compatHandlers.Routes(mux)
 	announcement.NewHandlers(announcements).Routes(mux)
 	feedbackHandlers := feedback.NewHandlers(feedbackStore)
 	// Signed in and spending nothing, so this is the one challenge an
 	// operator switches on after being spammed rather than before.
-	feedbackHandlers.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
-	feedbackHandlers.Challenge = turnstile.Gate{
-		Client:  challengeClient,
-		Enabled: func() bool { return settingsService.Bool(settings.TurnstileOnFeedback) },
-		Secret:  func() string { return settingsService.Get(settings.TurnstileSecretKey) },
-	}
+	feedbackHandlers.ClientIP = clientIP
+	feedbackHandlers.Challenge = challengeGate(func() bool { return settingsService.Bool(settings.TurnstileOnFeedback) })
 	// Read per request rather than captured, so turning it off takes effect
 	// on the next thread somebody opens rather than on the next restart.
 	feedbackHandlers.ShowStaffName = func() bool {
@@ -955,7 +832,12 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// Signing in with an account somebody already holds at GitHub or Google.
 	// This instance is the client of those providers and never one itself:
 	// nothing here issues an identity for anybody else to check.
-	oauthService := oauth.NewService(db, oauth.NewStore(db), users, authService, settingsService)
+	oauthStore := oauth.NewStore(db)
+	oauthService := oauth.NewService(db, oauthStore, users, authService, settingsService)
+	// A provider sign-up is judged by the same plugin guards a form sign-up is,
+	// from the auth service that owns them. A provider's redirect carries no
+	// guard tokens, so each guard judges what it can see of the request.
+	oauthService.SignupGuards = authService.CheckSignupGuards
 	oauthHandlers := oauth.NewHandlers(oauthService, cfg.SecretKey)
 	// Its own client rather than the challenge one above: these calls go to
 	// two other hosts, and a pool per destination is what keeps a slow
@@ -971,7 +853,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		return httpx.PublicOrigin(r, proxyTrust, mailer.PublicURL())
 	}
 	oauthHandlers.Origin = publicOrigin
-	oauthHandlers.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
+	oauthHandlers.ClientIP = clientIP
 	oauthHandlers.Challenge = authService.Challenge
 	oauthHandlers.SignupChallenge = authService.Challenge
 	oauthHandlers.LoginChallenge = authService.LoginChallenge
@@ -979,22 +861,31 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// Which buttons the sign-in card draws. Read per request, so switching a
 	// provider on takes effect on the next visitor rather than the next
 	// restart.
-	authHandlers.SignInProviders = func() []auth.SignInProvider {
+	signInProviders := func() []auth.SignInProvider {
 		out := []auth.SignInProvider{}
-		for _, provider := range oauth.Providers() {
-			if oauthService.Enabled(provider.ID) {
+		for _, p := range oauth.Providers() {
+			if oauthService.Enabled(p.ID) {
 				out = append(out, auth.SignInProvider{
-					ID:   provider.ID,
-					Name: oauthService.DisplayName(provider.ID),
+					ID:   p.ID,
+					Name: oauthService.DisplayName(p.ID),
 				})
 			}
 		}
 		return out
 	}
+	authHandlers.SignInProviders = signInProviders
+	// The sign-up door asks the card's question too, so a registration is
+	// refused only where a button for the third-party route is on the page.
+	authService.Hooks.SignInProviderCount = func() int { return len(signInProviders()) }
 	// Same import-direction reason: whether an account owes an OIDC
 	// connection is oauth.Service's question to answer, and the account
 	// payload is auth's to build.
 	authHandlers.MustBindOIDC = oauthService.MustBindOIDC
+	// The API's door to the same two holds. Set here rather than where the
+	// handlers are built because the OIDC service is only made below, and the
+	// fields are read per request.
+	compatHandlers.MustEnrolTwoFactor = authService.MustEnrolTwoFactor
+	compatHandlers.MustBindOIDC = oauthService.MustBindOIDC
 
 	// And the other direction: this instance as the place somebody else's site
 	// sends people to sign in. internal/idp is the provider; internal/oauth
@@ -1005,7 +896,23 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		return nil, err
 	}
 	idpStore := idp.NewStore(db)
-	idpService := idp.NewService(idpStore, idp.NewKeys(db, signingBox), users, groups)
+	// A password that is replaced or reset ends what applications hold for
+	// the account. Set here because internal/idp imports auth, not the other
+	// way round.
+	authService.Hooks.RevokeIssued = idpStore.RevokeAccount
+	// The last of the sign-in wiring, so every hook the Service needs to run is
+	// set by now. A missing invite hook fails the boot here, not the first
+	// sign-up that carries a code.
+	if err := authService.CheckWired(); err != nil {
+		return nil, err
+	}
+	// The two requirements the web and the API hold at their doors, asked here
+	// too: a refresh token or a code issued before a requirement was switched
+	// on would otherwise carry its account past the door it is now held at.
+	idpService := idp.NewService(idpStore, idp.NewKeys(db, signingBox), users, groups, idp.Holds{
+		MustEnrolTwoFactor: authService.MustEnrolTwoFactor,
+		MustBindOIDC:       oauthService.MustBindOIDC,
+	})
 	idpHandlers := idp.NewHandlers(idpService, cfg.SecretKey)
 	// The issuer named in every identity token, and in the discovery document
 	// a client library reads to configure itself. The same resolution the
@@ -1019,16 +926,26 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	adminHandlers := admin.NewHandlers(db, users, groups, providers, models, settingsService, registry, authService, usageStore, quotaService, conversations, announcements, keys, requestLog, securityLog, cards, healthStore, feedbackStore, idpStore, invites)
+	adminHandlers := admin.NewHandlers(admin.Deps{
+		DB: db, Users: users, Groups: groups, Providers: providers, Models: models,
+		Settings: settingsService, Registry: registry, Auth: authService,
+		Usage: usageStore, Quota: quotaService, Conversations: conversations,
+		Announcements: announcements, Keys: keys, Requests: requestLog,
+		Security: securityLog, Cards: cards, Health: healthStore,
+		Feedback: feedbackStore, Apps: idpStore, Invites: invites,
+	})
 	adminHandlers.Mail = mailManager
 	adminHandlers.UserCheck = userCheckManager
 	adminHandlers.TryReview = adminTryReview
 	adminHandlers.Origin = publicOrigin
-	adminHandlers.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
+	adminHandlers.ClientIP = clientIP
 	adminHandlers.Notify = notifyStore
 	adminHandlers.Bonus = bonusStore
+	adminHandlers.Audit = auditTrail
 	adminHandlers.Checkin = checkinService
 	adminHandlers.SystemBackup = instanceBackup
+	adminHandlers.Updates = update.New(deps.Version, deps.UpdateFeed)
+	adminHandlers.CloudflareUnclaimed = func() bool { return proxyTrust.CloudflareUnclaimed() }
 
 	// The compiled-in plugins, attached now: every module they reach is
 	// built, and nothing has mounted the backoffice's table yet, so a route
@@ -1039,24 +956,23 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	inviteHandlers.SetPluginGate(pluginGate)
 	host := &plugin.Host{
 		DB: db, Settings: settingsService, Users: users, Security: securityLog,
-		Notify: notifyStore, Cards: cards,
+		Notify: notifyStore, Cards: cards, Bonus: bonusStore,
 		Auth: authService, AuthHandlers: authHandlers,
 		OAuth: oauthService, OAuthHandlers: oauthHandlers,
 		Invites: invites, InviteHandlers: inviteHandlers,
 		Admin:     adminHandlers,
 		Mux:       mux,
-		ClientIP:  func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) },
+		ClientIP:  clientIP,
 		PublicURL: mailer.PublicURL,
 		Gate:      pluginGate,
+		Challenge: pluginChallenge(settingsService, powManager, authService.RequiredPoWMax, challengeClient, turnstileDrawn),
 	}
 	if err := plugin.SetupAll(host); err != nil {
 		return nil, err
 	}
 	plugins.Attach(host)
 	adminHandlers.SetFallback(plugins.ServePlugins)
-	plugin.NewHandlers(plugins, authService, settingsService, func(r *http.Request) string {
-		return httpx.ClientIP(r, proxyTrust)
-	}).Mount(adminHandlers)
+	plugin.NewHandlers(plugins, authService, settingsService, clientIP).Mount(adminHandlers)
 	for _, name := range plugin.Names() {
 		authHandlers.Advertise(name)
 	}
@@ -1107,11 +1023,11 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// the engine. Loading the key is idempotent, so both read the same one.
 	var sshInfo console.SSHInfo
 	if cfg.Console.SSHAddr != "" {
-		print, err := consolessh.HostKeyFingerprint(cfg.Console.SSHHostKey)
+		fingerprint, err := consolessh.HostKeyFingerprint(cfg.Console.SSHHostKey)
 		if err != nil {
 			return nil, err
 		}
-		sshInfo = console.SSHInfo{Enabled: true, Addr: cfg.Console.SSHAddr, Fingerprint: print}
+		sshInfo = console.SSHInfo{Enabled: true, Addr: cfg.Console.SSHAddr, Fingerprint: fingerprint}
 	}
 
 	consoleEngine := console.New(console.Options{
@@ -1119,7 +1035,20 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		Plugins:  pluginGate,
 		Version:  deps.Version,
 		SiteName: func() string { return settingsService.Get(settings.SiteName) },
-		SSH:      sshInfo,
+		// Read on every call, as /api/health reads it: an operator who hides
+		// the build must see it hidden from the console at once.
+		ShowVersion: func() bool { return settingsService.Bool(settings.AboutShowSoftwareInfo) },
+		SSH:         sshInfo,
+		// Credentials of plugins installed while the server runs are known
+		// to the settings service alone; the audit trail masks them.
+		SecretSetting: func(key string) bool {
+			for _, d := range settingsService.AllDefinitions() {
+				if d.Key == key {
+					return d.Secret
+				}
+			}
+			return false
+		},
 		// The console can do everything the backoffice can from a surface
 		// that leaves nothing on screen afterwards, so what was run is
 		// recorded where the other administrative decisions are. The engine
@@ -1143,16 +1072,33 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// The commands of plugins installed as packages are added to it now, and
 	// as they arrive and leave.
 	plugins.AttachConsole(consoleEngine)
-	// The work surface's tools are the console's own commands, filtered to
-	// what the account may run. Set here rather than at construction
-	// because the engine is built from the mux the handlers above are
-	// mounted on, and the chat service is older than both.
-	chatService.Tools = agent.New(consoleEngine)
+	adminHandlers.AssistantChat = chatService
+	adminHandlers.AssistantConsole = consoleEngine
+
+	// Who may hold a console at all; see consoleAdmits for the rule.
+	consoleAllowed := func(ctx context.Context, account user.User) (bool, error) {
+		return consoleAdmits(ctx, groups, authService, oauthService, account)
+	}
 
 	consoleHandlers := console.NewHandlers(consoleEngine)
-	consoleHandlers.ClientIP = func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) }
+	consoleHandlers.ClientIP = clientIP
 	consoleHandlers.Allowed = func(ctx context.Context, account user.User) error {
 		return terminalAllowed(ctx, groups, account)
+	}
+	// A watch runs for as long as its request does, so it is asked again before
+	// each run after the first. The sign-in is checked but not renewed: a stream
+	// is not the person being there, so it must not extend the sign-in or count
+	// as activity. The account must still pass the rule a console opens under.
+	consoleHandlers.Reauthorize = func(ctx context.Context, r *http.Request) (user.User, error) {
+		account, err := authService.Resolve(ctx, authService.TokenFrom(r))
+		if err != nil {
+			return user.User{}, err
+		}
+		allowed, err := consoleAllowed(ctx, account)
+		if err != nil || !allowed {
+			return user.User{}, errors.New("this account may no longer use the console")
+		}
+		return account, nil
 	}
 	consoleHandlers.Routes(mux)
 
@@ -1170,18 +1116,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			// here and guessing at the sign-in form cannot be spread across
 			// two limits.
 			Authenticate: authService.VerifyCredential,
-			// The web terminal's rule, so the two doors agree about who may
-			// have a console: any account whose group allows it, and every
-			// administrator.
-			//
-			// An account the two-step policy is holding at the door is held
-			// here too: enrolling needs a screen to scan from, and SSH is
-			// not one. Asked before every command, so a policy switched on
-			// reaches a session that is already open.
-			Permitted: func(ctx context.Context, account user.User) bool {
-				return terminalAllowed(ctx, groups, account) == nil &&
-					!authService.MustEnrolTwoFactor(account)
-			},
+			Permitted:    consoleAllowed,
 			// The code for an account with two-step sign-in, checked against
 			// the same secret, the same replay guard and the same guessing
 			// budget as the web sign-in's second step.
@@ -1198,6 +1133,10 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			Reauthorize: func(ctx context.Context, userID string) (user.User, error) {
 				return users.ByID(ctx, nil, userID)
 			},
+			// A password change ends the sessions a web sign-in holds, and a console
+			// connection has none of those, so it keeps the fingerprint it signed in
+			// with and ends at its next command once the password has moved on.
+			Credential:  authService.CredentialFingerprint,
 			IdleTimeout: cfg.Console.SSHIdle,
 			MaxSessions: cfg.Console.SSHMaxSessions,
 		})
@@ -1237,8 +1176,14 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			description = settingsService.Get(settings.SiteDescription)
 		}
 		iconURL := settingsService.Get(settings.PWAIconURL)
-		if iconURL == "" && settingsService.SiteLogoUpdatedAt() > 0 {
-			iconURL = fmt.Sprintf("/api/site/logo?v=%d", settingsService.SiteLogoUpdatedAt())
+		iconType := ""
+		if iconURL == "" {
+			iconURL = siteLogoURL(settingsService)
+			if iconURL != "" {
+				// The logo's URL names no file, so the manifest cannot read the type from
+				// it; the type the upload was stored as is the one to declare.
+				iconType = settingsService.SiteLogoMime()
+			}
 		}
 		return web.Manifest{
 			Name:            name,
@@ -1247,6 +1192,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 			ThemeColor:      settingsService.Get(settings.PWAThemeColor),
 			BackgroundColor: settingsService.Get(settings.PWABackgroundColor),
 			IconURL:         iconURL,
+			IconType:        iconType,
 		}
 	}))
 
@@ -1255,12 +1201,7 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		DevServer:  devServerURL(cfg),
 		Title:      settingsService.BrowserTitle,
 		ThemeColor: func() string { return settingsService.Get(settings.PWAThemeColor) },
-		FaviconURL: func() string {
-			if settingsService.SiteLogoUpdatedAt() > 0 {
-				return fmt.Sprintf("/api/site/logo?v=%d", settingsService.SiteLogoUpdatedAt())
-			}
-			return ""
-		},
+		FaviconURL: func() string { return siteLogoURL(settingsService) },
 	})
 	if err != nil {
 		return nil, err
@@ -1269,10 +1210,10 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 
 	// Who is asking, for every request that could care. The fingerprinted
 	// bundle under /assets/ and the two root files are the same bytes for
-	// every visitor and anonymous-readable by design, but the session cookie
-	// is Path=/, so each of them used to pay for a session-and-account lookup
-	// — and on first load there are a dozen of them. They skip it; nothing
-	// they serve reads the account.
+	// every visitor and anonymous-readable by design. The session cookie is
+	// Path=/, so without this split every one of them would pay for a session
+	// and account lookup, and on first load there are a dozen of them. They
+	// skip it; nothing they serve reads the account.
 	withSession := httpx.Chain(mux,
 		// The session lookup only happens for requests that survived the
 		// origin check, which sits outside this chain.
@@ -1313,33 +1254,27 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 				next.ServeHTTP(w, r.WithContext(quota.WithLedger(r.Context())))
 			})
 		},
-		httpx.Recover(),
+		// Logger outside Recover, so the recorder is what Recover sees: a panic
+		// after the first byte of a stream then gets no JSON 500 written into
+		// the stream, and the log still names the request that panicked.
 		httpx.Logger(),
+		httpx.Recover(),
 		// Outside the session lookup so the duration it measures is the whole
 		// answer and a request refused before any handler is still recorded;
 		// inside the request id so both records name the same request.
 		requestLog.Middleware(
-			func(r *http.Request) string { return httpx.ClientIP(r, proxyTrust) },
+			clientIP,
 			skipFromLog,
 		),
+		// Inside the log, so the redirect is recorded. Ahead of compression and
+		// the security headers: the redirect's own short body needs neither, and
+		// the page it leads to gets both.
+		httpx.PlainHTTPRedirect(proxyTrust, mailer.PublicURL),
 		// Inside the log, so the byte count it records is what actually went
 		// on the wire rather than what the handler produced. Outside
 		// everything that writes a body, so there is one place that decides.
 		httpx.Compress(),
-		httpx.SecurityHeaders(cfg.Dev, web.InlineScriptHashes(), func() bool {
-			// Exactly when a widget can appear. A key with both switches off
-			// draws nothing, and an instance that draws nothing keeps the
-			// policy it had before this feature existed.
-			mode := settingsService.RegistrationCaptchaMode()
-			turnstileOnSignup := mode == settings.CaptchaModeTurnstile || mode == settings.CaptchaModeBoth
-			return settingsService.Get(settings.TurnstileSiteKey) != "" &&
-				(turnstileOnSignup ||
-					settingsService.Bool(settings.TurnstileOnLogin) ||
-					settingsService.Bool(settings.TurnstileOnAPIKey) ||
-					settingsService.Bool(settings.TurnstileOnRedeem) ||
-					settingsService.Bool(settings.TurnstileOnFeedback) ||
-					settingsService.Int(settings.ChatChallengeRequests, 0) > 0)
-		}, host.Origins),
+		httpx.SecurityHeaders(cfg.Dev, web.InlineScriptHashes(), turnstileDrawn, host.Origins),
 		httpx.SameOrigin(cfg.AllowedOrigins),
 	)
 
@@ -1354,10 +1289,13 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		quota:          quotaService,
 		requests:       requestLog,
 		idp:            idpStore,
+		oauth:          oauthStore,
 		notify:         notifyStore,
+		audit:          auditTrail,
 		bonus:          bonusStore,
 		invites:        invites,
 		instanceBackup: instanceBackup,
+		plugins:        plugins,
 		consoleAPI:     consoleAPI,
 		health: &health.Checker{
 			Store: healthStore, Models: models, Providers: providers, Registry: registry, Notify: notifyStore,
@@ -1387,7 +1325,12 @@ func apiAllowed(
 			"API access is restricted for this account.").
 			WithDetails(map[string]any{"until": account.APIRestrictedUntil})
 	}
+	// A failed read is not a refusal: answering it as one tells the person
+	// their group lost the grant, and sends them to ask for it back.
 	membership, err := groups.ByID(ctx, nil, account.GroupID)
+	if err != nil && !errors.Is(err, group.ErrNotFound) {
+		return err
+	}
 	if err != nil || !membership.APIAccess {
 		return httpx.ForbiddenCode("api_not_permitted",
 			"Your group does not have API access.")
@@ -1445,9 +1388,6 @@ func archiveAllowed(_ context.Context, set *settings.Service, account user.User)
 		"Archiving conversations is disabled.")
 }
 
-// skipFromLog drops the requests nobody audits: the compiled frontend's own
-// assets. Everything else is recorded, including the ones that never reached
-// a handler.
 // staticAsset is a request for a file that is the same for every visitor:
 // the fingerprinted bundle and the two root files a browser asks for on its
 // own. Only reads — anything else goes the whole way through, so a method
@@ -1456,16 +1396,31 @@ func staticAsset(r *http.Request) bool {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		return false
 	}
-	path := r.URL.Path
+	return isStaticPath(r.URL.Path)
+}
+
+// isStaticPath is the path half of staticAsset. The request log's skip list
+// reads the same paths, so the two cannot come to name different files.
+func isStaticPath(path string) bool {
 	return strings.HasPrefix(path, "/assets/") || path == "/favicon.ico" || path == "/robots.txt"
 }
 
+// skipFromLog drops the requests nobody audits: the compiled frontend's own
+// files and the manifest a browser fetches on every load. Everything else is
+// recorded, including the ones that never reached a handler.
 func skipFromLog(r *http.Request) bool {
-	path := r.URL.Path
-	return strings.HasPrefix(path, "/assets/") ||
-		path == "/favicon.ico" ||
-		path == "/robots.txt" ||
-		path == "/manifest.webmanifest"
+	return isStaticPath(r.URL.Path) || r.URL.Path == "/manifest.webmanifest"
+}
+
+// siteLogoURL is where the uploaded logo is served, or "" when there is none.
+// The upload time rides in the query so a replaced logo is not served from a
+// cache that still holds the old one.
+func siteLogoURL(set *settings.Service) string {
+	at := set.SiteLogoUpdatedAt()
+	if at <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("/api/site/logo?v=%d", at)
 }
 
 func (s *Server) Handler() http.Handler { return s.handler }
@@ -1474,14 +1429,29 @@ func (s *Server) Handler() http.Handler { return s.handler }
 // starts and stops it alongside the HTTP server; nothing else touches it.
 func (s *Server) SSH() *consolessh.Server { return s.ssh }
 
-// StartJanitor starts the three idle application loops: request-log writing,
-// backup scheduling and periodic cleanup. Sharing ctx lets shutdown signal
-// all three together; the request logger drains its queue when it stops.
-func (s *Server) StartJanitor(ctx context.Context) {
-	go s.requests.Run(ctx)
-	s.instanceBackup.Start(ctx)
+// StartJanitor starts the idle application loops: request-log writing, backup
+// scheduling and periodic cleanup. Sharing ctx lets shutdown signal them
+// together. The returned channel closes once the request logger, the sweep
+// and the backup scheduler have returned, and any backup the scheduler started
+// has finished. The request logger's final drain and a backup's final status
+// are database writes, so the caller must wait on the channel before it closes
+// the database.
+func (s *Server) StartJanitor(ctx context.Context) <-chan struct{} {
+	var loops sync.WaitGroup
+	loops.Add(3)
 
 	go func() {
+		defer loops.Done()
+		s.requests.Run(ctx)
+	}()
+	backupDone := s.instanceBackup.Start(ctx)
+	go func() {
+		defer loops.Done()
+		<-backupDone
+	}()
+
+	go func() {
+		defer loops.Done()
 		ticker := time.NewTicker(10 * time.Minute)
 		defer ticker.Stop()
 		for {
@@ -1495,58 +1465,156 @@ func (s *Server) StartJanitor(ctx context.Context) {
 			}
 		}
 	}()
+
+	done := make(chan struct{})
+	go func() {
+		loops.Wait()
+		close(done)
+	}()
+	return done
+}
+
+// sweepTask is one of the sweep's clean-ups. Each runs whatever the ones
+// before it did: none depends on another, so a failure is logged in its own
+// words and the next one is tried. A task that reports its own failures, or
+// has none worth reporting, has no failure line and returns nil.
+type sweepTask struct {
+	failure string
+	run     func(context.Context) error
 }
 
 func (s *Server) sweep(ctx context.Context) {
 	sweepCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	// Expired sessions are already refused on read; the sweep is only about
-	// not letting the table grow forever.
-	_, _ = s.auth.Sessions().DeleteExpired(sweepCtx)
-	if err := s.users.ExpireMemberships(sweepCtx, nil, time.Now()); err != nil {
-		slog.ErrorContext(sweepCtx, "could not expire group memberships", "error", err)
-	}
-	s.sweepAttachments(sweepCtx)
-	// Authorisation codes live two minutes and tokens an hour; without this
-	// the two tables grow forever with rows nothing will read again.
-	if s.idp != nil {
-		if _, err := s.idp.Purge(sweepCtx); err != nil {
-			slog.ErrorContext(sweepCtx, "could not purge sign-in grants", "error", err)
-		}
-	}
-	// Counter buckets whose window has long since rolled over. The ledger is
-	// never pruned: it is the audit trail.
-	_, _ = s.quota.PruneCounters(sweepCtx)
-	// The bell keeps about a month, unlike the security log: a notice is a
-	// nudge to look at something, not a record kept for its own sake.
-	if s.notify != nil {
-		if _, err := s.notify.Prune(sweepCtx, time.Now().Add(-30*24*time.Hour)); err != nil {
-			slog.ErrorContext(sweepCtx, "could not prune notifications", "error", err)
-		}
-	}
-	// Bonus a person is about to lose is worth a line in the bell, once.
-	if s.notify != nil && s.bonus != nil {
-		expiring, err := s.bonus.TakeExpiring(sweepCtx, 3*24*time.Hour)
-		if err != nil {
-			slog.ErrorContext(sweepCtx, "could not look for expiring bonus", "error", err)
-		}
-		for _, e := range expiring {
-			if err := s.notify.Push(sweepCtx, nil, notify.Notification{
-				Audience: notify.AudienceUser, UserID: e.UserID, Kind: "bonus_expiring", Link: "/usage",
-				Params: map[string]any{"name": e.BarName, "amount": e.Remaining, "expires_at": e.ExpiresAt},
-			}); err != nil {
-				slog.ErrorContext(sweepCtx, "could not tell an account its bonus is expiring", "error", err, "user", e.UserID)
-			}
-		}
-	}
-	// Invite rewards waiting on something no request announces — a signup
-	// restriction running out, say.
-	if s.invites != nil {
-		if err := s.invites.RewardPending(sweepCtx, s.auth.VerificationRequired()); err != nil {
-			slog.ErrorContext(sweepCtx, "could not resolve pending invite rewards", "error", err)
+	for _, task := range s.sweepTasks() {
+		if err := task.run(sweepCtx); err != nil && task.failure != "" {
+			slog.ErrorContext(sweepCtx, task.failure, "error", err)
 		}
 	}
 	s.sweepHealth(ctx)
+	s.SweepPlugins(ctx)
+}
+
+// sweepTasks is the sweep's clean-ups, in the order they run.
+func (s *Server) sweepTasks() []sweepTask {
+	return []sweepTask{
+		{
+			// Expired sessions are already refused on read; the sweep is only
+			// about not letting the table grow forever.
+			run: func(ctx context.Context) error {
+				_, _ = s.auth.Sessions().DeleteExpired(ctx)
+				return nil
+			},
+		},
+		{
+			failure: "could not expire group memberships",
+			run: func(ctx context.Context) error {
+				return s.users.ExpireMemberships(ctx, nil, time.Now())
+			},
+		},
+		{
+			run: func(ctx context.Context) error {
+				s.sweepAttachments(ctx)
+				return nil
+			},
+		},
+		{
+			// Authorisation codes live two minutes and tokens an hour; without
+			// this the two tables grow forever with rows nothing will read again.
+			failure: "could not purge sign-in grants",
+			run: func(ctx context.Context) error {
+				_, err := s.idp.Purge(ctx)
+				return err
+			},
+		},
+		{
+			// A spent sign-in state is only a record of a callback that already
+			// came back. Once its expiry has passed the state check refuses it,
+			// so the row is safe to drop.
+			failure: "could not prune sign-in states",
+			run: func(ctx context.Context) error {
+				_, err := s.oauth.PruneStates(ctx, time.Now().UnixMilli())
+				return err
+			},
+		},
+		{
+			// Counter buckets whose window has long since rolled over. The
+			// ledger is never pruned: it is the audit trail. A failure is
+			// logged here because the request log cannot record it: the
+			// database that failed is the one it writes to.
+			failure: "could not prune usage counters",
+			run: func(ctx context.Context) error {
+				_, err := s.quota.PruneCounters(ctx)
+				return err
+			},
+		},
+		{
+			// The bell keeps about a month, unlike the security log: a notice
+			// is a nudge to look at something, not a record kept for its own
+			// sake.
+			failure: "could not prune notifications",
+			run: func(ctx context.Context) error {
+				_, err := s.notify.Prune(ctx, time.Now().Add(-30*24*time.Hour))
+				return err
+			},
+		},
+		{
+			// The audit trail is kept for as long as the super administrator
+			// chose, and never less than the floor the setting enforces.
+			failure: "could not prune the audit trail",
+			run: func(ctx context.Context) error {
+				days := s.settings.Int(settings.AuditRetentionDays, audit.DefaultRetentionDays)
+				days = min(max(days, audit.MinRetentionDays), audit.MaxRetentionDays)
+				_, err := s.audit.Prune(ctx, time.Now().Add(-time.Duration(days)*24*time.Hour))
+				return err
+			},
+		},
+		{
+			// Only today's draw on a pool is held against a limit; a few weeks
+			// are kept for the figures.
+			failure: "could not prune pool usage",
+			run: func(ctx context.Context) error {
+				return s.bonus.PrunePoolUsage(ctx, 35*24*time.Hour)
+			},
+		},
+		{
+			// Bonus a person is about to lose is worth a line in the bell,
+			// once. Its two failures say different things, so it logs them
+			// itself.
+			run: func(sweepCtx context.Context) error {
+				expiring, err := s.bonus.TakeExpiring(sweepCtx, 3*24*time.Hour)
+				if err != nil {
+					slog.ErrorContext(sweepCtx, "could not look for expiring bonus", "error", err)
+				}
+				for _, e := range expiring {
+					if err := s.notify.Push(sweepCtx, nil, notify.Notification{
+						Audience: notify.AudienceUser, UserID: e.UserID, Kind: "bonus_expiring", Link: "/usage",
+						Params: map[string]any{"name": e.BarName, "amount": e.Remaining, "expires_at": e.ExpiresAt},
+					}); err != nil {
+						slog.ErrorContext(sweepCtx, "could not tell an account its bonus is expiring", "error", err, "user", e.UserID)
+					}
+				}
+				return nil
+			},
+		},
+		{
+			// Invite rewards waiting on something no request announces — a
+			// signup restriction running out, say.
+			failure: "could not resolve pending invite rewards",
+			run: func(ctx context.Context) error {
+				return s.invites.RewardPending(ctx, s.auth.VerificationRequired())
+			},
+		},
+	}
+}
+
+// SweepPlugins gives each switched-on plugin package that asked for it (the
+// sweep hook) its turn at periodic work. On the janitor's context rather than
+// the 30-second one: every package's call carries its own deadline, and one
+// slow package must not use up the next one's time. Exported so a test can
+// make the turn come now instead of in ten minutes.
+func (s *Server) SweepPlugins(ctx context.Context) {
+	s.plugins.Sweep(ctx)
 }
 
 // sweepHealth asks the models nobody has used lately whether they still work,
@@ -1557,17 +1625,22 @@ func (s *Server) sweep(ctx context.Context) {
 // for the models after it. The policy is read here rather than captured at
 // boot, so a change in the settings screen lands on the next pass.
 func (s *Server) sweepHealth(ctx context.Context) {
-	if s.health == nil {
-		return
-	}
 	healthCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
+	// Every field the operator can set has to be passed on here: the checker
+	// reads only what the Policy carries, so a missing one is a setting the
+	// screen accepts and nothing enforces.
 	s.health.Run(healthCtx, health.Policy{
 		Probe:        s.settings.Bool(settings.HealthProbe),
-		Window:       time.Duration(s.settings.Int(settings.HealthWindowMins, 30)) * time.Minute,
+		Window:       time.Duration(s.settings.Int(settings.HealthWindowMins, settings.DefaultHealthWindowMins)) * time.Minute,
 		DisableAfter: s.settings.Int(settings.HealthDisableAfter, 0),
+		DisableBelow: s.settings.Int(settings.HealthDisableBelow, 0),
 		Retain:       time.Duration(s.settings.Int(settings.HealthRetainDays, 14)) * 24 * time.Hour,
+		// An administrator's reset must also stop the checker counting what
+		// came before it, or a model it just re-enabled is switched off again
+		// on the next pass by the failures that caused the first switch-off.
+		ResetAt: int64(s.settings.Int(settings.HealthResetAt, 0)),
 	})
 }
 
@@ -1582,29 +1655,28 @@ func (s *Server) sweepAttachments(ctx context.Context) {
 		DailyAt:   s.settings.Get(settings.AttachmentPurgeDaily),
 		OrphanTTL: time.Duration(s.settings.Int(settings.AttachmentOrphanMins, 60)) * time.Minute,
 	}
-	lastRun := int64(s.settings.Int(settings.AttachmentPurgeLast, 0))
-
-	// Configured but never run: record the time and purge nothing this pass.
-	// An operator who sets a 03:00 cleanup at three in the afternoon did not
-	// ask for everything to vanish right then.
-	if conversation.DecidePurge(policy.DailyAt, time.Now(), lastRun) == conversation.DecisionSeed {
-		if err := s.settings.Set(ctx, settings.AttachmentPurgeLast,
-			strconv.FormatInt(time.Now().UnixMilli(), 10)); err != nil {
-			slog.ErrorContext(ctx, "could not record the attachment purge time", "error", err)
-		}
+	claim, err := s.claimDailyPurge(ctx, policy.DailyAt)
+	if err != nil {
+		slog.ErrorContext(ctx, "could not record the attachment purge time", "error", err)
+	}
+	// Only a claimed run reaches the purge. Seed is "configured but never
+	// run": the time is recorded and nothing is purged this pass, because an
+	// operator who sets a 03:00 cleanup at three in the afternoon did not ask
+	// for everything to vanish right then.
+	lastRun := claim.previous
+	if claim.decision != conversation.DecisionRun {
 		policy.DailyAt = ""
 	}
 
 	result, err := s.conversations.Sweep(ctx, policy, lastRun)
+	if claim.decision == conversation.DecisionRun && !result.RanDaily {
+		// Today's purge was claimed and did not happen, so the claim is handed
+		// back and the next tick, here or on another instance, tries again.
+		s.releaseDailyPurge(ctx, claim)
+	}
 	if err != nil {
 		slog.ErrorContext(ctx, "attachment sweep failed", "error", err)
 		return
-	}
-	if result.RanDaily {
-		if err := s.settings.Set(ctx, settings.AttachmentPurgeLast,
-			strconv.FormatInt(time.Now().UnixMilli(), 10)); err != nil {
-			slog.ErrorContext(ctx, "could not record the attachment purge time", "error", err)
-		}
 	}
 	// Worth a line in the log: this is the one background task that destroys
 	// something, and an operator should be able to see that it is working.
@@ -1620,4 +1692,65 @@ func devServerURL(cfg config.Config) string {
 		return ""
 	}
 	return "http://127.0.0.1:5173"
+}
+
+// pluginChallenge is the human check a plugin borrows: the one the sign-up
+// door asks for, so "follow the site's setting" means one setting. A sign-up
+// mode the core does not draw itself (off, or a plugin's own) still has to
+// mean something when a plugin asked for a check, so it falls back to
+// Turnstile where the page already loads it and to proof of work, which needs
+// nobody else's server, everywhere else.
+func pluginChallenge(s *settings.Service, powManager *pow.Manager, requiredTier func(ip string) int64, client *http.Client, turnstileDrawn func() bool) plugin.Challenge {
+	describe := func() plugin.ChallengeKinds {
+		key := s.Get(settings.TurnstileSiteKey)
+		ready := key != "" && s.Get(settings.TurnstileSecretKey) != ""
+		var kinds plugin.ChallengeKinds
+		switch s.RegistrationCaptchaMode() {
+		case settings.CaptchaModePoW:
+			kinds.PoW = true
+		case settings.CaptchaModeTurnstile:
+			if ready {
+				kinds.TurnstileSiteKey = key
+			} else {
+				kinds.PoW = true
+			}
+		case settings.CaptchaModeBoth:
+			kinds.PoW = true
+			if ready {
+				kinds.TurnstileSiteKey = key
+			}
+		default:
+			if ready && turnstileDrawn() {
+				kinds.TurnstileSiteKey = key
+			} else {
+				kinds.PoW = true
+			}
+		}
+		return kinds
+	}
+	return plugin.Challenge{
+		Describe: describe,
+		Verify: func(ctx context.Context, proof plugin.ChallengeProof, ip string) error {
+			kinds := describe()
+			if kinds.PoW {
+				var solution pow.Solution
+				if len(proof.PoW) == 0 || string(proof.PoW) == "null" {
+					return pow.ErrMissingSolution
+				}
+				if err := json.Unmarshal(proof.PoW, &solution); err != nil {
+					return pow.ErrInvalidNonce
+				}
+				// The tier is the one the challenge endpoint hands this address now,
+				// the same bar the sign-up door sets, so a plugin cannot be passed
+				// with work that the site would no longer accept.
+				if err := powManager.VerifyAt(ctx, &solution, requiredTier(ip)); err != nil {
+					return err
+				}
+			}
+			if kinds.TurnstileSiteKey != "" {
+				return turnstile.Verify(ctx, client, s.Get(settings.TurnstileSecretKey), proof.Turnstile, ip)
+			}
+			return nil
+		},
+	}
 }

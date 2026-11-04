@@ -57,11 +57,7 @@ func init() {
 			}
 			// What the panel tells somebody before they write five hundred
 			// words into a box they are not allowed to send today.
-			if rt.Session.Lang == "zh" {
-				rt.Printf("\n今天还能提交 %v 条（每天最多 %v 条）。\n", asNum(m["remaining"]), asNum(m["max_per_day"]))
-			} else {
-				rt.Printf("\n%v of %v reports left today.\n", asNum(m["remaining"]), asNum(m["max_per_day"]))
-			}
+			rt.Say(Text{EN: fmt.Sprintf("\n%v of %v reports left today.\n", asNum(m["remaining"]), asNum(m["max_per_day"])), ZH: fmt.Sprintf("\n今天还能提交 %v 条（每天最多 %v 条）。\n", asNum(m["remaining"]), asNum(m["max_per_day"]))})
 			return nil
 		},
 	})
@@ -110,15 +106,11 @@ func init() {
 				// A staff reply arrives without a name when the operator
 				// has chosen not to show who answered.
 				if asBoolVal(reply["from_staff"]) {
-					if who == "" && rt.Session.Lang == "zh" {
-						who = "管理员"
-					} else if who == "" {
-						who = "staff"
+					if who == "" {
+						who = Text{EN: "staff", ZH: "管理员"}.For(rt.Session.Lang)
 					}
-				} else if rt.Session.Lang == "zh" {
-					who = "你"
 				} else {
-					who = "you"
+					who = Text{EN: "you", ZH: "你"}.For(rt.Session.Lang)
 				}
 				rt.Printf("\n— %s · %s\n%s\n", who, formatMS(reply["created_at"]), asStr(reply["body"]))
 			}
@@ -136,7 +128,7 @@ func init() {
 			ZH: "在这条反馈的对话里追加你的回复，和面板里的回复框一样。走的是同一个接口，所以站点如果开了提交反馈的人机验证，这条命令也会被拒绝：那时请到面板里回复。",
 		},
 		Args:       []Arg{{Name: "feedback-id", Hint: Text{EN: "from feedback mine", ZH: "来自 feedback mine"}, Required: true}},
-		Flags:      []Flag{{Name: "--body", Hint: Text{EN: "what you want to add, required", ZH: "要补充的内容，必填"}, Value: "TEXT"}},
+		Flags:      []Flag{{Name: "--body", Hint: Text{EN: "what you want to add, required", ZH: "要补充的内容，必填"}, Value: "TEXT", Sensitive: true}},
 		Examples:   []string{`feedback answer 01H9Z… --body "It happens on Firefox too."`, `feedback answer 01H9Z… --body "Fixed, thanks."`},
 		SeeAlso:    []string{"feedback thread"},
 		Permission: Anyone,
@@ -154,12 +146,7 @@ func init() {
 			if rt.effectiveJSON() {
 				return rt.Fields([][2]string{{"id", asStr(asMap(data)["id"])}})
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已回复。\n")
-			} else {
-				rt.Printf("replied.\n")
-			}
-			return nil
+			return rt.confirm(Text{EN: "replied.", ZH: "已回复。"})
 		},
 	})
 

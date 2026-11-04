@@ -80,3 +80,43 @@ func TestForRequestIsTheNewestUsableMessagesInOrder(t *testing.T) {
 		t.Fatalf("another account read %d messages (err %v)", len(other), err)
 	}
 }
+
+// The reasoning a model showed is not sent back to it, so a turn does not read
+// it: it is the widest column a message has, and a turn replays forty of them.
+// The transcript a reader opens still carries it.
+func TestForRequestLeavesTheReasoningBehind(t *testing.T) {
+	store, _, account := attachmentFixture(t)
+	ctx := context.Background()
+	thread, err := store.Create(ctx, nil, account.ID, NewConversation{Title: "Thinking"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, in := range []AppendInput{
+		{Role: RoleUser, Content: "why"},
+		{Role: RoleAssistant, Content: "because", Reasoning: "a long chain of thought", ModelName: "m", Stats: &Stats{}},
+	} {
+		in.ConversationID, in.UserID = thread.ID, account.ID
+		if _, err := store.Append(ctx, nil, in); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := store.ForRequest(ctx, nil, account.ID, thread.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[1].Content != "because" || got[1].Role != RoleAssistant || got[1].ID == "" {
+		t.Fatalf("for request = %+v", got)
+	}
+	if got[1].Reasoning != "" || got[1].Stats != nil || got[1].ModelName != "" {
+		t.Fatalf("a turn read what it never sends: %+v", got[1])
+	}
+
+	transcript, err := store.Messages(ctx, nil, account.ID, thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transcript[1].Reasoning != "a long chain of thought" {
+		t.Fatalf("the transcript lost its reasoning: %q", transcript[1].Reasoning)
+	}
+}

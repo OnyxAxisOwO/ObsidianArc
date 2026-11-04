@@ -9,16 +9,19 @@
 // Only the group filter reaches it, because "this group's accounts" means the
 // same thing here as on the rest of the page.
 //
-// The list is the server's, sorted across everyone there is; the rows arrive
-// a page at a time as the scrolling reaches the end, so a long list is as
-// cheap to open as a short one.
+// The list is the server's, sorted across the accounts it loads. Past its cap
+// that is the newest few thousand, which the page says rather than presenting
+// the ranking as complete. The rows arrive a page at a time as the scrolling
+// reaches the end, so a long list is as cheap to open as a short one.
 
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useDebounceFn } from '@vueuse/core';
 import { adminApi, type AllowanceRow, type GroupOption } from '@/admin/api';
+import { QUOTA_WINDOW_NAME } from '@/admin/quota';
 import OaScrollArea from '@/components/OaScrollArea.vue';
 import OaUsageWindow from '@/components/OaUsageWindow.vue';
 import { t } from '@/composables/useI18n';
+import { useLatestRequest } from '@/composables/useLatestRequest';
 import { isMasked, maskUser } from '@/admin/safeMode';
 import type { UsageDisplay } from '@/api/usage';
 import { useScrollFade } from './useScrollFade';
@@ -34,6 +37,12 @@ const ROWS = 6;
 
 const rows = ref<AllowanceRow[]>([]);
 const total = ref(0);
+const listed = ref(0);
+const capped = ref(false);
+const loaded = ref(0);
+// Whether the list being shown is narrowed by a state. A narrowed count past
+// the cap is drawn only from the accounts loaded, so it is worded differently.
+const filtered = ref(false);
 const low = ref(0);
 const exhausted = ref(0);
 const display = ref<UsageDisplay>('absolute');
@@ -41,7 +50,10 @@ const groups = ref<GroupOption[]>([]);
 const search = ref('');
 const state = ref<State>('');
 const loading = ref(false);
+// A first page that failed replaces the list with a message; a later page that
+// failed leaves the rows up and offers a retry. Scrolling must not ask again.
 const failed = ref(false);
+const appendFailed = ref(false);
 
 const states = computed<Array<{ value: State; label: string }>>(() => [
   { value: '', label: t('allowanceAll') },
@@ -54,23 +66,24 @@ const { onScroll: fade, reset: resetFade, scrollClass } = useScrollFade(overflow
 
 // Answers can come back in a different order from the questions that asked
 // for them, and the one that matters is the last one asked.
-let ticket = 0;
+const pageRequest = useLatestRequest();
 let disposed = false;
 
-function query(offset: number): string {
+function query(offset: number): URLSearchParams {
   const params = new URLSearchParams({ limit: String(PAGE), offset: String(offset) });
   if (search.value.trim()) params.set('q', search.value.trim());
   if (props.groupId) params.set('group_id', props.groupId);
   if (state.value) params.set('state', state.value);
-  return params.toString();
+  return params;
 }
 
 async function load(append: boolean): Promise<void> {
-  const mine = ++ticket;
+  const mine = pageRequest.begin();
   loading.value = true;
+  if (!append) appendFailed.value = false;
   try {
     const answer = await adminApi.usageAllowances(query(append ? rows.value.length : 0));
-    if (disposed || mine !== ticket) return;
+    if (disposed || !pageRequest.isCurrent(mine)) return;
     if (append) {
       const seen = new Set(rows.value.map((row) => row.id));
       rows.value = [...rows.value, ...(answer.rows ?? []).filter((row) => !seen.has(row.id))];
@@ -79,14 +92,27 @@ async function load(append: boolean): Promise<void> {
       resetFade();
     }
     total.value = answer.total ?? 0;
+    listed.value = answer.listed ?? rows.value.length;
+    capped.value = answer.capped ?? false;
+    loaded.value = answer.loaded ?? rows.value.length;
+    filtered.value = state.value !== '';
     low.value = answer.low ?? 0;
     exhausted.value = answer.exhausted ?? 0;
     display.value = answer.display ?? 'absolute';
     failed.value = false;
+    appendFailed.value = false;
   } catch {
-    if (!disposed && mine === ticket) failed.value = true;
+    if (!disposed && pageRequest.isCurrent(mine)) {
+      if (append) {
+        appendFailed.value = true;
+      } else {
+        // Rows left from another filter would be read as this one's answer.
+        rows.value = [];
+        failed.value = true;
+      }
+    }
   } finally {
-    if (!disposed && mine === ticket) loading.value = false;
+    if (!disposed && pageRequest.isCurrent(mine)) loading.value = false;
   }
 }
 
@@ -109,7 +135,9 @@ function onScroll(event: Event): void {
   fade(event);
   const element = event.target as HTMLElement;
   const nearEnd = element.scrollTop + element.clientHeight >= element.scrollHeight - 160;
-  if (nearEnd && !loading.value && rows.value.length < total.value) void load(true);
+  // A failed page waits for its retry button: every scroll event near the end
+  // would otherwise ask the server again for the same page.
+  if (nearEnd && !loading.value && !appendFailed.value && rows.value.length < listed.value) void load(true);
 }
 
 function name(row: AllowanceRow): string {
@@ -150,13 +178,13 @@ function sub(row: AllowanceRow): string {
               <span class="oa-board-mark oa-allow-mark" aria-hidden="true">{{ initial(row) }}</span>
               <span class="oa-allow-who">
                 <span class="oa-board-name">{{ name(row) }}</span>
-                <span class="oa-allow-sub">{{ sub(row) }}</span>
+                <span class="oa-cell-sub">{{ sub(row) }}</span>
               </span>
               <span class="oa-allow-windows">
                 <template v-for="window in row.windows" :key="window.kind">
                   <OaUsageWindow v-if="window.enforced" :window="window" :display="display" :masked="isMasked('billing')" />
                   <div v-else class="oa-allow-none">
-                    <span>{{ t(window.kind === '5h' ? 'quota5h' : window.kind === '1w' ? 'quotaWeek' : 'quotaMonth') }}</span>
+                    <span>{{ t(QUOTA_WINDOW_NAME[window.kind]) }}</span>
                     <span>{{ t('allowanceNoLimit') }}</span>
                   </div>
                 </template>
@@ -165,7 +193,13 @@ function sub(row: AllowanceRow): string {
           </li>
         </ol>
       </OaScrollArea>
-      <p v-if="total > ROWS" class="oa-board-count">{{ t('boardCount', { count: total }) }}</p>
+      <p v-if="appendFailed" class="oa-board-count" role="alert">
+        {{ t('couldNotLoad') }}
+        <button type="button" class="oa-btn small" @click="load(true)">{{ t('tryAgain') }}</button>
+      </p>
+      <p v-if="capped && filtered" class="oa-board-count">{{ t('allowanceCappedMatching', { count: listed, loaded }) }}</p>
+      <p v-else-if="capped" class="oa-board-count">{{ t('allowanceCapped', { count: listed, total }) }}</p>
+      <p v-else-if="total > ROWS" class="oa-board-count">{{ t('boardCount', { count: total }) }}</p>
     </div>
   </section>
 </template>

@@ -11,18 +11,20 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/console"
 )
 
+var (
+	view     = PermissionView + "," + PermissionManage + "," + PermissionRemove
+	nameArg  = []console.Arg{{Name: "name", Hint: console.Text{EN: "plugin name", ZH: "插件名"}, Required: true}}
+	codeFlag = console.Flag{Name: "--code", Hint: console.Text{
+		EN: "a code from your authenticator, or a recovery code", ZH: "验证器中的验证码，或一个恢复码"},
+		Value: "CODE", Sensitive: true}
+)
+
 // The console's commands for the plugins screen. They live here, beside the
 // routes, for the reason a plugin's own commands live with the plugin: the
 // console's route-parity test reads admin.go, and these routes are mounted
 // from this package.
-func init() {
-	view := PermissionView + "," + PermissionManage + "," + PermissionRemove
-	nameArg := []console.Arg{{Name: "name", Hint: console.Text{EN: "plugin name", ZH: "插件名"}, Required: true}}
-	codeFlag := console.Flag{Name: "--code", Hint: console.Text{
-		EN: "a code from your authenticator, or a recovery code", ZH: "验证器中的验证码，或一个恢复码"},
-		Value: "CODE", Sensitive: true}
-
-	console.Register(console.Command{
+var commands = []console.Command{
+	{
 		Name:    "plugin list",
 		Group:   "instance",
 		Summary: console.Text{EN: "List the plugins this build carries", ZH: "列出本构建带有的插件"},
@@ -42,9 +44,9 @@ func init() {
 			if err != nil {
 				return err
 			}
-			list, _ := object(data)["plugins"].([]any)
-			rows := make([][]string, 0, len(list))
-			for _, raw := range list {
+			plugins := list(object(data)["plugins"])
+			rows := make([][]string, 0, len(plugins))
+			for _, raw := range plugins {
 				p := object(raw)
 				manifest := object(p["manifest"])
 				state := text(p["state"])
@@ -56,9 +58,8 @@ func init() {
 			}
 			return rt.Table([]string{"name", "version", "state", "title"}, rows)
 		},
-	})
-
-	console.Register(console.Command{
+	},
+	{
 		Name:    "plugin show",
 		Group:   "instance",
 		Summary: console.Text{EN: "Show one plugin's manifest", ZH: "查看插件清单"},
@@ -86,9 +87,9 @@ func init() {
 			manifest := object(p["manifest"])
 			installed := object(p["installed"])
 			c := object(p["contributions"])
-			var settingKeys []string
+			var keys []string
 			for _, raw := range list(c["settings"]) {
-				settingKeys = append(settingKeys, text(object(raw)["key"]))
+				keys = append(keys, text(object(raw)["key"]))
 			}
 			var routes []string
 			for _, raw := range list(c["admin_routes"]) {
@@ -106,7 +107,7 @@ func init() {
 				{"author", text(manifest["author"])},
 				{"license", text(manifest["license"])},
 				{"installed", when(installed["at"]) + " " + text(installed["by"])},
-				{"settings", strings.Join(settingKeys, ", ")},
+				{"settings", strings.Join(keys, ", ")},
 				{"fields", joined(c["fields"])},
 				{"guards", joined(c["guards"])},
 				{"routes", strings.Join(routes, ", ")},
@@ -114,9 +115,8 @@ func init() {
 				{"migrations", joined(c["migrations"])},
 			})
 		},
-	})
-
-	console.Register(console.Command{
+	},
+	{
 		Name:    "plugin install",
 		Group:   "instance",
 		Summary: console.Text{EN: "Install a plugin", ZH: "安装插件"},
@@ -141,9 +141,8 @@ func init() {
 				"two_factor_code": rt.String("code"),
 			})
 		},
-	})
-
-	console.Register(console.Command{
+	},
+	{
 		Name:       "plugin enable",
 		Group:      "instance",
 		Summary:    console.Text{EN: "Switch an installed plugin on", ZH: "启用已安装的插件"},
@@ -156,9 +155,8 @@ func init() {
 		Run: func(_ context.Context, rt *console.Runtime) error {
 			return change(rt, "enable", nil)
 		},
-	})
-
-	console.Register(console.Command{
+	},
+	{
 		Name:    "plugin disable",
 		Group:   "instance",
 		Summary: console.Text{EN: "Switch a plugin off", ZH: "禁用插件"},
@@ -176,18 +174,18 @@ func init() {
 		Run: func(_ context.Context, rt *console.Runtime) error {
 			return change(rt, "disable", map[string]any{"two_factor_code": rt.String("code")})
 		},
-	})
-
-	console.Register(console.Command{
+	},
+	{
 		Name:    "plugin uninstall",
 		Group:   "instance",
 		Summary: console.Text{EN: "Uninstall a plugin", ZH: "卸载插件"},
 		Usage:   "plugin uninstall <name> --code CODE [--purge] --yes",
 		Help: console.Text{
 			EN: "Takes the plugin off this instance. Its data stays for a later reinstall unless --purge is " +
-				"given, which deletes its settings and drops its tables and columns. Needs a two-step code.",
+				"given, which deletes its settings and, if the plugin ships a purge script, drops its tables " +
+				"and columns. Needs a two-step code.",
 			ZH: "从本实例移除插件。除非给出 --purge，其数据会保留以便日后重新安装；" +
-				"--purge 会删除其设置并删除其数据表和字段。需要两步验证码。",
+				"--purge 会删除其设置，若插件提供清除脚本，还会删除其数据表和字段。需要两步验证码。",
 		},
 		Args: nameArg,
 		Flags: []console.Flag{
@@ -204,7 +202,13 @@ func init() {
 				"two_factor_code": rt.String("code"), "purge": rt.Bool("purge"),
 			})
 		},
-	})
+	},
+}
+
+func init() {
+	for _, command := range commands {
+		console.RegisterCore(command)
+	}
 }
 
 func change(rt *console.Runtime, action string, body map[string]any) error {
@@ -220,11 +224,11 @@ func change(rt *console.Runtime, action string, body map[string]any) error {
 		return err
 	}
 	p := object(object(data)["plugin"])
+	colon := ": "
 	if rt.Session.Lang == "zh" {
-		rt.Printf("%s：%s\n", text(p["name"]), text(p["state"]))
-	} else {
-		rt.Printf("%s: %s\n", text(p["name"]), text(p["state"]))
+		colon = "："
 	}
+	rt.Printf("%s%s%s\n", text(p["name"]), colon, text(p["state"]))
 	return nil
 }
 

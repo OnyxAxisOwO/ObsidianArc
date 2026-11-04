@@ -8,10 +8,11 @@ on:
       - '.github/workflows/docs-pages.yml'
   workflow_dispatch:
 
+# Read-only for every job. The Pages deployment and its OIDC token are granted
+# to the deploy job alone, so nothing that runs while the site is built (the
+# docs' own dependencies included) holds a token that can publish it.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: github-pages
@@ -20,14 +21,24 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: read
     steps:
+      # The token is not left in .git/config, where a dependency's install
+      # script could read it.
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: docs/package-lock.json
-      - run: npm --prefix docs ci --no-fund --no-audit
+      # --ignore-scripts: the build needs no dependency's install script (esbuild
+      # runs from its optional platform package), and a script that ran here
+      # could alter the site this job uploads, whatever token it held.
+      - run: npm --prefix docs ci --ignore-scripts --no-fund --no-audit
       - run: npm --prefix docs run build
         env:
           DOCS_BASE: /ObsidianArc/
@@ -40,6 +51,10 @@ jobs:
           path: docs/.vitepress/dist
 
   deploy:
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

@@ -13,11 +13,11 @@ vi.mock('@/api/client', () => ({
     post: vi.fn() as unknown as <T>(url: string, body?: unknown) => Promise<T>,
   },
 }));
-vi.mock('@/router', () => ({ router: { push: vi.fn() } }));
 
 import { api } from '@/api/client';
 import type { Notification } from '@/api/notifications';
-import { router } from '@/router';
+import { feedbackUnread, forgetFeedbackUnread } from '@/stores/feedback';
+import { forget } from '@/stores/session';
 import {
   activeToasts, notificationList, notificationsUnread, openNotification,
   startNotifications, stopNotifications,
@@ -38,6 +38,7 @@ beforeEach(() => {
 
 afterEach(() => {
   stopNotifications();
+  forgetFeedbackUnread();
   vi.clearAllMocks();
   vi.useRealTimers();
 });
@@ -70,6 +71,27 @@ describe('the notifications store', () => {
     // The new row joins the top of the list too, not only the toast queue.
     expect(notificationList.value[0]?.id).toBe('c');
     expect(notificationList.value).toHaveLength(2);
+  });
+
+  // The account menu's feedback dot is fetched once per page load, so a reply
+  // that arrives later would not show until a reload without this refresh.
+  it('refreshes the feedback dot when a reply notice arrives in a poll', async () => {
+    get.mockImplementation(async (url: string) => {
+      if (url.includes('/poll')) {
+        return { notifications: [row('r', 3000, 'feedback_reply', '/feedback')], unread: 1, now: 3000 };
+      }
+      if (url.includes('/api/feedback/unread')) return { unread: 1 };
+      return { notifications: [], unread: 0, seen_at: 0, now: 1000 };
+    });
+
+    startNotifications();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(feedbackUnread.value).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    expect(activeToasts.value.map((toast) => toast.id)).toEqual(['r']);
+    expect(feedbackUnread.value).toBe(1);
+    expect(get).toHaveBeenCalledWith('/api/feedback/unread');
   });
 
   it('an unchanged poll raises nothing new', async () => {
@@ -121,11 +143,29 @@ describe('the notifications store', () => {
     expect(activeToasts.value).toHaveLength(0);
   });
 
+  // The toast stack is what calls stopNotifications, and it unmounts with the
+  // shell. Sign-out must not depend on that teardown order: the sign-out
+  // reset clears the inbox on its own, so the previous account's rows never
+  // show while the stack is still mounted.
+  it('clears the inbox on sign-out even when nothing stops the store', async () => {
+    get.mockResolvedValue({ notifications: [row('a', 1000)], unread: 1, seen_at: 0, now: 1000 });
+    startNotifications();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(notificationList.value).toHaveLength(1);
+
+    forget();
+    expect(notificationList.value).toHaveLength(0);
+    expect(notificationsUnread.value).toBe(0);
+    expect(activeToasts.value).toHaveLength(0);
+  });
+
   it('opening a notification navigates, drops its toast and moves the watermark', async () => {
+    // The server's count follows the watermark: once it has moved, nothing is unread.
+    let unreadOnServer = 1;
     get.mockImplementation(async (url: string) =>
-      (url.includes('/poll') ? { notifications: [row('c', 3000, 'quota_reset', '/usage')], unread: 1, now: 3000 } :
+      (url.includes('/poll') ? { notifications: [row('c', 3000, 'quota_reset', '/usage')], unread: unreadOnServer, now: 3000 } :
         { notifications: [], unread: 0, seen_at: 0, now: 0 }));
-    post.mockResolvedValue(undefined);
+    post.mockImplementation(async () => { unreadOnServer = 0; });
 
     startNotifications();
     await vi.advanceTimersByTimeAsync(0);
@@ -133,12 +173,30 @@ describe('the notifications store', () => {
     const toast = activeToasts.value[0];
     expect(toast).toBeDefined();
 
-    await openNotification(toast!.notification);
+    const go = vi.fn();
+    await openNotification(toast!.notification, go);
 
-    expect(router.push).toHaveBeenCalledWith('/usage');
+    expect(go).toHaveBeenCalledWith('/usage');
     expect(activeToasts.value).toHaveLength(0);
     expect(post).toHaveBeenCalledWith('/api/notifications/read', { up_to: 3000 });
     expect(notificationsUnread.value).toBe(0);
+  });
+
+  // The watermark has no memory of each row, so opening one that was already
+  // read moves nothing: the badge must keep the server's count, not drop by one.
+  it('keeps the badge at the server count when the row opened was already read', async () => {
+    get.mockImplementation(async (url: string) =>
+      (url.includes('/poll') ? { notifications: [], unread: 1, now: 3000 } :
+        { notifications: [row('a', 1000), row('c', 3000)], unread: 1, seen_at: 0, now: 3000 }));
+    post.mockResolvedValue(undefined);
+
+    startNotifications();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(notificationsUnread.value).toBe(1);
+
+    await openNotification(row('a', 1000), vi.fn());
+    expect(post).toHaveBeenCalledWith('/api/notifications/read', { up_to: 1000 });
+    expect(notificationsUnread.value).toBe(1);
   });
 
   it('shows only the newest three toasts from an oversized batch, though every row still reaches the list', async () => {
@@ -199,6 +257,29 @@ describe('the notifications store', () => {
     expect(activeToasts.value.map((toast) => toast.id)).toEqual(['b']);
   });
 
+  it('gives up on a poll that is accepted and never answered, so the next tick asks again', async () => {
+    // A half-open connection: the request never settles on its own, and only
+    // aborting its signal ends it, the way fetch rejects when aborted.
+    let pollCalls = 0;
+    get.mockImplementation(async (url: string, options?: { signal?: AbortSignal }) => {
+      if (!url.includes('/poll')) return { notifications: [], unread: 0, seen_at: 0, now: 1000 };
+      pollCalls += 1;
+      if (pollCalls > 1) return { notifications: [row('late', 4000)], unread: 1, now: 4000 };
+      return new Promise((_, reject) => {
+        options?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+      });
+    });
+
+    startNotifications();
+    await vi.advanceTimersByTimeAsync(0); // the initial load
+    await vi.advanceTimersByTimeAsync(POLL_MS); // the poll that hangs
+    expect(pollCalls).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(POLL_MS); // past its deadline, so this tick goes out
+    expect(pollCalls).toBe(2);
+    expect(activeToasts.value.map((toast) => toast.id)).toEqual(['late']);
+  });
+
   it('drops a response that lands after sign-out instead of writing into the next session', async () => {
     let resolvePoll!: (value: unknown) => void;
     const pending = new Promise((resolve) => { resolvePoll = resolve; });
@@ -216,5 +297,30 @@ describe('the notifications store', () => {
     expect(activeToasts.value).toHaveLength(0);
     expect(notificationList.value).toHaveLength(0);
     expect(notificationsUnread.value).toBe(0);
+  });
+  // The server answers at most 200 rows, starting ten seconds before `after`.
+  // With 200 rows the reader already has inside that window, every answer
+  // used to be the same full page of them, so a row committed later was never
+  // raised. The store now asks again from the page's last row.
+  it('still raises a row that arrives behind a full page of rows the reader already has', async () => {
+    const backlog = Array.from({ length: 200 }, (_, i) => row(`old-${i}`, 4000 + i));
+    const table = [...backlog];
+    get.mockImplementation(async (url: string) => {
+      if (!url.includes('/poll')) return { notifications: backlog, unread: 200, seen_at: 0, now: 4300 };
+      const after = Number(url.split('after=')[1]);
+      const page = table
+        .filter((record) => record.created_at > after - 10_000)
+        .sort((a, b) => a.created_at - b.created_at)
+        .slice(0, 200);
+      return { notifications: page, unread: table.length, now: 4500 };
+    });
+
+    startNotifications();
+    await vi.advanceTimersByTimeAsync(0);
+    table.push(row('new', 4400));
+
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    expect(activeToasts.value.map((toast) => toast.id)).toEqual(['new']);
+    expect(notificationList.value[0]?.id).toBe('new');
   });
 });

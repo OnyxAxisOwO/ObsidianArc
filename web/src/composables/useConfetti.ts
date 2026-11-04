@@ -2,10 +2,10 @@
 //
 // For the two moments in this interface that are unambiguously good news: an
 // administrator putting everybody's usage back, and somebody spending a reset
-// card on their own. Both are the end of "you have run out", and both used to
-// be a sentence in small grey text.
+// card on their own. Both are the end of "you have run out", a moment that
+// deserves more than a line of small grey text.
 //
-// Hand-rolled rather than a package, for the same reason as before: this is
+// Hand-rolled rather than a package: this is
 // forty lines, and a confetti library is several kilobytes to draw a thing
 // that falls down. It stays imperative because it is not part of any
 // component's state — nothing re-renders because paper is falling.

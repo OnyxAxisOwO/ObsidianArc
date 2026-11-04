@@ -27,7 +27,12 @@ function onClosed(): void {
 
 function switchAccount(close: () => void): void {
   leaving = true;
-  void logout().finally(() => {
+  // A failed sign-out must not strand the reader on this refusal: the local
+  // session is dropped and the sign-in page opened whether or not the server
+  // agreed the session was over.
+  void logout().catch(() => {
+    // Already gone, or unreachable; the cleanup below runs either way.
+  }).finally(() => {
     forget();
     close();
     void router.replace('/login');
@@ -36,7 +41,7 @@ function switchAccount(close: () => void): void {
 </script>
 
 <template>
-  <OaOverlay v-slot="{ close }" overlay-class="oa-modal-overlay" @close="onClosed">
+  <OaOverlay v-slot="{ close }" overlay-class="oa-modal-overlay" :label="t('accessDenied')" @close="onClosed">
     <div class="oa-auth-card oa-modal-card">
       <OaIconButton class="oa-icon-btn oa-modal-close" :label="t('close')" @click="close">
         <IconClose :size="16" />

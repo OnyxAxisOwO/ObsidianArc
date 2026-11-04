@@ -62,6 +62,24 @@ func TestSignupGateEnforcesThePerHourLimitSeparately(t *testing.T) {
 	}
 }
 
+// With neither limit set, allow never prunes, so record is what keeps the
+// slice from growing with every account for the life of the process.
+func TestSignupGateRecordPrunesEntriesPastTheHour(t *testing.T) {
+	gate := newSignupGate()
+
+	stale := time.Now().Add(-2 * time.Hour)
+	fresh := time.Now().Add(-30 * time.Minute)
+	for i := 0; i < 10; i++ {
+		gate.recent = append(gate.recent, stale)
+	}
+	gate.recent = append(gate.recent, fresh)
+
+	gate.record()
+	if len(gate.recent) != 2 {
+		t.Fatalf("%d entries after record, want the one inside the hour and the new one", len(gate.recent))
+	}
+}
+
 // Entries older than the window must stop counting, or the limit becomes a
 // lifetime cap and the instance quietly closes itself.
 func TestSignupGateForgetsOldEntries(t *testing.T) {
@@ -81,6 +99,9 @@ func TestParseDomainsTakesWhatOperatorsActuallyType(t *testing.T) {
 		"qq.com\noutlook.com":     {"qq.com", "outlook.com"},
 		"@QQ.com":                 {"qq.com"},
 		"https://gmail.com; a.io": {"gmail.com", "a.io"},
+		"https://gmail.com/":      {"gmail.com"},
+		"https://qq.com/inbox":    {"qq.com"},
+		"https://outlook.com:443": {"outlook.com"},
 		"":                        {},
 		"   ":                     {},
 	}

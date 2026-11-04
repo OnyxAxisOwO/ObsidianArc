@@ -7,6 +7,8 @@
 // the same size as each other or as anything else in the panel.
 
 import { t, type StringKey } from '@/composables/useI18n';
+import { daysFromNow, toLocalInput } from './localTime';
+import { addMonths } from './shared';
 
 const props = withDefaults(defineProps<{
   /** Offer "no expiry" too, for a field where empty means for ever. */
@@ -24,15 +26,12 @@ const PRESETS: Array<{ span: Span; label: StringKey }> = [
   { span: '1y', label: 'expiry1Year' },
 ];
 
+const MONTHS: Record<Exclude<Span, '1w'>, number> = { '1m': 1, '3m': 3, '6m': 6, '1y': 12 };
+
 /** That far from now, as the value a datetime-local field takes. */
 function later(span: Span): string {
-  const date = new Date();
-  if (span === '1w') date.setDate(date.getDate() + 7);
-  else if (span === '1m') date.setMonth(date.getMonth() + 1);
-  else if (span === '3m') date.setMonth(date.getMonth() + 3);
-  else if (span === '6m') date.setMonth(date.getMonth() + 6);
-  else date.setFullYear(date.getFullYear() + 1);
-  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+  if (span === '1w') return daysFromNow(7);
+  return toLocalInput(addMonths(new Date(), MONTHS[span]));
 }
 </script>
 

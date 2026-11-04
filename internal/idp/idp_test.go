@@ -2,8 +2,13 @@ package idp
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -64,7 +69,7 @@ func newFixture(t *testing.T) *fixture {
 	store := NewStore(db)
 	return &fixture{
 		db: db, users: users, groups: groups, store: store, account: account,
-		service: NewService(store, NewKeys(db, box), users, groups),
+		service: NewService(store, NewKeys(db, box), users, groups, Holds{}),
 	}
 }
 
@@ -137,6 +142,13 @@ func TestCallbacksAreCheckedWhenTheyAreRegistered(t *testing.T) {
 		"https://wiki.example.com/callback#/oidc",
 		"javascript:alert(1)",
 		"data:text/html,x",
+		// A second callback typed without its scheme is not a callback. Read
+		// as one, the join would be registered with the typo in its path.
+		"https://wiki.example.com/callback,localhost:3000/callback",
+		"https://wiki.example.com/callback,wiki.example.com/other",
+		// A comma in a path is never a callback boundary, so it is refused
+		// rather than folded into the path.
+		"https://wiki.example.com/a,b",
 	}
 	for _, candidate := range bad {
 		if _, err := ParseRedirectURIs(candidate); err == nil {
@@ -183,7 +195,7 @@ func TestRegisteringAnApplicationShowsItsSecretOnceAndNeverAgain(t *testing.T) {
 	}
 
 	// Rotation invalidates the old one and nothing else.
-	rotated, err := f.store.RotateSecret(ctx, record.ID)
+	rotated, err := f.store.RotateSecret(ctx, record.ID, true)
 	if err != nil {
 		t.Fatalf("rotate: %v", err)
 	}
@@ -212,7 +224,7 @@ func TestAPublicApplicationHasNoSecretAndNeedsPKCE(t *testing.T) {
 	if _, err := f.store.Authenticate(ctx, record.ClientID, ""); err != nil {
 		t.Errorf("a public application cannot identify itself: %v", err)
 	}
-	if _, err := f.store.RotateSecret(ctx, record.ID); err == nil {
+	if _, err := f.store.RotateSecret(ctx, record.ID, true); err == nil {
 		t.Error("a public application rotated a secret it does not have")
 	}
 
@@ -257,7 +269,7 @@ func TestAnUnknownApplicationOrCallbackIsNeverRedirectedTo(t *testing.T) {
 
 	// A disabled application is not a different answer: it is simply not one
 	// that exists as far as the front door is concerned.
-	if _, err := f.store.UpdateApp(ctx, record.ID, AppUpdate{Disabled: boolPtr(true)}); err != nil {
+	if _, err := f.store.UpdateApp(ctx, record.ID, AppUpdate{Disabled: boolPtr(true)}, true); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
 	if _, err := f.service.Read(ctx, values(map[string]string{
@@ -286,6 +298,110 @@ func TestScopesAreNarrowedToWhatTheApplicationMayAskFor(t *testing.T) {
 	if strings.Join(request.Scopes, " ") != "openid profile" {
 		t.Errorf("scopes = %v, want only what the application was registered with", request.Scopes)
 	}
+}
+
+// Narrowing an application reaches the tokens it already holds. A refresh and
+// the identity endpoint answer with what the application may ask for now, so
+// removing email stops the address arriving on the next refresh and the next
+// userinfo call, not only on a new sign-in.
+func TestNarrowingAnApplicationReachesTheTokensItAlreadyHolds(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	granted := []string{ScopeOpenID, ScopeProfile, ScopeEmail}
+	record, _ := f.app(t, CreateAppInput{Scopes: granted})
+
+	if err := f.store.RecordGrant(ctx, nil, record.ID, f.account.ID, granted); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	if _, err := f.store.SaveToken(ctx, nil, "access-token", "refresh-token",
+		record.ID, f.account.ID, granted); err != nil {
+		t.Fatalf("save token: %v", err)
+	}
+
+	withoutEmail := []string{ScopeOpenID, ScopeProfile}
+	narrowed, err := f.store.UpdateApp(ctx, record.ID, AppUpdate{Scopes: &withoutEmail}, false)
+	if err != nil {
+		t.Fatalf("narrow: %v", err)
+	}
+
+	refreshed, err := f.service.Refresh(ctx, "https://arc.example", narrowed,
+		url.Values{"refresh_token": {"refresh-token"}})
+	if err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if strings.Contains(refreshed.Scope, ScopeEmail) {
+		t.Errorf("scope = %q, want email gone from what a refresh grants", refreshed.Scope)
+	}
+	if _, has := idTokenClaims(t, refreshed.IDToken)["email"]; has {
+		t.Error("the identity token from a refresh still carries the address")
+	}
+
+	info, err := f.service.UserInfo(ctx, "https://arc.example", refreshed.AccessToken)
+	if err != nil {
+		t.Fatalf("userinfo: %v", err)
+	}
+	if _, has := info["email"]; has {
+		t.Errorf("userinfo = %v, want no address after the narrowing", info)
+	}
+}
+
+// A code issued while the application could still ask for an address, and
+// redeemed after the operator took that away, buys a token that carries only
+// what the application may ask for now.
+func TestACodeRedeemedAfterANarrowingCarriesOnlyWhatIsStillAllowed(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	const callback = "https://wiki.example.com/callback"
+	granted := []string{ScopeOpenID, ScopeProfile, ScopeEmail}
+	record, _ := f.app(t, CreateAppInput{Scopes: granted})
+
+	// A code is only ever issued after the consent it rests on is recorded, so
+	// the grant the approval would have written is part of the setup.
+	if err := f.store.RecordGrant(ctx, nil, record.ID, f.account.ID, granted); err != nil {
+		t.Fatalf("record consent: %v", err)
+	}
+	if err := f.store.SaveCode(ctx, "a-code", Code{
+		AppID: record.ID, UserID: f.account.ID, RedirectURI: callback, Scopes: granted,
+	}); err != nil {
+		t.Fatalf("save code: %v", err)
+	}
+	withoutEmail := []string{ScopeOpenID, ScopeProfile}
+	narrowed, err := f.store.UpdateApp(ctx, record.ID, AppUpdate{Scopes: &withoutEmail}, false)
+	if err != nil {
+		t.Fatalf("narrow: %v", err)
+	}
+
+	tokens, err := f.service.Exchange(ctx, "https://arc.example", narrowed,
+		url.Values{"code": {"a-code"}, "redirect_uri": {callback}})
+	if err != nil {
+		t.Fatalf("exchange: %v", err)
+	}
+	if strings.Contains(tokens.Scope, ScopeEmail) {
+		t.Errorf("scope = %q, want email withheld from a code redeemed after the narrowing", tokens.Scope)
+	}
+	if _, has := idTokenClaims(t, tokens.IDToken)["email"]; has {
+		t.Error("the identity token from the exchange carries an address the application may no longer ask for")
+	}
+}
+
+// idTokenClaims reads what an identity token says. The signature is not checked
+// here: the claims are what these tests are about, and the flow tests verify the
+// signature against the published keys.
+func idTokenClaims(t *testing.T, token string) map[string]any {
+	t.Helper()
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		t.Fatalf("identity token has %d parts, want three", len(parts))
+	}
+	body, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatalf("decode identity token: %v", err)
+	}
+	var claims map[string]any
+	if err := json.Unmarshal(body, &claims); err != nil {
+		t.Fatalf("read identity token: %v", err)
+	}
+	return claims
 }
 
 func TestTheOpenIDScopeIsRequired(t *testing.T) {
@@ -404,6 +520,42 @@ func TestRevokingAnAuthorisationTakesTheTokensWithIt(t *testing.T) {
 	}
 }
 
+// A password change ends what an account holds with applications: its tokens,
+// and a code issued just before the change, which would otherwise still
+// redeem for a pair. The consent is kept, because the person still agreed.
+func TestRevokingAnAccountEndsWhatItHoldsAndKeepsItsConsent(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	record, _ := f.app(t, CreateAppInput{})
+
+	if err := f.store.RecordGrant(ctx, nil, record.ID, f.account.ID, DefaultScopes); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	if _, err := f.store.SaveToken(ctx, nil, "access-token", "refresh-token",
+		record.ID, f.account.ID, DefaultScopes); err != nil {
+		t.Fatalf("save token: %v", err)
+	}
+	if err := f.store.SaveCode(ctx, "unspent-code", Code{
+		AppID: record.ID, UserID: f.account.ID, RedirectURI: "https://wiki.example.com/callback",
+		Scopes: DefaultScopes,
+	}); err != nil {
+		t.Fatalf("save code: %v", err)
+	}
+
+	if err := f.store.RevokeAccount(ctx, nil, f.account.ID); err != nil {
+		t.Fatalf("revoke account: %v", err)
+	}
+	if _, err := f.store.ResolveAccess(ctx, "access-token"); err != ErrBadToken {
+		t.Errorf("the access token survived the account's revocation: %v", err)
+	}
+	if _, err := f.store.RedeemCode(ctx, "unspent-code"); err != ErrBadCode {
+		t.Errorf("a code issued before the revocation still redeems: %v", err)
+	}
+	if granted, err := f.store.GrantedScopes(ctx, nil, record.ID, f.account.ID); err != nil || len(granted) == 0 {
+		t.Errorf("consent = %v (%v), want the consent kept", granted, err)
+	}
+}
+
 func TestPurgeDropsWhatNothingWillReadAgain(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -437,6 +589,182 @@ func TestPurgeDropsWhatNothingWillReadAgain(t *testing.T) {
 	}
 }
 
+// A trusted application skips the consent screen for everybody who signs in,
+// so the operator's decision about it is not one a delegated security
+// administrator can take. The same grant manages ordinary applications, except
+// for where they send people, which has a test of its own.
+func TestOnlyASuperAdministratorChangesATrustedApplication(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	ordinary, _ := f.app(t, CreateAppInput{Name: "Wiki"})
+	if _, err := f.store.UpdateApp(ctx, ordinary.ID, AppUpdate{Name: strPtr("Wiki Renamed")}, false); err != nil {
+		t.Errorf("renaming an ordinary application: %v", err)
+	}
+	if _, err := f.store.RotateSecret(ctx, ordinary.ID, false); err != nil {
+		t.Errorf("rotating an ordinary application's secret: %v", err)
+	}
+	if _, err := f.store.UpdateApp(ctx, ordinary.ID, AppUpdate{Trusted: boolPtr(true)}, false); !errors.Is(err, ErrTrustedApplication) {
+		t.Errorf("making an application trusted = %v, want ErrTrustedApplication", err)
+	}
+
+	trusted, _ := f.app(t, CreateAppInput{Name: "Own Service", Trusted: true})
+	refusals := map[string]func() error{
+		"rename": func() error {
+			_, err := f.store.UpdateApp(ctx, trusted.ID, AppUpdate{Name: strPtr("Renamed")}, false)
+			return err
+		},
+		"callbacks": func() error {
+			_, err := f.store.UpdateApp(ctx, trusted.ID, AppUpdate{RedirectURIs: strPtr("https://evil.example.com/cb")}, false)
+			return err
+		},
+		"untrust": func() error {
+			_, err := f.store.UpdateApp(ctx, trusted.ID, AppUpdate{Trusted: boolPtr(false)}, false)
+			return err
+		},
+		"rotate": func() error {
+			_, err := f.store.RotateSecret(ctx, trusted.ID, false)
+			return err
+		},
+		"delete": func() error { return f.store.DeleteApp(ctx, trusted.ID, false) },
+	}
+	for label, change := range refusals {
+		if err := change(); !errors.Is(err, ErrTrustedApplication) {
+			t.Errorf("%s of a trusted application = %v, want ErrTrustedApplication", label, err)
+		}
+	}
+	stored, err := f.store.AppByID(ctx, nil, trusted.ID)
+	if err != nil {
+		t.Fatalf("read trusted application: %v", err)
+	}
+	if stored.Name != "Own Service" || !stored.Trusted || len(stored.RedirectURIs) != 1 || stored.RedirectURIs[0] != "https://wiki.example.com/callback" {
+		t.Fatalf("a refused change altered the application: %+v", stored)
+	}
+
+	if _, err := f.store.UpdateApp(ctx, trusted.ID, AppUpdate{Name: strPtr("Renamed")}, true); err != nil {
+		t.Errorf("a super administrator renaming a trusted application: %v", err)
+	}
+	if _, err := f.store.RotateSecret(ctx, trusted.ID, true); err != nil {
+		t.Errorf("a super administrator rotating a trusted application's secret: %v", err)
+	}
+	if err := f.store.DeleteApp(ctx, trusted.ID, true); err != nil {
+		t.Errorf("a super administrator deleting a trusted application: %v", err)
+	}
+	if _, err := f.store.AppByID(ctx, nil, trusted.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("deleted application still reads back: %v", err)
+	}
+}
+
+// Consent is recorded per application and not per callback, so a callback added
+// to an application people have already agreed to would get their codes without
+// asking them again. Re-saving the stored set is allowed, because the form sends
+// it back and order is not part of a callback. Any other change, adding one or
+// removing one, is the super administrator's, and a refused change leaves the
+// stored set as it was.
+func TestOnlyASuperAdministratorChangesACallback(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	ordinary, _ := f.app(t, CreateAppInput{Name: "Wiki"})
+	const callback = "https://wiki.example.com/callback"
+
+	for _, same := range []string{callback, callback + ", " + callback} {
+		if _, err := f.store.UpdateApp(ctx, ordinary.ID, AppUpdate{RedirectURIs: strPtr(same)}, false); err != nil {
+			t.Errorf("re-saving the stored callbacks as %q: %v", same, err)
+		}
+	}
+	for _, refused := range []string{
+		callback + "\nhttps://evil.example.com/cb",
+		"https://evil.example.com/cb",
+	} {
+		if _, err := f.store.UpdateApp(ctx, ordinary.ID, AppUpdate{RedirectURIs: strPtr(refused)}, false); !errors.Is(err, ErrCallbacksNeedSuperAdmin) {
+			t.Errorf("a security administrator set the callbacks to %q: %v, want ErrCallbacksNeedSuperAdmin", refused, err)
+		}
+	}
+	stored, err := f.store.AppByID(ctx, nil, ordinary.ID)
+	if err != nil {
+		t.Fatalf("read application: %v", err)
+	}
+	if len(stored.RedirectURIs) != 1 || stored.RedirectURIs[0] != callback {
+		t.Fatalf("a refused change altered the callbacks: %v", stored.RedirectURIs)
+	}
+
+	both := callback + "\nhttps://wiki.example.org/callback"
+	if _, err := f.store.UpdateApp(ctx, ordinary.ID, AppUpdate{RedirectURIs: strPtr(both)}, true); err != nil {
+		t.Fatalf("a super administrator adding a callback: %v", err)
+	}
+	if _, err := f.store.UpdateApp(ctx, ordinary.ID, AppUpdate{RedirectURIs: strPtr("https://wiki.example.org/callback\n" + callback)}, false); err != nil {
+		t.Errorf("re-saving two stored callbacks in another order: %v", err)
+	}
+	if _, err := f.store.UpdateApp(ctx, ordinary.ID, AppUpdate{RedirectURIs: strPtr(callback)}, false); !errors.Is(err, ErrCallbacksNeedSuperAdmin) {
+		t.Errorf("a security administrator removed a callback: %v, want ErrCallbacksNeedSuperAdmin", err)
+	}
+	stored, err = f.store.AppByID(ctx, nil, ordinary.ID)
+	if err != nil {
+		t.Fatalf("read application: %v", err)
+	}
+	if len(stored.RedirectURIs) != 2 {
+		t.Fatalf("callbacks after the super administrator's change = %v, want both", stored.RedirectURIs)
+	}
+}
+
+// Trust is checked and written under the application's row lock. Without it a
+// trust change by a super administrator can be overwritten by a security
+// administrator's update that read the row before the change. Whatever the
+// interleaving, the trust must survive, and the rename must have landed exactly
+// when the security administrator was told it did. The delegate's write is a
+// rename rather than a callback change: a callback change by anybody but a
+// super administrator is refused whatever the trust, so it could not race the
+// trust check at all.
+func TestConcurrentTrustChangeIsNeitherLostNorBypassed(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	// Each round removes its application again: the instance caps how many
+	// exist, and a race that needs many tries to show itself needs many rounds.
+	const rounds = 200
+	for round := 0; round < rounds; round++ {
+		record, _ := f.app(t, CreateAppInput{Name: "Race"})
+		var (
+			wg                    sync.WaitGroup
+			trustErr, delegateErr error
+			start                 = make(chan struct{})
+		)
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, trustErr = f.store.UpdateApp(ctx, record.ID, AppUpdate{Trusted: boolPtr(true)}, true)
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			_, delegateErr = f.store.UpdateApp(ctx, record.ID, AppUpdate{Name: strPtr("Renamed by the delegate")}, false)
+		}()
+		close(start)
+		wg.Wait()
+
+		if trustErr != nil {
+			t.Fatalf("round %d: a super administrator trusting an application: %v", round, trustErr)
+		}
+		if delegateErr != nil && !errors.Is(delegateErr, ErrTrustedApplication) {
+			t.Fatalf("round %d: a security administrator's update: %v", round, delegateErr)
+		}
+		stored, err := f.store.AppByID(ctx, nil, record.ID)
+		if err != nil {
+			t.Fatalf("round %d: read application: %v", round, err)
+		}
+		if !stored.Trusted {
+			t.Fatalf("round %d: the trust change was lost", round)
+		}
+		renamed := stored.Name == "Renamed by the delegate"
+		if renamed != (delegateErr == nil) {
+			t.Fatalf("round %d: name changed = %v, but the security administrator's update returned %v", round, renamed, delegateErr)
+		}
+		if err := f.store.DeleteApp(ctx, record.ID, true); err != nil {
+			t.Fatalf("round %d: remove application: %v", round, err)
+		}
+	}
+}
+
 // --- helpers ------------------------------------------------------------------
 
 func values(pairs map[string]string) map[string][]string {
@@ -456,3 +784,36 @@ func asRedirectable(err error, into **RedirectableError) bool {
 }
 
 func boolPtr(value bool) *bool { return &value }
+
+func strPtr(value string) *string { return &value }
+
+// A comma separates callbacks only where the next one begins. A callback with
+// a comma in its own query string is one callback, and the registration match
+// is exact, so a split there would leave no way to register it.
+func TestACommaInsideACallbackDoesNotSplitIt(t *testing.T) {
+	parsed, err := ParseRedirectURIs("https://a.example/cb?x=1,2")
+	if err != nil || len(parsed) != 1 || parsed[0] != "https://a.example/cb?x=1,2" {
+		t.Fatalf("one callback with a comma = %v (%v), want it kept whole", parsed, err)
+	}
+
+	parsed, err = ParseRedirectURIs("https://a.example/cb,https://b.example/cb, https://c.example/cb?x=1,2")
+	if err != nil {
+		t.Fatalf("three callbacks = %v", err)
+	}
+	want := []string{"https://a.example/cb", "https://b.example/cb", "https://c.example/cb?x=1,2"}
+	if len(parsed) != len(want) {
+		t.Fatalf("three callbacks = %v, want %v", parsed, want)
+	}
+	for i := range want {
+		if parsed[i] != want[i] {
+			t.Errorf("callback %d = %q, want %q", i, parsed[i], want[i])
+		}
+	}
+
+	// The scheme is case-insensitive, and checkRedirectURI accepts HTTPS://,
+	// so a comma before one must still begin a callback.
+	parsed, err = ParseRedirectURIs("https://a.example/cb,HTTPS://b.example/cb")
+	if err != nil || len(parsed) != 2 || parsed[0] != "https://a.example/cb" || parsed[1] != "HTTPS://b.example/cb" {
+		t.Fatalf("an upper-case scheme after a comma = %v (%v), want two callbacks", parsed, err)
+	}
+}

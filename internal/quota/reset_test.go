@@ -73,7 +73,7 @@ func TestResetAllRestartsAllowanceWindowsFromNow(t *testing.T) {
 	ctx := context.Background()
 	person := account("user-1", "")
 	person.CreatedAt = time.Now().Add(-48 * time.Hour).UnixMilli()
-	if _, err := service.Policies().Save(ctx, Policy{
+	if _, err := service.Policies().Save(ctx, nil, Policy{
 		Scope: ScopeGlobal,
 		Windows: map[Window]Limits{
 			Window5H:   limits(true, ptrInt(10), nil, nil),
@@ -93,7 +93,7 @@ func TestResetAllRestartsAllowanceWindowsFromNow(t *testing.T) {
 	if err := service.ResetAll(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Reserve(ctx, person, Estimate{}); err != nil {
+	if _, err := service.ReserveFor(ctx, person, "", Estimate{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	after, err := service.SummaryFor(ctx, person)
@@ -262,7 +262,7 @@ func TestResetWindowsClearsSpecificWindowsOnly(t *testing.T) {
 	}
 
 	// Reset only 5h.
-	if err := service.ResetWindows(ctx, []string{spender.ID}, []string{"5h"}); err != nil {
+	if err := service.ResetWindows(ctx, nil, []string{spender.ID}, []string{"5h"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -277,7 +277,7 @@ func TestResetWindowsClearsSpecificWindowsOnly(t *testing.T) {
 	}
 
 	// Reset combined 1w and 1m.
-	if err := service.ResetWindows(ctx, []string{spender.ID}, []string{"1w", "1m"}); err != nil {
+	if err := service.ResetWindows(ctx, nil, []string{spender.ID}, []string{"1w", "1m"}); err != nil {
 		t.Fatal(err)
 	}
 	if got := spentInWindow(t, service, spender.ID, WindowWeek); got != 0 {
@@ -298,4 +298,42 @@ func spentInWindow(t *testing.T, service *Service, userID string, window Window)
 		t.Fatalf("read counter window %s: %v", window, err)
 	}
 	return credits
+}
+
+// A refund can land on a counter a reset has just deleted: a reset card used
+// while the account's turns are still streaming. It used to insert the
+// negative delta as the row, and the account then had that much allowance
+// beyond its limit.
+func TestARefundIntoADeletedCounterDoesNotGoNegative(t *testing.T) {
+	service, _ := newService(t)
+	ctx := context.Background()
+	spender := account("user-refund", "")
+	start := bucketStart(Window5H, time.Now(), 0)
+
+	got, err := bump(ctx, service.db, scopeKey(spender.ID), Window5H, start, 0, -4096, -3.5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Tokens != 0 || got.Credits != 0 {
+		t.Errorf("a refund into an empty bucket left %d tokens and %v credits", got.Tokens, got.Credits)
+	}
+
+	// And the update path still clamps and still adds.
+	if _, err := bump(ctx, service.db, scopeKey(spender.ID), Window5H, start, 1, 300, 0.3); err != nil {
+		t.Fatal(err)
+	}
+	got, err = bump(ctx, service.db, scopeKey(spender.ID), Window5H, start, 0, -100, -0.1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Tokens != 200 || got.Requests != 1 {
+		t.Errorf("after +300 and -100 the counter reads %+v", got)
+	}
+	got, err = bump(ctx, service.db, scopeKey(spender.ID), Window5H, start, 0, -1000, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Tokens != 0 || got.Credits != 0 {
+		t.Errorf("an over-refund left %+v", got)
+	}
 }

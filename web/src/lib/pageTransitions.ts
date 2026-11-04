@@ -1,4 +1,4 @@
-// Page transition logic: CONTRACT.md / navigation transitions.
+// Page transition logic: which way each navigation slides, if at all.
 // Determines whether navigation between routes should trigger a full-page
 // horizontal slide (左右滑动) or subtle cross-fade, and in which direction.
 

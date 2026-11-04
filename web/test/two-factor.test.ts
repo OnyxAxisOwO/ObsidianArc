@@ -1,11 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, shallowRef, type App, type Component } from 'vue';
+import { type Component } from 'vue';
 import * as authApi from '../src/api/auth';
-import type { Account } from '../src/api/auth';
 import { ApiError } from '../src/api/client';
 import * as twoFactorApi from '../src/api/twofactor';
 import type { TwoFactorStatus } from '../src/api/twofactor';
-import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { serverOwned } from '../src/lib/next';
 import {
@@ -14,6 +12,8 @@ import {
 import AuthView from '../src/views/AuthView.vue';
 import SecuritySection from '../src/views/settings/SecuritySection.vue';
 import TwoFactorWizard from '../src/views/settings/TwoFactorWizard.vue';
+import { mountComponent, settle, stubLocation, button } from './helpers';
+import { makeAccount } from './fixtures/account';
 
 // Two-step verification from the browser's side: the code step of signing in,
 // the setup wizard, and the security settings that switch it on and off.
@@ -25,28 +25,7 @@ vi.mock('vue-router', () => ({
   useRoute: () => route,
 }));
 
-const ACCOUNT: Account = {
-  id: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
-  username: 'ada',
-  email: '',
-  nickname: 'Ada',
-  avatar: '',
-  bio: '',
-  role: 'user',
-  group_id: 'g1',
-  group_expires_at: 0,
-  group_name: 'Default',
-  status: 'active',
-  created_at: 0,
-  updated_at: 0,
-  last_login_at: 0,
-  email_verified: true,
-  allow_stats: true,
-  allow_delete_conversations: true,
-  api_restricted: false,
-  api_restricted_until: 0,
-  api_restriction_source: '',
-};
+const ACCOUNT = makeAccount({ id: '01ARZ3NDEKTSV4RRFFQ69G5FAV', email: '', created_at: 0, updated_at: 0 });
 
 const SETUP = {
   secret: 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP',
@@ -58,7 +37,7 @@ const SETUP = {
 
 const CODES = ['abcde-fghjk', 'mnpqr-stvwx', '01234-56789'];
 
-let app: App | undefined;
+let unmount: (() => void) | undefined;
 let host: HTMLElement;
 
 beforeEach(async () => {
@@ -71,44 +50,20 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  app?.unmount();
-  app = undefined;
-  document.body.textContent = '';
+  unmount?.();
+  unmount = undefined;
   vi.restoreAllMocks();
   site.value = null;
   forget();
 });
 
-async function settle(): Promise<void> {
-  for (let i = 0; i < 3; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await nextTick();
-  }
-}
-
 async function mount(component: Component, props: Record<string, unknown> = {}): Promise<void> {
-  const panels = document.createElement('div');
-  document.body.append(panels);
-  app = createApp({
-    setup() {
-      providePanelHost(shallowRef(panels));
-      return () => h(component, props);
-    },
-  });
-  app.mount(host);
-  await settle();
+  unmount = await mountComponent(component, props, { host });
 }
 
 function type(node: HTMLInputElement, value: string): void {
   node.value = value;
   node.dispatchEvent(new Event('input', { bubbles: true }));
-}
-
-function button(label: string): HTMLButtonElement {
-  const found = [...host.querySelectorAll<HTMLButtonElement>('button')]
-    .find((node) => node.textContent?.trim() === label);
-  if (!found) throw new Error(`Button not found: ${label}`);
-  return found;
 }
 
 describe('the code step of signing in', () => {
@@ -176,7 +131,7 @@ describe('the code step of signing in', () => {
     const finish = vi.spyOn(authApi, 'completeSignIn').mockResolvedValue({ user: ACCOUNT });
     await mount(AuthView, { mode: 'login' });
 
-    button(t('twoFactorUseRecovery')).click();
+    button(host, t('twoFactorUseRecovery')).click();
     await settle();
     expect(host.querySelector('.oa-field-label')!.textContent).toBe(t('twoFactorRecoveryLabel'));
     expect(host.textContent).toContain(t('twoFactorLostHelp'));
@@ -194,7 +149,7 @@ describe('the code step of signing in', () => {
     pendingSecondFactor.value = true;
     await mount(AuthView, { mode: 'login' });
     expect(host.querySelector('input[type="checkbox"]')).toBeNull();
-    app?.unmount();
+    unmount?.();
 
     site.value = { ...siteInfo.value, two_factor_remember_days: 30 };
     const finish = vi.spyOn(authApi, 'completeSignIn').mockResolvedValue({ user: ACCOUNT });
@@ -212,7 +167,7 @@ describe('the code step of signing in', () => {
     pendingSecondFactor.value = true;
     const out = vi.spyOn(authApi, 'logout').mockResolvedValue();
     await mount(AuthView, { mode: 'login' });
-    button(t('twoFactorOtherAccount')).click();
+    button(host, t('twoFactorOtherAccount')).click();
     await settle();
     expect(out).toHaveBeenCalled();
     expect(pendingSecondFactor.value).toBe(false);
@@ -222,8 +177,7 @@ describe('the code step of signing in', () => {
   // Another site sends a visitor through the sign-in with its own request as
   // the destination, and the router has no screen by that name.
   it('follows a destination the server owns with a real navigation', async () => {
-    const assign = vi.fn();
-    Object.defineProperty(window, 'location', { configurable: true, writable: true, value: { assign, href: '' } });
+    const { assign } = stubLocation();
     route.query = { next: '/oauth/authorize?client_id=wiki&state=s' };
     pendingSecondFactor.value = true;
     vi.spyOn(authApi, 'completeSignIn').mockResolvedValue({ user: ACCOUNT });
@@ -261,7 +215,7 @@ describe('the setup wizard', () => {
     // Nothing is asked of the server until somebody says they have an app.
     expect(begin).not.toHaveBeenCalled();
     expect(host.textContent).toContain(t('twoFactorAppTitle'));
-    button(t('twoFactorAppHaveOne')).click();
+    button(host, t('twoFactorAppHaveOne')).click();
     await settle();
 
     // The picture carries its quiet zone, and the key is there as text.
@@ -269,11 +223,11 @@ describe('the setup wizard', () => {
     expect(svg.getAttribute('viewBox')).toBe('-4 -4 29 29');
     expect(host.querySelector('.oa-2fa-qr-dark')!.getAttribute('d')).toBe(SETUP.qr.path);
     expect(host.textContent).toContain(t('twoFactorScanBody', { issuer: 'Arc' }));
-    button(t('twoFactorCantScan')).click();
+    button(host, t('twoFactorCantScan')).click();
     await settle();
     expect(host.querySelector('.oa-2fa-secret')!.textContent).toContain('JBSW Y3DP EHPK 3PXP');
 
-    button(t('twoFactorContinue')).click();
+    button(host, t('twoFactorContinue')).click();
     await settle();
     type(host.querySelector<HTMLInputElement>('input.oa-2fa-code')!, '123456');
     await settle();
@@ -282,7 +236,7 @@ describe('the setup wizard', () => {
     // The codes, once, and no way past them without saying they are kept.
     const codes = [...host.querySelectorAll('.oa-2fa-codes li')].map((node) => node.textContent);
     expect(codes).toEqual(CODES);
-    const finish = button(t('twoFactorFinish'));
+    const finish = button(host, t('twoFactorFinish'));
     expect(finish.disabled).toBe(true);
     // Not handed over yet: a gate watching the account would vanish with
     // the codes still unsaved.
@@ -301,14 +255,67 @@ describe('the setup wizard', () => {
     vi.spyOn(twoFactorApi, 'enableTwoFactor')
       .mockRejectedValue(new ApiError(400, 'two_factor_no_setup', 'expired'));
     await mount(TwoFactorWizard);
-    button(t('twoFactorAppHaveOne')).click();
+    button(host, t('twoFactorAppHaveOne')).click();
     await settle();
-    button(t('twoFactorContinue')).click();
+    button(host, t('twoFactorContinue')).click();
     await settle();
     type(host.querySelector<HTMLInputElement>('input.oa-2fa-code')!, '123456');
     await settle();
     expect(host.textContent).toContain(t('twoFactorAppTitle'));
     expect(host.textContent).toContain(t('twoFactorNoSetup'));
+  });
+
+  describe('for an account with a password', () => {
+    async function toTheCodeStep(): Promise<void> {
+      await mount(TwoFactorWizard);
+      button(host, t('twoFactorAppHaveOne')).click();
+      await settle();
+      button(host, t('twoFactorContinue')).click();
+      await settle();
+    }
+
+    it('sends the password with the code, and does not submit on the code alone', async () => {
+      vi.spyOn(twoFactorApi, 'beginTwoFactor').mockResolvedValue({ ...SETUP, password_required: true });
+      const enable = vi.spyOn(twoFactorApi, 'enableTwoFactor')
+        .mockResolvedValue({ recovery_codes: CODES, user: { ...ACCOUNT, two_factor_at: 1 } });
+      await toTheCodeStep();
+
+      type(host.querySelector<HTMLInputElement>('input.oa-2fa-code')!, '123456');
+      await settle();
+      expect(enable).not.toHaveBeenCalled();
+      expect(button(host, t('twoFactorVerifyAndEnable')).disabled).toBe(true);
+
+      type(host.querySelector<HTMLInputElement>('input[type="password"]')!, 'a-good-password');
+      await settle();
+      button(host, t('twoFactorVerifyAndEnable')).click();
+      await settle();
+      expect(enable).toHaveBeenCalledWith('123456', 'a-good-password');
+      expect(host.querySelectorAll('.oa-2fa-codes li')).toHaveLength(CODES.length);
+    });
+
+    it('asks for the password again when it was wrong, keeping the code', async () => {
+      vi.spyOn(twoFactorApi, 'beginTwoFactor').mockResolvedValue({ ...SETUP, password_required: true });
+      vi.spyOn(twoFactorApi, 'enableTwoFactor')
+        .mockRejectedValue(new ApiError(400, 'current_password_wrong', 'wrong'));
+      await toTheCodeStep();
+
+      type(host.querySelector<HTMLInputElement>('input[type="password"]')!, 'nope');
+      type(host.querySelector<HTMLInputElement>('input.oa-2fa-code')!, '123456');
+      await settle();
+      expect(host.textContent).toContain(t('currentPasswordWrong'));
+      expect(host.querySelector<HTMLInputElement>('input[type="password"]')!.value).toBe('');
+      expect(host.querySelector<HTMLInputElement>('input.oa-2fa-code')!.value).toBe('123456');
+    });
+  });
+
+  it('asks an account with no password for none', async () => {
+    vi.spyOn(twoFactorApi, 'beginTwoFactor').mockResolvedValue({ ...SETUP, password_required: false });
+    await mount(TwoFactorWizard);
+    button(host, t('twoFactorAppHaveOne')).click();
+    await settle();
+    button(host, t('twoFactorContinue')).click();
+    await settle();
+    expect(host.querySelector('input[type="password"]')).toBeNull();
   });
 });
 
@@ -323,7 +330,7 @@ describe('the security settings', () => {
     vi.spyOn(twoFactorApi, 'fetchTwoFactor').mockResolvedValue({ ...ON, enabled: false, enabled_at: 0, recovery_remaining: 0 });
     await mount(SecuritySection);
     expect(host.textContent).toContain(t('twoFactorOff'));
-    button(t('twoFactorTurnOn')).click();
+    button(host, t('twoFactorTurnOn')).click();
     await settle();
     expect(host.querySelector('.oa-2fa-wizard')).not.toBeNull();
   });
@@ -335,7 +342,7 @@ describe('the security settings', () => {
     await mount(SecuritySection);
 
     expect(host.textContent).toContain(t('twoFactorRecoveryRowHint', { count: 8 }));
-    button(t('twoFactorTurnOffShort')).click();
+    button(host, t('twoFactorTurnOffShort')).click();
     await settle();
     type(host.querySelector<HTMLInputElement>('input.oa-2fa-code')!, '123456');
     host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
@@ -349,8 +356,8 @@ describe('the security settings', () => {
     vi.spyOn(twoFactorApi, 'fetchTwoFactor').mockResolvedValue({ ...ON, mandatory: true, policy: 'everyone' });
     await mount(SecuritySection);
     expect(host.textContent).toContain(t('twoFactorMandatoryNote'));
-    expect(() => button(t('twoFactorTurnOffShort'))).toThrow();
-    expect(() => button(t('twoFactorRegenerateShort'))).not.toThrow();
+    expect(() => button(host, t('twoFactorTurnOffShort'))).toThrow();
+    expect(() => button(host, t('twoFactorRegenerateShort'))).not.toThrow();
   });
 
   it('warns when the recovery codes are running out', async () => {
@@ -358,5 +365,192 @@ describe('the security settings', () => {
     vi.spyOn(twoFactorApi, 'fetchTwoFactor').mockResolvedValue({ ...ON, recovery_remaining: 2 });
     await mount(SecuritySection);
     expect(host.textContent).toContain(t('twoFactorRecoveryLow', { count: 2 }));
+  });
+
+  it('keeps freshly regenerated codes on screen until they are acknowledged', async () => {
+    adopt({ ...ACCOUNT, two_factor_at: 1 });
+    vi.spyOn(twoFactorApi, 'fetchTwoFactor').mockResolvedValue(ON);
+    const regenerate = vi.spyOn(twoFactorApi, 'regenerateRecovery').mockResolvedValue({ recovery_codes: CODES });
+    await mount(SecuritySection);
+
+    button(host, t('twoFactorRegenerateShort')).click();
+    await settle();
+    type(host.querySelector<HTMLInputElement>('input.oa-2fa-code')!, '123456');
+    host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    await settle();
+    expect(regenerate).toHaveBeenCalledWith('123456');
+    const codesShown = () => [...host.querySelectorAll('.oa-2fa-codes li')].map((node) => node.textContent);
+    expect(codesShown()).toEqual(CODES);
+
+    // Opening the other action must not throw away codes the server no longer holds.
+    button(host, t('twoFactorTurnOffShort')).click();
+    await settle();
+    expect(codesShown()).toEqual(CODES);
+
+    // Finish waits for the reader to say the codes are kept.
+    expect(button(host, t('twoFactorFinish')).disabled).toBe(true);
+    const saved = host.querySelector<HTMLInputElement>('.oa-2fa-codes-box input[type="checkbox"]')!;
+    saved.checked = true;
+    saved.dispatchEvent(new Event('change', { bubbles: true }));
+    await settle();
+    expect(button(host, t('twoFactorFinish')).disabled).toBe(false);
+    button(host, t('twoFactorFinish')).click();
+    await settle();
+    expect(codesShown()).toEqual([]);
+  });
+});
+
+describe('leaving the setup wizard with codes unsaved', () => {
+  it('asks before the page is left on the save step, and not once the codes are acknowledged', async () => {
+    vi.spyOn(twoFactorApi, 'beginTwoFactor').mockResolvedValue(SETUP);
+    vi.spyOn(twoFactorApi, 'enableTwoFactor')
+      .mockResolvedValue({ recovery_codes: CODES, user: { ...ACCOUNT, two_factor_at: 1 } });
+    await mount(TwoFactorWizard, { onDone: vi.fn() });
+    button(host, t('twoFactorAppHaveOne')).click();
+    await settle();
+    button(host, t('twoFactorContinue')).click();
+    await settle();
+    type(host.querySelector<HTMLInputElement>('input.oa-2fa-code')!, '123456');
+    await settle();
+
+    const leaving = (): boolean => {
+      const event = new Event('beforeunload', { cancelable: true });
+      window.dispatchEvent(event);
+      return event.defaultPrevented;
+    };
+    expect(leaving()).toBe(true);
+
+    const saved = host.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    saved.checked = true;
+    saved.dispatchEvent(new Event('change', { bubbles: true }));
+    await settle();
+    expect(leaving()).toBe(false);
+  });
+
+  it('does not ask on the earlier steps, where nothing has changed yet', async () => {
+    await mount(TwoFactorWizard, { onDone: vi.fn() });
+    const leaving = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(leaving);
+    expect(leaving.defaultPrevented).toBe(false);
+  });
+});
+
+describe('leaving with regenerated codes unsaved', () => {
+  const ON: TwoFactorStatus = {
+    available: true, enabled: true, enabled_at: Date.UTC(2026, 8, 1), recovery_remaining: 8,
+    mandatory: false, policy: 'optional', remember_days: 0,
+  };
+
+  it('asks before the page is left while the new codes are unsaved, and not once they are acknowledged', async () => {
+    adopt({ ...ACCOUNT, two_factor_at: 1 });
+    vi.spyOn(twoFactorApi, 'fetchTwoFactor').mockResolvedValue(ON);
+    vi.spyOn(twoFactorApi, 'regenerateRecovery').mockResolvedValue({ recovery_codes: CODES });
+    await mount(SecuritySection);
+    button(host, t('twoFactorRegenerateShort')).click();
+    await settle();
+    type(host.querySelector<HTMLInputElement>('input.oa-2fa-code')!, '123456');
+    host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    await settle();
+
+    const leaving = (): boolean => {
+      const event = new Event('beforeunload', { cancelable: true });
+      window.dispatchEvent(event);
+      return event.defaultPrevented;
+    };
+    expect(leaving()).toBe(true);
+
+    const saved = host.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    saved.checked = true;
+    saved.dispatchEvent(new Event('change', { bubbles: true }));
+    await settle();
+    expect(leaving()).toBe(false);
+  });
+
+  it('does not ask while no codes are on screen', async () => {
+    adopt({ ...ACCOUNT, two_factor_at: 1 });
+    vi.spyOn(twoFactorApi, 'fetchTwoFactor').mockResolvedValue(ON);
+    await mount(SecuritySection);
+    const leaving = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(leaving);
+    expect(leaving.defaultPrevented).toBe(false);
+  });
+
+  // Leaving the settings page inside the app unmounts the section, and the
+  // server cannot show the codes again: a remount in the same load has to find
+  // them still on screen, not lost.
+  it('shows unacknowledged codes again after the settings page is left and returned to', async () => {
+    adopt({ ...ACCOUNT, two_factor_at: 1 });
+    vi.spyOn(twoFactorApi, 'fetchTwoFactor').mockResolvedValue(ON);
+    vi.spyOn(twoFactorApi, 'regenerateRecovery').mockResolvedValue({ recovery_codes: CODES });
+    await mount(SecuritySection);
+    button(host, t('twoFactorRegenerateShort')).click();
+    await settle();
+    type(host.querySelector<HTMLInputElement>('input.oa-2fa-code')!, '123456');
+    host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    await settle();
+
+    unmount?.();
+    unmount = undefined;
+    await mount(SecuritySection);
+
+    expect([...host.querySelectorAll('.oa-2fa-codes li')].map((node) => node.textContent)).toEqual(CODES);
+  });
+
+  it('does not show the codes to the next account signed in on the same page', async () => {
+    adopt({ ...ACCOUNT, two_factor_at: 1 });
+    vi.spyOn(twoFactorApi, 'fetchTwoFactor').mockResolvedValue(ON);
+    vi.spyOn(twoFactorApi, 'regenerateRecovery').mockResolvedValue({ recovery_codes: CODES });
+    await mount(SecuritySection);
+    button(host, t('twoFactorRegenerateShort')).click();
+    await settle();
+    type(host.querySelector<HTMLInputElement>('input.oa-2fa-code')!, '123456');
+    host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    await settle();
+
+    unmount?.();
+    unmount = undefined;
+    forget();
+    adopt({ ...ACCOUNT, id: '01ARZ3NDEKTSV4RRFFQ69G5FAW', two_factor_at: 1 });
+    await mount(SecuritySection);
+
+    expect(host.querySelectorAll('.oa-2fa-codes li')).toHaveLength(0);
+  });
+});
+
+describe('turning it off after a regeneration', () => {
+  it('drops the codes it was showing, so they do not come back when it is switched on again', async () => {
+    adopt({ ...ACCOUNT, two_factor_at: 1 });
+    const ON_NOW: TwoFactorStatus = {
+      available: true, enabled: true, enabled_at: Date.UTC(2026, 8, 1), recovery_remaining: 8,
+      mandatory: false, policy: 'optional', remember_days: 0,
+    };
+    vi.spyOn(twoFactorApi, 'fetchTwoFactor').mockResolvedValue(ON_NOW);
+    vi.spyOn(twoFactorApi, 'regenerateRecovery').mockResolvedValue({ recovery_codes: CODES });
+    const disable = vi.spyOn(twoFactorApi, 'disableTwoFactor').mockResolvedValue({ user: ACCOUNT });
+    await mount(SecuritySection);
+
+    button(host, t('twoFactorRegenerateShort')).click();
+    await settle();
+    type(host.querySelector<HTMLInputElement>('input.oa-2fa-code')!, '123456');
+    host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    await settle();
+    expect(host.querySelectorAll('.oa-2fa-codes li')).toHaveLength(CODES.length);
+
+    button(host, t('twoFactorTurnOffShort')).click();
+    await settle();
+    type(host.querySelector<HTMLInputElement>('input.oa-2fa-code')!, '654321');
+    host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    await settle();
+    expect(disable).toHaveBeenCalledWith('654321');
+    expect(host.querySelectorAll('.oa-2fa-codes li')).toHaveLength(0);
+  });
+});
+
+describe('which destinations belong to the server', () => {
+  it('sends the authorisation request to the server and nothing under the API', () => {
+    expect(serverOwned('/oauth/authorize?client_id=x')).toBe(true);
+    expect(serverOwned('/oauth/authorize')).toBe(true);
+    expect(serverOwned('/oauth/authorizeX')).toBe(false);
+    expect(serverOwned('/api/auth/me')).toBe(false);
   });
 });

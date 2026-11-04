@@ -21,6 +21,7 @@ package reqlog
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -66,21 +67,28 @@ const (
 	bufferSize = 2000
 	// Rows per INSERT. Large enough that a burst costs few round trips, small
 	// enough that one statement stays well inside any driver's parameter
-	// limit — thirteen columns times this.
+	// limit — columnCount parameters times this.
 	batchSize = 100
 	// How long a partial batch waits for company before being written. Short
 	// enough that the log is current when an operator looks at it.
 	flushEvery = 2 * time.Second
 	// An audit trail must not be an unauthenticated disk-filling primitive.
 	// The newest entries are retained and older ones are evicted once this
-	// ceiling is reached. At the current row shape this keeps the log in the
-	// low hundreds of megabytes even under sustained hostile traffic.
+	// ceiling is reached. The ceiling counts rows, so it bounds the table only
+	// if no single row can grow without limit: every free-text field an
+	// anonymous request can set is capped before it is queued, here in
+	// cleanEntry, and the request id, which httpx.RequestID replaces when it
+	// is longer than 64 bytes.
 	MaxStoredEntries = 200_000
 	// Checking the cap requires walking the time index to its boundary. Do it
 	// on the first write after boot, then once per several thousand rows rather
 	// than turning every batch into a full-cap scan.
 	trimEveryBatches = 50
 
+	// The server routes GET, POST, PUT, PATCH and DELETE, none longer than six
+	// characters. The cap sits far above that, and bounds what one
+	// client-chosen string can make a row carry.
+	MaxMethodChars    = 32
 	MaxPathChars      = 300
 	MaxUserAgentChars = 200
 )
@@ -109,8 +117,7 @@ func NewStore(db *database.DB) *Store {
 // be held up, or made to fail, by the recording of it.
 func (s *Store) Record(entry Entry) {
 	entry.ID = id.New()
-	entry.Path = text.Truncate(entry.Path, MaxPathChars)
-	entry.UserAgent = text.Truncate(entry.UserAgent, MaxUserAgentChars)
+	entry = cleanEntry(entry)
 
 	select {
 	case s.entries <- entry:
@@ -119,7 +126,31 @@ func (s *Store) Record(entry Entry) {
 	}
 }
 
-// Dropped is how many entries were lost to a full buffer since boot.
+// cleanEntry makes every text field storable before the entry can share a
+// batch. PostgreSQL refuses the whole multi-row INSERT for one bad value, and
+// the rows lost with it belong to other requests, so this runs per entry here
+// rather than once per batch. Every field is checked, not only the ones a
+// client names: usernames and display names are typed by people, and nothing
+// in this package says which of them could hold a bad byte.
+//
+// Clean runs before Truncate, so the limits count what is actually stored.
+func cleanEntry(entry Entry) Entry {
+	entry.Method = text.Truncate(text.Clean(entry.Method), MaxMethodChars)
+	entry.Path = text.Truncate(text.Clean(entry.Path), MaxPathChars)
+	entry.UserID = text.Clean(entry.UserID)
+	entry.Username = text.Clean(entry.Username)
+	entry.Channel = text.Clean(entry.Channel)
+	entry.IP = text.Clean(entry.IP)
+	entry.UserAgent = text.Truncate(text.Clean(entry.UserAgent), MaxUserAgentChars)
+	entry.RequestID = text.Clean(entry.RequestID)
+	entry.ModelID = text.Clean(entry.ModelID)
+	entry.ModelName = text.Clean(entry.ModelName)
+	entry.ErrorCode = text.Clean(entry.ErrorCode)
+	return entry
+}
+
+// Dropped is how many entries were lost before they reached the table since
+// boot: to a full buffer, or to a batch whose write failed.
 func (s *Store) Dropped() int64 { return s.dropped.Load() }
 
 // Evicted is how many old rows were removed by the hard storage ceiling
@@ -140,8 +171,10 @@ func (s *Store) Run(ctx context.Context) {
 			return
 		}
 		if err := s.write(ctx, batch); err != nil {
-			// Nowhere better to report this than the process log: the thing
-			// that failed is the recording of things.
+			// The rows are lost either way. The count reaches the administration
+			// screen, but only the process log keeps the cause, and the database
+			// that failed cannot be asked to record its own failure.
+			slog.ErrorContext(ctx, "request log write failed", "entries", len(batch), "error", err)
 			s.dropped.Add(int64(len(batch)))
 		}
 		batch = batch[:0]
@@ -187,13 +220,28 @@ const columns = `id, at, method, path, status, duration_ms, bytes,
 
 const columnCount = 16
 
+// scanTargets is the one place besides columns that knows their order; a test
+// holds the two to the same length, and the row tuple is built from the count.
+func (e *Entry) scanTargets() []any {
+	return []any{&e.ID, &e.At, &e.Method, &e.Path,
+		&e.Status, &e.DurationMS, &e.Bytes,
+		&e.UserID, &e.Username, &e.Channel, &e.IP,
+		&e.UserAgent, &e.RequestID,
+		&e.ModelID, &e.ModelName, &e.ErrorCode}
+}
+
+// rowPlaceholder is one row's "(?, …)" tuple, built once from the count so it
+// cannot fall out of step with columns.
+var rowPlaceholder = "(" + strings.TrimSuffix(strings.Repeat("?, ", columnCount), ", ") + ")"
+
 func (s *Store) write(ctx context.Context, batch []Entry) error {
 	placeholders := make([]string, 0, len(batch))
 	args := make([]any, 0, len(batch)*columnCount)
 
+	// The arguments are values, not scanTargets' pointers: drivers are not
+	// all obliged to dereference a pointer argument the same way.
 	for _, entry := range batch {
-		placeholders = append(placeholders,
-			"(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+		placeholders = append(placeholders, rowPlaceholder)
 		args = append(args,
 			entry.ID, entry.At, entry.Method, entry.Path, entry.Status,
 			entry.DurationMS, entry.Bytes, entry.UserID, entry.Username,

@@ -75,8 +75,8 @@ function onMove(event: PointerEvent): void {
 // The flag and the body class come off together, and unconditionally: a drag
 // ends in more ways than it starts. A cancel can arrive with the capture
 // already released, and an unmount takes the handle away entirely — and this
-// used to return early unless the capture was still held, which left
-// `oa-resizing` on the body. That class blocks text selection and holds the
+// so nothing here may return early on whether the capture is still held: such
+// a check would leave `oa-resizing` on the body. That class blocks text selection and holds the
 // col-resize cursor everywhere, so it outlived the drag until a reload.
 function release(): void {
   active.value = false;

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { Component } from 'vue';
 import OaGroup from '@/components/OaGroup.vue';
-defineProps<{ title: string; hint?: string; icon?: Component }>();
+defineProps<{ title: string; hint?: string | undefined; icon?: Component | undefined }>();
 </script>
 
 <template>

@@ -5,7 +5,7 @@
 // settings panel, because one would be claiming to commit things it has
 // nothing to do with.
 
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { changePassword, updateProfile } from '@/api/auth';
 import { exportAccount, importAccount, pickJSONFile, saveAsFile } from '@/api/backup';
@@ -14,7 +14,7 @@ import {
   fetchAuthorizations, withdrawAuthorization, type Authorization,
 } from '@/api/consent';
 import {
-  disconnectProvider, fetchConnections, signInURL,
+  connectProvider, disconnectProvider, fetchConnections,
   type OAuthConnection, type OAuthProvider,
 } from '@/api/oauth';
 import OaAccountFields from '@/components/OaAccountFields.vue';
@@ -23,15 +23,33 @@ import OaGroup from '@/components/OaGroup.vue';
 import OaRow from '@/components/OaRow.vue';
 import OaTextArea from '@/components/OaTextArea.vue';
 import OaTextField from '@/components/OaTextField.vue';
-import { t, type StringKey } from '@/composables/useI18n';
-import { IconGithub, IconGoogle, IconKey, type OaIcon } from '@/icons';
+import { t } from '@/composables/useI18n';
+import { IconKey } from '@/icons';
 import { allFields, fieldProblem, fieldValues } from '@/lib/account-fields';
+import { useLatestTimeout } from '@/composables/useLatestTimeout';
+import { apiErrorText } from '@/lib/api-error';
 import { absoluteTime } from '@/lib/format';
+import { connectCallbackText, connectRefusalText, refusalText } from '@/lib/refusal';
+import { providerMark } from '@/lib/provider-marks';
 import { pinnedProvider, pluginRefusal } from '@/plugins/registry';
 import { adopt, currentPreferences, currentUser, requireUser, siteInfo } from '@/stores/session';
 import { matchesSettings } from './search';
 
-const props = withDefaults(defineProps<{ query?: string }>(), { query: '' });
+// `active` is whether the section is on screen (absent reads as false, as a
+// boolean prop does). It mounts with the panel, for the address below, but
+// reads what it lists only once it is first shown.
+const props = withDefaults(defineProps<{ query?: string; active?: boolean }>(), { query: '' });
+
+// Worked out once per change of the query or the language rather than once
+// per group on every render: matchesSettings translates each group's terms,
+// and t() is what makes this recompute when the language changes.
+const shown = computed(() => ({
+  profile: matchesSettings(props.query, 'profile'),
+  connections: matchesSettings(props.query, 'connections'),
+  authorizations: matchesSettings(props.query, 'authorizations'),
+  password: matchesSettings(props.query, 'password'),
+  data: matchesSettings(props.query, 'data'),
+}));
 
 const account = requireUser();
 const route = useRoute();
@@ -50,6 +68,9 @@ const avatar = ref(account.avatar);
 const profileFlash = ref('');
 const profileBusy = ref(false);
 const profileLabel = ref('');
+// Asked for only while the address is actually changing: the form sends the
+// unchanged address with every save, and a nickname edit must not need it.
+const profilePassword = ref('');
 
 const currentPassword = ref('');
 const newPassword = ref('');
@@ -67,24 +88,43 @@ const connections = ref<OAuthConnection[]>([]);
 const providers = ref<OAuthProvider[]>([]);
 const connectionFlash = ref('');
 const connectionsBusy = ref(false);
+// A connection is started by a request, not a link, because the account proves
+// itself first (see connectProvider). `connecting` is the provider whose connection
+// is waiting for the password the server asked for, if there is one.
+const connecting = ref('');
+const connectPassword = ref('');
+const connectBusy = ref(false);
 /**
- * Whether this account also has a password.
+ * Whether this account also has a password: true, false, or null while the
+ * connections have not loaded.
  *
- * Unknown until the connections load, and assumed true until then, because
- * that is the state every account created by the sign-up form is in — the
- * password box should not flicker from "set one" to "change it" on the way
- * past. An account with no password is one that only ever signed in through a
- * provider, and this is what lets it give itself a way in that does not
- * depend on the operator leaving that provider switched on.
+ * The password forms are not offered until this is known. Assuming an answer
+ * shows the wrong form for one of the two kinds of account: a password box for
+ * an account that has none asks for a thing it cannot give. An account with no
+ * password is one that only ever signed in through a provider, and this is
+ * what lets it give itself a way in that does not depend on the operator
+ * leaving that provider switched on.
  */
-const hasPassword = ref(true);
+const hasPassword = ref<boolean | null>(null);
 
-const MARKS: Record<string, OaIcon> = { github: IconGithub, google: IconGoogle };
-function mark(id: string): OaIcon {
-  return MARKS[id] ?? IconKey;
-}
+/** The server compares addresses case-insensitively, so this does too. */
+const emailMoving = computed(() =>
+  email.value.trim().toLowerCase() !== (currentUser.value?.email ?? '').trim().toLowerCase());
+// Asked for unless the account is known to have no password. While the
+// connections are loading or have failed to load, the state is null, and hiding
+// the field then would leave the server's password_required refusal with
+// nothing to type into.
+const askForPassword = computed(() => emailMoving.value && hasPassword.value !== false);
+
 
 const linked = computed(() => new Map(connections.value.map((item) => [item.provider, item])));
+
+// Where a connection brings the browser back to. In the chat that is the settings
+// screen, as it always was. Over the backoffice it is the address this panel is
+// drawn at, panel parameter and all, so the page underneath stays where it was and
+// the panel reopens with the outcome in it. The server returns to the page it was
+// given, when it fails as well as when it works.
+const connectBack = computed(() => (route.meta['admin'] ? route.fullPath : '/settings'));
 
 /** The line under a provider's name: who it is here, and since when — or that it is not connected. */
 function connectionMeta(id: string): string {
@@ -106,13 +146,15 @@ const rows = computed(() => providers.value.filter(
   (provider) => provider.enabled || linked.value.has(provider.id),
 ));
 
-const OAUTH_REFUSALS: Record<string, StringKey> = {
-  denied: 'oauthDenied',
-  state: 'oauthState',
-  unavailable: 'oauthUnavailable',
-  provider: 'oauthProviderFailed',
-  already_linked: 'oauthAlreadyLinked',
-};
+// Saved-state labels clear themselves after a moment. Each section has its own, so
+// saving one does not end the other's label early.
+const LABEL_FLASH_MS = 1500;
+const profileLabelLater = useLatestTimeout();
+const passwordLabelLater = useLatestTimeout();
+
+// The message of the last read that failed, so a later read that works can take
+// back its own failure from both places it was shown, and nothing else.
+let failedLoad = '';
 
 async function loadConnections(): Promise<void> {
   try {
@@ -120,8 +162,18 @@ async function loadConnections(): Promise<void> {
     connections.value = result.connections ?? [];
     providers.value = result.providers ?? [];
     hasPassword.value = result.has_password;
+    if (failedLoad) {
+      if (connectionFlash.value === failedLoad) connectionFlash.value = '';
+      if (passwordFlash.value === failedLoad) passwordFlash.value = '';
+      failedLoad = '';
+    }
   } catch (error) {
-    connectionFlash.value = error instanceof ApiError ? error.message : String(error);
+    const message = apiErrorText(error);
+    failedLoad = message;
+    connectionFlash.value = message;
+    // Until this loads the password section cannot say which form it is, so the
+    // failure is reported there too, with a way to try again.
+    passwordFlash.value = message;
   }
 }
 
@@ -136,10 +188,60 @@ function disconnect(provider: string): void {
       connectionFlash.value = error instanceof ApiError && error.code === 'last_way_in'
         ? t('oauthLastWayIn')
         : error instanceof ApiError && error.code === 'oidc_pinned'
-          ? pinnedProvider(provider)?.refused() ?? error.message
-          : error instanceof ApiError ? error.message : String(error);
+          ? pinnedProvider(provider)?.refused() ?? apiErrorText(error)
+          : apiErrorText(error);
     })
     .finally(() => { connectionsBusy.value = false; });
+}
+
+/** The name the password prompt gives the provider it is connecting. */
+const connectingName = computed(() =>
+  providers.value.find((item) => item.id === connecting.value)?.name ?? connecting.value);
+
+function startConnect(provider: string): void {
+  connecting.value = '';
+  connectPassword.value = '';
+  sendToProvider(provider, '');
+}
+
+function submitConnect(): void {
+  sendToProvider(connecting.value, connectPassword.value);
+}
+
+function cancelConnect(): void {
+  connecting.value = '';
+  connectPassword.value = '';
+}
+
+/**
+ * Asks the server to start the connection, and leaves for the provider with the
+ * address it answers with. A password the server wants opens the field to type it
+ * into, and a wrong one keeps the field open. Nothing is started until the proof is
+ * right, so nothing has to be undone when it is not.
+ */
+function sendToProvider(provider: string, password: string): void {
+  connectBusy.value = true;
+  connectionFlash.value = '';
+  void connectProvider(provider, { password, next: connectBack.value })
+    .then((answer) => {
+      // Off this page for good: the provider's consent screen, then back here.
+      window.location.assign(answer.redirect);
+    })
+    .catch((error: unknown) => {
+      if (error instanceof ApiError && error.code === 'password_required') {
+        // The field's own hint says what it is for, so there is no flash.
+        connecting.value = provider;
+        return;
+      }
+      if (error instanceof ApiError && error.code === 'current_password_wrong') {
+        connecting.value = provider;
+        connectPassword.value = '';
+        connectionFlash.value = t('currentPasswordWrong');
+        return;
+      }
+      connectionFlash.value = connectRefusalText(error);
+    })
+    .finally(() => { connectBusy.value = false; });
 }
 
 // --- the sites this account has let in ----------------------------------------
@@ -153,7 +255,7 @@ async function loadAuthorizations(): Promise<void> {
     const result = await fetchAuthorizations();
     authorizations.value = result.authorizations ?? [];
   } catch (error) {
-    authorizationFlash.value = error instanceof ApiError ? error.message : String(error);
+    authorizationFlash.value = apiErrorText(error);
   }
 }
 
@@ -169,7 +271,7 @@ function withdraw(appID: string): void {
   void withdrawAuthorization(appID)
     .then(loadAuthorizations)
     .catch((error: unknown) => {
-      authorizationFlash.value = error instanceof ApiError ? error.message : String(error);
+      authorizationFlash.value = apiErrorText(error);
     })
     .finally(() => { authorizationsBusy.value = false; });
 }
@@ -180,19 +282,41 @@ onMounted(() => {
   const failure = route.query['oauth_error'];
   const done = route.query['oauth'];
   if (typeof failure === 'string' && failure) {
-    connectionFlash.value = t(OAUTH_REFUSALS[failure] ?? 'oauthFailed');
+    connectionFlash.value = connectCallbackText(failure);
   } else if (done === 'connected') {
     connectionFlash.value = t('oauthConnected');
   }
-  if (failure || done) void router.replace({ path: route.path, query: {} });
+  if (failure || done) {
+    // Only the two keys this section reads. It can be open over the backoffice,
+    // and the rest of that address, its hash included, belongs to the page
+    // underneath.
+    const query = { ...route.query };
+    delete query['oauth'];
+    delete query['oauth_error'];
+    void router.replace({ path: route.path, query, hash: route.hash });
+  }
+});
+
+// The panel opens on whichever category was asked for, and the two lists are
+// not worth two requests to a reader who never opens this one. A failed read
+// still says so the first time the section is seen, which is when it loads.
+// Once: switching back to the section is not a reason to read them again.
+function readLists(): void {
   void loadConnections();
   void loadAuthorizations();
-});
+}
+if (props.active) readLists();
+else watch(() => props.active, readLists, { once: true });
 
 async function saveProfile(): Promise<void> {
   const fieldError = fieldProblem(fields.value, fieldPlan.value);
   if (fieldError) {
     profileFlash.value = fieldError;
+    return;
+  }
+
+  if (askForPassword.value && !profilePassword.value) {
+    profileFlash.value = t('emailChangePasswordHint');
     return;
   }
 
@@ -205,15 +329,28 @@ async function saveProfile(): Promise<void> {
       ...(fieldPlan.value.keys.length ? { fields: fieldValues(fields.value, fieldPlan.value) } : {}),
       bio: bio.value.trim(),
       avatar: avatar.value.trim(),
+      ...(askForPassword.value ? { current_password: profilePassword.value } : {}),
     });
     adopt(user, currentPreferences.value);
+    profilePassword.value = '';
     profileLabel.value = t('saved');
-    window.setTimeout(() => { profileLabel.value = ''; }, 1500);
+    profileLabelLater(() => { profileLabel.value = ''; }, LABEL_FLASH_MS);
   } catch (error) {
-    if (error instanceof ApiError) {
-      profileFlash.value = pluginRefusal(error.code ?? '') ?? error.message;
+    if (error instanceof ApiError && error.code === 'current_password_wrong') {
+      profileFlash.value = t('currentPasswordWrong');
+      profilePassword.value = '';
+    } else if (error instanceof ApiError && error.code === 'password_required') {
+      profileFlash.value = t('emailChangePasswordHint');
+    } else if (error instanceof ApiError && error.code === 'reauth_required') {
+      profileFlash.value = t('reauthForAddress');
+    } else if (error instanceof ApiError && error.code === 'too_many_attempts') {
+      // Addresses that have used this hour's lookups come back with the wait,
+      // which refusalText words in the reader's language.
+      profileFlash.value = refusalText(error);
+    } else if (error instanceof ApiError) {
+      profileFlash.value = pluginRefusal(error.code ?? '') ?? apiErrorText(error);
     } else {
-      profileFlash.value = String(error);
+      profileFlash.value = apiErrorText(error);
     }
   } finally {
     profileBusy.value = false;
@@ -236,9 +373,15 @@ async function savePassword(): Promise<void> {
     // From here it is an ordinary password: the next change asks for it.
     hasPassword.value = true;
     passwordLabel.value = t('changed');
-    window.setTimeout(() => { passwordLabel.value = ''; }, 1500);
+    passwordLabelLater(() => { passwordLabel.value = ''; }, LABEL_FLASH_MS);
   } catch (error) {
-    passwordFlash.value = error instanceof ApiError ? error.message : String(error);
+    if (error instanceof ApiError && error.code === 'reauth_required') {
+      passwordFlash.value = t('reauthForPassword');
+    } else if (error instanceof ApiError && error.code === 'current_password_wrong') {
+      passwordFlash.value = t('currentPasswordWrong');
+    } else {
+      passwordFlash.value = apiErrorText(error);
+    }
   } finally {
     passwordBusy.value = false;
   }
@@ -255,11 +398,13 @@ function exportData(): void {
   void exportAccount()
     .then((document) => {
       const stamp = new Date().toISOString().slice(0, 10);
-      saveAsFile(`obsidian-arc-${stamp}.json`, JSON.stringify(document, null, 2));
+      // Compact on purpose: indentation can push a file over the size the
+      // server will import, and the file is read back by the same importer.
+      saveAsFile(`obsidian-arc-${stamp}.json`, JSON.stringify(document));
       dataStatus.value = t('exportDone', { count: document.conversations.length });
     })
     .catch((error: unknown) => {
-      dataStatus.value = error instanceof ApiError ? error.message : t('failed');
+      dataStatus.value = apiErrorText(error);
     })
     .finally(() => { exporting.value = false; });
 }
@@ -286,17 +431,36 @@ function importData(): void {
       });
       // The imported conversations are not in the list behind this panel, and
       // the preferences may have changed the theme out from under it.
+      // Not cancelled when the reader leaves this screen: the import changed data the
+      // rest of the app has already read into memory, and only a reload shows it.
       window.setTimeout(() => window.location.reload(), 1200);
     })
     .catch((error: unknown) => {
-      dataStatus.value = error instanceof ApiError ? error.message : t('failed');
+      // Any failure after the import has started carries the counts of what it
+      // wrote before stopping, whatever its code. What was written is in the
+      // account already. Say how much, or the reader re-sends the same file and
+      // gets a second copy of it. A failure that wrote nothing has no partial
+      // import to describe, so it falls through to its own reason.
+      if (error instanceof ApiError && typeof error.details['conversations'] === 'number') {
+        const counts = {
+          conversations: Number(error.details['conversations']),
+          messages: Number(error.details['messages'] ?? 0),
+        };
+        if (counts.conversations > 0 || counts.messages > 0) {
+          dataStatus.value = error.code === 'storage_full'
+            ? t('importStorageFull', counts)
+            : t('importPartialFailed', counts);
+          return;
+        }
+      }
+      dataStatus.value = apiErrorText(error);
     })
     .finally(() => { importing.value = false; });
 }
 </script>
 
 <template>
-  <OaGroup v-show="matchesSettings(props.query, 'profile')" :title="t('secProfile')">
+  <OaGroup v-show="shown.profile" :title="t('secProfile')">
     <OaRow stacked>
       <OaTextField
         v-model="nickname"
@@ -307,6 +471,15 @@ function importData(): void {
       />
     </OaRow>
     <OaRow stacked><OaTextField v-model="email" :label="t('email')" type="email" /></OaRow>
+    <OaRow v-if="askForPassword" stacked>
+      <OaTextField
+        v-model="profilePassword"
+        :label="t('currentPassword')"
+        :hint="t('emailChangePasswordHint')"
+        type="password"
+        autocomplete="current-password"
+      />
+    </OaRow>
     <OaRow v-if="fieldPlan.keys.length" stacked><OaAccountFields v-model="fields" :plan="fieldPlan" /></OaRow>
     <OaRow stacked><OaTextArea v-model="bio" :label="t('bio')" :rows="3" /></OaRow>
     <OaRow stacked>
@@ -317,8 +490,8 @@ function importData(): void {
         :hint="t('avatarHint')"
       />
     </OaRow>
-    <OaRow :title="t('registrationUserAgent')">
-      <template #text><span class="oa-group-row-meta mono">{{ account.signup_user_agent || '—' }}</span></template>
+    <OaRow v-if="currentUser?.show_signup_user_agent !== false" :title="t('registrationUserAgent')">
+      <template #text><span class="oa-group-row-meta mono">{{ currentUser?.signup_user_agent || '—' }}</span></template>
     </OaRow>
     <p v-if="profileFlash" class="oa-group-flash" role="alert">{{ profileFlash }}</p>
     <OaRow>
@@ -328,28 +501,30 @@ function importData(): void {
     </OaRow>
   </OaGroup>
 
-  <OaGroup v-show="matchesSettings(props.query, 'connections')" :title="t('secConnections')" :hint="t('connectionsHint')">
+  <OaGroup v-show="shown.connections" :title="t('secConnections')" :hint="t('connectionsHint')">
     <p v-if="!rows.length" class="oa-group-note">{{ t('connectionsNone') }}</p>
     <OaRow
       v-for="provider in rows"
       :key="provider.id"
       class="oa-connection"
-      :icon="mark(provider.id)"
+      :icon="providerMark(provider.id)"
       :title="provider.name"
       :meta="connectionMeta(provider.id)"
     >
-      <!-- A link, not a button: connecting is a trip to the provider and
-           back, which the browser has to navigate itself. -->
-      <a
+      <!-- A request, not a link: the account proves itself first, and the browser
+           leaves for the provider only with the address the server answers. -->
+      <button
         v-if="!linked.has(provider.id)"
+        type="button"
         class="oa-btn"
-        :href="signInURL(provider.id, { link: true, next: '/settings' })"
-      >{{ t('connect') }}</a>
+        :disabled="connectBusy"
+        @click="startConnect(provider.id)"
+      >{{ t('connect') }}</button>
       <!-- A connection a plugin made permanent proves a detail of the
            account, so it has no remove control at all — deleting the
            account is the only way it comes off. -->
       <span v-else-if="pinnedProvider(provider.id)" class="oa-group-row-meta">
-        {{ pinnedProvider(provider.id)!.hint() }}
+        {{ pinnedProvider(provider.id)?.hint() }}
       </span>
       <OaConfirmButton
         v-else
@@ -362,10 +537,28 @@ function importData(): void {
         @confirm="disconnect(provider.id)"
       />
     </OaRow>
+    <template v-if="connecting">
+      <OaRow stacked>
+        <OaTextField
+          v-model="connectPassword"
+          :label="t('currentPassword')"
+          type="password"
+          :hint="t('connectPasswordHint', { provider: connectingName })"
+        />
+      </OaRow>
+      <OaRow>
+        <button type="button" class="oa-btn primary" :disabled="connectBusy" @click="submitConnect">
+          {{ t('connect') }}
+        </button>
+        <button type="button" class="oa-btn" :disabled="connectBusy" @click="cancelConnect">
+          {{ t('cancel') }}
+        </button>
+      </OaRow>
+    </template>
     <p v-if="connectionFlash" class="oa-group-flash" role="alert">{{ connectionFlash }}</p>
   </OaGroup>
 
-  <OaGroup v-show="matchesSettings(props.query, 'authorizations')" :title="t('secAuthorizations')" :hint="t('authorizationsHint')">
+  <OaGroup v-show="shown.authorizations" :title="t('secAuthorizations')" :hint="t('authorizationsHint')">
     <p v-if="!authorizations.length" class="oa-group-note">{{ t('authorizationsNone') }}</p>
     <OaRow
       v-for="grant in authorizations"
@@ -388,25 +581,28 @@ function importData(): void {
   </OaGroup>
 
   <OaGroup
-    v-show="matchesSettings(props.query, 'password')"
-    :title="hasPassword ? t('secPassword') : t('setPassword')"
-    :hint="hasPassword ? t('passwordSectionHint') : t('setPasswordHint')"
+    v-show="shown.password"
+    :title="hasPassword === false ? t('setPassword') : t('secPassword')"
+    :hint="hasPassword === false ? t('setPasswordHint') : t('passwordSectionHint')"
   >
-    <OaRow v-if="hasPassword" stacked>
+    <OaRow v-if="hasPassword === null" stacked>
+      <button type="button" class="oa-btn" @click="loadConnections">{{ t('retry') }}</button>
+    </OaRow>
+    <OaRow v-if="hasPassword === true" stacked>
       <OaTextField v-model="currentPassword" :label="t('currentPassword')" type="password" />
     </OaRow>
-    <OaRow stacked>
+    <OaRow v-if="hasPassword !== null" stacked>
       <OaTextField v-model="newPassword" :label="t('newPassword')" type="password" :hint="t('newPasswordHint')" />
     </OaRow>
     <p v-if="passwordFlash" class="oa-group-flash" role="alert">{{ passwordFlash }}</p>
-    <OaRow>
+    <OaRow v-if="hasPassword !== null">
       <button type="button" class="oa-btn" :disabled="passwordBusy" @click="savePassword">
         {{ passwordLabel || (hasPassword ? t('changePassword') : t('setPassword')) }}
       </button>
     </OaRow>
   </OaGroup>
 
-  <OaGroup v-show="matchesSettings(props.query, 'data')" :title="t('secData')" :hint="t('dataHint')">
+  <OaGroup v-show="shown.data" :title="t('secData')" :hint="t('dataHint')">
     <OaRow>
       <button type="button" class="oa-btn" :disabled="exporting" @click="exportData">
         {{ t('exportData') }}

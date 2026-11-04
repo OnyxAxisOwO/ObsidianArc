@@ -43,11 +43,13 @@ export interface AccountFieldSpec {
   taken: Text;
 }
 
-export type GuardAction = 'register' | 'login';
+export type GuardAction = 'register' | 'login' | 'images';
 
 /**
- * A check the server-side plugin stands in front of sign-up or sign-in
- * (auth.Service.AddGuard). The token it produces rides in the request's
+ * A check the server-side plugin stands in front of sign-up, sign-in or the
+ * image generation lab (auth.Service.AddGuard). `active` must answer false
+ * for an action it has no switch for rather than falling through to another
+ * door's setting. The token it produces rides in the request's
  * "guards" object under the guard's name.
  */
 export interface GuardSpec {
@@ -64,12 +66,18 @@ export interface GuardSpec {
   token(action: GuardAction, config: PluginConfig, form?: HTMLFormElement): Promise<string>;
   /** What the submit button says while token() runs. */
   checking: Text;
-  /** What the card says when token() rejects. */
   /** What the card says when token() rejects; the rejection is passed for a guard with more than one way to fail. */
   failed: (failure?: unknown) => string;
 }
 
-/** One control in a settings section. */
+/**
+ * One control in a settings section.
+ *
+ * Its placeholder is a plain string, as an action card's is, not Text: on the
+ * backoffice it is a sample value or a stored mask, which the plugin writes as
+ * it should appear and the page shows as it stands. The account forms further
+ * down are read by everybody, so theirs is a sentence, and translated.
+ */
 export type SettingControl =
   | { kind: 'text'; key: string; label: Text; hint?: Text; placeholder?: string }
   /** Write-only: shown empty with the stored mask as its placeholder, and sent only when typed in. */
@@ -105,11 +113,60 @@ export interface SettingsSection {
   defaults: Record<string, string>;
 }
 
+/** A draft of an action's inputs: every value a string, as a form holds it. */
+export type ActionDraft = Record<string, string>;
+
+/**
+ * What every action control may say besides its own kind. `visible` hides a
+ * control that only matters for some answers to another — a bonus bar when
+ * the reward is a card. A hidden control keeps its value; the plugin decides
+ * what an irrelevant one means.
+ */
+interface ActionControlBase {
+  key: string;
+  label: Text;
+  hint?: Text;
+  visible?: (draft: ActionDraft) => boolean;
+}
+
+/** One column of a rows control; its value in a row is a string like any other. */
+export type RowColumn =
+  | { kind: 'text'; key: string; label: Text; placeholder?: string; visible?: (draft: ActionDraft) => boolean }
+  | { kind: 'number'; key: string; label: Text; min?: number; max?: number; step?: number; visible?: (draft: ActionDraft) => boolean }
+  | { kind: 'select'; key: string; label: Text; options: Array<{ value: string; label: Text }>; visible?: (draft: ActionDraft) => boolean }
+  | { kind: 'switch'; key: string; label: Text; visible?: (draft: ActionDraft) => boolean };
+
 /** One control in an action card. */
 export type ActionControl =
-  | { kind: 'text'; key: string; label: Text; hint?: Text; placeholder?: string; required?: boolean }
-  | { kind: 'select'; key: string; label: Text; hint?: Text; options: Array<{ value: string; label: Text }> }
-  | { kind: 'datetime'; key: string; label: Text; hint?: Text; presets?: boolean; required?: boolean };
+  | (ActionControlBase & { kind: 'text'; placeholder?: string; required?: boolean })
+  | (ActionControlBase & { kind: 'textarea'; placeholder?: string; rows?: number; required?: boolean })
+  | (ActionControlBase & { kind: 'number'; min?: number; max?: number; step?: number; required?: boolean })
+  /** A switch's value is 'true' or 'false'. */
+  | (ActionControlBase & { kind: 'switch' })
+  | (ActionControlBase & {
+    kind: 'select';
+    options: Array<{ value: string; label: Text }>;
+    /**
+     * Options only the server knows — the instance's bonus bars — fetched
+     * when the control is drawn and listed after the fixed ones. Their labels
+     * arrive already in the reader's language.
+     */
+    load?: () => Promise<Array<{ value: string; label: string }>>;
+  })
+  | (ActionControlBase & { kind: 'datetime'; presets?: boolean; required?: boolean })
+  /**
+   * A list the operator builds row by row — a survey's questions, a draw's
+   * prizes. The value is the rows as a JSON array of objects, each column's
+   * key holding its string.
+   */
+  | (ActionControlBase & {
+    kind: 'rows';
+    columns: RowColumn[];
+    /** The button that adds a row. */
+    add: Text;
+    min?: number;
+    max?: number;
+  });
 
 /**
  * An action card on a workbench page: inputs and an action button that executes
@@ -127,11 +184,11 @@ export interface ActionCardSpec {
   button: {
     label: Text;
     /** Optional confirmation question or title. */
-    confirm?: (draft: Record<string, string>) => string;
+    confirm?: (draft: ActionDraft) => string;
     /** Optional label shown while the button is armed. */
     armedLabel?: Text;
     danger?: boolean;
-    run(draft: Record<string, string>): Promise<string>;
+    run(draft: ActionDraft): Promise<string>;
   };
 }
 
@@ -141,6 +198,7 @@ export interface ListCell {
   sub?: string;
   /** Mask title and sub as account identifiers while safe mode is on. */
   mask?: boolean;
+  /** A subset of BadgeTone, kept as it shipped: widening it changes the SDK copy in sdk/web/arc-plugin.d.ts too. */
   badge?: { tone: 'default' | 'muted' | 'danger' };
 }
 
@@ -156,6 +214,45 @@ export interface AdminListSpec {
   columns: Array<{ key: string; header: Text; width?: string; secondary?: boolean }>;
   load(offset: number, limit: number): Promise<{ rows: Array<Record<string, unknown>>; total: number }>;
   cell(key: string, row: Record<string, unknown>): ListCell;
+  /**
+   * Makes a row open: the record in a panel beside the table, with what can
+   * be done to it. Resolved when the row is opened, so its sentences are
+   * already in the reader's language. The table is read again after an
+   * action, since the action may have moved the row.
+   */
+  detail?(row: Record<string, unknown>): Promise<RecordDetail>;
+}
+
+export type BadgeTone = 'default' | 'muted' | 'warning' | 'danger';
+
+/** One record of a plugin's list, opened (AdminListSpec.detail). */
+export interface RecordDetail {
+  title: string;
+  badges?: Array<{ label: string; tone: BadgeTone }>;
+  /**
+   * Label and value, in order. A link is drawn as one only when it is http(s);
+   * a masked value goes through safe mode like a masked list cell.
+   */
+  fields: Array<{ label: string; value: string; link?: boolean; mask?: boolean; multiline?: boolean }>;
+  /** Addresses of images to show, each opening in the lightbox. */
+  images?: string[];
+  actions?: RecordAction[];
+}
+
+/**
+ * Something done to an opened record: optional inputs, then one button. A
+ * confirmation is asked in place (OaConfirmButton), never by window.confirm.
+ */
+export interface RecordAction {
+  id: string;
+  label: string;
+  danger?: boolean;
+  /** The question, given what has been entered. */
+  confirm?: (draft: ActionDraft) => string;
+  controls?: ActionControl[];
+  defaults?: ActionDraft;
+  /** Resolves to what the panel says afterwards. */
+  run(draft: ActionDraft): Promise<string>;
 }
 
 /** A group of buttons in the backoffice's account panel. */
@@ -173,6 +270,144 @@ export interface UserActionSpec {
     /** The account is gone afterwards; close the panel. */
     closesPanel?: boolean;
   }>;
+}
+
+/** One control in a form a plugin puts in front of the people using the instance. */
+export type UserFormControl =
+  /**
+   * Every option on screen at once, as a segmented control. Required means
+   * one must be picked: with a default of '' nothing is, so an answer is not
+   * suggested by which option happened to come first.
+   */
+  | {
+    kind: 'choice';
+    key: string;
+    label: Text;
+    hint?: Text;
+    options: Array<{ value: string; label: Text }>;
+    required?: boolean;
+    /** One option a line, for options longer than a word — a survey's answers. */
+    list?: boolean;
+  }
+  /** Any number of the options, at most max; the value is the list of the picked values. */
+  | { kind: 'checks'; key: string; label: Text; hint?: Text; options: Array<{ value: string; label: Text }>; required?: boolean; max?: number }
+  | { kind: 'text'; key: string; label: Text; hint?: Text; placeholder?: Text; maxLength?: number; required?: boolean }
+  | { kind: 'textarea'; key: string; label: Text; hint?: Text; placeholder?: Text; rows?: number; required?: boolean }
+  | { kind: 'switch'; key: string; label: Text; hint?: Text }
+  /**
+   * Pictures, sent as data: URLs. The core shrinks each one before it is
+   * sent (see lib/shrink-image.ts), so a phone's 8 MB photo does not meet the
+   * server's 4 MiB limit on a plugin's request body.
+   */
+  | { kind: 'images'; key: string; label: Text; hint?: Text; max: number }
+  /**
+   * Any number of short texts, one a row, with a button that adds a row and
+   * one beside each that removes it — several accounts, several links. The
+   * value is the rows that were filled in, trimmed; blank ones are dropped
+   * before the plugin sees it.
+   */
+  | { kind: 'list'; key: string; label: Text; add: Text; hint?: Text; placeholder?: Text; maxLength?: number; max?: number; required?: boolean };
+
+/** A choice or text is a string, a switch a boolean, checks a list of values, images a list of data: URLs, a list its rows. */
+export type UserFormValues = Record<string, string | boolean | string[]>;
+
+/** One of the reader's own submissions, as the panel lists it. */
+export interface UserRecord {
+  id: string;
+  title: string;
+  badge?: { label: string; tone: BadgeTone };
+  /** Short facts under the title — a kind, a time. */
+  meta?: string[];
+  /** A longer line under those, such as what the operator answered. */
+  note?: string;
+}
+
+/**
+ * A panel of the plugin's own for everybody signed in: an entry in the
+ * account menu, opening a column beside the chat at /x/<slug>, with a form and
+ * the reader's own earlier submissions under it — the shape of the feedback
+ * panel, drawn by the core.
+ */
+export interface UserPanelSpec {
+  slug: string;
+  title: Text;
+  icon?: OaIcon;
+  /**
+   * Where the account menu offers it. Left out, it goes with the other
+   * plugins' panels after Feedback; 'usage' puts it straight under Usage,
+   * for a panel about what the account may spend — an upgrade, a top-up —
+   * which is where somebody who has just looked at their allowance is.
+   */
+  menu?: 'usage';
+  /** The first thing in the panel: what this is for. */
+  intro?: Text;
+  /** The panel's own form, for a plugin whose form is the same for everyone. */
+  controls?: UserFormControl[];
+  defaults?: Record<string, string | boolean>;
+  submit?: {
+    label: Text;
+    /** Resolves to what the panel says afterwards; the form is then cleared. */
+    run(values: UserFormValues): Promise<string>;
+  };
+  /** For a plugin whose forms an operator writes: a list, each opening its own. */
+  entries?: UserEntriesSpec;
+  mine?: { title: Text; empty: Text; load(): Promise<UserRecord[]> };
+}
+
+/**
+ * What the browser solved of the instance's own human check (see
+ * UserEntryView.challenge), passed to the plugin to send with its request:
+ * the server checks it, the plugin only carries it.
+ */
+export interface ChallengeProof {
+  turnstile?: string;
+  pow?: unknown;
+}
+
+/** Which check the server asked for, as the plugin's backend was told it (arc.Challenge). */
+export interface ChallengeKinds {
+  pow: boolean;
+  turnstile_site_key: string;
+}
+
+/** One of the things a panel of entries lists: an event, a survey. */
+export interface UserEntry {
+  id: string;
+  title: string;
+  badge?: { label: string; tone: BadgeTone };
+  meta?: string[];
+  note?: string;
+}
+
+/**
+ * An entry, opened: what it is, and either a form to take part with or what
+ * came of taking part. Resolved when it is opened, so its sentences are
+ * already in the reader's language and its controls are the operator's.
+ */
+export interface UserEntryView {
+  title: string;
+  badges?: Array<{ label: string; tone: BadgeTone }>;
+  /** What the operator wrote about it, as plain text; line breaks are kept. */
+  body?: string;
+  facts?: Array<{ label: string; value: string }>;
+  controls?: UserFormControl[];
+  defaults?: Record<string, string | boolean>;
+  /** The check the core draws and solves before submit runs; null for none. */
+  challenge?: ChallengeKinds | null;
+  /** Absent when there is nothing to do here — taken part, or over. */
+  submit?: {
+    label: string;
+    /** Resolves to what the panel says afterwards; the entry is then opened again. */
+    run(values: UserFormValues, proof: ChallengeProof): Promise<string>;
+  };
+  /** What came of it, where the form would be. */
+  outcome?: { text: string; tone: BadgeTone };
+}
+
+export interface UserEntriesSpec {
+  empty: Text;
+  load(): Promise<UserEntry[]>;
+  open(id: string): Promise<UserEntryView>;
 }
 
 /**
@@ -273,6 +508,8 @@ export interface ArcPlugin {
   lists?: AdminListSpec[];
   userActions?: UserActionSpec[];
   adminPages?: AdminPluginPage[];
+  /** Panels for everybody signed in, entered from the account menu. */
+  userPanels?: UserPanelSpec[];
   /** A notice and a confirmation on the API keys screen. */
   keyIssuing?: KeyIssuingSpec;
 }

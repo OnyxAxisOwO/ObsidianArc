@@ -28,6 +28,14 @@ type Handlers struct {
 	// the wiring the same way apiKeyHandlers.ClientIP is in server.New. A
 	// nil ClientIP simply means Session.IP is left empty.
 	ClientIP func(*http.Request) string
+	// Reauthorize answers who the sign-in a request came in on belongs to now,
+	// or an error once that sign-in or the account's right to use the terminal
+	// has ended. The wiring owns what that right is, so it is the same rule the
+	// SSH door applies. A watch outlives the request that started it, and asks
+	// again through here before each run after the first. Nil keeps the account
+	// the request began with, which is what a test that is not about revocation
+	// wants.
+	Reauthorize func(ctx context.Context, r *http.Request) (user.User, error)
 }
 
 func NewHandlers(c *Console) *Handlers { return &Handlers{console: c} }
@@ -100,11 +108,11 @@ type doneFrame struct {
 	ElapsedMS int64  `json:"elapsed_ms"`
 	// What `format` and `lang` left the session set to.
 	//
-	// The SSH transport keeps one Session for a whole connection, so those
-	// two commands simply mutate it and the next line sees the change. The
-	// web transport has no connection to keep anything on: every exec builds
-	// a fresh Session out of the request body, so the mutation was being
-	// thrown away the moment the response ended and `format json` did
+	// The SSH transport builds a fresh Session per line and copies these two
+	// values back onto the connection afterwards, so the next line sees the
+	// change. The web transport has no connection to keep anything on: every
+	// exec builds a fresh Session out of the request body, so the mutation was
+	// being thrown away the moment the response ended and `format json` did
 	// nothing at all here. Handing the values back lets the client carry
 	// them on the next request, which is the browser's version of the same
 	// session.
@@ -112,11 +120,10 @@ type doneFrame struct {
 	Lang string `json:"lang"`
 }
 
-// sseOut adapts an io.Writer expected by Execute to the SSE wire shape:
-// every Write becomes one `event: out` frame, flushed immediately by
-// httpx.SSE.Event itself — which is also what makes cancelling the fetch
-// visible mid-command for `watch`, the one command whose Run writes more
-// than once.
+// sseOut adapts the io.Writer Execute writes to into the SSE wire shape: every
+// Write becomes one `event: out` frame, flushed at once by httpx.SSE.Event.
+// Execute buffers a line's output, so a frame is a chunk of it, and a watch
+// flushes after each run, which is what lets its runs appear as they end.
 type sseOut struct{ sse *httpx.SSE }
 
 func (o sseOut) Write(p []byte) (int, error) {
@@ -146,6 +153,13 @@ func (h *Handlers) exec(w http.ResponseWriter, r *http.Request) error {
 		Colour:    true,
 		Lang:      normalizeLang(body.Lang),
 		JSON:      body.JSON,
+	}
+	if h.Reauthorize != nil {
+		// The sign-in is on the request, so the hook keeps the request. It is
+		// only called from inside this handler, while the stream is still open.
+		s.Reauthorize = func(ctx context.Context) (user.User, error) {
+			return h.Reauthorize(ctx, r)
+		}
 	}
 
 	// Every status-bearing failure happens above this line, while the

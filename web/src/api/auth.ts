@@ -1,3 +1,4 @@
+import type { SiteBackground, SiteTheme } from '@/theme/theme';
 import { api } from './client';
 
 export type Role = 'user' | 'admin' | 'super_admin';
@@ -14,6 +15,8 @@ export interface Account {
   fields?: Record<string, string>;
   nickname: string;
   avatar: string;
+  default_avatar?: string;
+  show_signup_user_agent?: boolean;
   bio: string;
   role: Role;
   admin_permissions?: string[];
@@ -77,7 +80,7 @@ export interface Account {
 // What a visitor with no account is shown at the address. The server settles
 // this — an instance still being set up always gets the sign-in card, whatever
 // is configured — so the client only has to draw what it is told.
-export interface Landing {
+interface Landing {
   /** 'site' is the product's own front page, which no operator has to write. */
   mode: 'login' | 'intro' | 'chat' | 'site';
   /** HTML the operator wrote. Only meaningful in 'intro' mode. */
@@ -97,6 +100,9 @@ export interface SiteInfo {
   health_show_users?: boolean;
   /** Whether readers may open the leaderboard. Absent on an older server. */
   leaderboard_show_users?: boolean;
+  /** Whether the instance draws the background behind an empty conversation.
+   *  Absent on an older server, which never drew one. */
+  ascii_field?: boolean;
   allow_archive_conversations?: boolean;
   // True while the instance has no accounts at all: the first person to
   // register becomes the administrator.
@@ -119,6 +125,8 @@ export interface SiteInfo {
   turnstile_on_api_key?: boolean;
   turnstile_on_redeem?: boolean;
   turnstile_on_feedback?: boolean;
+  turnstile_on_images?: boolean;
+  pow_on_images?: boolean;
   turnstile_on_chat_speed?: boolean;
   /**
    * The plugins compiled into this server, each with whatever its browser
@@ -161,12 +169,17 @@ export interface SiteInfo {
   /** Whether an account gets a personal invite code (invites.user_enabled),
    *  so the sign-up form knows an admin-issued code is not the only kind. */
   user_invites?: boolean;
-  /** Background image URLs per variant (landscape_light, landscape_dark, portrait_light, portrait_dark). */
+  /** The signed-out images alone, the shape older servers sent. Superseded by backgrounds. */
   login_background?: Record<string, string>;
+  /** Every stored background by variant: the signed-out four by their bare
+   *  names, the signed-in four behind `app_`. `html` is a page for a frame. */
+  backgrounds?: Record<string, SiteBackground>;
+  /** The instance's own look (theme.* settings). Absent from older servers. */
+  theme?: SiteTheme;
   /** Custom site logo URL, or empty if the built-in mark/favicon is used. */
   logo_url?: string;
-  /** Layout position of the sign-in / registration card ('center' | 'left' | 'right'). */
-  auth_card_position?: 'center' | 'left' | 'right';
+  /** Absent on older servers, which keep the centered floating card. */
+  auth_card_position?: 'center' | 'left' | 'right' | 'left-panel' | 'right-panel';
   /** Whether new user registrations are forced to use third-party OAuth/OIDC. */
   oauth_only_signup?: boolean;
   /** Whether new user registrations are forced to use OIDC (compatibility alias). */
@@ -248,7 +261,7 @@ export function fetchPoWChallenge(): Promise<PoWChallenge> {
   return api.get<PoWChallenge>('/api/auth/pow-challenge');
 }
 
-export interface RegisterInput {
+interface RegisterInput {
   username: string;
   password: string;
   email?: string;
@@ -275,16 +288,19 @@ export function register(input: RegisterInput): Promise<{ user: Account }> {
   });
 }
 
-export function logout(): Promise<void> {
-  return api.post<void>('/api/auth/logout');
+export function logout(signal?: AbortSignal): Promise<void> {
+  return api.post<void>('/api/auth/logout', undefined, signal ? { signal } : undefined);
 }
 
-export interface ProfilePatch {
+interface ProfilePatch {
   nickname?: string;
   avatar?: string;
   bio?: string;
   email?: string;
   fields?: Record<string, string>;
+  /** Required by the server when `email` actually changes and the account has
+   *  a password; ignored otherwise. */
+  current_password?: string;
 }
 
 export function updateProfile(patch: ProfilePatch): Promise<{ user: Account }> {

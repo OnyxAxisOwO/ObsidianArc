@@ -2,7 +2,9 @@ package mail
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -36,7 +38,27 @@ func NewManager(ctx context.Context, db *database.DB, sender *Sender, legacy Con
 	if err := m.read(ctx); err != nil {
 		return nil, err
 	}
-	sender.Update(m.cfg)
+	// The environment values never went through Save, and the sender writes
+	// its address into a header as given, so the sending fields are checked
+	// before the sender sees them. PublicURL is checked on its own: it only
+	// builds links, and a bad origin there must not switch SMTP off for the
+	// whole instance. It is kept as configured rather than cleared, because a
+	// plugin's path base resolves against it; VerificationReady already refuses
+	// to build a verification link from an origin that is not HTTPS.
+	//
+	// m.cfg stays as read so the admin mail page shows the stored values,
+	// including the refused one, for the operator to correct. Only the sender
+	// is given an empty configuration.
+	probe := m.cfg
+	probe.PublicURL = ""
+	senderCfg := m.cfg
+	if err := ValidateConfig(probe); err != nil {
+		slog.ErrorContext(ctx, "mail: configuration refused, mail stays off", "error", err)
+		senderCfg = Config{}
+	} else if err := ValidateConfig(m.cfg); err != nil {
+		slog.WarnContext(ctx, "mail: public URL refused, SMTP stays on and verification links stay off", "error", err)
+	}
+	sender.Update(senderCfg)
 	return m, nil
 }
 
@@ -68,9 +90,23 @@ func (m *Manager) read(ctx context.Context) error {
 	return nil
 }
 
+// ErrOriginNeedsSuperAdmin is returned when someone other than a super
+// administrator would move the public site URL. Mailed links are built from
+// that address, so whoever sets it decides where a person who clicks a
+// verification link ends up.
+var ErrOriginNeedsSuperAdmin = errors.New("mail: only a super administrator can change the public site URL")
+
+// ErrTransportNeedsSuperAdmin is returned when someone other than a super
+// administrator would change the SMTP server, port or account. The relay a save
+// names receives every message, verification links, codes and new-device
+// notices included, so choosing it carries the authority the public URL does.
+var ErrTransportNeedsSuperAdmin = errors.New("mail: only a super administrator can change the SMTP server, port or username")
+
 // Save persists and activates a whole configuration. An empty password keeps
-// the current secret unless clearPassword explicitly removes it.
-func (m *Manager) Save(ctx context.Context, cfg Config, password string, clearPassword bool) error {
+// the current secret unless clearPassword explicitly removes it. changeOrigin
+// says whether the caller may move PublicURL; a caller that may not is refused
+// every value but the one already stored.
+func (m *Manager) Save(ctx context.Context, cfg Config, password string, clearPassword, changeOrigin bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cfg = normalizeConfig(cfg)
@@ -85,22 +121,36 @@ func (m *Manager) Save(ctx context.Context, cfg Config, password string, clearPa
 		// A manager can be behind another instance's credential rotation. Read
 		// under the shared settings lock so a blank form field preserves the
 		// database value that this save actually follows.
-		var currentSealed []byte
-		readErr := tx.QueryRow(ctx, `SELECT password FROM mail_config WHERE id = 1`).Scan(&currentSealed)
-		currentPassword := ""
+		var (
+			currentSealed []byte
+			current       Config
+			hasRow        bool
+		)
+		readErr := tx.QueryRow(ctx, `SELECT host, port, username, public_url, password FROM mail_config WHERE id = 1`).
+			Scan(&current.Host, &current.Port, &current.Username, &current.PublicURL, &currentSealed)
 		switch {
-		case readErr == nil && len(currentSealed) > 0:
-			opened, err := m.box.Open(currentSealed)
-			if err != nil {
-				return fmt.Errorf("mail: open stored password: %w", err)
-			}
-			currentPassword = opened
+		case readErr == nil:
+			hasRow = true
 		case database.IsNotFound(readErr):
 			// Keep the legacy environment credential when creating the first
 			// database override without entering a replacement password.
-			currentPassword = m.cfg.Password
-		case readErr != nil:
+			current = m.cfg
+		default:
 			return fmt.Errorf("mail: read stored password: %w", readErr)
+		}
+
+		// Compared with what is stored, read under the lock this write holds.
+		// This manager's own copy can be behind another instance's save, and a
+		// save that trusted it could put back an address a super administrator
+		// had moved away from.
+		if cfg.PublicURL != strings.TrimSpace(current.PublicURL) && !changeOrigin {
+			return ErrOriginNeedsSuperAdmin
+		}
+		// Not relaxed by a typed password: whoever chooses the relay receives
+		// the mail, whichever secret they sent it with. Sender address, TLS
+		// mode and the password itself stay open to the security grant.
+		if !changeOrigin && movesTransport(cfg, current) {
+			return ErrTransportNeedsSuperAdmin
 		}
 
 		if clearPassword {
@@ -108,7 +158,25 @@ func (m *Manager) Save(ctx context.Context, cfg Config, password string, clearPa
 		} else if password != "" {
 			cfg.Password = password
 		} else {
-			cfg.Password = currentPassword
+			// Only a save that keeps the stored secret opens it. A typed or
+			// cleared password replaces the value unread, so a secret the box can
+			// no longer open (a rotated key, a damaged row) cannot block the save
+			// that would fix it.
+			kept := m.cfg.Password
+			if hasRow {
+				kept = ""
+				if len(currentSealed) > 0 {
+					opened, err := m.box.Open(currentSealed)
+					if err != nil {
+						return fmt.Errorf("mail: open stored password: %w", err)
+					}
+					kept = opened
+				}
+			}
+			if movesTransport(cfg, current) && kept != "" {
+				return ErrPasswordNeededForMove
+			}
+			cfg.Password = kept
 		}
 		var sealed any
 		if cfg.Password != "" {
@@ -145,6 +213,14 @@ func normalizeConfig(cfg Config) Config {
 	cfg.From = strings.TrimSpace(cfg.From)
 	cfg.PublicURL = strings.TrimSpace(cfg.PublicURL)
 	return cfg
+}
+
+// movesTransport reports whether a save changes the server a message is sent
+// through, or the account it is sent as. Save asks this of the row it read
+// under its lock, never of this manager's copy, which can be behind.
+func movesTransport(cfg, current Config) bool {
+	return !strings.EqualFold(cfg.Host, strings.TrimSpace(current.Host)) ||
+		cfg.Port != current.Port || cfg.Username != strings.TrimSpace(current.Username)
 }
 
 // ClaimTestSend records the shared, instance-wide test-mail cooldown before a

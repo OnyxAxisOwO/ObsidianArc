@@ -1,12 +1,27 @@
 // The administrative API, typed.
 //
 // Kept apart from the rest of the client so the shape of what an
-// administrator can do is one file. Note what is not here: no provider API
-// key, in either direction beyond writing a new one. The server never sends
-// one back, and there is no field on these types that could carry it.
+// administrator can do is one file. Provider and service keys go one way: a
+// request body may carry a new one, and the server answers with a flag or a
+// masked hint, so no response type on these pages can hold a key.
 
-import { api, ApiError, type RequestOptions } from '../api/client';
+import {
+  api,
+  ApiError,
+  fetchApi,
+  noteBackofficeRefusal,
+  noteSessionEnded,
+  type RequestOptions,
+} from '../api/client';
+import { readSSE } from '../api/sse';
+import type { Account, Role, AccountStatus } from '../api/auth';
+import type { Announcement, DisplayMode } from '../api/announcements';
+import type { Conversation, Message } from '../api/chat';
+import type {
+  Feedback, FeedbackKind, FeedbackPriority, FeedbackReply, FeedbackStatus, FeedbackThread,
+} from '../api/feedback';
 import type { ApiKey } from '../api/keys';
+import type { SiteBackground } from '../theme/theme';
 import type { UsageDisplay, UsageSummary, UsageWindow } from '../api/usage';
 import { t } from '../composables/useI18n';
 
@@ -14,9 +29,10 @@ import { t } from '../composables/useI18n';
 // shape on this surface already does.
 export type { ApiKey };
 
-/** A session on the operator's side of the same list `DeviceSession` is for
- *  an account's own screen — no "current" flag, since nothing about the
- *  operator's own browser belongs in somebody else's device list. */
+/** A device session as an operator sees an account's list of them. Unlike
+ *  `DeviceSession`, which is an account's own screen, there is no "current"
+ *  flag: nothing about the operator's own browser belongs in somebody else's
+ *  device list. */
 export interface AdminSession {
   id: string;
   created_at: number;
@@ -24,11 +40,11 @@ export interface AdminSession {
   ip: string;
   user_agent: string;
 }
-import type { Account, Role, AccountStatus } from '../api/auth';
-import type { Conversation, Message } from '../api/chat';
 
 export type ProviderKind = 'openai' | 'anthropic';
 export type ReasoningStyle = 'auto' | 'none' | 'anthropic' | 'openai_effort' | 'openrouter' | 'qwen';
+
+export type KeyRotation = 'sequential' | 'random';
 
 export interface Provider {
   id: string;
@@ -37,6 +53,9 @@ export interface Provider {
   base_url: string;
   allow_insecure: boolean;
   api_key_hint: string;
+  /** One per stored key, in the order they are taken. */
+  api_key_hints: string[];
+  key_rotation: KeyRotation;
   headers: Record<string, string>;
   anthropic_version: string;
   reasoning_style: ReasoningStyle;
@@ -78,12 +97,12 @@ export interface CodeRedemption {
   redeemed_at: number;
 }
 
-export type InviteStatus = 'active' | 'used_up' | 'expired' | 'revoked';
+type InviteStatus = 'active' | 'used_up' | 'expired' | 'revoked';
 
 /** What a code is for. Independent of `owner_id`, which only ever tells "an
  *  account's own" (personal) from "nobody's" (batch and partner are both
  *  `owner_id: ''`) — only `kind` tells those last two apart. */
-export type InviteKind = 'batch' | 'partner' | 'personal';
+type InviteKind = 'batch' | 'partner' | 'personal';
 
 /** One code — a batch entry, a partner's named link, or a personal one an
  *  account carries. */
@@ -135,7 +154,7 @@ export interface InviteUse {
   via: 'register' | 'claim';
 }
 
-export interface InviteTopInviter {
+interface InviteTopInviter {
   user_id: string;
   username: string;
   nickname: string;
@@ -144,7 +163,7 @@ export interface InviteTopInviter {
 }
 
 /** One row of the partner leaderboard `InviteStats.partners` returns. */
-export interface InvitePartnerStat {
+interface InvitePartnerStat {
   id: string;
   code: string;
   name: string;
@@ -160,12 +179,12 @@ export interface InviteStats {
   partners: InvitePartnerStat[];
 }
 
-export interface GroupModelGrant {
+interface GroupModelGrant {
   model_id: string;
   access: 'use' | 'view';
 }
 
-export interface ModelGroupGrant {
+interface ModelGroupGrant {
   group_id: string;
   access: 'use' | 'view';
 }
@@ -175,17 +194,31 @@ export interface BonusBarRow {
   id: string;
   name: string;
   description: string;
-  kind: 'bonus' | 'reserve';
-  toggle_mode: 'user' | 'on' | 'off';
+  kind: 'bonus' | 'reserve' | 'shared';
+  toggle_mode: 'user' | 'on' | 'off' | 'only';
   default_on: boolean;
   show_total: boolean;
   model_ids: string[];
   default_expires_at: number;
   active: boolean;
   created_at: number;
+  /** For a pool, its balance; for every other bar, what was granted in it. */
   granted: number;
   used: number;
+  /** For a pool, how many accounts drew on it today. */
   holders: number;
+  /** A shared pool's balance and rules; absent on every other kind. */
+  pool?: BonusPool;
+}
+
+interface BonusPool {
+  amount: number;
+  used: number;
+  reset_period: '' | 'day' | 'week' | 'month';
+  reset_amount: number;
+  period_start: number;
+  /** Zero is no limit. */
+  per_user_daily: number;
 }
 
 export interface BonusGrantRow {
@@ -201,7 +234,7 @@ export interface BonusGrantRow {
   created_at: number;
 }
 
-export interface BonusGrantBody {
+interface BonusGrantBody {
   all?: boolean;
   group_id?: string;
   usernames?: string[];
@@ -357,7 +390,14 @@ export interface AllowanceRow {
 
 export interface AllowanceList {
   rows: AllowanceRow[];
+  /** The real number of accounts behind the list (with a state filter past the cap, only those loaded). */
   total: number;
+  /** How many rows the paging can reach; below total when capped. */
+  listed: number;
+  /** How many accounts the ranking was built from; the most that can be listed when capped. */
+  loaded: number;
+  /** True when the instance has more accounts than the server loads, so rows and counts are partial. */
+  capped: boolean;
   display: UsageDisplay;
   /** How many accounts are at 80% or more of a window, and how many at all of it. */
   low: number;
@@ -405,7 +445,7 @@ export interface UsageReport {
   current_rpm?: number;
 }
 
-export type UsageDimension = 'model' | 'provider' | 'user' | 'group' | 'status';
+type UsageDimension = 'model' | 'provider' | 'user' | 'group' | 'status';
 
 export interface UsageRecord {
   id: string;
@@ -437,7 +477,8 @@ export interface Dashboard {
     models: number;
     enabled_models: number;
   };
-  newest_users: Account[];
+  /** Only these fields: the dashboard grant does not cover an account's address or signup details. */
+  newest_users: Pick<Account, 'id' | 'username' | 'nickname' | 'created_at'>[];
   last_24h: UsageTotals;
   /** The 24 hours before those, so each figure can say which way it moved. */
   prev_24h: UsageTotals;
@@ -455,13 +496,28 @@ export interface Meta {
   reasoning_styles: ReasoningStyle[];
 }
 
+/** A problem with this instance worth a super administrator's attention. */
+interface UpdateNotice {
+  kind: 'cloudflare_unclaimed';
+}
+
+/** What the backoffice knows about the running build; see internal/admin/update.go. */
+export interface UpdateStatus {
+  current: string;
+  /** Empty when the release feed could not be asked, or the check is off. */
+  latest: string;
+  update_available: boolean;
+  name: string;
+  /** The release's Markdown body, shown as written. */
+  notes: string;
+  url: string;
+  published_at: string;
+  check_disabled: boolean;
+  notices: UpdateNotice[];
+}
+
 // The reader's client already describes this shape, and one row of JSON
 // should not have two declarations that can drift apart.
-import type { Announcement, DisplayMode } from '../api/announcements';
-import type {
-  Feedback, FeedbackKind, FeedbackPriority, FeedbackReply, FeedbackStatus, FeedbackThread,
-} from '../api/feedback';
-
 export type { Announcement, DisplayMode };
 export type { Feedback, FeedbackKind, FeedbackPriority, FeedbackReply, FeedbackStatus, FeedbackThread };
 
@@ -516,6 +572,46 @@ export interface LogOption {
   count: number;
 }
 
+/** One action an administrator took, as the audit trail recorded it. */
+export interface AuditEntry {
+  id: string;
+  at: number;
+  actor_id: string;
+  actor_username: string;
+  actor_role: string;
+  method: string;
+  /** The route pattern, `/api/admin/users/{id}`; `path` is what was asked for. */
+  route: string;
+  path: string;
+  target_id: string;
+  target_label: string;
+  status: number;
+  duration_ms: number;
+  /** `web`, `console:web` or `console:ssh`. */
+  via: string;
+  ip: string;
+  user_agent: string;
+  /** Only on a single entry: the masked request body, and what moved. */
+  request?: string;
+  changes?: AuditChange[];
+}
+
+interface AuditChange {
+  field: string;
+  from: string;
+  to: string;
+  secret?: boolean;
+}
+
+export interface AuditFacets {
+  actors: LogOption[];
+  /** `value` is the method and the route together, as the `action` filter takes it. */
+  routes: LogOption[];
+  total: number;
+  failed: number;
+  retention_days: number;
+}
+
 /** One access decision, kept separately from the request log. */
 export interface SecurityEvent {
   id: string;
@@ -564,7 +660,7 @@ export interface LogFacets {
  * How a breakdown is ranked. Several defensible answers to "the most"; `users`
  * is the one that asks how popular something is rather than how busy.
  */
-export type UsageMetric = 'requests' | 'tokens' | 'credits' | 'users';
+type UsageMetric = 'requests' | 'tokens' | 'credits' | 'users';
 
 /**
  * The reader's distance from UTC in minutes east, which is what the server
@@ -638,6 +734,8 @@ export interface ProbeProgress {
   total: number;
   succeeded: number;
   failed: number;
+  /** Models whose provider is switched off; nothing was sent to them. */
+  skipped: number;
 }
 
 /** What one account is holding in reset cards. */
@@ -651,8 +749,8 @@ export interface CardHolding {
 }
 
 export type GroupOption = Pick<Group, 'id' | 'name'>;
-export type ModelOption = Pick<AdminModel, 'id' | 'display_name' | 'model_id' | 'enabled' | 'provider_name'>;
-export type ProviderOption = Pick<Provider, 'id' | 'name' | 'kind' | 'enabled'>;
+type ModelOption = Pick<AdminModel, 'id' | 'display_name' | 'model_id' | 'enabled' | 'provider_name'>;
+type ProviderOption = Pick<Provider, 'id' | 'name' | 'kind' | 'enabled'>;
 /** An application registered to sign people in with accounts from here. */
 export interface SignInApplication {
   id: string;
@@ -671,7 +769,7 @@ export interface SignInApplication {
   updated_at: number;
 }
 
-export interface ApplicationInput {
+interface ApplicationInput {
   name?: string;
   description?: string;
   /** One per line, as the textarea collects them. */
@@ -692,7 +790,7 @@ export interface AdminMailSettings {
   password_set: boolean;
 }
 
-export interface AdminMailUpdate extends Omit<AdminMailSettings, 'password_set'> {
+interface AdminMailUpdate extends Omit<AdminMailSettings, 'password_set'> {
   password: string;
   clear_password: boolean;
 }
@@ -704,29 +802,35 @@ export interface AdminUserCheckSettings {
   api_key_set: boolean;
 }
 
-export interface AdminUserCheckUpdate extends Omit<AdminUserCheckSettings, 'api_key_set'> {
+interface AdminUserCheckUpdate extends Omit<AdminUserCheckSettings, 'api_key_set'> {
   api_key: string;
   clear_api_key: boolean;
 }
 
-export interface AdminUserCheckTestResult {
+interface AdminUserCheckTestResult {
   disposable: boolean;
   skipped?: boolean;
 }
 
+export type StorageType = 's3' | 'webdav';
+
 /** Instance-wide backup settings and the most recent run. Credential values
  *  are deliberately absent: the API accepts them only on writes. */
 export interface AdminBackup {
+  type?: StorageType;
   enabled: boolean;
   configured: boolean;
   endpoint: string;
   bucket: string;
   region: string;
   prefix: string;
+  webdav_url?: string;
+  webdav_username?: string;
   interval_hours: number;
   retention_hours: number;
   retention_days?: number;
   secret_configured: boolean;
+  webdav_secret_configured?: boolean;
   running: boolean;
   last_status: '' | 'running' | 'success' | 'error';
   last_started_at: number;
@@ -738,6 +842,7 @@ export interface AdminBackup {
 }
 
 export interface AdminBackupInput {
+  type?: StorageType;
   enabled: boolean;
   endpoint: string;
   bucket: string;
@@ -745,13 +850,199 @@ export interface AdminBackupInput {
   prefix: string;
   access_key_id: string;
   secret_access_key: string;
+  webdav_url?: string;
+  webdav_username?: string;
+  webdav_password?: string;
   interval_hours: number;
   retention_hours: number;
   retention_days?: number;
 }
 
+// What the backoffice sends to make or change a record, named after the field
+// the server reads. Typed, so a key spelled wrong is a build failure rather
+// than a field the server ignores without a word. A field left out of a PATCH
+// keeps what the record holds.
+
+interface AdminReviewTrialInput {
+  username: string;
+  email: string;
+  fields: Record<string, string>;
+  from_this_address: number;
+  user_agent: string;
+}
+
+export interface AdminUserPatch {
+  nickname?: string;
+  email?: string;
+  bio?: string;
+  avatar?: string;
+  fields?: Record<string, string>;
+  role?: Role;
+  admin_permissions?: string[];
+  group_id?: string;
+  group_expires_at?: number;
+  api_restricted?: boolean;
+  api_restriction_hours?: number;
+  status?: AccountStatus;
+  ban_reason?: string;
+}
+
+export interface AdminGroupInput {
+  name: string;
+  description: string;
+  is_default: boolean;
+  allow_all_models: boolean;
+  api_access: boolean;
+  allow_stats: boolean;
+  allow_delete_conversations: boolean;
+  allow_terminal: boolean;
+  show_expiry: boolean;
+  sort_order: number;
+  model_ids: string[];
+  model_grants: GroupModelGrant[];
+}
+
+export interface AdminProviderInput {
+  name?: string;
+  kind?: ProviderKind;
+  base_url?: string;
+  allow_insecure?: boolean;
+  reasoning_style?: ReasoningStyle;
+  timeout_seconds?: number;
+  enabled?: boolean;
+  sort_order?: number;
+  anthropic_version?: string;
+  key_rotation?: KeyRotation;
+  /** Keys typed in this save, appended after the kept ones. */
+  api_keys?: string[];
+  /** Which stored keys stay, by position in `key_hints`. */
+  keep_keys?: number[];
+  key_hints?: string[];
+  headers?: Record<string, string>;
+  /** A duplicate names the provider whose keys it takes, which this page never holds. */
+  copy_key_from?: string;
+}
+
+export interface AdminModelInput {
+  provider_id?: string;
+  model_id?: string;
+  api_name?: string;
+  display_name?: string;
+  description?: string;
+  avatar?: string;
+  system_prompt?: string;
+  route_to_id?: string;
+  reasoning_style?: ReasoningStyle | '';
+  reasoning_tiers?: ReasoningTier[];
+  request_override?: string;
+  enabled?: boolean;
+  hidden?: boolean;
+  sort_order?: number;
+  supports_reasoning?: boolean;
+  supports_images?: boolean;
+  supports_vision?: boolean;
+  supports_streaming?: boolean;
+  supports_system_prompt?: boolean;
+  supports_tools?: boolean;
+  supports_image_gen?: boolean;
+  supports_chat_image_gen?: boolean;
+  emulate_tools?: boolean;
+  context_window?: number;
+  max_output_tokens?: number;
+  request_weight?: number;
+  input_token_weight?: number;
+  output_token_weight?: number;
+  reasoning_token_weight?: number;
+  group_grants?: ModelGroupGrant[];
+}
+
+export interface AdminBonusPoolInput {
+  reset_period: BonusPool['reset_period'];
+  reset_amount: number;
+  per_user_daily: number;
+  /** The starting balance, sent only when the pool is made. */
+  amount?: number;
+}
+
+interface AdminBonusBarInput {
+  name: string;
+  description: string;
+  kind: BonusBarRow['kind'];
+  toggle_mode: BonusBarRow['toggle_mode'];
+  default_on: boolean;
+  show_total: boolean;
+  model_ids: string[];
+  default_expires_at: number;
+  active: boolean;
+  pool?: AdminBonusPoolInput | undefined;
+}
+
+interface AdminCodeInput {
+  code: string;
+  name: string;
+  windows: string[];
+  count: number;
+  cards: number;
+  card_days: number;
+  expires_at: number;
+}
+
+interface AdminInviteInput {
+  count: number;
+  code: string;
+  max_uses: number;
+  expires_at: number;
+  group_id: string;
+  group_days: number;
+  group_days_max: number;
+  note: string;
+  kind?: InviteKind;
+  name?: string;
+  allow_existing?: boolean;
+}
+
+interface AdminPolicyInput {
+  scope: QuotaPolicy['scope'];
+  scope_id: string;
+  rpm: number | null;
+  tpm: number | null;
+  windows: Partial<Record<QuotaWindowKind, QuotaLimits>>;
+}
+
+interface AdminAnnouncementInput {
+  title: string;
+  body: string;
+  display_mode: DisplayMode;
+  dismiss_after_seconds: number;
+  published: boolean;
+  pinned: boolean;
+}
+
+/**
+ * A list read's filters, as an object or as the URLSearchParams a page built
+ * them in. The method adds the `?`, and nothing when there is nothing to send:
+ * some of these used to want it from the caller and others added their own,
+ * so every call site had to know which one it was talking to.
+ */
+export type AdminQuery = URLSearchParams | Record<string, string | number | boolean | undefined>;
+
+/** A query as the parameters it sends, for a caller (or a test) that reads one back. */
+export function adminQueryParams(query?: AdminQuery): URLSearchParams {
+  if (query instanceof URLSearchParams) return query;
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query ?? {})) {
+    if (value !== undefined) params.set(key, String(value));
+  }
+  return params;
+}
+
+function withQuery(path: string, query?: AdminQuery): string {
+  const text = adminQueryParams(query).toString();
+  return text ? `${path}?${text}` : path;
+}
+
 /** Where a plugin stands on this instance. Only a compiled-in one is ever `available`. */
-export type PluginState = 'available' | 'enabled' | 'disabled';
+type PluginState = 'available' | 'enabled' | 'disabled';
 
 export interface PluginText {
   en: string;
@@ -794,6 +1085,8 @@ export interface AdminPlugin {
     migrations: string[];
     purges: boolean;
   };
+  /** The setting keys this administrator may read and write, each by its own grant. */
+  writable_settings: string[];
 }
 
 export interface PluginChange {
@@ -840,11 +1133,24 @@ export interface PluginPreview {
   warnings: string[];
 }
 
+// The three selectors below all read one document, which carries every list at
+// once. A page that asks for two of them in the same moment (the model editor
+// loads providers and groups together) sends one request between them. Only a
+// call still in flight shares the answer: a call made after a save must read
+// again, because the document may have changed since.
+let referencesInFlight: Promise<unknown> | null = null;
+function references<T>(): Promise<T> {
+  if (!referencesInFlight) {
+    referencesInFlight = api.get<unknown>('/api/admin/references').finally(() => { referencesInFlight = null; });
+  }
+  return referencesInFlight as Promise<T>;
+}
+
 export const adminApi = {
   plugins: () => api.get<{ plugins: AdminPlugin[]; two_factor_required?: boolean }>('/api/admin/plugins'),
   installPlugin: (name: string, enable: boolean, settings: Record<string, string>, code?: string) => {
-    const body: Record<string, unknown> = { enable, settings };
-    if (code) body['two_factor_code'] = code;
+    const body: { enable: boolean; settings: Record<string, string>; two_factor_code?: string } = { enable, settings };
+    if (code) body.two_factor_code = code;
     return api.post<PluginChange>(`/api/admin/plugins/${encodeURIComponent(name)}/install`, body);
   },
   previewPlugin: (file: File) => {
@@ -853,8 +1159,8 @@ export const adminApi = {
     return api.upload<{ preview: PluginPreview }>('/api/admin/plugins/preview', form);
   },
   installPluginPackage: (token: string, enable: boolean, settings: Record<string, string>, code?: string) => {
-    const body: Record<string, unknown> = { token, enable, settings };
-    if (code) body['two_factor_code'] = code;
+    const body: { token: string; enable: boolean; settings: Record<string, string>; two_factor_code?: string } = { token, enable, settings };
+    if (code) body.two_factor_code = code;
     return api.post<PluginChange & { did: 'install' | 'update' | 'adopt' }>('/api/admin/plugins/install-package', body);
   },
   enablePlugin: (name: string) =>
@@ -869,14 +1175,17 @@ export const adminApi = {
   userCheck: () => api.get<AdminUserCheckSettings>('/api/admin/usercheck'),
   saveUserCheck: (body: AdminUserCheckUpdate) => api.put<AdminUserCheckSettings>('/api/admin/usercheck', body),
   testUserCheck: (email: string) => api.post<AdminUserCheckTestResult>('/api/admin/usercheck/test', { email }),
-  groupOptions: () => api.get<{ groups: GroupOption[] }>('/api/admin/references'),
-  modelOptions: () => api.get<{ models: ModelOption[] }>('/api/admin/references'),
-  providerOptions: () => api.get<{ providers: ProviderOption[] }>('/api/admin/references'),
-  memberOptions: (query: string) => api.get<{ users: Account[]; total: number }>(`/api/admin/member-options${query}`),
+  groupOptions: () => references<{ groups: GroupOption[] }>(),
+  modelOptions: () => references<{ models: ModelOption[] }>(),
+  providerOptions: () => references<{ providers: ProviderOption[] }>(),
+  memberOptions: (query: AdminQuery) => api.get<{ users: Account[]; total: number }>(withQuery('/api/admin/member-options', query)),
   dashboard: (metric: UsageMetric = 'credits') =>
     api.get<Dashboard>(`/api/admin/dashboard?metric=${metric}&${zoneQuery()}`),
   meta: () => api.get<Meta>('/api/admin/meta'),
-  tryReview: (body: Record<string, unknown>) =>
+  // Super administrators only: the server answers 403 to everyone else, so the
+  // caller checks the role first rather than relying on that refusal.
+  update: () => api.get<UpdateStatus>('/api/admin/update'),
+  tryReview: (body: AdminReviewTrialInput) =>
     api.post<{ ran: boolean; decision: 'allow' | 'restrict' | 'refuse'; reason: string }>(
       '/api/admin/security/review', body),
   // The applications allowed to use this instance as a sign-in. Registering
@@ -890,15 +1199,15 @@ export const adminApi = {
       '/api/admin/applications', input,
     ),
   updateApplication: (id: string, input: ApplicationInput) =>
-    api.patch<{ application: SignInApplication }>(`/api/admin/applications/${id}`, input),
+    api.patch<{ application: SignInApplication }>(`/api/admin/applications/${encodeURIComponent(id)}`, input),
   rotateApplicationSecret: (id: string) =>
-    api.post<{ client_secret: string }>(`/api/admin/applications/${id}/secret`, {}),
+    api.post<{ client_secret: string }>(`/api/admin/applications/${encodeURIComponent(id)}/secret`, {}),
   deleteApplication: (id: string) =>
-    api.delete<void>(`/api/admin/applications/${id}`),
+    api.delete<void>(`/api/admin/applications/${encodeURIComponent(id)}`),
   twoFactorAdoption: () => api.get<TwoFactorAdoption>('/api/admin/security/two-factor'),
-  securityEvents: (query = '') =>
+  securityEvents: (query?: AdminQuery) =>
     api.get<{ events: SecurityEvent[]; total: number; limit: number; offset: number }>(
-      `/api/admin/security/events${query}`,
+      withQuery('/api/admin/security/events', query),
     ),
   health: (hours = 24) =>
     api.get<{
@@ -915,15 +1224,15 @@ export const adminApi = {
         reset_at?: number;
       };
     }>(`/api/admin/health?hours=${hours}`),
-  probeAllModels: (onProgress: (progress: ProbeProgress) => void) =>
-    streamProbeAllModels(onProgress),
+  probeAllModels: (onProgress: (progress: ProbeProgress) => void, options?: { signal?: AbortSignal }) =>
+    streamProbeAllModels(onProgress, options?.signal),
   resetHealth: () =>
     api.post<{ reset_at: number; probes_cleared: number; models_reenabled: number }>(
       '/api/admin/health/reset',
     ),
   resources: () => api.get<Resources>('/api/admin/resources'),
 
-  users: (query: string) => api.get<{ users: Account[]; total: number }>(`/api/admin/users${query}`),
+  users: (query?: AdminQuery) => api.get<{ users: Account[]; total: number }>(withQuery('/api/admin/users', query)),
   user: (id: string) =>
     api.get<{
       user: Account;
@@ -933,63 +1242,67 @@ export const adminApi = {
       models?: UsageBreakdown[];
       policy: QuotaPolicy;
       cards: CardHolding;
-    }>(`/api/admin/users/${id}`),
-  updateUser: (id: string, patch: Record<string, unknown>) =>
-    api.patch<{ user: Account }>(`/api/admin/users/${id}`, patch),
-  deleteUser: (id: string) => api.delete<void>(`/api/admin/users/${id}`),
+    }>(`/api/admin/users/${encodeURIComponent(id)}`),
+  updateUser: (id: string, patch: AdminUserPatch) =>
+    api.patch<{ user: Account }>(`/api/admin/users/${encodeURIComponent(id)}`, patch),
+  deleteUser: (id: string) => api.delete<void>(`/api/admin/users/${encodeURIComponent(id)}`),
   resetPassword: (id: string, newPassword: string) =>
-    api.post<void>(`/api/admin/users/${id}/password`, { new_password: newPassword }),
+    api.post<void>(`/api/admin/users/${encodeURIComponent(id)}/password`, { new_password: newPassword }),
   resetTwoFactor: (id: string) =>
-    api.delete<{ user: Account }>(`/api/admin/users/${id}/two-factor`),
+    api.delete<{ user: Account }>(`/api/admin/users/${encodeURIComponent(id)}/two-factor`),
   // Only ever the record, never the token: the server keeps a digest, so
   // there is nothing an administrator could be shown even in principle.
-  userKeys: (id: string) => api.get<{ keys: ApiKey[] }>(`/api/admin/users/${id}/keys`),
+  userKeys: (id: string) => api.get<{ keys: ApiKey[] }>(`/api/admin/users/${encodeURIComponent(id)}/keys`),
   revokeUserKey: (id: string, keyID: string) =>
-    api.delete<void>(`/api/admin/users/${id}/keys/${keyID}`),
+    api.delete<void>(`/api/admin/users/${encodeURIComponent(id)}/keys/${encodeURIComponent(keyID)}`),
 
-  userSessions: (id: string) => api.get<{ sessions: AdminSession[] }>(`/api/admin/users/${id}/sessions`),
+  // The cards alone, for the panel to re-read after a card changes: the
+  // account detail would read usage and limits that change never touched.
+  userCards: (id: string) => api.get<{ cards: CardHolding }>(`/api/admin/users/${encodeURIComponent(id)}/cards`),
+
+  userSessions: (id: string) => api.get<{ sessions: AdminSession[] }>(`/api/admin/users/${encodeURIComponent(id)}/sessions`),
   revokeUserSession: (id: string, sessionID: string) =>
-    api.delete<void>(`/api/admin/users/${id}/sessions/${sessionID}`),
-  revokeAllUserSessions: (id: string) => api.delete<void>(`/api/admin/users/${id}/sessions`),
+    api.delete<void>(`/api/admin/users/${encodeURIComponent(id)}/sessions/${encodeURIComponent(sessionID)}`),
+  revokeAllUserSessions: (id: string) => api.delete<void>(`/api/admin/users/${encodeURIComponent(id)}/sessions`),
 
-  userConversations: (id: string, query = '') =>
-    api.get<{ conversations: Conversation[]; total: number }>(`/api/admin/users/${id}/conversations${query}`),
+  userConversations: (id: string, query?: AdminQuery) =>
+    api.get<{ conversations: Conversation[]; total: number }>(withQuery(`/api/admin/users/${encodeURIComponent(id)}/conversations`, query)),
   userTranscript: (id: string, conversationID: string) =>
     api.get<{ conversation: Conversation; messages: Message[] }>(
-      `/api/admin/users/${id}/conversations/${conversationID}`,
+      `/api/admin/users/${encodeURIComponent(id)}/conversations/${encodeURIComponent(conversationID)}`,
     ),
 
   groups: () => api.get<{ groups: Group[]; policies: QuotaPolicy[] }>('/api/admin/groups'),
   assignGroupMembers: (id: string, user_ids: string[], expires_at: number) =>
-    api.post<{ updated: number }>(`/api/admin/groups/${id}/members`, { user_ids, expires_at }),
-  createGroup: (body: Record<string, unknown>) => api.post<{ group: Group }>('/api/admin/groups', body),
-  updateGroup: (id: string, body: Record<string, unknown>) =>
-    api.patch<{ group: Group }>(`/api/admin/groups/${id}`, body),
-  deleteGroup: (id: string) => api.delete<{ moved_to: string }>(`/api/admin/groups/${id}`),
+    api.post<{ updated: number }>(`/api/admin/groups/${encodeURIComponent(id)}/members`, { user_ids, expires_at }),
+  createGroup: (body: AdminGroupInput) => api.post<{ group: Group }>('/api/admin/groups', body),
+  updateGroup: (id: string, body: Partial<AdminGroupInput>) =>
+    api.patch<{ group: Group }>(`/api/admin/groups/${encodeURIComponent(id)}`, body),
+  deleteGroup: (id: string) => api.delete<{ moved_to: string }>(`/api/admin/groups/${encodeURIComponent(id)}`),
 
   providers: () => api.get<{ providers: Provider[] }>('/api/admin/providers'),
-  createProvider: (body: Record<string, unknown>) =>
+  createProvider: (body: AdminProviderInput) =>
     api.post<{ provider: Provider }>('/api/admin/providers', body),
-  updateProvider: (id: string, body: Record<string, unknown>) =>
-    api.patch<{ provider: Provider }>(`/api/admin/providers/${id}`, body),
-  deleteProvider: (id: string) => api.delete<void>(`/api/admin/providers/${id}`),
+  updateProvider: (id: string, body: AdminProviderInput) =>
+    api.patch<{ provider: Provider }>(`/api/admin/providers/${encodeURIComponent(id)}`, body),
+  deleteProvider: (id: string) => api.delete<void>(`/api/admin/providers/${encodeURIComponent(id)}`),
   detect: (id: string) =>
     api.post<{ models: Array<{ model_id: string; display_name: string; configured: boolean }> }>(
-      `/api/admin/providers/${id}/detect`,
+      `/api/admin/providers/${encodeURIComponent(id)}/detect`,
     ),
 
   models: (providerID?: string) =>
     api.get<{ models: AdminModel[] }>(
-      `/api/admin/models${providerID ? `?provider_id=${providerID}` : ''}`,
+      `/api/admin/models${providerID ? `?provider_id=${encodeURIComponent(providerID)}` : ''}`,
     ),
-  createModel: (body: Record<string, unknown>) => api.post<{ model: AdminModel }>('/api/admin/models', body),
+  createModel: (body: AdminModelInput) => api.post<{ model: AdminModel }>('/api/admin/models', body),
   importModels: (models: unknown[]) =>
     api.post<{ created: number; updated: number; skipped: string[] }>(
       '/api/admin/models/import', { models }),
-  updateModel: (id: string, body: Record<string, unknown>) =>
-    api.patch<{ model: AdminModel }>(`/api/admin/models/${id}`, body),
+  updateModel: (id: string, body: AdminModelInput) =>
+    api.patch<{ model: AdminModel }>(`/api/admin/models/${encodeURIComponent(id)}`, body),
   bonusBars: () => api.get<{ bars: BonusBarRow[] }>('/api/admin/bonus/bars'),
-  saveBonusBar: (id: string | null, body: Record<string, unknown>) =>
+  saveBonusBar: (id: string | null, body: AdminBonusBarInput) =>
     id
       ? api.put<{ bar: BonusBarRow }>(`/api/admin/bonus/bars/${encodeURIComponent(id)}`, body)
       : api.post<{ bar: BonusBarRow }>('/api/admin/bonus/bars', body),
@@ -1000,68 +1313,78 @@ export const adminApi = {
   bonusGrants: (id: string, offset = 0) =>
     api.get<{ grants: BonusGrantRow[]; total: number }>(
       `/api/admin/bonus/bars/${encodeURIComponent(id)}/grants?limit=20&offset=${offset}`),
+  adjustBonusPool: (id: string, op: 'add' | 'set', amount: number) =>
+    api.post<{ pool: BonusPool }>(`/api/admin/bonus/bars/${encodeURIComponent(id)}/pool`, { op, amount }),
   revokeBonusGrant: (id: string) =>
     api.delete<{ revoked: number }>(`/api/admin/bonus/grants/${encodeURIComponent(id)}`),
   checkinSettings: () => api.get<CheckinSettings>('/api/admin/checkin'),
   saveCheckinSettings: (body: CheckinSettings) => api.put<CheckinSettings>('/api/admin/checkin', body),
   codes: () => api.get<{ codes: RedemptionCode[] }>('/api/admin/codes'),
-  createCode: (body: Record<string, unknown>) =>
+  createCode: (body: AdminCodeInput) =>
     api.post<{ codes: RedemptionCode[] }>('/api/admin/codes', body),
   codeRedemptions: (id: string) =>
     api.get<{ redemptions: CodeRedemption[] }>(`/api/admin/codes/${encodeURIComponent(id)}/redemptions`),
-  deleteCode: (id: string) => api.delete<void>(`/api/admin/codes/${id}`),
-  invites: (query: string) =>
-    api.get<{ codes: InviteCode[]; total: number }>(`/api/admin/invites${query}`),
-  createInvites: (body: Record<string, unknown>) =>
+  deleteCode: (id: string) => api.delete<void>(`/api/admin/codes/${encodeURIComponent(id)}`),
+  invites: (query?: AdminQuery) =>
+    api.get<{ codes: InviteCode[]; total: number }>(withQuery('/api/admin/invites', query)),
+  createInvites: (body: AdminInviteInput) =>
     api.post<{ codes: InviteCode[] }>('/api/admin/invites', body),
   revokeInvite: (id: string) =>
     api.delete<{ code: InviteCode }>(`/api/admin/invites/${encodeURIComponent(id)}`),
+  // `total` counts every use, while `uses` is only the newest page of them.
   inviteUses: (id: string) =>
-    api.get<{ uses: InviteUse[] }>(`/api/admin/invites/${encodeURIComponent(id)}/uses`),
+    api.get<{ uses: InviteUse[]; total: number }>(`/api/admin/invites/${encodeURIComponent(id)}/uses`),
   inviteStats: () => api.get<InviteStats>('/api/admin/invites/stats'),
   grantCards: (userID: string, body: { name?: string; windows?: string[]; cards: number; expires_at: number }) =>
-    api.post<void>(`/api/admin/users/${userID}/cards`, body),
+    api.post<void>(`/api/admin/users/${encodeURIComponent(userID)}/cards`, body),
   // Moves cards the account already holds. Omitting card_ids means every
   // unused one, expired included — which is what "their card ran out" asks
   // for and what granting another one would get wrong.
   rescheduleCards: (userID: string, body: { expires_at: number; card_ids?: string[] }) =>
-    api.patch<{ moved: number }>(`/api/admin/users/${userID}/cards`, body),
+    api.patch<{ moved: number }>(`/api/admin/users/${encodeURIComponent(userID)}/cards`, body),
   // Takes one unused card back. Nothing is sent to the account: cards arrive
   // without a message and they leave the same way.
   revokeCard: (userID: string, cardID: string) =>
-    api.delete<void>(`/api/admin/users/${userID}/cards/${encodeURIComponent(cardID)}`),
+    api.delete<void>(`/api/admin/users/${encodeURIComponent(userID)}/cards/${encodeURIComponent(cardID)}`),
   reorderModels: (ids: string[]) =>
     api.put<void>('/api/admin/models/order', { ids }),
   resetQuota: (body: { scope: 'all' | 'group' | 'user'; id?: string }) =>
     api.post<{ accounts: number }>('/api/admin/usage/reset', body),
-  deleteModel: (id: string) => api.delete<void>(`/api/admin/models/${id}`),
+  deleteModel: (id: string) => api.delete<void>(`/api/admin/models/${encodeURIComponent(id)}`),
 
-  logs: (query: string) =>
+  logs: (query?: AdminQuery) =>
     api.get<{ entries: LogEntry[]; total: number; limit: number; offset: number }>(
-      `/api/admin/logs${query}`,
+      withQuery('/api/admin/logs', query),
     ),
-  logFacets: (query: string) => api.get<LogFacets>(`/api/admin/logs/facets${query}`),
-  pruneLogs: (days: number) =>
-    api.post<{ removed: number }>('/api/admin/logs/prune', { days }),
+  logFacets: (query?: AdminQuery) => api.get<LogFacets>(withQuery('/api/admin/logs/facets', query)),
 
-  usage: (query: string, options?: RequestOptions) =>
-    api.get<UsageReport>(`/api/admin/usage${query}`, options),
+  audit: (query?: AdminQuery) =>
+    api.get<{ entries: AuditEntry[]; total: number; limit: number; offset: number }>(
+      withQuery('/api/admin/audit', query),
+    ),
+  auditFacets: (query?: AdminQuery) => api.get<AuditFacets>(withQuery('/api/admin/audit/facets', query)),
+  auditEntry: (id: string) =>
+    api.get<{ entry: AuditEntry }>(`/api/admin/audit/${encodeURIComponent(id)}`),
+
+  usage: (query?: AdminQuery, options?: RequestOptions) =>
+    api.get<UsageReport>(withQuery('/api/admin/usage', query), options),
   // One dimension alone — who used a model, what an account used — for a panel
   // that should not pay for the whole report.
-  usageBreakdown: (dimension: UsageDimension, query = '', options?: RequestOptions) =>
-    api.get<{ rows: UsageBreakdown[] }>(`/api/admin/usage/breakdown?dimension=${dimension}${query ? `&${query}` : ''}`, options),
-  usageRecords: (query: string, options?: RequestOptions) =>
-    api.get<{ records: UsageRecord[]; total: number }>(`/api/admin/usage/records${query}`, options),
-  usageAllowances: (query: string, options?: RequestOptions) =>
-    api.get<AllowanceList>(`/api/admin/usage/allowances?${query}`, options),
-  rpm: (query = '') =>
-    api.get<{ rpm: number }>(`/api/admin/usage/rpm${query}`),
+  usageBreakdown: (dimension: UsageDimension, query?: AdminQuery, options?: RequestOptions) => {
+    const params = new URLSearchParams({ dimension });
+    adminQueryParams(query).forEach((value, key) => params.append(key, value));
+    return api.get<{ rows: UsageBreakdown[] }>(withQuery('/api/admin/usage/breakdown', params), options);
+  },
+  usageRecords: (query?: AdminQuery, options?: RequestOptions) =>
+    api.get<{ records: UsageRecord[]; total: number }>(withQuery('/api/admin/usage/records', query), options),
+  usageAllowances: (query?: AdminQuery, options?: RequestOptions) =>
+    api.get<AllowanceList>(withQuery('/api/admin/usage/allowances', query), options),
+  rpm: (query?: AdminQuery) =>
+    api.get<{ rpm: number }>(withQuery('/api/admin/usage/rpm', query)),
 
   policies: () => api.get<{ policies: QuotaPolicy[] }>('/api/admin/quota/policies'),
-  savePolicy: (policy: Record<string, unknown>) =>
+  savePolicy: (policy: AdminPolicyInput) =>
     api.put<{ policy: QuotaPolicy }>('/api/admin/quota/policies', policy),
-  deletePolicy: (scope: string, scopeID: string) =>
-    api.delete<void>(`/api/admin/quota/policies/${scope}?scope_id=${encodeURIComponent(scopeID)}`),
 
   settings: () =>
     api.get<{
@@ -1069,7 +1392,7 @@ export const adminApi = {
       groups?: GroupOption[];
       mail_configured?: boolean;
       attachments?: HeldAttachments;
-      login_background?: Record<string, string>;
+      backgrounds?: Record<string, SiteBackground>;
       logo_url?: string;
       signup_review_prompt_default?: string;
     }>(
@@ -1082,18 +1405,20 @@ export const adminApi = {
   testBackup: () => api.post<{ ok: true }>('/api/admin/backup/test', {}),
   runBackup: () => api.post<{ ok: true; running: true }>('/api/admin/backup/run', {}),
   uploadLoginBackground: (variant: string, mime: string, data: string) =>
-    api.put<{ url: string; updated_at: number }>(`/api/admin/login-background/${variant}`, { mime, data }),
+    api.put<{ url: string; updated_at: number }>(`/api/admin/login-background/${encodeURIComponent(variant)}`, { mime, data }),
+  uploadBackgroundHTML: (variant: string, html: string) =>
+    api.put<{ url: string; html: true; updated_at: number }>(`/api/admin/login-background/${encodeURIComponent(variant)}`, { html }),
   deleteLoginBackground: (variant: string) =>
-    api.delete<void>(`/api/admin/login-background/${variant}`),
+    api.delete<void>(`/api/admin/login-background/${encodeURIComponent(variant)}`),
   uploadSiteLogo: (mime: string, data: string) =>
     api.put<{ url: string; updated_at: number }>('/api/admin/logo', { mime, data }),
   deleteSiteLogo: () =>
     api.delete<void>('/api/admin/logo'),
-  // More forgiving than saveSettings: identifiers that mean nothing on this
-  // instance are cleared and named back rather than failing the whole file.
   // The daily purge, on demand. Same operation, without waiting for 03:00.
   purgeAttachments: () =>
     api.post<{ purged: number; attachments: HeldAttachments }>('/api/admin/attachments/purge'),
+  // More forgiving than saveSettings: identifiers that mean nothing on this
+  // instance are cleared and named back rather than failing the whole file.
   importSettings: (values: Record<string, string>) =>
     api.post<{ settings: Record<string, string>; applied: number; skipped: string[] }>(
       '/api/admin/settings/import',
@@ -1101,45 +1426,51 @@ export const adminApi = {
     ),
 
   announcements: () => api.get<{ announcements: Announcement[] }>('/api/admin/announcements'),
-  createAnnouncement: (body: Record<string, unknown>) =>
+  createAnnouncement: (body: AdminAnnouncementInput) =>
     api.post<{ announcement: Announcement }>('/api/admin/announcements', body),
-  updateAnnouncement: (id: string, body: Record<string, unknown>) =>
-    api.patch<{ announcement: Announcement }>(`/api/admin/announcements/${id}`, body),
-  deleteAnnouncement: (id: string) => api.delete<void>(`/api/admin/announcements/${id}`),
+  updateAnnouncement: (id: string, body: AdminAnnouncementInput) =>
+    api.patch<{ announcement: Announcement }>(`/api/admin/announcements/${encodeURIComponent(id)}`, body),
+  deleteAnnouncement: (id: string) => api.delete<void>(`/api/admin/announcements/${encodeURIComponent(id)}`),
 
-  feedback: (query = '') =>
+  feedback: (query?: AdminQuery) =>
     api.get<{
       feedback: Feedback[];
       total: number;
       offset: number;
       summary: FeedbackSummary;
-    }>(`/api/admin/feedback${query}`),
+    }>(withQuery('/api/admin/feedback', query)),
   // Fetching a thread is also what marks it read on the operator's side:
   // there is no other reason to open one.
-  feedbackThread: (id: string) => api.get<FeedbackThread>(`/api/admin/feedback/${id}`),
+  feedbackThread: (id: string) => api.get<FeedbackThread>(`/api/admin/feedback/${encodeURIComponent(id)}`),
   replyToFeedback: (id: string, body: string) =>
-    api.post<FeedbackReply>(`/api/admin/feedback/${id}/replies`, { body }),
+    api.post<FeedbackReply>(`/api/admin/feedback/${encodeURIComponent(id)}/replies`, { body }),
   deleteFeedbackReply: (id: string, replyID: string) =>
-    api.delete<void>(`/api/admin/feedback/${id}/replies/${replyID}`),
+    api.delete<void>(`/api/admin/feedback/${encodeURIComponent(id)}/replies/${encodeURIComponent(replyID)}`),
   // Status is the only thing about the report itself an operator may change:
   // the words are what somebody wrote.
   setFeedbackStatus: (id: string, status: FeedbackStatus) =>
-    api.patch<Feedback>(`/api/admin/feedback/${id}`, { status }),
-  deleteFeedback: (id: string) => api.delete<void>(`/api/admin/feedback/${id}`),
+    api.patch<Feedback>(`/api/admin/feedback/${encodeURIComponent(id)}`, { status }),
+  deleteFeedback: (id: string) => api.delete<void>(`/api/admin/feedback/${encodeURIComponent(id)}`),
 };
 
 async function streamProbeAllModels(
   onProgress: (progress: ProbeProgress) => void,
+  signal?: AbortSignal,
 ): Promise<ProbeProgress> {
-  const response = await fetch('/api/admin/health/probe', {
+  // Aborting the request closes the connection, and the server stops probing
+  // the models it has not reached yet: the browser's disconnect is its cancel.
+  const response = await fetchApi('/api/admin/health/probe', {
     method: 'POST',
     credentials: 'same-origin',
     headers: { Accept: 'text/event-stream' },
+    ...(signal ? { signal } : {}),
   });
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as
       | { error?: { code?: string; message?: string } }
       | null;
+    noteBackofficeRefusal(body?.error?.code);
+    noteSessionEnded(body?.error?.code);
     throw new ApiError(
       response.status,
       body?.error?.code ?? 'probe',
@@ -1148,51 +1479,29 @@ async function streamProbeAllModels(
   }
   if (!response.body) throw new ApiError(0, 'stream', t('probeAllModelsFailed'));
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let finished: ProbeProgress | null = null;
-
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-
-    let boundary = /\r?\n\r?\n/.exec(buffer);
-    while (boundary) {
-      const result = probeFrame(buffer.slice(0, boundary.index), onProgress);
-      if (result) finished = result;
-      buffer = buffer.slice(boundary.index + boundary[0].length);
-      boundary = /\r?\n\r?\n/.exec(buffer);
+  // Widened by hand: the callback assigns it, and TypeScript does not see
+  // assignments made inside a callback, so it would narrow this to null.
+  let finished = null as ProbeProgress | null;
+  // A frame that is not JSON is dropped rather than failing the whole probe,
+  // but counted, so a run that lost frames says so instead of looking clean.
+  let unreadable = 0;
+  // readSSE cancels the body before it rethrows, so an error frame or an
+  // abort closes the connection now rather than when the collector gets to it.
+  await readSSE(response.body, ({ event, data }) => {
+    let payload: ProbeProgress;
+    try {
+      payload = JSON.parse(data) as ProbeProgress;
+    } catch {
+      unreadable += 1;
+      return;
     }
-  }
+    if (event === 'error') throw new ApiError(500, 'probe', t('probeAllModelsFailed'));
+    if (event === 'progress') onProgress(payload);
+    else if (event === 'done') finished = payload;
+  });
+  if (unreadable) console.warn(`model probe: ${unreadable} unreadable frame(s) dropped`);
   if (!finished) throw new ApiError(0, 'stream', t('probeAllModelsFailed'));
   return finished;
-}
-
-function probeFrame(
-  frame: string,
-  onProgress: (progress: ProbeProgress) => void,
-): ProbeProgress | null {
-  let event = '';
-  let data = '';
-  for (const line of frame.split(/\r?\n/)) {
-    if (line.startsWith('event:')) event = line.slice(6).trim();
-    else if (line.startsWith('data:')) data += line.slice(5).trim();
-  }
-  if (!data) return null;
-
-  let payload: ProbeProgress;
-  try {
-    payload = JSON.parse(data) as ProbeProgress;
-  } catch {
-    return null;
-  }
-  if (event === 'error') {
-    throw new ApiError(500, 'probe', t('probeAllModelsFailed'));
-  }
-  if (event === 'progress') onProgress(payload);
-  return event === 'done' ? payload : null;
 }
 
 export type { Account, Role, AccountStatus, Conversation, Message };

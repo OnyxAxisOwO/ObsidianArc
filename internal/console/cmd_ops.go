@@ -2,13 +2,19 @@ package console
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 )
 
+// The operations group is registered one noun family per init — health,
+// usage, quota, code, log — so each family's locals stay with it and one
+// family can be read without scrolling through the others. Go runs a
+// file's inits in order, so the registration order is what it was.
 func init() {
 	registerCommand(Command{
 		Name:       "dash",
@@ -36,9 +42,9 @@ func init() {
 			jsonMode := rt.effectiveJSON()
 			counts := asMap(m["counts"])
 			if err := rt.Fields([][2]string{
-				{"users", fmt.Sprint(asNum(counts["users"]))}, {"active_users", fmt.Sprint(asNum(counts["active_users"]))},
-				{"providers", fmt.Sprint(asNum(counts["providers"]))}, {"enabled_providers", fmt.Sprint(asNum(counts["enabled_providers"]))},
-				{"models", fmt.Sprint(asNum(counts["models"]))}, {"enabled_models", fmt.Sprint(asNum(counts["enabled_models"]))},
+				{"users", formatNumber(asNum(counts["users"]))}, {"active_users", formatNumber(asNum(counts["active_users"]))},
+				{"providers", formatNumber(asNum(counts["providers"]))}, {"enabled_providers", formatNumber(asNum(counts["enabled_providers"]))},
+				{"models", formatNumber(asNum(counts["models"]))}, {"enabled_models", formatNumber(asNum(counts["enabled_models"]))},
 			}); err != nil {
 				return err
 			}
@@ -46,8 +52,8 @@ func init() {
 				return nil
 			}
 			printTotals := func(label string, t map[string]any) {
-				fmt.Fprintf(rt.Out, "\n%s: %v requests, %v tokens, %.2f credits, %v errors\n",
-					label, asNum(t["requests"]), asNum(t["total_tokens"]), asNum(t["credits"]), asNum(t["errors"]))
+				fmt.Fprintf(rt.Out, "\n%s: %s requests, %s tokens, %.2f credits, %s errors\n",
+					label, formatNumber(asNum(t["requests"])), formatNumber(asNum(t["total_tokens"])), asNum(t["credits"]), formatNumber(asNum(t["errors"])))
 			}
 			printTotals("last 24h", asMap(m["last_24h"]))
 			printTotals("last 7d", asMap(m["last_7d"]))
@@ -78,11 +84,11 @@ func init() {
 			storage, mem, cpu := asMap(m["storage"]), asMap(m["memory"]), asMap(m["cpu"])
 			jsonMode := rt.effectiveJSON()
 			if err := rt.Fields([][2]string{
-				{"storage.held_bytes", fmt.Sprint(asNum(storage["held_bytes"]))}, {"storage.held_count", fmt.Sprint(asNum(storage["held_count"]))},
-				{"storage.discarded_count", fmt.Sprint(asNum(storage["discarded_count"]))},
-				{"memory.heap_bytes", fmt.Sprint(asNum(mem["heap_bytes"]))}, {"memory.sys_bytes", fmt.Sprint(asNum(mem["sys_bytes"]))},
-				{"memory.gc_count", fmt.Sprint(asNum(mem["gc_count"]))}, {"memory.goroutines", fmt.Sprint(asNum(mem["goroutines"]))},
-				{"cpu.cores", fmt.Sprint(asNum(cpu["cores"]))}, {"cpu.gomaxprocs", fmt.Sprint(asNum(cpu["gomaxprocs"]))},
+				{"storage.held_bytes", formatNumber(asNum(storage["held_bytes"]))}, {"storage.held_count", formatNumber(asNum(storage["held_count"]))},
+				{"storage.discarded_count", formatNumber(asNum(storage["discarded_count"]))},
+				{"memory.heap_bytes", formatNumber(asNum(mem["heap_bytes"]))}, {"memory.sys_bytes", formatNumber(asNum(mem["sys_bytes"]))},
+				{"memory.gc_count", formatNumber(asNum(mem["gc_count"]))}, {"memory.goroutines", formatNumber(asNum(mem["goroutines"]))},
+				{"cpu.cores", formatNumber(asNum(cpu["cores"]))}, {"cpu.gomaxprocs", formatNumber(asNum(cpu["gomaxprocs"]))},
 				{"cpu.percent", limitStr(cpu["percent"])},
 			}); err != nil {
 				return err
@@ -94,7 +100,7 @@ func init() {
 			var rows [][]string
 			for _, raw := range asSlice(storage["by_user"]) {
 				u := asMap(raw)
-				rows = append(rows, []string{asStr(u["user_id"]), asStr(u["name"]), fmt.Sprint(asNum(u["count"])), fmt.Sprint(asNum(u["bytes"]))})
+				rows = append(rows, []string{asStr(u["user_id"]), asStr(u["name"]), formatNumber(asNum(u["count"])), formatNumber(asNum(u["bytes"]))})
 			}
 			RenderTable(rt.Out, rt.Session.Width, rt.Session.Colour, []string{"user_id", "name", "count", "bytes"}, rows)
 			return nil
@@ -124,7 +130,7 @@ func init() {
 				rows = append(rows, []string{
 					asStr(m["name"]), asStr(m["provider"]), yesNo(asBoolVal(m["enabled"])),
 					asStr(status["state"]), fmt.Sprintf("%.1f%%", asNum(status["uptime"])*100),
-					fmt.Sprint(asNum(status["samples"])), fmt.Sprint(asNum(status["failures_in_a_row"])),
+					formatNumber(asNum(status["samples"])), formatNumber(asNum(status["failures_in_a_row"])),
 				})
 			}
 			return rt.Table([]string{"name", "provider", "enabled", "state", "uptime", "samples", "fails_in_row"}, rows)
@@ -137,11 +143,11 @@ func init() {
 		Summary: Text{EN: "Probe every model right now", ZH: "立即探测全部模型"},
 		Usage:   "health probe",
 		Help: Text{
-			EN: "Probes every model, including disabled ones, 4 at a time with a 20s timeout each. This " +
-				"streams progress from the server; the console prints a line per update and a summary " +
-				"at the end.",
-			ZH: "会探测全部模型（含已禁用的），每批 4 个，单个超时 20 秒。服务器会流式返回进度，" +
-				"控制台每次更新打印一行，并在结束时输出汇总。",
+			EN: "Probes every model, including disabled ones, 4 at a time with a 20s timeout each. The " +
+				"console receives the whole run before it prints, so the progress lines appear together " +
+				"at the end, followed by the summary. A failed run exits with an error.",
+			ZH: "会探测全部模型（含已禁用的），每批 4 个，单个超时 20 秒。控制台要等整轮探测结束才能拿到全部进度，" +
+				"所以各行会在最后一起输出，末尾是汇总。探测失败时命令会返回错误。",
 		},
 		Examples:   []string{"health probe", "health probe --json"},
 		SeeAlso:    []string{"health status", "health reset"},
@@ -154,18 +160,37 @@ func init() {
 			}
 			frames := ParseSSE(raw)
 			if len(frames) == 0 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("没有收到探测进度")
+				return rt.Fail(Text{EN: "no probe progress was received", ZH: "没有收到探测进度"})
+			}
+			// An error frame means the run stopped short of "done". Its exit status
+			// must say so, or a script takes a half-probed instance for a healthy one.
+			// The flag is kept apart from the text: an error frame with an empty
+			// payload is still a failed run, and an empty string cannot say so.
+			var failure string
+			var failed bool
+			for _, f := range frames {
+				if f.Event == "error" {
+					failed = true
+					failure = string(f.Data)
+					break
 				}
-				return rt.Errorf("no probe progress was received")
+			}
+			stopped := func() error {
+				return rt.Fail(Text{EN: fmt.Sprintf("the probe stopped with an error: %s", failure), ZH: fmt.Sprintf("探测中途出错：%s", failure)})
+			}
+			if rt.effectiveJSON() {
+				if failed {
+					return stopped()
+				}
+				return renderProbeFrames(rt, frames)
 			}
 			for _, f := range frames {
-				switch f.Event {
-				case "progress", "done":
+				if f.Event == "progress" || f.Event == "done" {
 					rt.Printf("%s: %s\n", f.Event, string(f.Data))
-				case "error":
-					rt.Printf("error: %s\n", string(f.Data))
 				}
+			}
+			if failed {
+				return stopped()
 			}
 			return nil
 		},
@@ -197,12 +222,14 @@ func init() {
 				notReenabled = append(notReenabled, asStr(v))
 			}
 			return rt.Fields([][2]string{
-				{"reset_at", formatMS(m["reset_at"])}, {"probes_cleared", fmt.Sprint(asNum(m["probes_cleared"]))},
-				{"models_reenabled", fmt.Sprint(asNum(m["models_reenabled"]))}, {"models_not_reenabled", strings.Join(notReenabled, ", ")},
+				{"reset_at", formatMS(m["reset_at"])}, {"probes_cleared", formatNumber(asNum(m["probes_cleared"]))},
+				{"models_reenabled", formatNumber(asNum(m["models_reenabled"]))}, {"models_not_reenabled", strings.Join(notReenabled, ", ")},
 			})
 		},
 	})
+}
 
+func init() {
 	usageFilterFlags := []Flag{
 		{Name: "--user", Hint: Text{EN: "filter to one account, by ref", ZH: "按账户筛选，可用引用"}, Value: "REF"},
 		{Name: "--group", Hint: Text{EN: "filter to one group, by ref", ZH: "按分组筛选，可用引用"}, Value: "REF"},
@@ -283,10 +310,10 @@ func init() {
 			t := asMap(m["totals"])
 			jsonMode := rt.effectiveJSON()
 			if err := rt.Fields([][2]string{
-				{"requests", fmt.Sprint(asNum(t["requests"]))}, {"input_tokens", fmt.Sprint(asNum(t["input_tokens"]))},
-				{"output_tokens", fmt.Sprint(asNum(t["output_tokens"]))}, {"total_tokens", fmt.Sprint(asNum(t["total_tokens"]))},
-				{"credits", fmt.Sprintf("%.2f", asNum(t["credits"]))}, {"errors", fmt.Sprint(asNum(t["errors"]))},
-				{"current_rpm", fmt.Sprint(asNum(m["current_rpm"]))},
+				{"requests", formatNumber(asNum(t["requests"]))}, {"input_tokens", formatNumber(asNum(t["input_tokens"]))},
+				{"output_tokens", formatNumber(asNum(t["output_tokens"]))}, {"total_tokens", formatNumber(asNum(t["total_tokens"]))},
+				{"credits", fmt.Sprintf("%.2f", asNum(t["credits"]))}, {"errors", formatNumber(asNum(t["errors"]))},
+				{"current_rpm", formatNumber(asNum(m["current_rpm"]))},
 			}); err != nil {
 				return err
 			}
@@ -312,7 +339,7 @@ func init() {
 			{Name: "--state", Hint: Text{EN: "low is 80% or more of a window spent; exhausted is all of it", ZH: "low 为已用 80% 以上；exhausted 为已用尽"}, Value: "STATE"},
 			{Name: "--q", Hint: Text{EN: "search name, nickname or email", ZH: "搜索用户名、昵称或邮箱"}, Value: "TEXT"},
 			{Name: "--group", Hint: Text{EN: "only this group's accounts", ZH: "只看这个用户组的账户"}, Value: "ID"},
-			{Name: "--limit", Hint: Text{EN: "rows to show; default 50", ZH: "显示多少行；默认 50"}, Value: "N"},
+			{Name: "--limit", Hint: Text{EN: "rows to show; default 50", ZH: "显示多少行；默认 50"}, Value: "N", Default: "50"},
 			{Name: "--offset", Hint: Text{EN: "rows to skip", ZH: "跳过多少行"}, Value: "N"},
 		},
 		Examples:   []string{"usage allowances --state exhausted", "usage allowances --q alice"},
@@ -348,6 +375,26 @@ func init() {
 				}
 				rows = append(rows, cells)
 			}
+			// Past the server's account cap the rows are the newest accounts only, so
+			// the ranking and the counts are partial. Said first, so a table that
+			// looks complete is never read without it. Under --json the response
+			// already carries capped, listed and total, so the sentence is left out
+			// and the output stays one document.
+			if !rt.effectiveJSON() && asMap(data)["capped"] == true {
+				listed := formatNumber(asNum(asMap(data)["listed"]))
+				// A state filter past the cap is counted over the loaded accounts, so
+				// its figure is matches among those, not a count of the population.
+				if rt.String("state") != "" {
+					loaded := formatNumber(asNum(asMap(data)["loaded"]))
+					rt.Say(Text{
+						EN: fmt.Sprintf("%s matching accounts among the newest %s; accounts beyond those are not counted.\n", listed, loaded),
+						ZH: fmt.Sprintf("最近的 %s 个账号中有 %s 个符合条件；之外的账号不计入。\n", loaded, listed),
+					})
+				} else {
+					total := formatNumber(asNum(asMap(data)["total"]))
+					rt.Say(Text{EN: fmt.Sprintf("Showing the newest %s of %s accounts; the ranking and counts cover only those.\n", listed, total), ZH: fmt.Sprintf("仅列出最近的 %s 个账号（共 %s 个）；排序与计数只覆盖这些账号。\n", listed, total)})
+				}
+			}
 			return rt.Table([]string{"account", "5h", "1w", "1m"}, rows)
 		},
 	})
@@ -373,10 +420,7 @@ func init() {
 		Endpoints:  []string{"GET /api/admin/usage/breakdown"},
 		Run: func(_ context.Context, rt *Runtime) error {
 			if rt.NArg() == 0 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("需要维度：model、provider、user、group 或 status")
-				}
-				return rt.Errorf("a dimension is required: model, provider, user, group or status")
+				return rt.Fail(Text{EN: "a dimension is required: model, provider, user, group or status", ZH: "需要维度：model、provider、user、group 或 status"})
 			}
 			dimension := rt.Arg(0)
 			q, err := buildUsageQuery(rt)
@@ -416,8 +460,8 @@ func init() {
 					label += " (" + detail + ")"
 				}
 				rows = append(rows, []string{
-					label, fmt.Sprint(asNum(b["requests"])), fmt.Sprint(asNum(b["total_tokens"])),
-					fmt.Sprintf("%.2f", asNum(b["credits"])), fmt.Sprint(asNum(b[reach])), formatMS(b["last_at"]),
+					label, formatNumber(asNum(b["requests"])), formatNumber(asNum(b["total_tokens"])),
+					fmt.Sprintf("%.2f", asNum(b["credits"])), formatNumber(asNum(b[reach])), formatMS(b["last_at"]),
 				})
 			}
 			return rt.Table([]string{dimension, "requests", "tokens", "credits", reach, "last used"}, rows)
@@ -443,7 +487,7 @@ func init() {
 			if err != nil {
 				return err
 			}
-			return rt.Fields([][2]string{{"rpm", fmt.Sprint(asNum(asMap(data)["rpm"]))}})
+			return rt.Fields([][2]string{{"rpm", formatNumber(asNum(asMap(data)["rpm"]))}})
 		},
 	})
 
@@ -477,7 +521,7 @@ func init() {
 				r := asMap(raw)
 				rows = append(rows, []string{
 					asStr(r["username"]), asStr(r["model_name"]), asStr(r["status"]),
-					fmt.Sprint(asNum(r["total_tokens"])), fmt.Sprintf("%.2f", asNum(r["credits"])), formatMS(r["started_at"]),
+					formatNumber(asNum(r["total_tokens"])), fmt.Sprintf("%.2f", asNum(r["credits"])), formatMS(r["started_at"]),
 				})
 			}
 			return rt.Table([]string{"user", "model", "status", "tokens", "credits", "started"}, rows)
@@ -502,6 +546,13 @@ func init() {
 			scope := rt.String("scope")
 			body := bodyBuilder{"scope": scope}
 			switch scope {
+			case "all":
+				// The all branch never reads an id, so "--scope all --id alice" would
+				// reset everyone while the operator meant one account. The line is
+				// refused instead.
+				if rt.Present("id") {
+					return rt.Fail(Text{EN: "--scope all takes no --id; use --scope user to reset one account", ZH: "--scope all 不能再给 --id；要重置单个账户请用 --scope user"})
+				}
 			case "user":
 				uid, err := resolveUserRef(rt, rt.String("id"))
 				if err != nil {
@@ -514,15 +565,19 @@ func init() {
 					return err
 				}
 				body["id"] = gid
+			default:
+				return rt.Fail(Text{EN: "--scope must be all, group or user", ZH: "--scope 必须是 all、group 或 user"})
 			}
 			data, _, err := rt.Call(http.MethodPost, "/api/admin/usage/reset", map[string]any(body))
 			if err != nil {
 				return err
 			}
-			return rt.Fields([][2]string{{"accounts", fmt.Sprint(asNum(asMap(data)["accounts"]))}})
+			return rt.Fields([][2]string{{"accounts", formatNumber(asNum(asMap(data)["accounts"]))}})
 		},
 	})
+}
 
+func init() {
 	registerCommand(Command{
 		Name:    "quota list",
 		Group:   "operations",
@@ -551,6 +606,8 @@ func init() {
 				for k := range windows {
 					wins = append(wins, k)
 				}
+				// Sorted, so a quota shows its windows in the same order each time.
+				sort.Strings(wins)
 				rows = append(rows, []string{
 					asStr(p["scope"]), asStr(p["scope_id"]), limitStr(p["rpm"]), limitStr(p["tpm"]),
 					strings.Join(wins, ","), formatMS(p["updated_at"]),
@@ -569,10 +626,12 @@ func init() {
 			EN: "The policy is replaced wholesale on the server, so this command reads the existing " +
 				"policy first and carries every other window forward unchanged — only the --window " +
 				"named here (if any) and --rpm/--tpm are touched. --clear-rpm / --clear-tpm set that " +
-				"limit back to 'inherit'.",
+				"limit back to 'inherit'. If the policy changes between that read and the save, the save is " +
+				"refused rather than overwriting the change; run the command again.",
 			ZH: "服务器端策略是整体替换写入的，因此本命令会先读取现有策略，并原样保留其余窗口的设置——" +
 				"只会改动这里指定的 --window（如果给出）以及 --rpm / --tpm。--clear-rpm / --clear-tpm " +
-				"会把对应限制改回“继承”。",
+				"会把对应限制改回“继承”。如果读取之后、保存之前策略被别人改过，保存会被拒绝而不是覆盖那次修改；" +
+				"重新执行一次即可。",
 		},
 		Flags: []Flag{
 			{Name: "--scope", Hint: Text{EN: "global, group or user, required", ZH: "global、group 或 user，必填"}, Value: "SCOPE"},
@@ -613,10 +672,7 @@ func init() {
 				}
 				scopeID = gid
 			default:
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("--scope 必须是 global、group 或 user")
-				}
-				return rt.Errorf("--scope must be global, group or user")
+				return rt.Fail(Text{EN: "--scope must be global, group or user", ZH: "--scope 必须是 global、group 或 user"})
 			}
 
 			existing, _, err := rt.Call(http.MethodGet, "/api/admin/quota/policies", nil)
@@ -625,9 +681,15 @@ func init() {
 			}
 			var rpm, tpm any
 			windows := map[string]any{}
+			// What the policy looked like when it was read, sent back as the
+			// save's precondition: the windows carried forward are this
+			// reading's, and another administrator's change since then would
+			// otherwise be overwritten with them. 0 means no policy yet.
+			var readAt int64
 			for _, raw := range asSlice(asMap(existing)["policies"]) {
 				p := asMap(raw)
 				if asStr(p["scope"]) == scope && asStr(p["scope_id"]) == scopeID {
+					readAt = int64(asNum(p["updated_at"]))
 					rpm, tpm = p["rpm"], p["tpm"]
 					for k, v := range asMap(p["windows"]) {
 						windows[k] = v
@@ -635,19 +697,21 @@ func init() {
 					break
 				}
 			}
-			if rt.Present("clear-rpm") {
+			// Bool, not Present, for the --clear-* flags: "--clear-rpm false" is
+			// given, and must leave the limit where it was.
+			if rt.Bool("clear-rpm") {
 				rpm = nil
 			} else if rt.Present("rpm") {
 				rpm = rt.Int("rpm")
 			}
-			if rt.Present("clear-tpm") {
+			if rt.Bool("clear-tpm") {
 				tpm = nil
 			} else if rt.Present("tpm") {
 				tpm = rt.Int("tpm")
 			}
 
 			if kind := rt.String("window"); kind != "" {
-				if rt.Present("clear-window") {
+				if rt.Bool("clear-window") {
 					delete(windows, kind)
 				} else {
 					win := asMap(windows[kind])
@@ -664,6 +728,8 @@ func init() {
 						win["tokens"] = rt.Int("tokens")
 					}
 					if rt.Present("credits") {
+						// --credits is declared F, so ParseFlags has already refused anything that
+						// does not parse, and the discarded error cannot turn into a zero limit.
 						f, _ := strconv.ParseFloat(rt.String("credits"), 64)
 						win["credits"] = f
 					}
@@ -671,7 +737,7 @@ func init() {
 				}
 			}
 
-			body := map[string]any{"scope": scope, "scope_id": scopeID, "rpm": rpm, "tpm": tpm, "windows": windows}
+			body := map[string]any{"scope": scope, "scope_id": scopeID, "rpm": rpm, "tpm": tpm, "windows": windows, "if_updated_at": readAt}
 			data, _, err := rt.Call(http.MethodPut, "/api/admin/quota/policies", body)
 			if err != nil {
 				return err
@@ -699,10 +765,7 @@ func init() {
 		Endpoints:   []string{"DELETE /api/admin/quota/policies/{scope}"},
 		Run: func(_ context.Context, rt *Runtime) error {
 			if rt.NArg() == 0 {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("需要 scope：global、group 或 user")
-				}
-				return rt.Errorf("a scope is required: global, group or user")
+				return rt.Fail(Text{EN: "a scope is required: global, group or user", ZH: "需要 scope：global、group 或 user"})
 			}
 			scope := rt.Arg(0)
 			var scopeID string
@@ -721,10 +784,7 @@ func init() {
 				}
 				scopeID = gid
 			default:
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("scope 必须是 global、group 或 user")
-				}
-				return rt.Errorf("scope must be global, group or user")
+				return rt.Fail(Text{EN: "scope must be global, group or user", ZH: "scope 必须是 global、group 或 user"})
 			}
 			q := url.Values{}
 			if scopeID != "" {
@@ -737,15 +797,15 @@ func init() {
 			if _, _, err := rt.Call(http.MethodDelete, path, nil); err != nil {
 				return err
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已删除。\n")
-			} else {
-				rt.Printf("deleted.\n")
+			if rt.effectiveJSON() {
+				return rt.Fields(nil)
 			}
-			return nil
+			return rt.confirm(Text{EN: "deleted.", ZH: "已删除。"})
 		},
 	})
+}
 
+func init() {
 	registerCommand(Command{
 		Name:       "code list",
 		Group:      "operations",
@@ -765,8 +825,8 @@ func init() {
 				c := asMap(raw)
 				rows = append(rows, []string{
 					asStr(c["id"]), asStr(c["code"]), asStr(c["name"]), formatWindows(c["windows"]),
-					fmt.Sprint(asNum(c["cards"])), fmt.Sprint(asNum(c["claimed"])),
-					fmt.Sprint(asNum(c["card_days"])), formatMS(c["expires_at"]), asStr(c["note"]),
+					formatNumber(asNum(c["cards"])), formatNumber(asNum(c["claimed"])),
+					formatNumber(asNum(c["card_days"])), formatMS(c["expires_at"]), asStr(c["note"]),
 				})
 			}
 			return rt.Table([]string{"id", "code", "name", "windows", "cards", "claimed", "card_days", "expires", "note"}, rows)
@@ -786,7 +846,7 @@ func init() {
 		Flags: []Flag{
 			{Name: "--name", Hint: Text{EN: "name or label for the minted card", ZH: "卡片名称"}, Value: "NAME"},
 			{Name: "--windows", Hint: Text{EN: "quota windows, e.g. 5h, 1w, 1m, 5h,1w, or full", ZH: "重置周期，如 5h、1w、1m、5h,1w 或 full"}, Value: "WINS"},
-			{Name: "--code", Hint: Text{EN: "the literal code; empty = generated", ZH: "字面兑换码；留空则自动生成"}, Value: "TEXT"},
+			{Name: "--code", Hint: Text{EN: "the literal code; empty = generated", ZH: "字面兑换码；留空则自动生成"}, Value: "TEXT", Sensitive: true},
 			{Name: "--cards", Hint: Text{EN: "cards per code, 1-10000, default 1", ZH: "每个兑换码的卡数，1-10000，默认 1"}, Value: "N", Default: "1"},
 			{Name: "--card-days", Hint: Text{EN: "how long each minted card lives, 0-3650", ZH: "每张卡的有效天数，0-3650"}, Value: "D"},
 			{Name: "--expires-at", Hint: Text{EN: "when the code itself stops being redeemable, epoch ms", ZH: "兑换码本身的失效时间（毫秒时间戳）"}, Value: "MS"},
@@ -818,7 +878,7 @@ func init() {
 				c := asMap(raw)
 				rows = append(rows, []string{
 					asStr(c["id"]), asStr(c["code"]), asStr(c["name"]), formatWindows(c["windows"]),
-					fmt.Sprint(asNum(c["cards"])), formatMS(c["expires_at"]),
+					formatNumber(asNum(c["cards"])), formatMS(c["expires_at"]),
 				})
 			}
 			return rt.Table([]string{"id", "code", "name", "windows", "cards", "expires"}, rows)
@@ -873,15 +933,15 @@ func init() {
 			if _, _, err := rt.Call(http.MethodDelete, "/api/admin/codes/"+url.PathEscape(ref), nil); err != nil {
 				return err
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已删除。\n")
-			} else {
-				rt.Printf("deleted.\n")
+			if rt.effectiveJSON() {
+				return rt.Fields(nil)
 			}
-			return nil
+			return rt.confirm(Text{EN: "deleted.", ZH: "已删除。"})
 		},
 	})
+}
 
+func init() {
 	logFilterFlags := []Flag{
 		{Name: "--channel", Hint: Text{EN: "web or api", ZH: "web 或 api"}, Value: "CHANNEL"},
 		{Name: "--method", Hint: Text{EN: "HTTP method", ZH: "HTTP 方法"}, Value: "METHOD"},
@@ -949,7 +1009,7 @@ func init() {
 			for _, raw := range asSlice(asMap(data)["entries"]) {
 				e := asMap(raw)
 				rows = append(rows, []string{
-					formatMS(e["at"]), asStr(e["method"]), asStr(e["path"]), fmt.Sprint(asNum(e["status"])),
+					formatMS(e["at"]), asStr(e["method"]), asStr(e["path"]), formatNumber(asNum(e["status"])),
 					asStr(e["username"]), asStr(e["error_code"]),
 				})
 			}
@@ -962,7 +1022,7 @@ func init() {
 		Group:      "operations",
 		Summary:    Text{EN: "Show request log facet counts", ZH: "显示请求日志的分面统计"},
 		Usage:      "log facets [--since MS]",
-		Flags:      []Flag{{Name: "--since", Hint: Text{EN: "epoch ms, default 0 (all time)", ZH: "毫秒时间戳，默认 0（全部时间）"}, Value: "MS"}},
+		Flags:      []Flag{{Name: "--since", Hint: Text{EN: "epoch ms, default 0 (all time)", ZH: "毫秒时间戳，默认 0（全部时间）"}, Value: "MS", Default: "0"}},
 		Examples:   []string{"log facets", "log facets --since 0"},
 		SeeAlso:    []string{"log list"},
 		Permission: "logs",
@@ -983,8 +1043,8 @@ func init() {
 			m := asMap(data)
 			jsonMode := rt.effectiveJSON()
 			if err := rt.Fields([][2]string{
-				{"total", fmt.Sprint(asNum(m["total"]))}, {"dropped", fmt.Sprint(asNum(m["dropped"]))},
-				{"evicted", fmt.Sprint(asNum(m["evicted"]))}, {"oldest", formatMS(m["oldest"])},
+				{"total", formatNumber(asNum(m["total"]))}, {"dropped", formatNumber(asNum(m["dropped"]))},
+				{"evicted", formatNumber(asNum(m["evicted"]))}, {"oldest", formatMS(m["oldest"])},
 			}); err != nil {
 				return err
 			}
@@ -996,7 +1056,7 @@ func init() {
 				var rows [][]string
 				for _, raw := range asSlice(m[section]) {
 					f := asMap(raw)
-					rows = append(rows, []string{asStr(f["value"]), asStr(f["label"]), fmt.Sprint(asNum(f["count"]))})
+					rows = append(rows, []string{asStr(f["value"]), asStr(f["label"]), formatNumber(asNum(f["count"]))})
 				}
 				RenderTable(rt.Out, rt.Session.Width, rt.Session.Colour, []string{"value", "label", "count"}, rows)
 			}
@@ -1023,16 +1083,13 @@ func init() {
 		Endpoints:   []string{"POST /api/admin/logs/prune"},
 		Run: func(_ context.Context, rt *Runtime) error {
 			if !rt.Present("days") {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("需要 --days（0 表示全部）")
-				}
-				return rt.Errorf("--days is required (0 means everything)")
+				return rt.Fail(Text{EN: "--days is required (0 means everything)", ZH: "需要 --days（0 表示全部）"})
 			}
 			data, _, err := rt.Call(http.MethodPost, "/api/admin/logs/prune", map[string]any{"days": rt.Int("days")})
 			if err != nil {
 				return err
 			}
-			return rt.Fields([][2]string{{"removed", fmt.Sprint(asNum(asMap(data)["removed"]))}})
+			return rt.Fields([][2]string{{"removed", formatNumber(asNum(asMap(data)["removed"]))}})
 		},
 	})
 }
@@ -1048,7 +1105,7 @@ func breakdownRows(v any) [][]string {
 		if label == "" {
 			label = asStr(b["key"])
 		}
-		rows = append(rows, []string{label, fmt.Sprint(asNum(b["requests"])), fmt.Sprint(asNum(b["total_tokens"])), fmt.Sprintf("%.2f", asNum(b["credits"]))})
+		rows = append(rows, []string{label, formatNumber(asNum(b["requests"])), formatNumber(asNum(b["total_tokens"])), fmt.Sprintf("%.2f", asNum(b["credits"]))})
 	}
 	return rows
 }
@@ -1056,16 +1113,28 @@ func breakdownRows(v any) [][]string {
 // windowFigure is how full one allowance window is, judged on whichever of its
 // limits is closest — the same reading the account's own bars are drawn from.
 func windowFigure(window map[string]any) string {
-	worst := -1.0
-	for _, pair := range [][2]string{
-		{"used_requests", "limit_requests"}, {"used_tokens", "limit_tokens"}, {"used_credits", "limit_credits"},
-	} {
-		if limit := asNum(window[pair[1]]); limit > 0 {
-			worst = max(worst, min(1, asNum(window[pair[0]])/limit))
-		}
-	}
-	if worst < 0 {
+	ratio, has := windowRatio(window)
+	if !has || ratio < 0 {
 		return "-"
 	}
-	return fmt.Sprintf("%d%% used", int(worst*100+0.5))
+	return fmt.Sprintf("%d%% used", int(min(1, ratio)*100+0.5))
+}
+
+// renderProbeFrames prints a probe run as one JSON array of {event, data}
+// objects. The data stays structured when the server sent JSON, so a script
+// reads the counts directly instead of parsing progress lines.
+func renderProbeFrames(rt *Runtime, frames []SSEFrame) error {
+	out := make([]map[string]any, 0, len(frames))
+	for _, f := range frames {
+		var data any = string(f.Data)
+		if json.Valid(f.Data) {
+			data = json.RawMessage(f.Data)
+		}
+		out = append(out, map[string]any{"event": f.Event, "data": data})
+	}
+	enc, err := json.Marshal(out)
+	if err != nil {
+		return err
+	}
+	return RenderJSON(rt.Out, enc)
 }

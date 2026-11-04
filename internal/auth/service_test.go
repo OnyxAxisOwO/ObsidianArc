@@ -156,7 +156,7 @@ func TestParallelFirstRegistrationsCreateOnlyOneAdmin(t *testing.T) {
 func TestParallelFirstRegistrationsScreenEveryNonAdministrator(t *testing.T) {
 	f := newFixture(t)
 	var screened atomic.Int32
-	f.auth.ScreenEmail = func(context.Context, string) error {
+	f.auth.Hooks.ScreenEmail = func(context.Context, string) error {
 		screened.Add(1)
 		return usercheck.ErrDisposable
 	}
@@ -204,7 +204,7 @@ func TestRegisteredAddressDoesNotSpendPaidScreeningLookup(t *testing.T) {
 		t.Fatal(err)
 	}
 	var calls atomic.Int32
-	f.auth.ScreenEmail = func(context.Context, string) error {
+	f.auth.Hooks.ScreenEmail = func(context.Context, string) error {
 		calls.Add(1)
 		return nil
 	}
@@ -294,13 +294,13 @@ func TestSignupReviewCanRestrictAPIWithoutRefusingTheAccount(t *testing.T) {
 	}
 
 	until := time.Now().Add(30 * time.Hour).UnixMilli()
-	f.auth.ReviewSignup = func(context.Context, RegisterInput, int) (SignupReview, error) {
+	f.auth.Hooks.ReviewSignup = func(context.Context, RegisterInput, int) (SignupReview, error) {
 		return SignupReview{
 			Ran: true, Decision: SignupRestrict, Reason: "generated-looking handle", RestrictedUntil: until,
 		}, nil
 	}
 	var recorded SignupReview
-	f.auth.OnSignupReview = func(_ context.Context, _ RegisterInput, account *user.User, review SignupReview) {
+	f.auth.Hooks.OnSignupReview = func(_ context.Context, _ RegisterInput, account *user.User, review SignupReview) {
 		if account == nil {
 			t.Error("a successful restricted registration had no account in its review event")
 		}
@@ -334,11 +334,11 @@ func TestSignupReviewCanRefuseWithoutCreatingAnAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	f.auth.ReviewSignup = func(context.Context, RegisterInput, int) (SignupReview, error) {
+	f.auth.Hooks.ReviewSignup = func(context.Context, RegisterInput, int) (SignupReview, error) {
 		return SignupReview{Ran: true, Decision: SignupRefuse, Reason: "automated"}, nil
 	}
 	called := false
-	f.auth.OnSignupReview = func(_ context.Context, _ RegisterInput, account *user.User, review SignupReview) {
+	f.auth.Hooks.OnSignupReview = func(_ context.Context, _ RegisterInput, account *user.User, review SignupReview) {
 		called = true
 		if account != nil || review.Decision != SignupRefuse {
 			t.Errorf("refusal event = account %+v, review %+v", account, review)
@@ -607,12 +607,16 @@ func TestChangePasswordRevokesOtherSessions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := f.auth.ChangePassword(ctx, account.ID, "a-good-password", "a-better-password", keepSession.ID); err != nil {
+	newToken, err := f.auth.ChangePassword(ctx, account.ID, "a-good-password", "a-better-password", keepSession.ID)
+	if err != nil {
 		t.Fatalf("change password: %v", err)
 	}
 
-	if _, _, err := f.auth.Authenticate(ctx, keepToken); err != nil {
-		t.Errorf("the session that made the change was revoked: %v", err)
+	if _, _, err := f.auth.Authenticate(ctx, keepToken); !errors.Is(err, ErrSessionNotFound) {
+		t.Errorf("the cookie that made the change still signs in: %v", err)
+	}
+	if _, _, err := f.auth.Authenticate(ctx, newToken); err != nil {
+		t.Errorf("the session that made the change was not reissued: %v", err)
 	}
 	if _, _, err := f.auth.Authenticate(ctx, otherToken); !errors.Is(err, ErrSessionNotFound) {
 		t.Errorf("another session survived the password change: %v", err)
@@ -633,9 +637,283 @@ func TestChangePasswordRequiresTheCurrentOne(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = f.auth.ChangePassword(ctx, account.ID, "wrong-current", "a-better-password", "")
+	_, err = f.auth.ChangePassword(ctx, account.ID, "wrong-current", "a-better-password", "")
 	if !errors.Is(err, ErrCurrentPasswordWrong) {
 		t.Fatalf("want ErrCurrentPasswordWrong, got %v", err)
+	}
+}
+
+// The session that made the change keeps everything its sign-in recorded. Only
+// the token moves, so the signed-in devices list and the timers read as they
+// did before.
+func TestChangePasswordReissuesTheCallersSessionAsItWas(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	account, token, err := f.auth.Register(ctx, RegisterInput{
+		Username: "arc", Password: "a-good-password", IP: "203.0.113.5", UA: "Browser/1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.auth.Sessions().SetDeviceID(ctx, nil, HashToken(token), "device-one"); err != nil {
+		t.Fatal(err)
+	}
+	_, before, err := f.auth.Authenticate(ctx, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	newToken, err := f.auth.ChangePassword(ctx, account.ID, "a-good-password", "a-better-password", before.ID)
+	if err != nil {
+		t.Fatalf("change password: %v", err)
+	}
+	if newToken == "" || newToken == token {
+		t.Fatalf("the session was not given a new token (got %q)", newToken)
+	}
+
+	_, after, err := f.auth.Authenticate(ctx, newToken)
+	if err != nil {
+		t.Fatalf("the reissued session does not authenticate: %v", err)
+	}
+	if after.ID != HashToken(newToken) {
+		t.Errorf("the reissued row is keyed by %q, not by the new token", after.ID)
+	}
+	if after.CreatedAt != before.CreatedAt || after.ExpiresAt != before.ExpiresAt || after.LastSeenAt != before.LastSeenAt {
+		t.Errorf("the timers moved: before %+v, after %+v", before, after)
+	}
+	if after.IP != "203.0.113.5" || after.UserAgent != "Browser/1" || after.DeviceID != "device-one" {
+		t.Errorf("the reissued session lost what its sign-in recorded: %+v", after)
+	}
+	if after.TwoFactorPending {
+		t.Error("the reissued session is waiting for a second step")
+	}
+}
+
+// A session that passed its second step and holds a backoffice visit keeps both
+// through a password change, and the account still asks for a code on its next
+// sign-in.
+func TestChangePasswordKeepsTheSecondStepAndTheBackofficeVisit(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	if err := f.settings.Set(ctx, settings.TwoFactorBackofficeMode, settings.BackofficeVerifyVisit); err != nil {
+		t.Fatal(err)
+	}
+	account, secret, recovery, used := enrolled(t, f, "founder")
+
+	signedIn, token, err := f.auth.CompleteSignIn(ctx, pending(t, f, "founder"), codeAt(t, secret, used+1), "", "")
+	if err != nil {
+		t.Fatalf("complete sign-in: %v", err)
+	}
+	_, session, err := f.auth.Authenticate(ctx, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A recovery code, so the test does not depend on which 30-second step it
+	// happens to run in.
+	if err := f.auth.EnterBackoffice(context.WithValue(ctx, sessionContextKey, session), signedIn, recovery[0], "203.0.113.1", "Browser/1"); err != nil {
+		t.Fatalf("enter the backoffice: %v", err)
+	}
+	_, session, err = f.auth.Authenticate(ctx, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.BackofficeAt == 0 {
+		t.Fatal("the visit did not open")
+	}
+
+	newToken, err := f.auth.ChangePassword(ctx, account.ID, "a-good-password", "a-better-password", session.ID)
+	if err != nil {
+		t.Fatalf("change password: %v", err)
+	}
+	signedIn, after, err := f.auth.Authenticate(ctx, newToken)
+	if err != nil {
+		t.Fatalf("the reissued session does not authenticate: %v", err)
+	}
+	if after.TwoFactorPending {
+		t.Fatal("the reissued session is waiting for a second step")
+	}
+	if after.BackofficeAt != session.BackofficeAt || after.BackofficeIP != "203.0.113.1" || after.BackofficeUA != "Browser/1" {
+		t.Errorf("the visit changed: before %+v, after %+v", session, after)
+	}
+	if f.auth.BackofficeLocked(context.WithValue(ctx, sessionContextKey, after), signedIn) {
+		t.Error("the backoffice asks for a code again after the password changed")
+	}
+
+	// The second step belongs to the account, not to the session, so the next
+	// sign-in with the new password still stops at a code.
+	_, _, err = f.auth.Login(ctx, LoginInput{Identifier: "founder", Password: "a-better-password"})
+	var second *SecondFactorRequired
+	if !errors.As(err, &second) {
+		t.Errorf("a sign-in with the new password skipped the second step: %v", err)
+	}
+}
+
+// A sign-in that has proved its password but not its code is a session as well,
+// and a password change ends it: it was issued against the old password.
+func TestChangePasswordEndsPendingSignIns(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	account, secret, _, used := enrolled(t, f, "arc")
+
+	half := pending(t, f, "arc")
+	_, full, err := f.auth.Sessions().Create(ctx, account.ID, time.Hour, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.auth.ChangePassword(ctx, account.ID, "a-good-password", "a-better-password", full.ID); err != nil {
+		t.Fatalf("change password: %v", err)
+	}
+	if _, _, err := f.auth.Authenticate(ctx, half); !errors.Is(err, ErrSessionNotFound) {
+		t.Errorf("a sign-in that proved the old password survived the change: %v", err)
+	}
+	if _, _, err := f.auth.CompleteSignIn(ctx, half, codeAt(t, secret, used+1), "", ""); !errors.Is(err, ErrNoPendingSignIn) {
+		t.Errorf("the pending sign-in could still be completed: %v", err)
+	}
+}
+
+// A change with no session to carry over ends every session and issues none.
+// The SSH console makes its changes this way.
+func TestChangePasswordWithoutASessionEndsEverySession(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	account, token, err := f.auth.Register(ctx, RegisterInput{Username: "arc", Password: "a-good-password"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, otherToken, err := f.auth.Login(ctx, LoginInput{Identifier: "arc", Password: "a-good-password"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	issued, err := f.auth.ChangePassword(ctx, account.ID, "a-good-password", "a-better-password", "")
+	if err != nil {
+		t.Fatalf("change password: %v", err)
+	}
+	if issued != "" {
+		t.Errorf("a change with no session issued a token: %q", issued)
+	}
+	for _, stale := range []string{token, otherToken} {
+		if _, _, err := f.auth.Authenticate(ctx, stale); !errors.Is(err, ErrSessionNotFound) {
+			t.Errorf("a session survived a change that kept none: %v", err)
+		}
+	}
+}
+
+// A session that ends while its own change is in flight is not revived. The
+// change is refused, and the password stays as it was.
+func TestChangePasswordRefusesASessionThatHasEnded(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	account, token, err := f.auth.Register(ctx, RegisterInput{Username: "arc", Password: "a-good-password"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, session, err := f.auth.Authenticate(ctx, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.auth.Logout(ctx, token); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := f.auth.ChangePassword(ctx, account.ID, "a-good-password", "a-better-password", session.ID); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("a change from an ended session = %v, want ErrSessionNotFound", err)
+	}
+	if _, _, err := f.auth.Login(ctx, LoginInput{Identifier: "arc", Password: "a-good-password"}); err != nil {
+		t.Errorf("the refused change still changed the password: %v", err)
+	}
+}
+
+// A session whose time has run out is refused while its row is still there.
+// Logout is no stand-in: it deletes the row, so the expiry check in Reissue
+// never decides the outcome.
+func TestChangePasswordRefusesASessionPastItsExpiry(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	account, token, err := f.auth.Register(ctx, RegisterInput{Username: "arc", Password: "a-good-password"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Authenticate refuses an expired row, so the session is read before the row is aged.
+	_, session, err := f.auth.Authenticate(ctx, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.Exec(ctx, `UPDATE sessions SET expires_at = ? WHERE id = ?`,
+		time.Now().Add(-time.Minute).UnixMilli(), session.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := f.auth.ChangePassword(ctx, account.ID, "a-good-password", "a-better-password", session.ID); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("a change from a session past its expiry = %v, want ErrSessionNotFound", err)
+	}
+	if _, _, err := f.auth.Login(ctx, LoginInput{Identifier: "arc", Password: "a-good-password"}); err != nil {
+		t.Errorf("the refused change still changed the password: %v", err)
+	}
+}
+
+// Two changes from one session can both pass the password check. Only one may
+// land, and only one may leave a session behind.
+func TestParallelPasswordChangesFromOneSessionIssueOneSession(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	account, token, err := f.auth.Register(ctx, RegisterInput{Username: "arc", Password: "a-good-password"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, session, err := f.auth.Authenticate(ctx, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const racers = 3
+	var (
+		wg     sync.WaitGroup
+		mu     sync.Mutex
+		issued []string
+		losses []error
+		start  = make(chan struct{})
+	)
+	for i := 0; i < racers; i++ {
+		wg.Add(1)
+		go func(next string) {
+			defer wg.Done()
+			<-start
+			newToken, err := f.auth.ChangePassword(ctx, account.ID, "a-good-password", next, session.ID)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				losses = append(losses, err)
+				return
+			}
+			issued = append(issued, newToken)
+		}(fmt.Sprintf("racing-password-%d", i))
+	}
+	close(start)
+	wg.Wait()
+
+	if len(issued) != 1 {
+		t.Fatalf("%d changes issued a session, want exactly one (losses: %v)", len(issued), losses)
+	}
+	for _, err := range losses {
+		if !errors.Is(err, ErrSessionNotFound) && !errors.Is(err, ErrCurrentPasswordWrong) && !errors.As(err, new(*RateLimitError)) {
+			t.Errorf("a losing change failed with %v", err)
+		}
+	}
+	var sessions int
+	if err := f.db.QueryRow(ctx, `SELECT COUNT(*) FROM sessions WHERE user_id = ?`, account.ID).Scan(&sessions); err != nil {
+		t.Fatal(err)
+	}
+	if sessions != 1 {
+		t.Errorf("the account has %d sessions after the race, want 1", sessions)
+	}
+	if _, _, err := f.auth.Authenticate(ctx, issued[0]); err != nil {
+		t.Errorf("the surviving session does not authenticate: %v", err)
 	}
 }
 
@@ -865,6 +1143,7 @@ func TestOIDCOnlySignupEnforcedAndToggleable(t *testing.T) {
 	if err := f.settings.Set(ctx, settings.OAuthOIDCOnlySignup, "true"); err != nil {
 		t.Fatal(err)
 	}
+	f.auth.Hooks.SignInProviderCount = onSwitches(f)
 
 	admin, _, err := f.auth.Register(ctx, RegisterInput{Username: "admin", Password: "a-good-password"})
 	if err != nil {
@@ -874,9 +1153,9 @@ func TestOIDCOnlySignupEnforcedAndToggleable(t *testing.T) {
 		t.Fatalf("first user role = %q, want admin", admin.Role)
 	}
 
-	// Subsequent normal registrations fail with ErrOIDCOnlyRegistration.
-	if _, _, err := f.auth.Register(ctx, RegisterInput{Username: "second", Password: "a-good-password"}); !errors.Is(err, ErrOIDCOnlyRegistration) {
-		t.Fatalf("second registration want ErrOIDCOnlyRegistration, got %v", err)
+	// Subsequent normal registrations fail with ErrThirdPartyOnlyRegistration.
+	if _, _, err := f.auth.Register(ctx, RegisterInput{Username: "second", Password: "a-good-password"}); !errors.Is(err, ErrThirdPartyOnlyRegistration) {
+		t.Fatalf("second registration want ErrThirdPartyOnlyRegistration, got %v", err)
 	}
 
 	// Existing user can still log in with password.
@@ -916,6 +1195,22 @@ func TestOIDCOnlySignupEnforcedAndToggleable(t *testing.T) {
 	}
 }
 
+// onSwitches stands in for the sign-in card's question in the tests that are
+// about the switches: a provider counts once its switch is on, as if it were
+// configured. Whether a switch on with no credentials counts is tested on its
+// own below.
+func onSwitches(f *fixture) func() int {
+	return func() int {
+		n := 0
+		for _, key := range []string{settings.OAuthGitHubEnabled, settings.OAuthGoogleEnabled, settings.OAuthOIDCEnabled} {
+			if f.settings.Bool(key) {
+				n++
+			}
+		}
+		return n
+	}
+}
+
 func TestThirdPartyOnlySignupEnforcedAndToggleable(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -927,6 +1222,7 @@ func TestThirdPartyOnlySignupEnforcedAndToggleable(t *testing.T) {
 	if err := f.settings.Set(ctx, settings.OAuthThirdPartyOnlySignup, "true"); err != nil {
 		t.Fatal(err)
 	}
+	f.auth.Hooks.SignInProviderCount = onSwitches(f)
 
 	admin, _, err := f.auth.Register(ctx, RegisterInput{Username: "admin", Password: "a-good-password"})
 	if err != nil {
@@ -975,5 +1271,150 @@ func TestThirdPartyOnlySignupEnforcedAndToggleable(t *testing.T) {
 	}
 	if third.Username != "third" {
 		t.Fatalf("third username = %q, want 'third'", third.Username)
+	}
+}
+
+// What a password replaces is revoked in the same transaction as the write. A
+// revocation that fails leaves the old password and every session in place,
+// and one that works is asked about the account that changed, for both the
+// change and the administrator's reset.
+// A switch that is on with no credentials has no button on the sign-in card,
+// so the card offers no third-party route. Refusing every sign-up because of
+// that switch alone would leave an instance with no way in at all.
+func TestThirdPartyOnlySignupIgnoresAProviderTheCardDoesNotOffer(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	if _, _, err := f.auth.Register(ctx, RegisterInput{Username: "admin", Password: "a-good-password"}); err != nil {
+		t.Fatalf("first account should succeed: %v", err)
+	}
+	if err := f.settings.Set(ctx, settings.OAuthGitHubEnabled, "true"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.settings.Set(ctx, settings.OAuthThirdPartyOnlySignup, "true"); err != nil {
+		t.Fatal(err)
+	}
+	f.auth.Hooks.SignInProviderCount = func() int { return 0 }
+
+	if _, _, err := f.auth.Register(ctx, RegisterInput{Username: "second", Password: "a-good-password"}); err != nil {
+		t.Fatalf("with no provider on the card, a password sign-up must be allowed, got %v", err)
+	}
+}
+
+func TestAPasswordWriteRevokesWhatWasIssuedInTheSameTransaction(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	account, token, err := f.auth.Register(ctx, RegisterInput{Username: "arc", Password: "a-good-password"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var asked []string
+	f.auth.Hooks.RevokeIssued = func(_ context.Context, _ database.Queryer, userID string) error {
+		asked = append(asked, userID)
+		return errors.New("the identity provider is unreachable")
+	}
+	if _, err := f.auth.ChangePassword(ctx, account.ID, "a-good-password", "a-better-password", ""); err == nil {
+		t.Fatal("a failed revocation let the password change land")
+	}
+	if _, _, err := f.auth.Login(ctx, LoginInput{Identifier: "arc", Password: "a-good-password"}); err != nil {
+		t.Errorf("the old password stopped working although its change was rolled back: %v", err)
+	}
+	if _, _, err := f.auth.Authenticate(ctx, token); err != nil {
+		t.Errorf("sessions were ended by a change that was rolled back: %v", err)
+	}
+
+	f.auth.Hooks.RevokeIssued = func(_ context.Context, _ database.Queryer, userID string) error {
+		asked = append(asked, userID)
+		return nil
+	}
+	if _, err := f.auth.ChangePassword(ctx, account.ID, "a-good-password", "a-better-password", ""); err != nil {
+		t.Fatalf("change password: %v", err)
+	}
+	if err := f.auth.SetPassword(ctx, account.ID, "a-third-password"); err != nil {
+		t.Fatalf("administrator reset: %v", err)
+	}
+
+	if len(asked) != 3 {
+		t.Fatalf("revocation asked %d times, want once for each of the three writes", len(asked))
+	}
+	for i, userID := range asked {
+		if userID != account.ID {
+			t.Errorf("revocation %d named %q, want the account that changed", i, userID)
+		}
+	}
+}
+
+// A plugin guard's restriction is the reviewer's middle answer without the
+// reviewer's judgement, so it lapses on the same clock and is recorded as the
+// guard's own. Labelled as the reviewer's, one guard's "not sure" would count
+// toward a batch of bot sign-ups.
+func TestAGuardsRestrictionLapsesAndIsNotTheReviewersOwn(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	if _, _, err := f.auth.Register(ctx, RegisterInput{
+		Username: "founder", Password: "a-good-password",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.auth.AddGuard(GuardRegister, Guard{
+		Name: "risk", Plugin: "risk", Event: "signup_restricted",
+		Check: func(context.Context, GuardRequest) (Verdict, error) {
+			return Verdict{Restrict: true, Reason: "unsure"}, nil
+		},
+	})
+	f.auth.Hooks.ReviewSignup = func(context.Context, RegisterInput, int) (SignupReview, error) {
+		return SignupReview{Ran: true, Decision: SignupAllow}, nil
+	}
+
+	created, _, err := f.auth.Register(ctx, RegisterInput{
+		Username: "guarded", Password: "another-password",
+	})
+	if err != nil {
+		t.Fatalf("guarded registration: %v", err)
+	}
+	if !created.APIRestricted || created.APIRestrictionSource != "guard" {
+		t.Fatalf("restriction = %+v, want the guard's restriction", created)
+	}
+	const day = int64(24 * time.Hour / time.Millisecond)
+	const slack = int64(time.Hour / time.Millisecond)
+	if left := created.APIRestrictedUntil - time.Now().UnixMilli(); left < day-slack || left > day+slack {
+		t.Errorf("restricted until %d, want about a day from now", created.APIRestrictedUntil)
+	}
+}
+
+// The account and its first session commit together or not at all. A failure
+// writing the session must not leave an account behind, or the retry would be
+// refused as a taken username.
+func TestASessionFailureLeavesNoAccountBehind(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	if _, _, err := f.auth.Register(ctx, RegisterInput{
+		Username: "founder", Password: "a-good-password",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := f.db.Exec(ctx,
+		`CREATE TRIGGER refuse_sessions BEFORE INSERT ON sessions BEGIN SELECT RAISE(ABORT, 'sessions are down'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.auth.Register(ctx, RegisterInput{
+		Username: "newcomer", Password: "another-password",
+	}); err == nil {
+		t.Fatal("a registration whose session could not be written reported success")
+	}
+	if total, err := f.users.Count(ctx, nil); err != nil || total != 1 {
+		t.Fatalf("accounts after the failed registration = %d (err %v), want only the founder", total, err)
+	}
+
+	if _, err := f.db.Exec(ctx, `DROP TRIGGER refuse_sessions`); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.auth.Register(ctx, RegisterInput{
+		Username: "newcomer", Password: "another-password",
+	}); err != nil {
+		t.Fatalf("retry after the session store recovered: %v", err)
 	}
 }

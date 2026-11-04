@@ -1,44 +1,51 @@
 <script setup lang="ts">
 // Providers: the upstream endpoints an administrator points this server at.
 //
-// The API key is write-only. The form never receives one — the row carries
-// only a hint like ••••1234 — so editing a provider's name cannot leak the
-// credential into a response, and leaving the key field empty on an edit
-// means "keep the one you have" rather than "clear it".
+// The API keys are write-only. The form never receives one — the row carries
+// only hints like ••••1234 — so editing a provider's name cannot leak a
+// credential into a response. A stored key is kept or removed by its position
+// in those hints, and the hints go back with the save so the server can tell
+// whether the list it is changing is still the one that was shown.
 
 import { computed, nextTick, onMounted, ref } from 'vue';
-import { adminApi, type Meta, type Provider, type ProviderKind, type ReasoningStyle } from '@/admin/api';
+import { adminApi, type AdminProviderInput, type KeyRotation, type Meta, type Provider, type ProviderKind, type ReasoningStyle } from '@/admin/api';
 import { ApiError } from '@/api/client';
 import OaBadge from '@/components/OaBadge.vue';
 import OaBadgeRow from '@/components/OaBadgeRow.vue';
+import OaBulkBar from '@/components/OaBulkBar.vue';
 import OaCellStack from '@/components/OaCellStack.vue';
-import OaFormSection from '@/components/OaFormSection.vue';
 import OaIconButton from '@/components/OaIconButton.vue';
 import OaNumberField from '@/components/OaNumberField.vue';
 import OaPanel from '@/components/OaPanel.vue';
+import OaRow from '@/components/OaRow.vue';
 import OaSelectField from '@/components/OaSelectField.vue';
 import OaSwitchField from '@/components/OaSwitchField.vue';
 import OaTable from '@/components/OaTable.vue';
 import OaTextField from '@/components/OaTextField.vue';
 import type { Column } from '@/components/table-types';
 import { t, tn } from '@/composables/useI18n';
-import { IconCopy } from '@/icons';
+import { useBulk } from '@/composables/useBulk';
+import { usePanelSlot } from '@/composables/usePanelSlot';
+import { IconCopy, IconTrash, IconUndo } from '@/icons';
 import { relativeTime } from '@/lib/format';
 import { canAdmin } from '@/stores/session';
 import { isMasked, maskProvider, maskCredential } from '@/admin/safeMode';
+import AdminControlCard from './AdminControlCard.vue';
+import AdminDetectModels from './AdminDetectModels.vue';
 import AdminFailure from './AdminFailure.vue';
 import { reasoningLabel } from './reasoning-labels';
 import { useAdminView } from './adminView';
+import { failureText, runLoad, runRemove } from './shared';
 
 const view = useAdminView();
-view.setTitle(t('providersTitle'), t('providersSubtitle'));
+view.setTitle(() => t('providersTitle'), () => t('providersSubtitle'));
 
 const providers = ref<Provider[]>([]);
 const meta = ref<Meta | null>(null);
 const error = ref('');
 const loaded = ref(false);
 
-const panelOpen = ref(false);
+const { open: panelOpen, panel, key: panelKey, show: showPanel, hide: hidePanel, closed: panelClosed } = usePanelSlot();
 const existing = ref<Provider | null>(null);
 /**
  * Values to start from when creating. A copy of a provider is the create form
@@ -57,6 +64,7 @@ const form = ref({
   baseURL: '',
   allowInsecure: false,
   apiKey: '',
+  keyRotation: 'sequential' as KeyRotation,
   reasoning: 'auto' as ReasoningStyle,
   timeout: 120 as number | null,
   anthropicVersion: '',
@@ -65,37 +73,113 @@ const form = ref({
 });
 
 const creating = computed(() => existing.value === null);
+// Computed so a render does not hand the select a new array, and so the
+// labels follow a change of language.
+const keyRotationChoices = computed(() => [
+  { value: 'sequential' as KeyRotation, label: t('keyRotationSequential') },
+  { value: 'random' as KeyRotation, label: t('keyRotationRandom') },
+]);
 
-// --- detection ----------------------------------------------------------------
+// --- keys ---------------------------------------------------------------------------
 
-interface Detected {
-  model_id: string;
-  display_name: string;
-  configured: boolean;
-  picked: boolean;
+/** Typed this visit and not saved yet. The browser has these; it never had the stored ones. */
+const pendingKeys = ref<string[]>([]);
+/** Positions in `storedHints` the operator took out. */
+const removedKeys = ref<number[]>([]);
+
+/** The keys already there: this provider's, or on a duplicate, its source's. */
+const storedHints = computed(() => (existing.value ?? template.value)?.api_key_hints ?? []);
+
+/**
+ * Whether the address is not the one the stored keys were typed for. They
+ * never follow it — the server refuses — so they are shown as going and only
+ * typed ones are sent. Only spelling is ignored here; the server normalises
+ * further and decides.
+ */
+const moved = computed(() => {
+  const source = existing.value ?? template.value;
+  const bare = (value: string) => value.trim().replace(/\/+$/, '');
+  return source !== null && bare(form.value.baseURL) !== bare(source.base_url);
+});
+
+const keptPositions = computed(() => (moved.value
+  ? []
+  : storedHints.value.map((_, position) => position).filter((position) => !removedKeys.value.includes(position))));
+
+function splitKeys(text: string): string[] {
+  return text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
 }
 
-const detecting = ref(false);
-const detected = ref<Detected[] | null>(null);
-const detectStatus = ref('');
-const addLabel = ref('');
+/** Everything typed, the field's own text included: a key left in it when Save is pressed was meant to be added. */
+function typedKeys(): string[] {
+  return [...new Set([...pendingKeys.value, ...splitKeys(form.value.apiKey)])];
+}
+
+const keyCount = computed(() => keptPositions.value.length + typedKeys().length);
+
+function addTyped(): void {
+  const keys = splitKeys(form.value.apiKey);
+  if (!keys.length) return;
+  pendingKeys.value = [...new Set([...pendingKeys.value, ...keys])];
+  form.value.apiKey = '';
+}
+
+/**
+ * A password field drops the line breaks of what is pasted into it, so a list
+ * of keys would arrive as one long wrong key. A paste of several lines is
+ * taken out of the field's hands and added as that many keys.
+ */
+function pasteKeys(event: ClipboardEvent): void {
+  const text = event.clipboardData?.getData('text') ?? '';
+  if (splitKeys(text).length < 2) return;
+  event.preventDefault();
+  form.value.apiKey = text;
+  addTyped();
+}
+
+function toggleStored(position: number): void {
+  removedKeys.value = removedKeys.value.includes(position)
+    ? removedKeys.value.filter((entry) => entry !== position)
+    : [...removedKeys.value, position];
+}
+
+/**
+ * Follows secret.Hint, the server's hint for a stored key, so a new key reads
+ * like the stored ones beside it: four characters or fewer show only the mask,
+ * because the last four would be most of the key.
+ */
+function hintOf(key: string): string {
+  const chars = [...key];
+  if (chars.length <= 4) return '••••';
+  return `••••${chars.slice(-4).join('')}`;
+}
+
+function storedMeta(position: number): string | undefined {
+  if (moved.value) return t('apiKeyDroppedOnMove');
+  if (removedKeys.value.includes(position)) return t('apiKeyRemoved');
+  return undefined;
+}
 
 const columns = computed<Array<Column<Provider>>>(() => [
   { key: 'name', header: t('colName') },
   { key: 'type', header: t('colType'), width: '110px' },
-  { key: 'key', header: t('colKey'), text: (row) => row.api_key_hint ? maskCredential(row.api_key_hint) : '—', secondary: true, width: '130px' },
+  { key: 'key', header: t('colKey'), text: keySummary, secondary: true, width: '130px' },
   { key: 'models', header: t('colModels'), text: (row) => String(row.model_count), numeric: true, width: '80px' },
   { key: 'state', header: t('colState'), width: '130px' },
   { key: 'updated', header: t('colUpdated'), text: (row) => relativeTime(row.updated_at), secondary: true, width: '110px' },
 ]);
 
+function keySummary(row: Provider): string {
+  if (!row.api_key_hint) return '—';
+  const hint = maskCredential(row.api_key_hint);
+  const count = row.api_key_hints?.length ?? 1;
+  return count > 1 ? t('apiKeysSummary', { hint, count, more: count - 1 }) : hint;
+}
+
 function open(row: Provider | null, from: Provider | null = null): void {
   existing.value = row;
   template.value = from;
   panelError.value = '';
-  detected.value = null;
-  detectStatus.value = '';
-  addLabel.value = '';
 
   const source = row ?? from;
   form.value = {
@@ -104,6 +188,7 @@ function open(row: Provider | null, from: Provider | null = null): void {
     baseURL: source?.base_url ?? '',
     allowInsecure: source?.allow_insecure ?? false,
     apiKey: '',
+    keyRotation: source?.key_rotation ?? 'sequential',
     reasoning: source?.reasoning_style ?? 'auto',
     timeout: source?.timeout_seconds ?? 120,
     anthropicVersion: source?.anthropic_version ?? '',
@@ -111,7 +196,12 @@ function open(row: Provider | null, from: Provider | null = null): void {
     sortOrder: source?.sort_order ?? 0,
   };
 
-  panelOpen.value = true;
+  pendingKeys.value = [];
+  removedKeys.value = [];
+
+  // Saving leaves this set while the panel slides out.
+  busy.value = false;
+  showPanel();
   void nextTick(() => nameField.value?.focus({ preventScroll: true }));
 }
 
@@ -121,10 +211,31 @@ function duplicate(): void {
   open(null, { ...row, name: t('copyOfName', { name: row.name }) });
 }
 
+/**
+ * The panel slides away and the table is refetched where it stands, rather
+ * than the page being mounted again — which put the reader back at the top.
+ */
+function finish(): void {
+  hidePanel();
+  void load();
+}
+
+// --- several at once ----------------------------------------------------------------
+
+const bulk = useBulk(() => providers.value, (row) => row.id);
+
+function bulkEnable(on: boolean): Promise<void> {
+  return bulk.run((row) => (row.enabled === on ? Promise.resolve() : adminApi.updateProvider(row.id, { enabled: on })), load);
+}
+
+function bulkRemove(): Promise<void> {
+  return bulk.run((row) => adminApi.deleteProvider(row.id), load);
+}
+
 async function save(): Promise<void> {
   busy.value = true;
   panelError.value = '';
-  const payload: Record<string, unknown> = {
+  const payload: AdminProviderInput = {
     name: form.value.name.trim(),
     kind: form.value.kind,
     base_url: form.value.baseURL.trim(),
@@ -134,92 +245,82 @@ async function save(): Promise<void> {
     enabled: form.value.enabled,
     sort_order: form.value.sortOrder ?? 0,
     anthropic_version: form.value.kind === 'anthropic' ? form.value.anthropicVersion.trim() : '',
+    key_rotation: form.value.keyRotation,
   };
-  // An empty key on an edit keeps the stored one; on a create there is
-  // nothing to keep.
-  if (form.value.apiKey || creating.value) payload['api_key'] = form.value.apiKey;
+  const typed = typedKeys();
+  const kept = keptPositions.value;
+  const everyStored = kept.length === storedHints.value.length;
+  if (typed.length) payload.api_keys = typed;
+  // Positions are sent only when the list changes: an edit that leaves the
+  // keys alone should not fail because someone else changed them meanwhile.
+  const sendKept = () => {
+    payload.keep_keys = kept;
+    payload.key_hints = storedHints.value;
+  };
   if (template.value) {
-    // Headers have no field in this form, and the key is not something this
-    // page could send even if it wanted to.
-    payload['headers'] = template.value.headers;
-    if (!form.value.apiKey) payload['copy_key_from'] = template.value.id;
+    // Headers have no field in this form, and the keys are not something this
+    // page could send even if it wanted to: it names the provider to take
+    // them from, and which of them.
+    // The headers come back as the hints the list showed. The server reads
+    // them as the source's stored values, so the source is named even when no
+    // key is kept.
+    payload.headers = template.value.headers;
+    payload.copy_key_from = template.value.id;
+    // An empty list is sent too: left out, the copy takes every key the source
+    // holds, which is what keeping none is meant to prevent.
+    if (!kept.length || !everyStored || typed.length) sendKept();
+  } else if (!creating.value && (typed.length || !everyStored)) {
+    sendKept();
   }
 
   try {
     if (creating.value) await adminApi.createProvider(payload);
     else await adminApi.updateProvider(existing.value!.id, payload);
-    panelOpen.value = false;
-    view.reload();
+    finish();
   } catch (failure) {
     busy.value = false;
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
+    panelError.value = failure instanceof ApiError ? refusalText(failure) : failureText(failure);
+  }
+}
+
+/**
+ * The server words its refusals in English. The ones this page has words for
+ * are translated here, for a save and a delete alike, so both read in the
+ * language the person chose. A code not listed keeps the server's sentence,
+ * unless it is a server failure: that sentence was written for the logs.
+ */
+function refusalText(failure: ApiError): string {
+  switch (failure.code) {
+    case 'provider_key_needed': return t('providerKeyNeeded');
+    case 'super_admin_required': return t('providerBaseURLSuperAdmin');
+    case 'provider_keys_changed': return t('providerKeysChanged');
+    case 'model_routed': return t('providerModelRouted');
+    case 'header_name_invalid':
+      return t('providerHeaderNameInvalid', { name: String(failure.details['name'] ?? '') });
+    case 'header_duplicate':
+      return t('providerHeaderDuplicate', { name: String(failure.details['name'] ?? '') });
+    case 'header_hidden': return t('providerHeaderHidden');
+    default: return failureText(failure);
   }
 }
 
 async function remove(): Promise<void> {
   const row = existing.value;
   if (!row) return;
-  busy.value = true;
-  try {
-    await adminApi.deleteProvider(row.id);
-    panelOpen.value = false;
-    view.reload();
-  } catch (failure) {
-    busy.value = false;
-    panelError.value = failure instanceof ApiError ? failure.message : String(failure);
-  }
-}
-
-async function detect(): Promise<void> {
-  const row = existing.value;
-  if (!row) return;
-  detecting.value = true;
-  detected.value = null;
-  detectStatus.value = '';
-  try {
-    const { models } = await adminApi.detect(row.id);
-    detected.value = models.map((model) => ({ ...model, picked: false }));
-    detectStatus.value = t('nModelsFound', { count: models.length });
-  } catch (failure) {
-    detectStatus.value = failure instanceof ApiError ? failure.message : String(failure);
-  } finally {
-    detecting.value = false;
-  }
-}
-
-async function addDetected(): Promise<void> {
-  const row = existing.value;
-  const picked = (detected.value ?? []).filter((entry) => entry.picked);
-  if (!row || !picked.length) return;
-  addLabel.value = t('adding');
-  try {
-    await Promise.all(picked.map((entry) => adminApi.createModel({
-      provider_id: row.id,
-      model_id: entry.model_id,
-      display_name: entry.display_name || entry.model_id,
-    })));
-    addLabel.value = t('addedN', { count: picked.length });
-    for (const entry of picked) {
-      entry.picked = false;
-      entry.configured = true;
-    }
-  } catch (failure) {
-    addLabel.value = '';
-    detectStatus.value = failure instanceof ApiError ? failure.message : String(failure);
-  }
+  await runRemove(
+    () => adminApi.deleteProvider(row.id),
+    { busy, error: panelError },
+    finish,
+    (failure) => (failure instanceof ApiError ? refusalText(failure) : failureText(failure)),
+  );
 }
 
 async function load(): Promise<void> {
-  error.value = '';
-  try {
+  await runLoad(async () => {
     const [providersResult, metaResult] = await Promise.all([adminApi.providers(), adminApi.meta()]);
     providers.value = providersResult.providers;
     meta.value = metaResult;
-  } catch (failure) {
-    error.value = failure instanceof Error ? failure.message : String(failure);
-  } finally {
-    loaded.value = true;
-  }
+  }, { error, loaded });
 }
 
 onMounted(load);
@@ -233,14 +334,17 @@ onMounted(load);
   <AdminFailure v-if="error" :message="error" @retry="load" />
   <p v-else-if="!loaded" class="oa-table-empty">{{ t('loading') }}</p>
 
+  <template v-else>
   <OaTable
     id="providersList"
-    v-else
     :columns="columns"
     :rows="providers"
     :empty="t('noProviders')"
     :muted="(row) => !row.enabled"
     selectable
+    multi
+    v-model:selected="bulk.selected.value"
+    :row-key="(row) => row.id"
     @select="open($event)"
   >
     <template #cell-name="{ row }">
@@ -260,9 +364,26 @@ onMounted(load);
       </OaBadgeRow>
     </template>
   </OaTable>
+  <OaBulkBar
+    :count="bulk.selected.value.length"
+    :total="providers.length"
+    :busy="bulk.busy.value"
+    :error="bulk.error.value"
+    deletable
+    :delete-question="t('bulkDeleteProvidersConfirm', { count: bulk.selected.value.length })"
+    @all="bulk.selectAll"
+    @clear="bulk.clear"
+    @delete="bulkRemove"
+  >
+    <button type="button" class="oa-btn small" :disabled="bulk.busy.value" @click="bulkEnable(true)">{{ t('bulkEnable') }}</button>
+    <button type="button" class="oa-btn small" :disabled="bulk.busy.value" @click="bulkEnable(false)">{{ t('bulkDisable') }}</button>
+  </OaBulkBar>
+  </template>
 
   <OaPanel
     v-if="panelOpen && meta"
+    ref="panel"
+    :key="panelKey"
     :title="creating ? t('addProvider') : maskProvider(existing!.name)"
     :confirm-label="creating ? t('add') : t('save')"
     :destructive-label="existing ? t('deleteLabel') : undefined"
@@ -271,7 +392,7 @@ onMounted(load);
       : undefined"
     :busy="busy"
     :error="panelError"
-    @close="panelOpen = false"
+    @close="panelClosed"
     @confirm="save"
     @destructive="remove"
   >
@@ -281,90 +402,117 @@ onMounted(load);
       </OaIconButton>
     </template>
 
-    <!-- Masking either field would break editing it, so the value stays real
-         and only its focus state decides whether it can be read — blurred
-         until the operator clicks in, same as a name or an endpoint typed on
-         a shared screen would need. -->
-    <OaTextField
-      ref="nameField"
-      v-model="form.name"
-      :class="{ 'oa-safe-blur': isMasked('providers') }"
-      :label="t('name')"
-      placeholder="OpenRouter"
-      :hint="t('providerNameHint')"
-    />
-    <OaSelectField
-      v-model="form.kind"
-      :label="t('protocol')"
-      :hint="t('protocolHint')"
-      :options="meta.provider_kinds.map((value) => ({
-        value,
-        label: value === 'anthropic' ? t('protocolAnthropic') : t('protocolOpenAI'),
-      }))"
-    />
-    <OaTextField
-      v-model="form.baseURL"
-      :class="{ 'oa-safe-blur': isMasked('providers') }"
-      :label="t('baseURL')"
-      placeholder="https://openrouter.ai/api/v1"
-      :hint="t('baseURLHint')"
-      monospace
-    />
-    <OaSwitchField
-      v-model="form.allowInsecure"
-      :label="t('allowInsecure')"
-      :hint="t('allowInsecureHint')"
-    />
-    <OaTextField
-      v-model="form.apiKey"
-      :label="creating ? t('apiKey') : t('replaceAPIKey')"
-      :placeholder="creating ? 'sk-…' : t('apiKeyKeepHint', { hint: maskCredential(existing!.api_key_hint) })"
-      :hint="t('apiKeyHint')"
-      type="password"
-    />
+    <AdminControlCard :title="t('secProviderConnection')">
+      <!-- Masking either field would break editing it, so the value stays real
+           and only its focus state decides whether it can be read — blurred
+           until the operator clicks in, same as a name or an endpoint typed on
+           a shared screen would need. -->
+      <OaTextField
+        ref="nameField"
+        v-model="form.name"
+        :class="{ 'oa-safe-blur': isMasked('providers') }"
+        :label="t('name')"
+        placeholder="OpenRouter"
+        :hint="t('providerNameHint')"
+      />
+      <OaSelectField
+        v-model="form.kind"
+        :label="t('protocol')"
+        :hint="t('protocolHint')"
+        :options="meta.provider_kinds.map((value) => ({
+          value,
+          label: value === 'anthropic' ? t('protocolAnthropic') : t('protocolOpenAI'),
+        }))"
+      />
+      <OaTextField
+        v-model="form.baseURL"
+        :class="{ 'oa-safe-blur': isMasked('providers') }"
+        :label="t('baseURL')"
+        placeholder="https://openrouter.ai/api/v1"
+        :hint="t('baseURLHint')"
+        monospace
+      />
+      <OaSwitchField
+        v-model="form.allowInsecure"
+        :label="t('allowInsecure')"
+        :hint="t('allowInsecureHint')"
+      />
+      <OaRow
+        v-for="(hint, position) in storedHints"
+        :key="`stored-${position}`"
+        class="oa-provider-key"
+        :class="{ dropped: moved || removedKeys.includes(position) }"
+        :title="maskCredential(hint)"
+        :meta="storedMeta(position)"
+      >
+        <OaIconButton
+          v-if="!moved"
+          class="oa-icon-btn tiny"
+          :label="removedKeys.includes(position) ? t('apiKeyKeep') : t('remove')"
+          @click="toggleStored(position)"
+        >
+          <IconUndo v-if="removedKeys.includes(position)" :size="13" />
+          <IconTrash v-else :size="13" />
+        </OaIconButton>
+      </OaRow>
+      <OaRow
+        v-for="key in pendingKeys"
+        :key="`new-${key}`"
+        class="oa-provider-key"
+        :title="hintOf(key)"
+        :meta="t('apiKeyNew')"
+      >
+        <OaIconButton
+          class="oa-icon-btn tiny"
+          :label="t('remove')"
+          @click="pendingKeys = pendingKeys.filter((entry) => entry !== key)"
+        >
+          <IconTrash :size="13" />
+        </OaIconButton>
+      </OaRow>
+      <!-- Enter adds the key to the list above rather than saving the form,
+           so a pool of keys is typed one after another in the same field. -->
+      <OaTextField
+        v-model="form.apiKey"
+        :label="storedHints.length || pendingKeys.length ? t('addAPIKey') : t('apiKey')"
+        placeholder="sk-…"
+        :hint="t('apiKeysHint')"
+        type="password"
+        autocomplete="off"
+        @keydown.enter.prevent.stop="addTyped"
+        @paste="pasteKeys"
+      />
+      <OaSelectField
+        v-if="keyCount > 1"
+        v-model="form.keyRotation"
+        :label="t('keyRotation')"
+        :hint="t('keyRotationHint')"
+        :options="keyRotationChoices"
+      />
+    </AdminControlCard>
 
-    <OaFormSection :title="t('secBehaviour')" />
-    <OaSelectField
-      v-model="form.reasoning"
-      :label="t('reasoningStyle')"
-      :hint="t('reasoningStyleHint')"
-      :options="meta.reasoning_styles.map((value) => ({ value, label: reasoningLabel(value) }))"
-    />
-    <OaTextField
-      v-if="form.kind === 'anthropic'"
-      v-model="form.anthropicVersion"
-      :label="t('anthropicVersion')"
-      placeholder="2023-06-01"
-      :hint="t('anthropicVersionHint')"
-      monospace
-    />
-    <OaNumberField v-model="form.timeout" :label="t('timeoutSeconds')" :min="5" :max="900" />
-    <OaSwitchField v-model="form.enabled" :label="t('enabled')" :hint="t('providerEnabledHint')" />
-    <OaNumberField v-model="form.sortOrder" :label="t('sortOrder')" />
+    <AdminControlCard id="secBehaviour" :title="t('secBehaviour')">
+      <OaSelectField
+        v-model="form.reasoning"
+        :label="t('reasoningStyle')"
+        :hint="t('reasoningStyleHint')"
+        :options="meta.reasoning_styles.map((value) => ({ value, label: reasoningLabel(value) }))"
+      />
+      <OaTextField
+        v-if="form.kind === 'anthropic'"
+        v-model="form.anthropicVersion"
+        :label="t('anthropicVersion')"
+        placeholder="2023-06-01"
+        :hint="t('anthropicVersionHint')"
+        monospace
+      />
+      <OaNumberField v-model="form.timeout" :label="t('timeoutSeconds')" :min="5" :max="900" />
+      <OaSwitchField v-model="form.enabled" :label="t('enabled')" :hint="t('providerEnabledHint')" />
+      <OaNumberField v-model="form.sortOrder" :label="t('sortOrder')" />
+    </AdminControlCard>
 
-    <template v-if="existing">
-      <OaFormSection :title="t('navModels')" />
-      <button type="button" class="oa-btn" :disabled="detecting" @click="detect">
-        {{ detecting ? t('detecting') : t('detect') }}
-      </button>
-
-      <div v-if="detectStatus || detected" class="oa-detect-panel">
-        <p class="oa-detect-status">{{ detectStatus }}</p>
-        <div v-if="detected" class="oa-detect-list">
-          <label v-for="entry in detected" :key="entry.model_id" class="oa-detect-row">
-            <input v-model="entry.picked" type="checkbox">
-            <span>
-              {{ entry.display_name ? `${entry.display_name} — ${entry.model_id}` : entry.model_id }}
-            </span>
-            <span v-if="entry.configured" class="oa-detect-known">{{ t('alreadyAdded') }}</span>
-          </label>
-        </div>
-        <div v-if="detected && canAdmin('models')" class="oa-detect-actions">
-          <button type="button" class="oa-btn primary" @click="addDetected">
-            {{ addLabel || t('addSelected') }}
-          </button>
-        </div>
-      </div>
-    </template>
+    <AdminControlCard v-if="existing" :title="t('navModels')">
+      <AdminDetectModels :provider-id="existing.id" mode="add" :can-add="canAdmin('models')" />
+    </AdminControlCard>
   </OaPanel>
 </template>

@@ -1,9 +1,9 @@
 // The dictionary, made reactive.
 //
-// `i18n.ts` is unchanged from the standalone build and stays the source of
-// truth: one `en` object, `StringKey` derived from it, and a `zh` map the
-// compiler forces to be complete. What it does not have is any notion of a
-// render — it was written for code that redrew a screen by hand.
+// `i18n.ts` is the source of truth: one `en` object (with the backoffice's
+// half in i18n.admin.ts), `StringKey` derived from them, and a `zh` map the
+// compiler forces to be complete. It has no notion of a
+// render, which is why the reactive layer lives here rather than in it.
 //
 // This is the whole adaptation: a version counter that every translated
 // string reads. Changing the language bumps it, which invalidates every
@@ -12,14 +12,17 @@
 
 import { ref } from 'vue';
 import {
+  fallBackToEnglish,
   language,
   loadLanguage,
+  wantBackofficeLanguage,
   setLanguage as applyLanguage,
   t as translate,
   tn as translatePlural,
   type Language,
   type StringKey,
 } from '@/i18n';
+import { within } from '@/lib/deadline';
 
 export type { Language, StringKey };
 
@@ -61,8 +64,57 @@ export async function changeLanguage(next: Language): Promise<void> {
   version.value += 1;
 }
 
-/** Called once at boot, before the first render. */
+// Same limit as a plugin package's browser half: boot waits on both before the
+// first paint, and neither may hold the spinner for longer than this.
+const DICTIONARY_DEADLINE_MS = 10_000;
+
+/**
+ * Called once at boot, before the first render.
+ *
+ * A dictionary that does not arrive must not hold up the mount: the boot
+ * waits on this alongside the session, and a rejection here would leave the
+ * page on its spinner. The page falls back to English through language() as
+ * well as t(), because a component that keys a date locale off language()
+ * would otherwise format English text with Chinese dates. The choice stays
+ * stored, so the next boot asks for the dictionary again.
+ *
+ * A dictionary that is accepted and never answers is treated as one that
+ * failed, for the same reason.
+ */
 export async function primeLanguage(): Promise<void> {
-  await loadLanguage();
+  try {
+    await within(loadLanguage(), DICTIONARY_DEADLINE_MS);
+  } catch (failure) {
+    fallBackToEnglish();
+    console.warn('language dictionary did not load; the page stays in English', failure);
+  }
   version.value += 1;
+}
+
+/**
+ * Called by the backoffice's route before its first render, alongside the
+ * fetch of its chunk. A Chinese reader needs the backoffice's half of the
+ * dictionary before anything there is drawn, or every label would show in
+ * English first; an English reader fetches nothing. From here on a switch to
+ * Chinese waits for that half as well (see loadLanguage).
+ *
+ * Bounded and never rejecting, for the reason primeLanguage is: the English
+ * sentences are already there as the fallback, so a dictionary that fails
+ * must not leave the backoffice unopenable. The redraw is tied to the load
+ * itself rather than to the wait, so a dictionary that lands after the
+ * deadline still replaces the English it found on screen.
+ */
+export async function primeBackofficeLanguage(): Promise<void> {
+  wantBackofficeLanguage();
+  if (language() !== 'zh') return;
+  const loading = loadLanguage();
+  loading.then(
+    () => { version.value += 1; },
+    () => {},
+  );
+  try {
+    await within(loading, DICTIONARY_DEADLINE_MS);
+  } catch (failure) {
+    console.warn('backoffice dictionary did not load; the backoffice stays in English', failure);
+  }
 }

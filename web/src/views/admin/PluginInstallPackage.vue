@@ -10,16 +10,16 @@
 
 import { computed, reactive, ref } from 'vue';
 import { adminApi, type PackageSetting, type PluginChange, type PluginPreview, type PluginText } from '@/admin/api';
-import { ApiError } from '@/api/client';
 import OaBadge from '@/components/OaBadge.vue';
 import OaPanel from '@/components/OaPanel.vue';
 import OaSwitchField from '@/components/OaSwitchField.vue';
 import OaTextField from '@/components/OaTextField.vue';
 import { currentLanguage, t } from '@/composables/useI18n';
 import { IconInfo, IconPuzzle } from '@/icons';
-import type { SettingControl, SettingsSection } from '@/plugins/types';
+import type { SettingControl } from '@/plugins/types';
 import PluginSettingControls from './PluginSettingControls.vue';
 import { permissionsOf } from './pluginPermissions';
+import { failureText } from './shared';
 
 const props = defineProps<{
   preview: PluginPreview;
@@ -52,16 +52,10 @@ const downgrade = computed(() => props.preview.warnings.includes('downgrade'));
 // The manifest's settings, drawn with the controls every other plugin setting
 // is drawn with, so the install panel and the settings page cannot disagree
 // about what a select or a secret looks like.
-const settingSection = computed<SettingsSection | null>(() => {
-  const asked = (manifest.value.settings ?? []).filter((s) => s.initial);
-  if (!asked.length) return null;
-  const controls: SettingControl[] = asked.map((s) => controlFor(s));
-  return {
-    id: 'install', page: 'security', category: '', column: 0,
-    title: () => name.value, controls,
-    defaults: Object.fromEntries(asked.map((s) => [s.key, s.default ?? ''])),
-  };
-});
+const asked = computed(() => (manifest.value.settings ?? []).filter((s) => s.initial));
+const settingControls = computed<SettingControl[]>(() => asked.value.map((s) => controlFor(s)));
+const settingDefaults = computed<Record<string, string>>(() =>
+  Object.fromEntries(asked.value.map((s) => [s.key, s.default ?? ''])));
 
 function controlFor(s: PackageSetting): SettingControl {
   const label = () => words(s.label) || s.key;
@@ -77,10 +71,9 @@ function controlFor(s: PackageSetting): SettingControl {
 }
 
 const draft = reactive<Record<string, string>>({});
-for (const control of settingSection.value?.controls ?? []) {
-  draft[control.key] = control.kind === 'secret' ? '' : settingSection.value?.defaults[control.key] ?? '';
+for (const control of settingControls.value) {
+  draft[control.key] = control.kind === 'secret' ? '' : settingDefaults.value[control.key] ?? '';
 }
-const noHints: Record<string, string> = {};
 const enableNow = ref(true);
 const code = ref('');
 const busy = ref(false);
@@ -94,7 +87,7 @@ async function install(): Promise<void> {
   // An untouched secret is not sent: empty is "none", and the install writes
   // nothing it was not given.
   const settings: Record<string, string> = {};
-  for (const control of settingSection.value?.controls ?? []) {
+  for (const control of settingControls.value) {
     const value = (draft[control.key] ?? '').trim();
     if (control.kind === 'secret' && !value) continue;
     settings[control.key] = value;
@@ -102,7 +95,7 @@ async function install(): Promise<void> {
   try {
     emit('done', await adminApi.installPluginPackage(props.preview.token, enableNow.value, settings, code.value.trim()));
   } catch (failure) {
-    error.value = failure instanceof ApiError ? failure.message : String(failure);
+    error.value = failureText(failure);
   } finally {
     busy.value = false;
   }
@@ -167,12 +160,12 @@ function size(bytes: number): string {
         </div>
       </div>
 
-      <div v-if="settingSection" class="oa-plugin-detail-section">
+      <div v-if="settingControls.length" class="oa-plugin-detail-section">
         <div class="oa-plugin-detail-section-head">
           <h4 class="oa-field-label">{{ t('pluginInitialSettings') }}</h4>
         </div>
         <p class="oa-field-hint">{{ t('pluginInitialSettingsHint') }}</p>
-        <PluginSettingControls :section="settingSection" :draft="draft" :hints="noHints" />
+        <PluginSettingControls :controls="settingControls" :draft="draft" />
       </div>
 
       <OaSwitchField v-model="enableNow" :label="t('pluginEnableNow')" :hint="t('pluginEnableNowHint')" />

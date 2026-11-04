@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 )
@@ -30,7 +31,26 @@ const Format = 1
 // hooks the host calls on it. A package says which it needs (Requires.API);
 // one that needs more than this build offers is refused at install, which is
 // the moment the operator can still do something about it.
-const APILevel = 1
+//
+// 5 tightened what a level-4 package may do: sessions.revoke_user needs the
+// users grant and cannot sign out an administrator, rewards for an account
+// other than the request's own need the usage or users grant, users.set_status
+// ends the account's sessions, security.record refuses the core's own event
+// names, and console.call refuses to run inside a transaction. It also added
+// the rest and sensitive keys to console arguments. A level-4 package keeps
+// installing, so one that depends on the new keys says 5, and an older server
+// refuses it at install instead of silently ignoring them.
+//
+// 6 holds console.call to the endpoints the command declares, by method and
+// path, where before a command that declared any write could send any method
+// to any administrative path. That would refuse calls an installed package
+// already makes, so it applies from DeclaredEndpointsAPI up and an older
+// package keeps the method-only rule.
+const APILevel = 6
+
+// DeclaredEndpointsAPI is the first level whose console commands may call only
+// the endpoints they declare.
+const DeclaredEndpointsAPI = 6
 
 // Text is one string in both of the interface's languages. An empty ZH falls
 // back to EN when the interface is drawn.
@@ -107,10 +127,18 @@ const (
 	// console.call: running an administrative endpoint as the operator who
 	// ran a console command.
 	PermConsole = "console"
+	// rewards.bonus and rewards.cards: giving an account credits in a bonus
+	// bar or reset cards. Spending them is the core's affair, as it is for
+	// what an administrator grants by hand.
+	PermRewards = "rewards"
+	// challenge.describe and challenge.verify: putting the instance's own
+	// human check (proof of work, Turnstile) in front of something of the
+	// plugin's, with the instance's own keys.
+	PermChallenge = "challenge"
 )
 
 // Permissions lists them, in the order an install dialog shows them.
-var Permissions = []string{PermDB, PermNetwork, PermUsers, PermCards, PermSessions, PermNotify, PermSecurityLog, PermConsole}
+var Permissions = []string{PermDB, PermNetwork, PermUsers, PermCards, PermRewards, PermSessions, PermNotify, PermSecurityLog, PermChallenge, PermConsole}
 
 // Hooks a manifest may list.
 const (
@@ -120,6 +148,11 @@ const (
 	HookDescribe = "describe"
 	// The backend adds to the rows of an inviter's own invitee list.
 	HookDecorateInvitees = "decorate_invitees"
+	// The backend is called now and then with nobody waiting on it — from
+	// the server's own periodic cleanup — for work that has to happen
+	// whether or not anybody asks: re-checking something outside, expiring
+	// what the plugin granted.
+	HookSweep = "sweep"
 )
 
 // Setting is a setting the plugin owns: unknown to the server until the
@@ -171,9 +204,10 @@ type OAuthBinding struct {
 	Pattern  string `json:"pattern"`
 }
 
-// Guard is a check the backend runs in front of sign-up or sign-in.
+// Guard is a check the backend runs in front of sign-up, sign-in or the
+// image generation lab.
 type Guard struct {
-	// "register" or "login".
+	// "register", "login" or "images".
 	Action string `json:"action"`
 	// The key the browser's token rides under, and what the backend
 	// registers its handler as.
@@ -217,19 +251,28 @@ type ConsoleCommand struct {
 	Endpoints   []string      `json:"endpoints,omitempty"`
 }
 
-// ConsoleArg is a positional argument.
+// ConsoleArg is a positional argument. Rest on the last one says the backend
+// reads every token after it, so a destructive command given more positionals
+// than declared is what it asked for rather than a mistake to refuse.
+// Sensitive has the value written as *** in the audit line: the line is read by
+// every administrator holding the security grant, and an import document can
+// carry credentials that were never meant for them.
 type ConsoleArg struct {
-	Name     string `json:"name"`
-	Hint     Text   `json:"hint,omitempty"`
-	Required bool   `json:"required,omitempty"`
+	Name      string `json:"name"`
+	Hint      Text   `json:"hint,omitempty"`
+	Required  bool   `json:"required,omitempty"`
+	Rest      bool   `json:"rest,omitempty"`
+	Sensitive bool   `json:"sensitive,omitempty"`
 }
 
 // ConsoleFlag is a flag. Value names its argument ("N", "MODE"); empty is a
-// switch.
+// switch. Sensitive has a flag's value written as *** in the audit line, as the
+// core's own credential flags are, and does nothing for a switch.
 type ConsoleFlag struct {
-	Name  string `json:"name"`
-	Hint  Text   `json:"hint,omitempty"`
-	Value string `json:"value,omitempty"`
+	Name      string `json:"name"`
+	Hint      Text   `json:"hint,omitempty"`
+	Value     string `json:"value,omitempty"`
+	Sensitive bool   `json:"sensitive,omitempty"`
 }
 
 // UI is the browser half.
@@ -249,6 +292,27 @@ var (
 	grantRE      = regexp.MustCompile(`^[a-z_]+(,[a-z_]+)*$`)
 	consoleRE    = regexp.MustCompile(`^[a-z][a-z0-9-]*( [a-z][a-z0-9-]*)*$`)
 )
+
+// Whole compiles pattern the way every place that uses one does: anchored at
+// both ends and grouped, so an alternation cannot escape the anchors. It is
+// also the only way a manifest's pattern is checked, because the bare pattern
+// is not the same test: `\Qabc` compiles on its own and `^(?:\Qabc)$` does
+// not, since the quote swallows the closing parenthesis. A pattern that passed
+// as itself and failed as used would panic in MustWhole on a request.
+func Whole(pattern string) (*regexp.Regexp, error) {
+	// An unmatched ')' is the only way a pattern can close the group early,
+	// and it is refused by the bare compile, not by the wrapped one: the
+	// wrapped form turns a stray ')' into a legal group boundary.
+	if _, err := regexp.Compile(pattern); err != nil {
+		return nil, err
+	}
+	return regexp.Compile(`^(?:` + pattern + `)$`)
+}
+
+// MustWhole is Whole for a pattern ParseManifest has already accepted.
+func MustWhole(pattern string) *regexp.Regexp {
+	return regexp.MustCompile(`^(?:` + pattern + `)$`)
+}
 
 // ParseManifest reads manifest.json, refusing anything it does not know:
 // a misspelt key is a feature that silently does not exist, and this is the
@@ -300,13 +364,16 @@ func (m *Manifest) Validate() error {
 	}
 	for _, hook := range m.Hooks {
 		switch hook {
-		case HookDescribe, HookDecorateInvitees:
+		case HookDescribe, HookDecorateInvitees, HookSweep:
 		default:
 			return fmt.Errorf("unknown hook %q", hook)
 		}
 	}
 	if m.UI != nil && !strings.HasPrefix(m.UI.Module, "web/") {
 		return fmt.Errorf("ui.module %q must be under web/", m.UI.Module)
+	}
+	if err := m.validateHomepage(); err != nil {
+		return err
 	}
 	if err := m.validateSettings(); err != nil {
 		return err
@@ -331,6 +398,20 @@ func (m *Manifest) Validate() error {
 	needsBackend := len(m.Guards) > 0 || len(m.Routes) > 0 || len(m.Console) > 0 || len(m.Hooks) > 0
 	if needsBackend && m.Backend == "" {
 		return errors.New("guards, routes, console commands and hooks need a backend")
+	}
+	return nil
+}
+
+// validateHomepage keeps a manifest from carrying a link that does something
+// when it is clicked: the backoffice draws it as an anchor, and a javascript:
+// address there would run in the operator's session.
+func (m *Manifest) validateHomepage() error {
+	if m.Homepage == "" {
+		return nil
+	}
+	u, err := url.Parse(m.Homepage)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || len(m.Homepage) > 300 {
+		return fmt.Errorf("homepage must be an http or https address of at most 300 characters")
 	}
 	return nil
 }
@@ -377,7 +458,7 @@ func (m *Manifest) validateSettings() error {
 			return fmt.Errorf("setting %s: permission %q is not a grant list", s.Key, s.Permission)
 		}
 		if s.Pattern != "" {
-			if _, err := regexp.Compile(s.Pattern); err != nil {
+			if _, err := Whole(s.Pattern); err != nil {
 				return fmt.Errorf("setting %s: pattern: %v", s.Key, err)
 			}
 		}
@@ -408,7 +489,7 @@ func (m *Manifest) validateFields() error {
 		}
 		fields[f.Key] = true
 		if f.Pattern != "" {
-			if _, err := regexp.Compile(f.Pattern); err != nil {
+			if _, err := Whole(f.Pattern); err != nil {
 				return fmt.Errorf("field %s: pattern: %v", f.Key, err)
 			}
 		}
@@ -432,7 +513,7 @@ func (m *Manifest) validateFields() error {
 		if b.Provider == "" || b.Pattern == "" {
 			return errors.New("an oauth binding needs a provider and a pattern")
 		}
-		if _, err := regexp.Compile(b.Pattern); err != nil {
+		if _, err := Whole(b.Pattern); err != nil {
 			return fmt.Errorf("oauth binding %s: pattern: %v", b.Field, err)
 		}
 	}
@@ -442,8 +523,8 @@ func (m *Manifest) validateFields() error {
 func (m *Manifest) validateGuards() error {
 	seen := map[string]bool{}
 	for _, g := range m.Guards {
-		if g.Action != "register" && g.Action != "login" {
-			return fmt.Errorf("guard %q: action must be register or login", g.Name)
+		if g.Action != "register" && g.Action != "login" && g.Action != "images" {
+			return fmt.Errorf("guard %q: action must be register, login or images", g.Name)
 		}
 		if !guardNameRE.MatchString(g.Name) {
 			return fmt.Errorf("guard name %q is not valid", g.Name)
@@ -488,12 +569,31 @@ func (m *Manifest) validateRoutes() error {
 			if !strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/api/admin/") {
 				return fmt.Errorf("public route %q must live under /api/ and outside /api/admin/", r.Pattern)
 			}
+			if err := publicPathOK(path); err != nil {
+				return fmt.Errorf("public route %q: %w", r.Pattern, err)
+			}
 			if r.Permission != "" {
 				return fmt.Errorf("public route %q has no permission to check", r.Pattern)
 			}
 		default:
 			return fmt.Errorf("route %q: access must be admin or public", r.Pattern)
 		}
+	}
+	return nil
+}
+
+// publicPathOK holds a public route to a shape that cannot reach the admin
+// namespace. The prefix test above reads the text, but the mux decodes escapes
+// in a pattern's literal segments, so "/api/%61dmin/" is "/api/admin/" to it;
+// and a wildcard as the first segment matches "admin" as well. Neither shows
+// in the text prefix, so the first segment is required to be a plain literal.
+func publicPathOK(path string) error {
+	if strings.Contains(path, "%") {
+		return errors.New("percent-escapes are not allowed in the path of a public route")
+	}
+	first, _, _ := strings.Cut(strings.TrimPrefix(path, "/api/"), "/")
+	if first == "" || first == "admin" || strings.ContainsAny(first, "{}") {
+		return errors.New("the first segment after /api/ must be a literal name other than admin")
 	}
 	return nil
 }
@@ -511,8 +611,22 @@ func (m *Manifest) validateConsole() error {
 		if strings.TrimSpace(c.Summary.EN) == "" {
 			return fmt.Errorf("console command %q needs a summary", c.Name)
 		}
+		// "anyone" would open the command to every account the terminal
+		// admits, and the backend runs with the package's own permissions and
+		// cannot tell which of them asked, so a package cannot grant it.
+		if c.Permission == "anyone" {
+			return fmt.Errorf("console command %q: a package cannot open a command to every terminal user", c.Name)
+		}
 		if c.Permission != "" && c.Permission != "super_admin" && !grantRE.MatchString(c.Permission) {
 			return fmt.Errorf("console command %q: permission %q is not a grant list", c.Name, c.Permission)
+		}
+		// The console honours Rest only on the last declared argument. Anywhere
+		// else it is ignored, and the command refuses surplus tokens as though the
+		// flag were absent, so the mistake would surface only at the terminal.
+		for i, a := range c.Args {
+			if a.Rest && i != len(c.Args)-1 {
+				return fmt.Errorf("console command %q: argument %q takes the rest of the line, so it must be the last one", c.Name, a.Name)
+			}
 		}
 	}
 	return nil

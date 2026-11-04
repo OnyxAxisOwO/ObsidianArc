@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -98,7 +99,10 @@ func Open(ctx context.Context, cfg config.Database) (*DB, error) {
 			return nil, errors.New("this build was compiled without SQLite support (build tag `nosqlite`); use OBSIDIAN_DB_DRIVER=postgres")
 		}
 		driver, dialect = sqliteDriverName, SQLite
-		dsn = sqliteDSN(cfg.DSN)
+		var err error
+		if dsn, err = sqliteDSN(cfg.DSN); err != nil {
+			return nil, err
+		}
 	case "postgres":
 		driver, dialect = "pgx", Postgres
 		dsn = cfg.DSN
@@ -219,9 +223,16 @@ func Rebind(dialect Dialect, query string) string {
 // been wrapped on the way up.
 func IsNotFound(err error) bool { return errors.Is(err, sql.ErrNoRows) }
 
+// percentEscape matches the %XX escapes SQLite decodes inside a file: URI. A %
+// that is not followed by two hex digits is kept as written, so it names the
+// file it looks like and is not refused.
+var percentEscape = regexp.MustCompile(`%[0-9A-Fa-f]{2}`)
+
 // sqliteDSN turns a plain file path into a driver DSN carrying the pragmas
 // this server needs. A DSN the caller already wrote as `file:…` is passed
-// through untouched, so an unusual setup stays possible.
+// through untouched, so an unusual setup stays possible — and then the caller
+// owns the pragmas too: nothing is added, so without foreign_keys(1) every
+// ON DELETE CASCADE in the schema is silently inert.
 //
 //   - WAL lets readers run while a write is in flight, which is the whole
 //     reason concurrent requests do not serialise on the file.
@@ -232,9 +243,19 @@ func IsNotFound(err error) bool { return errors.Is(err, sql.ErrNoRows) }
 //   - txlock=immediate takes the write lock when a transaction begins rather
 //     than when it first writes, which is what removes the deadlock two
 //     upgrading readers would otherwise hit.
-func sqliteDSN(path string) string {
+func sqliteDSN(path string) (string, error) {
 	if strings.HasPrefix(path, "file:") {
-		return path
+		return path, nil
+	}
+	// SQLite reads '?' as the start of the query and '#' as the start of a
+	// fragment, so the pragmas would be cut off and the file opened at the
+	// truncated path. It also decodes %XX inside a file: URI, which the driver
+	// opens this path as, so /srv/arc%20x/obsidian.db is read as
+	// /srv/arc x/obsidian.db. Re-encoding the path would not be the fix: it
+	// would point an instance at a file other than the one it has been opening.
+	// Refusing is the one answer that cannot open the wrong file.
+	if strings.ContainsAny(path, "?#") || percentEscape.MatchString(path) {
+		return "", fmt.Errorf("database: the SQLite path %q contains '?', '#' or a %%XX escape, which SQLite reads as the start of a query or fragment or decodes into a different file name; move the data directory, or set the DSN to a file: URI with the path escaped", path)
 	}
 	pragmas := []string{
 		"journal_mode(WAL)",
@@ -247,5 +268,5 @@ func sqliteDSN(path string) string {
 		query.Add("_pragma", pragma)
 	}
 	query.Set("_txlock", "immediate")
-	return "file:" + path + "?" + query.Encode()
+	return "file:" + path + "?" + query.Encode(), nil
 }

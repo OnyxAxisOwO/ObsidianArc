@@ -9,11 +9,17 @@ import (
 
 func init() {
 	registerCommand(Command{
-		Name:       "backup status",
-		Group:      "backup",
-		Summary:    Text{EN: "Show instance backup settings and latest run", ZH: "查看实例备份设置和最近运行状态"},
-		Usage:      "backup status",
-		Help:       Text{EN: "Shows the S3-compatible destination, schedule, last successful upload, and any recent error. Storage credentials are never returned.", ZH: "显示 S3 兼容存储目标、计划、最近一次成功上传时间和错误。不会返回存储凭据。"},
+		Name:    "backup status",
+		Group:   "backup",
+		Summary: Text{EN: "Show instance backup settings and latest run", ZH: "查看实例备份设置和最近运行状态"},
+		Usage:   "backup status",
+		Help: Text{
+			EN: "Shows the destination (S3-compatible or WebDAV), schedule, last successful upload, and any recent error. " +
+				"Storage credentials are never returned. A WebDAV destination is set on the super-administrator Backup page; " +
+				"this command shows it but cannot change it.",
+			ZH: "显示备份目标（S3 兼容存储或 WebDAV）、计划、最近一次成功上传时间和错误。不会返回存储凭据。" +
+				"WebDAV 目标需在超级管理员的备份页面设置；本命令只显示，不能修改。",
+		},
 		Examples:   []string{"backup status", "backup status --json"},
 		SeeAlso:    []string{"backup configure", "backup test", "backup run"},
 		Permission: "super_admin",
@@ -27,6 +33,9 @@ func init() {
 			return rt.Fields([][2]string{
 				{"enabled", yesNo(asBoolVal(state["enabled"]))},
 				{"configured", yesNo(asBoolVal(state["configured"]))},
+				{"type", asStr(state["type"])},
+				{"webdav_url", asStr(state["webdav_url"])},
+				{"webdav_username", asStr(state["webdav_username"])},
 				{"endpoint", asStr(state["endpoint"])},
 				{"bucket", asStr(state["bucket"])},
 				{"region", asStr(state["region"])},
@@ -81,7 +90,13 @@ func init() {
 				return err
 			}
 			current := asMap(currentData)
+			// The destination goes back as the status reported it, storage type and
+			// WebDAV address included. The server reads a field it did not receive as
+			// a blank one: a missing type silently turns a WebDAV instance into S3, and
+			// a missing WebDAV address counts as a move and refuses the save while
+			// the saved password is held.
 			body := map[string]any{
+				"type":              asStr(current["type"]),
 				"enabled":           asBoolVal(current["enabled"]),
 				"endpoint":          asStr(current["endpoint"]),
 				"bucket":            asStr(current["bucket"]),
@@ -89,11 +104,13 @@ func init() {
 				"prefix":            asStr(current["prefix"]),
 				"access_key_id":     "",
 				"secret_access_key": "",
+				"webdav_url":        asStr(current["webdav_url"]),
+				"webdav_username":   asStr(current["webdav_username"]),
 				"interval_hours":    int(asNum(current["interval_hours"])),
 				"retention_hours":   int(asNum(current["retention_hours"])),
 			}
 			if rt.Present("enabled") {
-				value, err := strconv.ParseBool(rt.String("enabled"))
+				value, err := parseBoolValue(rt.String("enabled"))
 				if err != nil {
 					return rt.Errorf("--enabled must be true or false")
 				}
@@ -159,12 +176,7 @@ func init() {
 			if _, _, err := rt.Call(http.MethodPost, "/api/admin/backup/test", map[string]any{}); err != nil {
 				return err
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("存储连接测试成功。\n")
-			} else {
-				rt.Printf("backup storage test passed.\n")
-			}
-			return nil
+			return rt.confirm(Text{EN: "backup storage test passed.", ZH: "存储连接测试成功。"})
 		},
 	})
 

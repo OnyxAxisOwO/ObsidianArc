@@ -5,6 +5,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, nextTick, type App } from 'vue';
+import { createMemoryHistory, createRouter } from 'vue-router';
 import { changeLanguage, t } from '@/composables/useI18n';
 import AnnounceBell from '@/announce/AnnounceBell.vue';
 
@@ -26,11 +27,14 @@ vi.mock('@/api/client', () => ({
     post: vi.fn() as unknown as <T>(url: string, body?: unknown) => Promise<T>,
   },
 }));
-vi.mock('@/router', () => ({ router: { push: vi.fn() } }));
 
 import { api } from '@/api/client';
-import { router } from '@/router';
 import { notificationList, notificationsUnread, stopNotifications } from '@/stores/notifications';
+
+// The row navigates through the router the bell is mounted with. A memory
+// router records the push without moving the page.
+const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:p(.*)*', component: { render: () => null } }] });
+const pushRoute = vi.spyOn(router, 'push').mockResolvedValue(undefined);
 
 const post = vi.mocked(api.post);
 
@@ -47,13 +51,14 @@ afterEach(() => {
   app?.unmount();
   app = null;
   host.remove();
-  document.body.textContent = '';
   stopNotifications();
   vi.clearAllMocks();
 });
 
+// Not mountComponent: the bell is the app's root here and waits one round rather than settle's four; moving it would change both under these tests.
 async function mount(): Promise<void> {
   app = createApp(AnnounceBell);
+  app.use(router);
   app.mount(host);
   await new Promise((resolve) => setTimeout(resolve, 0));
   await nextTick();
@@ -97,12 +102,22 @@ describe('the bell, with notifications added', () => {
     const rows = [...host.querySelectorAll('.oa-menu-item')];
     const notificationRow = rows.find((row) => row.textContent?.includes(t('notifyTitleQuotaReset')));
     expect(notificationRow).toBeDefined();
+    // The server's count once the watermark has moved past this row. Once
+    // only: clearAllMocks in afterEach leaves an implementation in place, so a
+    // persistent one would answer the polls of every test after this one.
+    // The count is 3, not 0: the local badge starts at 1, so a client-side
+    // decrement would land on 0 and make the assertion below pass without the
+    // server being asked at all.
+    vi.mocked(api.get).mockImplementationOnce(async () => ({ notifications: [], unread: 3, now: 2000 }));
     (notificationRow as HTMLElement).click();
+    // The badge is taken from the server after the mark-read request lands.
+    await new Promise((resolve) => setTimeout(resolve, 0));
     await nextTick();
 
-    expect(router.push).toHaveBeenCalledWith('/usage');
+    expect(pushRoute).toHaveBeenCalledWith('/usage');
     expect(post).toHaveBeenCalledWith('/api/notifications/read', { up_to: 2000 });
-    expect(notificationsUnread.value).toBe(0);
+    expect(api.get).toHaveBeenCalledWith('/api/notifications/poll?after=0');
+    expect(notificationsUnread.value).toBe(3);
   });
 
   it('does not list an announcement-kind row in the notifications section, which would count it twice', async () => {

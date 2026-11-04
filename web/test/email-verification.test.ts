@@ -1,27 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, type App, type Component } from 'vue';
-import { createMemoryHistory, createRouter } from 'vue-router';
+import { h, nextTick, type Component } from 'vue';
+import { createRouter } from 'vue-router';
 import { adminApi, type AdminMailSettings, type AdminUserCheckSettings } from '../src/admin/api';
 import * as authApi from '../src/api/auth';
-import type { Account } from '../src/api/auth';
 import { ApiError } from '../src/api/client';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import AuthView from '../src/views/AuthView.vue';
 import VerifyBanner from '../src/announce/VerifyBanner.vue';
 import VerifyView from '../src/views/VerifyView.vue';
 import AdminSecurity from '../src/views/admin/AdminSecurity.vue';
-import { provideAdminView } from '../src/views/admin/adminView';
 import { adopt, forget, site, siteInfo } from '../src/stores/session';
 import { refusalText } from '../src/lib/refusal';
 import { verificationErrorText } from '../src/lib/verification-error';
+import { catchAllRouter, adminShell, mountComponent, settle, button } from './helpers';
+import { makeAccount } from './fixtures/account';
 
-const ACCOUNT: Account = {
-  id: 'u1', username: 'ada', email: 'ada@example.com', nickname: 'Ada', avatar: '', bio: '',
-  role: 'user', group_id: 'g1', group_expires_at: 0, group_name: 'Default', status: 'active',
-  created_at: 1, updated_at: 1, last_login_at: 1, email_verified: false,
-  allow_stats: true, allow_delete_conversations: true, api_restricted: false,
-  api_restricted_until: 0, api_restriction_source: '',
-};
+const ACCOUNT = makeAccount({ id: 'u1', last_login_at: 1, email_verified: false });
 
 const MAIL: AdminMailSettings = {
   host: 'smtp.example.com', port: 465, username: 'mailer', from: 'arc@example.com',
@@ -32,15 +26,11 @@ const USER_CHECK: AdminUserCheckSettings = {
   enabled: false, exempt_domains: ['gmail.com', 'outlook.com'], failure_mode: 'reject', api_key_set: true,
 };
 
-let app: App | undefined;
+let unmount: (() => void) | undefined;
 let testRouter: ReturnType<typeof createRouter> | undefined;
 let host: HTMLElement;
 let actions: HTMLElement;
 
-async function settle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await nextTick();
-}
 
 function fieldInput(root: ParentNode, label: string): HTMLInputElement {
   const field = [...root.querySelectorAll<HTMLElement>('.oa-field')]
@@ -63,27 +53,10 @@ function type(input: HTMLInputElement | HTMLTextAreaElement, value: string): voi
   input.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
-function button(root: ParentNode, label: string): HTMLButtonElement {
-  const found = [...root.querySelectorAll<HTMLButtonElement>('button')]
-    .find((node) => node.textContent?.trim() === label || node.getAttribute('aria-label') === label);
-  if (!found) throw new Error(`Missing button: ${label}`);
-  return found;
-}
-
 async function mount(component: Component, path = '/'): Promise<void> {
-  testRouter = createRouter({
-    history: createMemoryHistory(),
-    routes: [{ path: '/:pathMatch(.*)*', component: { render: () => null } }],
-  });
-  await testRouter.push(path);
-  await testRouter.isReady();
-  app = createApp({ setup() {
-    provideAdminView({ actionsHost: actions, setTitle() {}, reload() {}, params: [] });
-    return () => h(component);
-  } });
-  app.use(testRouter);
-  app.mount(host);
-  await settle();
+  testRouter = await catchAllRouter(path);
+  // No panel host: none of these screens opens a panel, so one starting to would fail here.
+  unmount = await mountComponent(component, {}, { host, panels: null, adminView: adminShell(actions), router: testRouter });
 }
 
 beforeEach(async () => {
@@ -96,10 +69,9 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  app?.unmount();
-  app = undefined;
+  unmount?.();
+  unmount = undefined;
   testRouter = undefined;
-  document.body.textContent = '';
   vi.restoreAllMocks();
   forget();
   site.value = null;
@@ -246,6 +218,10 @@ describe('email verification controls', () => {
     );
   });
 
+  it('translates a login-guard refusal the same on the completion form as on the sign-in page', () => {
+    expect(refusalText(new ApiError(403, 'login_refused', 'raw'))).toBe(t('oauthLoginRefused'));
+  });
+
   it('explains the link and six-digit code on the registration form in both languages', async () => {
     await mount({ setup: () => () => h(AuthView, { mode: 'register' }) }, '/register');
     const email = host.querySelector<HTMLInputElement>('.oa-field input[type="email"]');
@@ -289,6 +265,8 @@ describe('administrator mail settings', () => {
   }
 
   it('keeps an empty password on save, sends a test email, and confirms explicit password clearing', async () => {
+    // Only a super administrator edits the SMTP server, so these cases act as one.
+    adopt({ ...ACCOUNT, role: 'super_admin' });
     const saved = vi.spyOn(adminApi, 'saveMail')
       .mockResolvedValueOnce(MAIL)
       .mockResolvedValueOnce({ ...MAIL, password_set: false });
@@ -323,6 +301,7 @@ describe('administrator mail settings', () => {
   });
 
   it('requires saved SMTP settings before the test action uses the live sender', async () => {
+    adopt({ ...ACCOUNT, role: 'super_admin' });
     let finishSave!: (settings: AdminMailSettings) => void;
     vi.spyOn(adminApi, 'saveMail').mockImplementation(() => new Promise((resolve) => { finishSave = resolve; }));
     const test = vi.spyOn(adminApi, 'testMail').mockResolvedValue();
@@ -345,6 +324,28 @@ describe('administrator mail settings', () => {
     button(card, t('mailTestSend')).click();
     await settle();
     expect(test).toHaveBeenCalledWith('ops@example.com');
+  });
+
+  // The relay is where every verification link and code is sent, so a security
+  // administrator sees it as text and cannot choose it. The sender address
+  // stays theirs, and a save sends the stored server back unchanged.
+  it('shows a security administrator the SMTP server as text, and saves the rest of the form', async () => {
+    adopt({ ...ACCOUNT, role: 'admin', admin_permissions: ['security'] });
+    const saved = vi.spyOn(adminApi, 'saveMail').mockResolvedValue(MAIL);
+    const card = await mountSecurity();
+
+    const labels = [...card.querySelectorAll<HTMLElement>('.oa-field-label')].map((node) => node.textContent);
+    for (const hidden of [t('mailHost'), t('mailPort'), t('mailUsername')]) {
+      expect(labels).not.toContain(hidden);
+    }
+    expect(card.textContent).toContain(t('mailTransportLocked', { server: 'smtp.example.com:465' }));
+
+    type(fieldInput(card, t('mailFrom')), 'ops@example.com');
+    button(card, t('save')).click();
+    await settle();
+    expect(saved).toHaveBeenCalledWith(expect.objectContaining({
+      host: MAIL.host, port: MAIL.port, username: MAIL.username, from: 'ops@example.com',
+    }));
   });
 
   it('localizes SMTP and UserCheck endpoint failures instead of showing server English', async () => {

@@ -6,10 +6,12 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/database/dbtest"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/provider"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
@@ -24,14 +26,21 @@ type fixture struct {
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	ctx := context.Background()
-
-	db, err := database.Open(ctx, config.Database{
+	return newFixtureOn(t, config.Database{
 		Driver:       "sqlite",
 		DSN:          filepath.Join(t.TempDir(), "model.db"),
 		MaxOpenConns: 4,
 		MaxIdleConns: 2,
 	})
+}
+
+// newFixtureOn is newFixture on a database the caller chose, for the tests
+// whose subject is a lock and so have to run on Postgres as well as SQLite.
+func newFixtureOn(t *testing.T, cfg config.Database) *fixture {
+	t.Helper()
+	ctx := context.Background()
+
+	db, err := database.Open(ctx, cfg)
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
@@ -61,7 +70,7 @@ func (f *fixture) provider(t *testing.T, name string) provider.Provider {
 		BaseURL: "https://api.example.com/v1",
 		APIKey:  "sk-test-key-1234",
 		Enabled: true,
-	})
+	}, true)
 	if err != nil {
 		t.Fatalf("create provider: %v", err)
 	}
@@ -122,7 +131,7 @@ func TestUpdateWithoutKeyKeepsIt(t *testing.T) {
 	created := f.provider(t, "Example")
 
 	name := "Renamed"
-	if _, err := f.providers.Update(ctx, created.ID, provider.Update{Name: &name}); err != nil {
+	if _, err := f.providers.Update(ctx, created.ID, provider.Update{Name: &name}, false); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 
@@ -145,7 +154,7 @@ func TestProviderRejectsUnsafeBaseURL(t *testing.T) {
 		Kind:    adapter.KindOpenAI,
 		BaseURL: "http://api.example.com/v1",
 		APIKey:  "sk-test",
-	})
+	}, true)
 	if err == nil {
 		t.Fatal("a plain-http remote base URL was accepted for a credential")
 	}
@@ -170,7 +179,7 @@ func TestListForUserRespectsGroupGrants(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.models.SetGroupModelIDs(ctx, restricted.ID, []string{allowed.ID}); err != nil {
+	if err := f.models.SetGroupModelIDs(ctx, nil, restricted.ID, []string{allowed.ID}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -203,7 +212,7 @@ func TestAuthorizeRefusesModelsOutsideTheGroup(t *testing.T) {
 	forbidden := f.model(t, upstream.ID, "forbidden-model")
 
 	restricted, _ := f.groups.Create(ctx, nil, group.CreateInput{Name: "Restricted"})
-	if err := f.models.SetGroupModelIDs(ctx, restricted.ID, []string{allowed.ID}); err != nil {
+	if err := f.models.SetGroupModelIDs(ctx, nil, restricted.ID, []string{allowed.ID}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -241,7 +250,7 @@ func TestAuthorizeRefusesDisabledModelOrProvider(t *testing.T) {
 	if _, err := f.models.Update(ctx, record.ID, Update{Enabled: &enabled}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.providers.Update(ctx, upstream.ID, provider.Update{Enabled: &disabled}); err != nil {
+	if _, err := f.providers.Update(ctx, upstream.ID, provider.Update{Enabled: &disabled}, false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.models.Authorize(ctx, open.ID, record.ID, false); !errors.Is(err, ErrDisabled) {
@@ -256,7 +265,7 @@ func TestDisabledProviderKeepsItsModelsDisabled(t *testing.T) {
 	upstream := f.provider(t, "Example")
 	existing := f.model(t, upstream.ID, "existing-model")
 	disabled := false
-	if _, err := f.providers.Update(ctx, upstream.ID, provider.Update{Enabled: &disabled}); err != nil {
+	if _, err := f.providers.Update(ctx, upstream.ID, provider.Update{Enabled: &disabled}, false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -309,7 +318,7 @@ func TestDisablingProviderWhileAddingModelLeavesModelDisabled(t *testing.T) {
 		defer wg.Done()
 		<-start
 		disabled := false
-		_, err := f.providers.Update(ctx, upstream.ID, provider.Update{Enabled: &disabled})
+		_, err := f.providers.Update(ctx, upstream.ID, provider.Update{Enabled: &disabled}, false)
 		errors <- err
 	}()
 	close(start)
@@ -385,6 +394,134 @@ func TestDisableIfEnabledFlipsExactlyOnceUnderConcurrency(t *testing.T) {
 	}
 }
 
+// The checker's claim on a model ends with the first decision an operator makes
+// about its state. Left standing, the next sweep switches the model back on,
+// because the flag still says the checker turned it off.
+func TestAnOperatorsStateChangeRetiresTheCheckersFlag(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	upstream := f.provider(t, "Example")
+	record := f.model(t, upstream.ID, "flaky-model")
+
+	if flipped, err := f.models.DisableIfEnabled(ctx, record.ID); err != nil || !flipped {
+		t.Fatalf("the checker's disable: flipped=%v, err=%v", flipped, err)
+	}
+
+	on, off := true, false
+	if _, err := f.models.Update(ctx, record.ID, Update{Enabled: &on}); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := f.models.ByID(ctx, record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stored.Enabled || stored.AutoDisabled {
+		t.Fatalf("after the operator enabled it: %+v, want enabled with no checker flag", stored)
+	}
+
+	if _, err := f.models.Update(ctx, record.ID, Update{Enabled: &off}); err != nil {
+		t.Fatal(err)
+	}
+	stored, err = f.models.ByID(ctx, record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Enabled || stored.AutoDisabled {
+		t.Fatalf("after the operator disabled it: %+v, want disabled with no checker flag", stored)
+	}
+}
+
+// The editor sends every field on every save, the enabled one included. A save
+// that leaves the state where it was is no decision about it, so it must not
+// end the checker's claim: a model the system switched off still comes back on
+// its own once it answers.
+func TestASaveThatKeepsTheStateKeepsTheFlag(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	upstream := f.provider(t, "Example")
+	record := f.model(t, upstream.ID, "flaky-model")
+
+	if flipped, err := f.models.DisableIfEnabled(ctx, record.ID); err != nil || !flipped {
+		t.Fatalf("the checker's disable: flipped=%v, err=%v", flipped, err)
+	}
+
+	name, off := "Corrected", false
+	if _, err := f.models.Update(ctx, record.ID, Update{DisplayName: &name, Enabled: &off}); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := f.models.ByID(ctx, record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.DisplayName != "Corrected" {
+		t.Fatalf("the save did not land: display name %q", stored.DisplayName)
+	}
+	if stored.Enabled || !stored.AutoDisabled {
+		t.Fatalf("a save that kept the state cleared the checker's flag: %+v", stored)
+	}
+}
+
+// Under a disabled provider an enable is refused and the model stays off, so
+// nothing about it changed and the checker keeps its claim on it. Clearing the
+// flag here would strand the model, because enabling a provider again does not
+// switch its models back on.
+func TestAnEnableRefusedByTheProviderKeepsTheFlag(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	upstream := f.provider(t, "Example")
+	record := f.model(t, upstream.ID, "flaky-model")
+
+	if flipped, err := f.models.DisableIfEnabled(ctx, record.ID); err != nil || !flipped {
+		t.Fatalf("the checker's disable: flipped=%v, err=%v", flipped, err)
+	}
+	disabled := false
+	if _, err := f.providers.Update(ctx, upstream.ID, provider.Update{Enabled: &disabled}, false); err != nil {
+		t.Fatal(err)
+	}
+
+	on := true
+	if _, err := f.models.Update(ctx, record.ID, Update{Enabled: &on}); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := f.models.ByID(ctx, record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Enabled || !stored.AutoDisabled {
+		t.Fatalf("a refused enable changed the model: %+v, want it off with the checker's flag", stored)
+	}
+}
+
+// A health reset sends the clear of the checker's flag along with the enable.
+// When the provider is off the enable is refused, and the flag must survive
+// that refusal too, or the model is left off with no record of why.
+func TestAResetsRefusedEnableKeepsTheFlag(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	upstream := f.provider(t, "Example")
+	record := f.model(t, upstream.ID, "flaky-model")
+
+	if flipped, err := f.models.DisableIfEnabled(ctx, record.ID); err != nil || !flipped {
+		t.Fatalf("the checker's disable: flipped=%v, err=%v", flipped, err)
+	}
+	disabled := false
+	if _, err := f.providers.Update(ctx, upstream.ID, provider.Update{Enabled: &disabled}, false); err != nil {
+		t.Fatal(err)
+	}
+
+	on, off := true, false
+	if _, err := f.models.Update(ctx, record.ID, Update{Enabled: &on, AutoDisabled: &off}); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := f.models.ByID(ctx, record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Enabled || !stored.AutoDisabled {
+		t.Fatalf("a refused reset enable changed the model: %+v, want it off with the checker's flag", stored)
+	}
+}
+
 // Authorize returns everything a turn needs, including the decrypted
 // credential, in one query.
 func TestAuthorizeResolvesTheProvider(t *testing.T) {
@@ -419,7 +556,7 @@ func TestDeletingProviderCascades(t *testing.T) {
 	upstream := f.provider(t, "Example")
 	record := f.model(t, upstream.ID, "some-model")
 	open, _ := f.groups.Create(ctx, nil, group.CreateInput{Name: "Open"})
-	if err := f.models.SetGroupModelIDs(ctx, open.ID, []string{record.ID}); err != nil {
+	if err := f.models.SetGroupModelIDs(ctx, nil, open.ID, []string{record.ID}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -544,5 +681,53 @@ func TestWorstCaseCapsAtDefaultMaxOutput(t *testing.T) {
 	}
 	if wantCredits := 1.0 + float64(DefaultMaxOutput)/1000*1.0; credits != wantCredits {
 		t.Errorf("got credits %v, want %v", credits, wantCredits)
+	}
+}
+
+// The checker's switch-off is a write a save must not undo. A save that read
+// the model before the checker wrote it, and then wrote every column from that
+// copy, puts enabled back and clears the flag the checker set. The checker holds
+// its write open here while the save runs, so the save has read the row as it
+// was before the switch-off: that is the window this test is about. Runs on
+// Postgres as well when a DSN is named, because the lock is the thing under test.
+func TestAnOperatorsRenameDoesNotUndoACheckerDisable(t *testing.T) {
+	f := newFixtureOn(t, dbtest.Either(t, filepath.Join(t.TempDir(), "model-race.db")))
+	ctx := context.Background()
+	upstream := f.provider(t, "Example")
+	record := f.model(t, upstream.ID, "flaky-model")
+
+	name := "Renamed"
+	saved := make(chan error, 1)
+	err := f.db.Tx(ctx, func(tx *database.Tx) error {
+		if _, err := tx.Exec(ctx,
+			`UPDATE models SET enabled = ?, auto_disabled = ?, updated_at = ? WHERE id = ? AND enabled = ?`,
+			false, true, time.Now().UnixMilli(), record.ID, true); err != nil {
+			return err
+		}
+		go func() {
+			_, err := f.models.Update(ctx, record.ID, Update{DisplayName: &name})
+			saved <- err
+		}()
+		// Long enough for the save to read the row, and short of the lock
+		// timeout, so the save is still waiting when the checker commits.
+		time.Sleep(100 * time.Millisecond)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("the checker's disable: %v", err)
+	}
+	if err := <-saved; err != nil {
+		t.Fatalf("the rename: %v", err)
+	}
+
+	stored, err := f.models.ByID(ctx, record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.DisplayName != name {
+		t.Fatalf("the rename did not land: display name %q", stored.DisplayName)
+	}
+	if stored.Enabled || !stored.AutoDisabled {
+		t.Fatalf("a rename that did not touch the state undid the checker's disable: %+v", stored)
 	}
 }

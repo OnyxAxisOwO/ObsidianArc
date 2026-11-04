@@ -64,13 +64,27 @@ func Build(dir string) ([]byte, error) {
 	if err := os.WriteFile(filepath.Join(stage, "manifest.json"), manifest, 0o644); err != nil {
 		return nil, err
 	}
-	cmd := exec.Command("go", "build", "-trimpath", "-buildmode=c-shared", "-ldflags=-s -w", "-o", filepath.Join(stage, "plugin.wasm"), ".")
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GOOS=wasip1", "GOARCH=wasm")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return nil, errors.New(string(out))
+	if err := CompileWasm(dir, ".", filepath.Join(stage, "plugin.wasm"), "-trimpath", "-ldflags=-s -w"); err != nil {
+		return nil, err
 	}
 	return arcx.Pack(stage)
+}
+
+// CompileWasm builds the main package pkg, run from dir, into a WebAssembly
+// module at out, the one shape the sandbox loads: a wasip1 reactor, which is
+// what -buildmode=c-shared makes of it. Extra build flags go before the
+// package; a package is stripped and trimmed, a bare test guest is not, and
+// both are built here so the target and the build mode are written once.
+func CompileWasm(dir, pkg, out string, flags ...string) error {
+	args := append([]string{"build", "-buildmode=c-shared"}, flags...)
+	args = append(args, "-o", out, pkg)
+	cmd := exec.Command("go", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GOOS=wasip1", "GOARCH=wasm")
+	if b, err := cmd.CombinedOutput(); err != nil {
+		return errors.New(string(b))
+	}
+	return nil
 }
 
 func copyDir(from, to string) error {

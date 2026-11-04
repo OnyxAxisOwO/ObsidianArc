@@ -9,7 +9,6 @@
 
 import { computed, onMounted, ref } from 'vue';
 import { adminApi } from '@/admin/api';
-import { ApiError } from '@/api/client';
 import { t } from '@/composables/useI18n';
 import type { AdminPluginPage } from '@/plugins/types';
 import AdminFailure from './AdminFailure.vue';
@@ -19,11 +18,15 @@ import PluginSettingsCard from './PluginSettingsCard.vue';
 import { usePluginSettings } from './pluginSettings';
 import { plugins } from '@/plugins/registry';
 import { useAdminView } from './adminView';
+import { provideOpenRecord } from './openRecord';
+import { failureText } from './shared';
+import { useSettingsDraft } from './settingsDraft';
 
 const props = defineProps<{ page: AdminPluginPage }>();
 
 const view = useAdminView();
-view.setTitle(props.page.title(), props.page.hint?.());
+provideOpenRecord();
+view.setTitle(() => props.page.title(), () => props.page.hint?.() ?? '');
 
 const placement = `plugin:${props.page.slug}` as const;
 const settings = usePluginSettings(placement);
@@ -41,13 +44,11 @@ const loaded = ref(false);
 const error = ref('');
 const busy = ref(false);
 const saveError = ref('');
-const baseline = ref('');
-
-const dirty = computed(() => loaded.value && baseline.value !== JSON.stringify(settings.collect()));
-
-function message(failure: unknown): string {
-  return failure instanceof ApiError ? failure.message : String(failure);
-}
+// What the server last sent for each of this page's keys. A save sends only the
+// keys that differ from it: a whole-page save would write back values loaded
+// before another administrator changed them.
+const draft = useSettingsDraft(settings.collect);
+const dirty = computed(() => loaded.value && draft.dirty.value);
 
 async function load(): Promise<void> {
   error.value = '';
@@ -58,22 +59,25 @@ async function load(): Promise<void> {
   try {
     const { settings: values } = await adminApi.settings();
     settings.load(values);
-    baseline.value = JSON.stringify(settings.collect());
+    draft.accept();
     loaded.value = true;
   } catch (failure) {
-    error.value = message(failure);
+    error.value = failureText(failure);
   }
 }
 
 async function save(): Promise<void> {
+  const values = draft.changes();
+  if (Object.keys(values).length === 0) return;
   busy.value = true;
   saveError.value = '';
   try {
-    const { settings: values } = await adminApi.saveSettings(settings.collect());
-    settings.load(values);
-    baseline.value = JSON.stringify(settings.collect());
+    const { settings: saved } = await adminApi.saveSettings(values);
+    // Only the keys just sent: the operator may have typed into another field
+    // while the request was in flight, and that edit must stay unsaved.
+    draft.accept(settings.settle(values, saved));
   } catch (failure) {
-    saveError.value = message(failure);
+    saveError.value = failureText(failure);
   } finally {
     busy.value = false;
   }
@@ -110,7 +114,7 @@ onMounted(load);
         :key="section.id"
         :section="section"
         :draft="settings.draft"
-        :hints="settings.hints"
+        :stored-masks="settings.storedMasks"
       />
       <PluginList
         v-for="spec in lists"

@@ -37,10 +37,44 @@ func TestValidPWAIconURL(t *testing.T) {
 		"data:image/svg+xml;base64,AAAA==":   true,
 		"data:text/html;base64,PHNjcmlwdD4=": false,
 		"javascript:alert(1)":                false,
+		// The first two a browser reads as "//evil.example.com/icon.png"; a
+		// control character has no place in a path either.
+		"/\\evil.example.com/icon.png":  false,
+		"/\t/evil.example.com/icon.png": false,
+		"/icon\n.png":                   false,
 	}
 	for value, want := range cases {
 		if got := ValidPWAIconURL(value); got != want {
 			t.Errorf("ValidPWAIconURL(%q) = %v, want %v", value, got, want)
+		}
+	}
+}
+
+// An OpenID Connect sign-in sends its code, client secret and access token to
+// these addresses, and it trusts an ID token without a signature check because
+// of TLS. Plain http is allowed only where the provider keys allow it: loopback.
+func TestValidOIDCURL(t *testing.T) {
+	cases := map[string]bool{
+		"https://idp.example.com":             true,
+		"https://idp.example.com/oauth/token": true,
+		"HTTPS://idp.example.com/token":       true,
+		"http://localhost:8080/realms/arc":    true,
+		"http://LOCALHOST:8080/token":         true,
+		"http://127.0.0.1:9000/token":         true,
+		"http://[::1]:9000/token":             true,
+		"http://idp.example.com/token":        false,
+		"http://localhost.example.com/token":  false,
+		"http://127.0.0.2/token":              false,
+		"http://10.0.0.5/token":               false,
+		"ftp://idp.example.com/token":         false,
+		"idp.example.com/token":               false,
+		"https:///token":                      false,
+		"https://idp.example.com/a\r\nX: y":   false,
+		"":                                    false,
+	}
+	for value, want := range cases {
+		if got := ValidOIDCURL(value); got != want {
+			t.Errorf("ValidOIDCURL(%q) = %v, want %v", value, got, want)
 		}
 	}
 }
@@ -125,4 +159,35 @@ func TestLandingDefaultsToTheSignInCard(t *testing.T) {
 	if got := Defaults[LandingMode]; got != LandingLogin {
 		t.Errorf("Defaults[LandingMode] = %q, want %q", got, LandingLogin)
 	}
+}
+
+// The gate answers yes for an empty owner, so a registration without one would
+// be core and always on. Refusing it at registration is the only place to catch
+// it: after init the setting already looks like any other.
+func TestDefineRefusesAnUnownedSetting(t *testing.T) {
+	expectPanic(t, func() {
+		Define(Definition{Key: "unowned.setting.test", Default: "x"})
+	})
+	if _, ok := Defaults["unowned.setting.test"]; ok {
+		t.Error("an unowned setting was registered before the panic")
+	}
+}
+
+func TestAddCaptchaModeRefusesAnUnownedMode(t *testing.T) {
+	expectPanic(t, func() {
+		AddCaptchaMode("", "unowned-captcha-test")
+	})
+	if _, ok := pluginCaptchaModes["unowned-captcha-test"]; ok {
+		t.Error("an unowned captcha mode was registered before the panic")
+	}
+}
+
+func expectPanic(t *testing.T, fn func()) {
+	t.Helper()
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected a panic")
+		}
+	}()
+	fn()
 }

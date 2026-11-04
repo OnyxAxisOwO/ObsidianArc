@@ -1,12 +1,13 @@
+import type { PoWSolution } from './auth';
 import { api } from './client';
 
 // Signing in with an account somebody already holds at GitHub or Google.
 //
-// The sign-in itself is not a request from here. It is a navigation: the
-// browser leaves for the provider and comes back to a callback that sets the
-// session cookie, so there is nothing to fetch and nothing to await. What
-// this module has is the address to leave for, and the two calls the settings
-// screen makes about connections that already exist.
+// The sign-in itself is a navigation: the browser leaves for the provider and
+// comes back to a callback that sets the session cookie. What this module has
+// is the address to leave for (or, when a one-use token rides along, the
+// request that answers with it), and the calls the settings screen makes about
+// connections that already exist.
 
 /** One provider account linked to this account. */
 export interface OAuthConnection {
@@ -25,7 +26,7 @@ export interface OAuthProvider {
   enabled: boolean;
 }
 
-export interface OAuthConnections {
+interface OAuthConnections {
   connections: OAuthConnection[];
   providers: OAuthProvider[];
   /**
@@ -37,25 +38,93 @@ export interface OAuthConnections {
 }
 
 /**
- * Where the button goes.
+ * Where a sign-in button goes.
  *
  * A URL rather than a fetch: the response is a redirect to somebody else's
- * site, which is a navigation the browser has to make itself. `link` says
- * this is an account adding a connection rather than a visitor signing in;
- * `next` is where to land afterwards, and the server keeps it to a path of
- * this site whatever is passed.
+ * site, which is a navigation the browser has to make itself. `next` is where to
+ * land afterwards, and the server keeps it to a path of this site whatever is
+ * passed. Adding a connection to an account is not a navigation of this kind, and
+ * is started by connectProvider instead.
+ *
+ * `pow` is the proof of work a sign-up from the register page has solved. It
+ * rides on this request because the request is the browser's own navigation to
+ * the server, the one place a sign-up's answer can be carried; the provider's
+ * redirect back carries nothing the browser solved.
  */
 export function signInURL(
   provider: string,
-  options: { link?: boolean; next?: string; turnstile?: string; register?: boolean } = {},
+  options: {
+    next?: string;
+    turnstile?: string;
+    pow?: PoWSolution;
+    register?: boolean;
+  } = {},
 ): string {
   const query = new URLSearchParams();
-  if (options.link) query.set('link', '1');
   if (options.next) query.set('next', options.next);
   if (options.turnstile) query.set('turnstile', options.turnstile);
+  if (options.pow) query.set('pow', JSON.stringify(options.pow));
   if (options.register) query.set('register', '1');
   const suffix = query.toString();
   return `/api/auth/oauth/start/${encodeURIComponent(provider)}${suffix ? `?${suffix}` : ''}`;
+}
+
+/**
+ * Starts a sign-in as a request rather than a navigation to signInURL, and
+ * then leaves for the address the server answers with.
+ *
+ * Used when the request carries a challenge token or a proof of work: both
+ * are one-use, but in an address they land in proxy logs, the browser's
+ * history and the Referer the provider's page is sent, so they travel in the
+ * body. Not as a form post: the shell's CSP says form-action 'self', and
+ * Chrome holds every redirect of a form's navigation to it, so a form whose
+ * answer redirects to the provider never leaves the page. The navigation made
+ * here is the page's own, which form-action does not govern. A refusal at the
+ * door is an address too (back to this page, with the reason), so the page is
+ * left the same way whatever the door said. The plain link stays for a
+ * sign-in that carries neither.
+ */
+export async function startSignIn(
+  provider: string,
+  options: {
+    next?: string;
+    turnstile?: string;
+    pow?: PoWSolution;
+    register?: boolean;
+  } = {},
+): Promise<void> {
+  const { redirect } = await api.post<{ redirect: string }>(
+    `/api/auth/oauth/start/${encodeURIComponent(provider)}`,
+    {
+      ...(options.next ? { next: options.next } : {}),
+      ...(options.turnstile ? { turnstile: options.turnstile } : {}),
+      ...(options.pow ? { pow: options.pow } : {}),
+      ...(options.register ? { register: true } : {}),
+    },
+  );
+  window.location.assign(redirect);
+}
+
+/**
+ * Starts connecting a provider to this account, and answers with the address the
+ * browser has to leave for: the provider's consent screen, which comes back to
+ * this site when it is done.
+ *
+ * A request rather than a link, because the account has to prove itself first. An
+ * account with a password is asked for it: the server answers password_required
+ * until it is given, and current_password_wrong for a wrong one. An account with no
+ * password has to have signed in just now, and answers reauth_required when it has
+ * not. Nothing is connected by this call; the callback does that, and only for the
+ * browser that asked.
+ */
+export function connectProvider(
+  provider: string,
+  options: { password?: string; next?: string } = {},
+): Promise<{ redirect: string }> {
+  return api.post<{ redirect: string }>(`/api/auth/oauth/connections/${encodeURIComponent(provider)}`, {
+    password: options.password ?? '',
+    next: options.next ?? '',
+  });
 }
 
 /**

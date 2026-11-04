@@ -8,15 +8,22 @@ package web
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"errors"
+	"io"
 	"io/fs"
+	"mime"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 )
 
 // The Vite build writes here (see web/vite.config.ts). `all:` so the
@@ -58,7 +65,21 @@ func Handler(opts Options) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
+	return handler(assets, opts)
+}
 
+// precompressedDir holds the build's brotli copy of every file under
+// assets/, at the same path with .br added (see web/vite.config.ts). It is not
+// served by its own path: a copy is only ever the body of a request for the
+// original. Gzip has no copy: Node's zlib compresses the same file to different
+// sizes on different CPUs, so httpx.Compress makes it on the way out, where
+// Go's compressor gives the same bytes on every machine and the first paint
+// the docs quote is one any build reproduces.
+const precompressedDir = "precompressed"
+
+// handler is Handler over any tree laid out as the build lays dist out, so a
+// test can hand it one without a frontend build.
+func handler(assets fs.FS, opts Options) (http.Handler, error) {
 	index, err := fs.ReadFile(assets, "index.html")
 	if err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
@@ -73,7 +94,7 @@ func Handler(opts Options) (http.Handler, error) {
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			httpx.WriteError(w, r, httpx.MethodNotAllowed())
 			return
 		}
 
@@ -83,8 +104,21 @@ func Handler(opts Options) (http.Handler, error) {
 			return
 		}
 
+		if strings.HasPrefix(clean, precompressedDir+"/") {
+			http.NotFound(w, r)
+			return
+		}
+
 		file, err := assets.Open(clean)
 		if err != nil {
+			// A fingerprinted bundle that is not on disk belongs to another
+			// build. A tab still running the previous release asks for it and
+			// gets the shell back as text/html, which the module loader rejects
+			// with a MIME error; a 404 is what it can recover from by reloading.
+			if strings.HasPrefix(clean, "assets/") {
+				http.NotFound(w, r)
+				return
+			}
 			// Not a file on disk: an application route. The SPA router
 			// resolves it client-side, so it gets the shell.
 			serveIndex(w, r, index, opts)
@@ -101,9 +135,61 @@ func Handler(opts Options) (http.Handler, error) {
 		// to cache forever. Anything else keeps the default.
 		if strings.HasPrefix(clean, "assets/") {
 			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			// The fingerprint in the name is the content's identity, so it is
+			// the validator too; embedded files have no modification time to
+			// offer instead. Weak, because these bytes may go out as the
+			// build's brotli copy or the compressor's gzip, and a strong tag
+			// would claim the encodings are byte-identical. FileServer answers
+			// If-None-Match from this header.
+			w.Header().Set("ETag", `W/"`+path.Base(clean)+`"`)
+			// A range is a range of the original bytes, which a compressed
+			// body does not have; the file server answers those from the
+			// original.
+			if r.Header.Get("Range") == "" && servePrecompressed(w, r, assets, clean) {
+				return
+			}
 		}
 		fileServer.ServeHTTP(w, r)
 	}), nil
+}
+
+// servePrecompressed answers with the build's brotli copy of an asset when the
+// client accepts br. It reports false when the client does not or the build
+// made no copy, and the caller serves the original, which the compressor in
+// front gzips for a client that takes that instead.
+//
+// The compressor in front (httpx.Compress) leaves a response that already
+// names its encoding alone, and adds the Vary this answer needs.
+func servePrecompressed(w http.ResponseWriter, r *http.Request, assets fs.FS, clean string) bool {
+	accept := r.Header.Get("Accept-Encoding")
+	for _, encoding := range [...]struct{ name, suffix string }{{"br", ".br"}} {
+		if !httpx.AcceptsEncoding(accept, encoding.name) {
+			continue
+		}
+		file, err := assets.Open(path.Join(precompressedDir, clean+encoding.suffix))
+		if err != nil {
+			continue
+		}
+		defer file.Close()
+		info, err := file.Stat()
+		body, seekable := file.(io.ReadSeeker)
+		if err != nil || !seekable {
+			continue
+		}
+		header := w.Header()
+		// The type is the original's, by its own extension, as the file
+		// server would have named it.
+		if kind := mime.TypeByExtension(path.Ext(clean)); kind != "" {
+			header.Set("Content-Type", kind)
+		}
+		header.Set("Content-Encoding", encoding.name)
+		// ServeContent counts the body only when no encoding is named, so the
+		// length of the compressed copy is set here.
+		header.Set("Content-Length", strconv.FormatInt(info.Size(), 10))
+		http.ServeContent(w, r, clean, time.Time{}, body)
+		return true
+	}
+	return false
 }
 
 // The shell must never be cached: it carries the script tags that point at
@@ -137,6 +223,12 @@ func serveIndex(w http.ResponseWriter, r *http.Request, index []byte, opts Optio
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
+	// Hashed per request, after the substitutions: a tag computed once from
+	// the embedded file would stay the same when an operator renames the
+	// site, and the browser would keep the old title on a 304. Weak for the
+	// same reason as the assets' — the compressor may re-encode the body.
+	sum := sha256.Sum256(body)
+	w.Header().Set("ETag", `W/"`+hex.EncodeToString(sum[:16])+`"`)
 	http.ServeContent(w, r, "index.html", time.Time{}, bytes.NewReader(body))
 }
 

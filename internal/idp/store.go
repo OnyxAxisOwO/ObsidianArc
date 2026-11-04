@@ -2,9 +2,7 @@ package idp
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -12,6 +10,8 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 )
 
 // Everything this feature stores: the applications, what each account has
@@ -24,8 +24,7 @@ import (
 
 // Digest maps a presented secret to the column that finds its row.
 func Digest(value string) string {
-	sum := sha256.Sum256([]byte(value))
-	return hex.EncodeToString(sum[:])
+	return secret.Digest(value)
 }
 
 const appColumns = `id, client_id, name, description, redirect_uris, scopes,
@@ -103,15 +102,19 @@ func (s *Store) CreateApp(ctx context.Context, in CreateAppInput) (App, string, 
 		hash = Digest(secret)
 	}
 
-	// The ceiling is a check followed by an insert, so it holds the instance
-	// lock the way every other instance-wide count does.
+	// The ceiling is a check followed by an insert. Without the instance lock
+	// two creates can both count 99 and both insert, and the default isolation
+	// on Postgres does not stop that.
 	err = s.db.Tx(ctx, func(tx *database.Tx) error {
+		if err := settings.Lock(ctx, tx); err != nil {
+			return err
+		}
 		var count int
 		if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM oauth_apps`).Scan(&count); err != nil {
 			return fmt.Errorf("idp: count applications: %w", err)
 		}
 		if count >= MaxApps {
-			return fmt.Errorf("idp: this instance already has the maximum of %d applications", MaxApps)
+			return ErrTooManyApplications
 		}
 		_, err := tx.Exec(ctx, `INSERT INTO oauth_apps
 			(id, client_id, secret_hash, name, description, redirect_uris, scopes,
@@ -137,52 +140,107 @@ type AppUpdate struct {
 	Disabled     *bool
 }
 
-func (s *Store) UpdateApp(ctx context.Context, appID string, in AppUpdate) (App, error) {
-	record, err := s.AppByID(ctx, nil, appID)
+// ErrTrustedApplication is what anybody short of a super administrator is
+// told when they would register, change or remove a trusted application, or
+// make one trusted. Trust lets an application skip the consent screen for
+// everybody who signs in, so the decision belongs to the operator and not to
+// whoever was delegated the security page.
+var ErrTrustedApplication = errors.New("idp: only a super administrator may change a trusted application")
+
+// ErrCallbacksNeedSuperAdmin is what anybody short of a super administrator is
+// told when they would add or remove a callback of an application. A callback
+// is where a code is sent, and consent is recorded per application rather than
+// per callback: a callback added later would receive the codes of everybody
+// who had already agreed to the application, and none of them would be asked
+// again.
+var ErrCallbacksNeedSuperAdmin = errors.New("idp: only a super administrator may change an application's callbacks")
+
+// lockApp holds the application's row until the transaction ends. The
+// statement changes nothing; it is there for the lock. A trust check is a read
+// followed by a write, and without the lock a concurrent change to trust can
+// land between the two.
+func lockApp(ctx context.Context, tx *database.Tx, appID string) error {
+	result, err := tx.Exec(ctx, `UPDATE oauth_apps SET updated_at = updated_at WHERE id = ?`, appID)
+	if err != nil {
+		return fmt.Errorf("idp: lock application: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("idp: lock application: %w", err)
+	}
+	if affected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// UpdateApp applies in to one application. superAdmin is the caller's
+// IsSuperAdmin answer: nobody else changes a trusted application, nobody else
+// makes one trusted, and nobody else changes the callbacks of any application.
+func (s *Store) UpdateApp(ctx context.Context, appID string, in AppUpdate, superAdmin bool) (App, error) {
+	var record App
+	err := s.db.Tx(ctx, func(tx *database.Tx) error {
+		if err := lockApp(ctx, tx, appID); err != nil {
+			return err
+		}
+		current, err := s.AppByID(ctx, tx, appID)
+		if err != nil {
+			return err
+		}
+		if !superAdmin && (current.Trusted || (in.Trusted != nil && *in.Trusted)) {
+			return ErrTrustedApplication
+		}
+		record = current
+		if in.Name != nil {
+			name, err := checkName(*in.Name)
+			if err != nil {
+				return err
+			}
+			record.Name = name
+		}
+		if in.Description != nil {
+			description := strings.TrimSpace(*in.Description)
+			if len([]rune(description)) > MaxDescriptionChars {
+				description = string([]rune(description)[:MaxDescriptionChars])
+			}
+			record.Description = description
+		}
+		if in.RedirectURIs != nil {
+			redirects, err := ParseRedirectURIs(*in.RedirectURIs)
+			if err != nil {
+				return err
+			}
+			// Re-saving the stored set is not a change, so a form that sends
+			// every field back still works for everybody.
+			if !superAdmin && !sameCallbacks(current.RedirectURIs, redirects) {
+				return ErrCallbacksNeedSuperAdmin
+			}
+			record.RedirectURIs = redirects
+		}
+		if in.Scopes != nil {
+			record.Scopes = normaliseScopes(*in.Scopes)
+		}
+		if in.Trusted != nil {
+			record.Trusted = *in.Trusted
+		}
+		if in.Disabled != nil {
+			record.Disabled = *in.Disabled
+		}
+		record.UpdatedAt = time.Now().UnixMilli()
+
+		if _, err := tx.Exec(ctx, `UPDATE oauth_apps
+			SET name = ?, description = ?, redirect_uris = ?, scopes = ?,
+			    trusted = ?, disabled = ?, updated_at = ?
+			WHERE id = ?`,
+			record.Name, record.Description, strings.Join(record.RedirectURIs, "\n"),
+			strings.Join(record.Scopes, " "), record.Trusted, record.Disabled,
+			record.UpdatedAt, record.ID); err != nil {
+			return fmt.Errorf("idp: update application: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
 		return App{}, err
-	}
-	if in.Name != nil {
-		name, err := checkName(*in.Name)
-		if err != nil {
-			return App{}, err
-		}
-		record.Name = name
-	}
-	if in.Description != nil {
-		description := strings.TrimSpace(*in.Description)
-		if len([]rune(description)) > MaxDescriptionChars {
-			description = string([]rune(description)[:MaxDescriptionChars])
-		}
-		record.Description = description
-	}
-	if in.RedirectURIs != nil {
-		redirects, err := ParseRedirectURIs(*in.RedirectURIs)
-		if err != nil {
-			return App{}, err
-		}
-		record.RedirectURIs = redirects
-	}
-	if in.Scopes != nil {
-		record.Scopes = normaliseScopes(*in.Scopes)
-	}
-	if in.Trusted != nil {
-		record.Trusted = *in.Trusted
-	}
-	if in.Disabled != nil {
-		record.Disabled = *in.Disabled
-	}
-	record.UpdatedAt = time.Now().UnixMilli()
-
-	_, err = s.db.Exec(ctx, `UPDATE oauth_apps
-		SET name = ?, description = ?, redirect_uris = ?, scopes = ?,
-		    trusted = ?, disabled = ?, updated_at = ?
-		WHERE id = ?`,
-		record.Name, record.Description, strings.Join(record.RedirectURIs, "\n"),
-		strings.Join(record.Scopes, " "), record.Trusted, record.Disabled,
-		record.UpdatedAt, record.ID)
-	if err != nil {
-		return App{}, fmt.Errorf("idp: update application: %w", err)
 	}
 	return record, nil
 }
@@ -190,33 +248,59 @@ func (s *Store) UpdateApp(ctx context.Context, appID string, in AppUpdate) (App,
 // RotateSecret issues a new secret and invalidates the old one. Everything
 // already issued keeps working: the secret authenticates the application at
 // the token endpoint, and a token that has already been handed over was
-// authenticated when it was issued.
-func (s *Store) RotateSecret(ctx context.Context, appID string) (string, error) {
-	record, err := s.AppByID(ctx, nil, appID)
+// authenticated when it was issued. A trusted application's secret is the
+// super administrator's to rotate, because whoever holds it can exchange the
+// codes its users are sent.
+func (s *Store) RotateSecret(ctx context.Context, appID string, superAdmin bool) (string, error) {
+	var secret string
+	err := s.db.Tx(ctx, func(tx *database.Tx) error {
+		if err := lockApp(ctx, tx, appID); err != nil {
+			return err
+		}
+		record, err := s.AppByID(ctx, tx, appID)
+		if err != nil {
+			return err
+		}
+		if !superAdmin && record.Trusted {
+			return ErrTrustedApplication
+		}
+		if !record.Confidential {
+			return ErrInvalidRequest
+		}
+		secret = id.Secret(secretBytes)
+		if _, err := tx.Exec(ctx,
+			`UPDATE oauth_apps SET secret_hash = ?, updated_at = ? WHERE id = ?`,
+			Digest(secret), time.Now().UnixMilli(), appID); err != nil {
+			return fmt.Errorf("idp: rotate secret: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
 		return "", err
-	}
-	if !record.Confidential {
-		return "", ErrInvalidRequest
-	}
-	secret := id.Secret(secretBytes)
-	if _, err := s.db.Exec(ctx,
-		`UPDATE oauth_apps SET secret_hash = ?, updated_at = ? WHERE id = ?`,
-		Digest(secret), time.Now().UnixMilli(), appID); err != nil {
-		return "", fmt.Errorf("idp: rotate secret: %w", err)
 	}
 	return secret, nil
 }
 
-func (s *Store) DeleteApp(ctx context.Context, appID string) error {
-	result, err := s.db.Exec(ctx, `DELETE FROM oauth_apps WHERE id = ?`, appID)
-	if err != nil {
-		return fmt.Errorf("idp: delete application: %w", err)
-	}
-	if affected, err := result.RowsAffected(); err == nil && affected == 0 {
-		return ErrNotFound
-	}
-	return nil
+// DeleteApp removes an application and everything issued through it. A trusted
+// one is the super administrator's to remove, for the same reason it is theirs
+// to change.
+func (s *Store) DeleteApp(ctx context.Context, appID string, superAdmin bool) error {
+	return s.db.Tx(ctx, func(tx *database.Tx) error {
+		if err := lockApp(ctx, tx, appID); err != nil {
+			return err
+		}
+		record, err := s.AppByID(ctx, tx, appID)
+		if err != nil {
+			return err
+		}
+		if !superAdmin && record.Trusted {
+			return ErrTrustedApplication
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM oauth_apps WHERE id = ?`, appID); err != nil {
+			return fmt.Errorf("idp: delete application: %w", err)
+		}
+		return nil
+	})
 }
 
 func (s *Store) ListApps(ctx context.Context) ([]App, error) {
@@ -279,7 +363,7 @@ func (s *Store) Authenticate(ctx context.Context, clientID, secret string) (App,
 	return record, nil
 }
 
-type rowScanner interface{ Scan(dest ...any) error }
+type rowScanner = database.RowScanner
 
 func scanApp(row rowScanner) (App, string, error) {
 	var (
@@ -307,20 +391,73 @@ func scanApp(row rowScanner) (App, string, error) {
 
 // --- consent ------------------------------------------------------------------
 
-// RecordGrant writes what an account has agreed to, widening what was there
-// rather than replacing it: a second application asking for less does not
-// take away what the first one was allowed.
+// RecordGrant writes what an account has agreed to for this application. The
+// stored list only grows: an approval that asks for less than the last one
+// leaves the earlier scopes in place, so a narrower sign-in cannot make the
+// application ask again for something the person already gave.
+//
+// The merge is a read followed by a write, so it runs under the grant row's
+// lock. Without that, two approvals landing together could each drop the
+// other's scopes.
 func (s *Store) RecordGrant(ctx context.Context, q database.Queryer, appID, userID string, scopes []string) error {
+	if q != nil {
+		return recordGrant(ctx, q, appID, userID, scopes)
+	}
+	return s.db.Tx(ctx, func(tx *database.Tx) error {
+		return recordGrant(ctx, tx, appID, userID, scopes)
+	})
+}
+
+func recordGrant(ctx context.Context, q database.Queryer, appID, userID string, scopes []string) error {
 	now := time.Now().UnixMilli()
-	_, err := s.queryer(q).Exec(ctx,
+	// Creates the row when it is new, and leaves an existing one to the merge.
+	if _, err := q.Exec(ctx,
 		`INSERT INTO oauth_grants (id, app_id, user_id, scopes, created_at, last_used_at)
 		 VALUES (?, ?, ?, ?, ?, ?)
-		 ON CONFLICT (app_id, user_id) DO UPDATE SET scopes = excluded.scopes, last_used_at = excluded.last_used_at`,
-		id.New(), appID, userID, strings.Join(scopes, " "), now, now)
+		 ON CONFLICT (app_id, user_id) DO NOTHING`,
+		id.New(), appID, userID, strings.Join(scopes, " "), now, now); err != nil {
+		return fmt.Errorf("idp: record consent: %w", err)
+	}
+	held, err := lockGrant(ctx, q, appID, userID)
 	if err != nil {
+		return err
+	}
+	if !held {
+		return fmt.Errorf("idp: record consent: the grant was withdrawn during the approval")
+	}
+	var stored string
+	if err := q.QueryRow(ctx,
+		`SELECT scopes FROM oauth_grants WHERE app_id = ? AND user_id = ?`, appID, userID).Scan(&stored); err != nil {
+		return fmt.Errorf("idp: read consent: %w", err)
+	}
+	merged := ParseScopes(stored + " " + strings.Join(scopes, " "))
+	if _, err := q.Exec(ctx,
+		`UPDATE oauth_grants SET scopes = ?, last_used_at = ? WHERE app_id = ? AND user_id = ?`,
+		strings.Join(merged, " "), now, appID, userID); err != nil {
 		return fmt.Errorf("idp: record consent: %w", err)
 	}
 	return nil
+}
+
+// lockGrant holds the account's grant row until the enclosing transaction
+// ends, and reports whether the row still exists. RevokeGrant deletes that row
+// before it revokes the tokens, so a token inserted under this lock is either
+// seen by that revocation or refused here. Without the lock, a token minted
+// just before the revocation committed would outlive it.
+//
+// The statement changes nothing; it is there for the lock, as lockApp is.
+func lockGrant(ctx context.Context, q database.Queryer, appID, userID string) (bool, error) {
+	result, err := q.Exec(ctx,
+		`UPDATE oauth_grants SET last_used_at = last_used_at WHERE app_id = ? AND user_id = ?`,
+		appID, userID)
+	if err != nil {
+		return false, fmt.Errorf("idp: lock consent: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("idp: lock consent: %w", err)
+	}
+	return affected > 0, nil
 }
 
 // GrantedScopes is what this account has already agreed to let this
@@ -441,6 +578,18 @@ func (s *Store) SaveCode(ctx context.Context, code string, in Code) error {
 // also the only safe reading: one of the two presentations was not the
 // application.
 func (s *Store) RedeemCode(ctx context.Context, code string) (Code, error) {
+	return s.RedeemVerifiedCode(ctx, code, nil)
+}
+
+// RedeemVerifiedCode is RedeemCode with the presentation checked first. verify
+// sees the code as stored and decides whether this presentation may count as a
+// use at all. A presentation that fails it changes nothing: a holder of a
+// copied code who guesses the verifier wrong must not spend the code, and must
+// not trigger the replay revocation below against the real application.
+//
+// verify runs inside the transaction, so it must be pure Go and must not call a
+// provider or any other service.
+func (s *Store) RedeemVerifiedCode(ctx context.Context, code string, verify func(Code) error) (Code, error) {
 	hash := Digest(code)
 	var (
 		out    Code
@@ -448,6 +597,46 @@ func (s *Store) RedeemCode(ctx context.Context, code string) (Code, error) {
 	)
 
 	err := s.db.Tx(ctx, func(tx *database.Tx) error {
+		// Read before anything is spent. The expiry is checked here rather
+		// than in the UPDATE, so an expired code that was already used still
+		// reaches the replay branch, as it always has.
+		var (
+			scopes    string
+			used      bool
+			expiresAt int64
+		)
+		if err := tx.QueryRow(ctx,
+			`SELECT app_id, user_id, redirect_uri, scopes, nonce, code_challenge, challenge_method, used, expires_at
+			 FROM oauth_codes WHERE code_hash = ?`, hash).
+			Scan(&out.AppID, &out.UserID, &out.RedirectURI, &scopes, &out.Nonce,
+				&out.CodeChallenge, &out.ChallengeMethod, &used, &expiresAt); err != nil {
+			if database.IsNotFound(err) {
+				return ErrBadCode
+			}
+			return fmt.Errorf("idp: read code: %w", err)
+		}
+		out.Scopes = ParseScopes(scopes)
+
+		if !used && expiresAt <= time.Now().UnixMilli() {
+			return ErrBadCode
+		}
+		if verify != nil {
+			if err := verify(out); err != nil {
+				return err
+			}
+		}
+		if used {
+			// Unlike the spend below, this one is not a race lost: the code was
+			// spent before this presentation arrived, and it passed verify, so
+			// the holder is presenting a copy. The revocation happens outside
+			// this transaction, which is about to be rolled back with the error.
+			replay.appID, replay.userID = out.AppID, out.UserID
+			return ErrBadCode
+		}
+
+		// The spending is the UPDATE, not the read: marking it used with the old
+		// value in the WHERE clause is a compare-and-set that both engines make
+		// atomic, so two exchanges arriving together cannot both find it unused.
 		result, err := tx.Exec(ctx,
 			`UPDATE oauth_codes SET used = ? WHERE code_hash = ? AND used = ? AND expires_at > ?`,
 			true, hash, false, time.Now().UnixMilli())
@@ -459,34 +648,23 @@ func (s *Store) RedeemCode(ctx context.Context, code string) (Code, error) {
 			return fmt.Errorf("idp: spend code: %w", err)
 		}
 		if affected == 0 {
-			// Unknown, expired, or already spent. Only the last of those is
-			// worth acting on, and it is the one worth acting on hard — but
-			// not from in here: this transaction is about to be rolled back
-			// with the error below, and a revocation written inside it would
-			// be rolled back with everything else.
+			// Another presentation spent it between the read and this write, or
+			// it expired in that gap. Only the first of those is a replay, and
+			// it is worth acting on hard — but not from in here, for the reason
+			// given above.
 			var (
 				appID  string
 				userID string
-				used   bool
+				spent  bool
 			)
 			readErr := tx.QueryRow(ctx,
 				`SELECT app_id, user_id, used FROM oauth_codes WHERE code_hash = ?`, hash).
-				Scan(&appID, &userID, &used)
-			if readErr == nil && used {
+				Scan(&appID, &userID, &spent)
+			if readErr == nil && spent {
 				replay.appID, replay.userID = appID, userID
 			}
 			return ErrBadCode
 		}
-
-		var scopes string
-		if err := tx.QueryRow(ctx,
-			`SELECT app_id, user_id, redirect_uri, scopes, nonce, code_challenge, challenge_method
-			 FROM oauth_codes WHERE code_hash = ?`, hash).
-			Scan(&out.AppID, &out.UserID, &out.RedirectURI, &scopes, &out.Nonce,
-				&out.CodeChallenge, &out.ChallengeMethod); err != nil {
-			return fmt.Errorf("idp: read code: %w", err)
-		}
-		out.Scopes = ParseScopes(scopes)
 		return nil
 	})
 	if err != nil {
@@ -544,6 +722,29 @@ func (s *Store) SaveToken(ctx context.Context, q database.Queryer,
 	return record, nil
 }
 
+// SaveGrantedToken issues a token pair only while the account still holds
+// its grant. The check and the insert share a transaction under the grant's
+// lock, which is what lets RevokeGrant either see the new pair or be seen by
+// the refusal here.
+func (s *Store) SaveGrantedToken(ctx context.Context, access, refresh, appID, userID string, scopes []string) (Token, error) {
+	var record Token
+	err := s.db.Tx(ctx, func(tx *database.Tx) error {
+		held, err := lockGrant(ctx, tx, appID, userID)
+		if err != nil {
+			return err
+		}
+		if !held {
+			return ErrBadCode
+		}
+		record, err = s.SaveToken(ctx, tx, access, refresh, appID, userID, scopes)
+		return err
+	})
+	if err != nil {
+		return Token{}, err
+	}
+	return record, nil
+}
+
 // ResolveAccess finds a live access token. Expired, revoked and unknown are
 // all the same answer: the caller is a stranger holding a string.
 func (s *Store) ResolveAccess(ctx context.Context, token string) (Token, error) {
@@ -566,6 +767,32 @@ func (s *Store) ResolveAccess(ctx context.Context, token string) (Token, error) 
 	}
 	record.Scopes = ParseScopes(scopes)
 	return record, nil
+}
+
+// liveRefreshApp reads the application, the account and the scopes that a
+// live refresh token was issued for. Refresh needs all three before the spend:
+// the application to refuse another's token, and the account and scopes to
+// build the identity token while a failure can still leave the token unspent.
+// Anything else answers false and is left to Rotate, which tells an expired or
+// spent token apart from one that never existed.
+func (s *Store) liveRefreshApp(ctx context.Context, refresh string) (Token, bool, error) {
+	var (
+		record Token
+		scopes string
+	)
+	err := s.db.QueryRow(ctx,
+		`SELECT app_id, user_id, scopes FROM oauth_tokens
+		 WHERE refresh_hash = ? AND revoked = ? AND refresh_expires_at > ?`,
+		Digest(refresh), false, time.Now().UnixMilli()).
+		Scan(&record.AppID, &record.UserID, &scopes)
+	if err != nil {
+		if database.IsNotFound(err) {
+			return Token{}, false, nil
+		}
+		return Token{}, false, fmt.Errorf("idp: read refresh token: %w", err)
+	}
+	record.Scopes = ParseScopes(scopes)
+	return record, true, nil
 }
 
 // Rotate spends a refresh token and issues a new pair in its place.
@@ -593,19 +820,36 @@ func (s *Store) Rotate(ctx context.Context, refresh, access, newRefresh string) 
 			Scan(&previous.ID, &previous.AppID, &previous.UserID, &scopes)
 		if err != nil {
 			if database.IsNotFound(err) {
-				// Either it never existed, or it has already been rotated
-				// away. The second is a copy in somebody else's hands, and it
-				// is acted on after this transaction rather than inside it:
-				// the error below rolls back everything written in here.
+				// Either it never existed, or it has been spent. A spent token
+				// still within its lifetime is taken as a copy in somebody
+				// else's hands. An expired one is only old: treating it as a
+				// copy revoked the live session beside it, so it is refused and
+				// nothing else is touched. The revocation is acted on after this
+				// transaction rather than inside it: the error below rolls back
+				// everything written here.
 				var appID, userID string
 				if found := tx.QueryRow(ctx,
-					`SELECT app_id, user_id FROM oauth_tokens WHERE refresh_hash = ?`, hash).
+					`SELECT app_id, user_id FROM oauth_tokens
+					 WHERE refresh_hash = ? AND revoked = ? AND refresh_expires_at > ?`,
+					hash, true, time.Now().UnixMilli()).
 					Scan(&appID, &userID); found == nil {
 					replay.appID, replay.userID = appID, userID
 				}
 				return ErrBadToken
 			}
 			return fmt.Errorf("idp: read refresh token: %w", err)
+		}
+
+		// The grant is held before the spend, in the order RevokeGrant takes
+		// its locks: a withdrawal that got here first refuses the rotation, and
+		// one that comes after waits for the new pair to commit and then
+		// revokes it.
+		held, err := lockGrant(ctx, tx, previous.AppID, previous.UserID)
+		if err != nil {
+			return err
+		}
+		if !held {
+			return ErrBadToken
 		}
 
 		// Spend it. The condition is what makes two simultaneous refreshes
@@ -666,6 +910,27 @@ func (s *Store) Touch(ctx context.Context, tokenID, appID, userID string) {
 		now, appID, userID)
 }
 
+// RevokeAccount ends every token and every unspent code this account holds
+// with any application. The password writes in internal/auth call it inside
+// their own transaction, so a credential that was replaced takes what was
+// issued under it, and the write and the revocation land together or not at
+// all. Consent is kept: the person still agreed to the application, and only
+// what the old credential bought is withdrawn.
+func (s *Store) RevokeAccount(ctx context.Context, q database.Queryer, userID string) error {
+	if _, err := s.queryer(q).Exec(ctx,
+		`UPDATE oauth_tokens SET revoked = ? WHERE user_id = ?`, true, userID); err != nil {
+		return fmt.Errorf("idp: revoke account tokens: %w", err)
+	}
+	// Without this a code issued just before the change would still be
+	// redeemable for a token pair, because redeeming checks only that the code
+	// is unused and unexpired.
+	if _, err := s.queryer(q).Exec(ctx,
+		`DELETE FROM oauth_codes WHERE user_id = ?`, userID); err != nil {
+		return fmt.Errorf("idp: drop account codes: %w", err)
+	}
+	return nil
+}
+
 // Purge drops what is spent or expired. Called by the janitor: codes live two
 // minutes and tokens an hour, so without it the two tables grow forever with
 // rows nothing will ever read again.
@@ -706,6 +971,12 @@ func normaliseScopes(scopes []string) []string {
 		parsed = ParseScopes(strings.Join(append(parsed, ScopeOpenID), " "))
 	}
 	return parsed
+}
+
+// sameCallbacks reports whether two lists name the same callbacks. Order is not
+// part of a callback, so each list has to cover the other.
+func sameCallbacks(a, b []string) bool {
+	return Covers(a, b) && Covers(b, a)
 }
 
 func splitLines(raw string) []string {

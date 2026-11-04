@@ -77,14 +77,56 @@ func fillUsage(request ChatRequest, result Result, reported Usage) Usage {
 		out.Estimated = true
 	}
 
+	// Gated on the output figure alone: a gateway that reports reasoning
+	// but no output still wrote the answer, and the answer is what the
+	// output count is for. The output estimate counts only the text and
+	// the calls, so it cannot repeat the reasoning the provider reported.
 	produced := result.Text != "" || result.Reasoning != "" || len(result.ToolCalls) > 0
-	if out.OutputTokens == 0 && out.ReasoningTokens == 0 && produced {
+	if out.OutputTokens == 0 && produced {
 		output := len(result.Text) / bytesPerToken
 		for _, call := range result.ToolCalls {
 			output += perToolCallTax + (len(call.Name)+len(call.Arguments))/bytesPerToken
 		}
 		out.OutputTokens = output
-		out.ReasoningTokens = len(result.Reasoning) / bytesPerToken
+		if out.ReasoningTokens == 0 {
+			out.ReasoningTokens = len(result.Reasoning) / bytesPerToken
+		}
+		out.Estimated = true
+	}
+	return out
+}
+
+// written is how much of an answer streamed, in bytes, before its call ended.
+type written struct {
+	text, reasoning, calls int
+}
+
+// fillStopped is fillUsage for a call that did not finish: the reader
+// stopped, the connection dropped, or the provider broke off. Nothing is
+// charged for a call that wrote nothing, as before — a provider that refused
+// outright did not bill either.
+//
+// What was reported mid-stream is a floor rather than the figure. Anthropic
+// sends its output count at the start and again at the end, so a stop in
+// between leaves the first one, which is a single token; OpenAI sends it only
+// at the end, so a stop leaves nothing. Either way the text that reached the
+// reader is the better measure, and the larger of the two is kept. Output and
+// reasoning are compared as a sum for the reason fillUsage gives: several
+// providers count thinking inside the output figure.
+func fillStopped(request ChatRequest, streamed written, reported Usage) Usage {
+	if streamed.text == 0 && streamed.reasoning == 0 && streamed.calls == 0 {
+		return reported
+	}
+	out := reported
+	if out.InputTokens == 0 {
+		out.InputTokens = EstimatePrompt(request)
+		out.Estimated = true
+	}
+	output := (streamed.text + streamed.calls) / bytesPerToken
+	reasoning := streamed.reasoning / bytesPerToken
+	if out.OutputTokens+out.ReasoningTokens < output+reasoning {
+		out.OutputTokens = output
+		out.ReasoningTokens = reasoning
 		out.Estimated = true
 	}
 	return out

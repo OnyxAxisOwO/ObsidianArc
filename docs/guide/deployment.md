@@ -13,7 +13,10 @@
 | `OBSIDIAN_COOKIE_SECURE` | HTTPS 下保持 `true` |
 | `OBSIDIAN_TRUST_PROXY` | 需要识别代理转发的客户端地址时设为 `true` |
 | `OBSIDIAN_TRUSTED_PROXIES` | 填实际代理地址或尽可能小的网段 |
+| `OBSIDIAN_TRUST_CLOUDFLARE` | 确认部署在 Cloudflare 之后时设为 `true`，否则该报头可被伪造 |
 | 站点公开地址 | 在管理员后台「安全 → 邮件服务」填写 HTTPS 地址。邮件验证、第三方登录和对外的 OpenID 登录都用它；旧部署可继续用 `OBSIDIAN_PUBLIC_URL` 作回退值 |
+
+开启 `OBSIDIAN_TRUST_CLOUDFLARE` 后，采信该报头的前提是「只有 Cloudflare 的回源流量能到达受信代理」：请在本机反代上配置 Cloudflare 回源 IP 白名单或启用 Authenticated Origin Pulls，否则绕过 Cloudflare 直连反代的请求仍可伪造该报头。另请注意 `OBSIDIAN_TRUST_CLOUDFLARE` 依赖 `OBSIDIAN_TRUST_PROXY` 开启才生效——未信任任何代理时，地址解析在入口处就返回对端地址，单独设置它是静默的空操作；请同时开启 `OBSIDIAN_TRUST_PROXY` 并配置 `OBSIDIAN_TRUSTED_PROXIES`。
 
 没有固定公开地址时，部分对外链接会从请求本身推断地址，而这依赖整条链路都如实转发协议。
 最常见的例外是代理前面还有一层代理、且那一层回源走明文——Cloudflare 的
@@ -39,6 +42,8 @@ location / {
 ## 使用 PostgreSQL
 
 仓库根目录的 `docker-compose.yml` 使用 PostgreSQL，服务名为 `server` 和 `db`。在启动前设置固定的 `OBSIDIAN_SECRET_KEY`，并修改数据库密码。妥善保存这些值，后续重建必须继续使用。
+
+`POSTGRES_PASSWORD` 没有默认值，必须写入仓库根目录的 `.env` 文件，未设置时 `docker compose` 会拒绝启动；它会嵌入数据库连接串，建议用 `openssl rand -hex 32` 生成。
 
 ```bash
 export OBSIDIAN_SECRET_KEY='替换为固定保存的随机密钥，至少16个字符'

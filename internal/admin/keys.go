@@ -23,10 +23,12 @@ func (h *Handlers) userKeys(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	// Confirms the account exists, so a guessed id reads as "no such user"
-	// rather than as an empty list.
-	if _, err := h.users.ByID(r.Context(), nil, userID); err != nil {
-		return translateUserError(err)
+	// Also confirms the account exists, so a guessed id reads as "no such
+	// user" rather than as an empty list — and holds an administrator's keys
+	// to the rule their sessions answer to, which this skipped: a delegated
+	// users grant could list a super administrator's keys and revoke them.
+	if err := h.authoriseSessionAction(r, userID); err != nil {
+		return err
 	}
 
 	keys, err := h.keys.List(r.Context(), userID)
@@ -43,7 +45,10 @@ func (h *Handlers) revokeUserKey(w http.ResponseWriter, r *http.Request) error {
 	}
 	keyID := r.PathValue("key")
 	if !id.Valid(keyID) {
-		return httpx.NotFound("No such key.")
+		return httpx.NotFoundCode("key_not_found", "No such key.")
+	}
+	if err := h.authoriseSessionAction(r, userID); err != nil {
+		return err
 	}
 
 	// Scoped to the named account rather than deleting by key id alone: an
@@ -51,7 +56,7 @@ func (h *Handlers) revokeUserKey(w http.ResponseWriter, r *http.Request) error {
 	// different person's by mistyping a path.
 	if err := h.keys.Delete(r.Context(), userID, keyID); err != nil {
 		if errors.Is(err, apikey.ErrNotFound) {
-			return httpx.NotFound("No such key.")
+			return httpx.NotFoundCode("key_not_found", "No such key.")
 		}
 		return httpx.Internal(err)
 	}

@@ -102,6 +102,34 @@ describe('markdown renderer', () => {
     });
   });
 
+  // Remembering that a marker has no closing must not change what a closed
+  // one becomes: the cases below were rendered the same way before it.
+  describe('emphasis that closes, beside emphasis that does not', () => {
+    const text = (value: string) => ({ type: 'text', value });
+    it('closes an em after an opener that never closes', () => {
+      expect(parseInline('a * b *c*')).toEqual([text('a * b '), { type: 'em', children: [text('c')] }]);
+      expect(parseInline('*a *b*')).toEqual([{ type: 'em', children: [text('a *b')] }]);
+    });
+    it('keeps strong, em and del apart when one of them is unclosed', () => {
+      expect(parseInline('**x *y* ~~z')).toEqual([{ type: 'em', children: [text('*x *y')] }, text(' ~~z')]);
+      expect(parseInline('~~a ~~b~~ **c**')).toEqual([
+        { type: 'del', children: [text('a ~~b')] }, text(' '), { type: 'strong', children: [text('c')] },
+      ]);
+    });
+    it('still refuses snake_case after an unclosed underscore', () => {
+      // The first closing sits inside a word and is refused, which is not a
+      // scan that found nothing: the later opener must still be tried.
+      expect(parseInline('_a b snake_case_name _c_')).toEqual([
+        text('_a b snake_case_name '), { type: 'em', children: [text('c')] },
+      ]);
+      expect(parseInline('_ a snake_case _x_')).toEqual([text('_ a snake_case '), { type: 'em', children: [text('x')] }]);
+    });
+    it('closes a later opener when only the earlier one was refused at its first character', () => {
+      expect(parseInline('* a *b*')).toEqual([text('* a '), { type: 'em', children: [text('b')] }]);
+      expect(parseInline('~~ a ~~b~~')).toEqual([text('~~ a '), { type: 'del', children: [text('b')] }]);
+    });
+  });
+
   describe('pathological input resilience (timeout tests)', () => {
     it('does not hang on deeply nested blockquotes', () => {
       const start = Date.now();
@@ -116,6 +144,31 @@ describe('markdown renderer', () => {
       const input = '*'.repeat(500) + 'text' + '*'.repeat(500);
       const inlines = parseInline(input);
       expect(inlines.length).toBeGreaterThan(0);
+      expect(Date.now() - start).toBeLessThan(500);
+    });
+
+    // An unclosed marker scans to the end of the paragraph for a closing that
+    // is not there. One such scan is linear; one per opener was quadratic.
+    for (const [name, unit] of [
+      ['*', 'a *b c '],
+      ['**', 'a **b c '],
+      ['~~', 'a ~~b c '],
+      ['_', 'a _b c '],
+      ['__', 'a __b c '],
+    ] as const) {
+      it(`stays linear on a long paragraph of unclosed ${name}`, () => {
+        const input = unit.repeat(Math.ceil(200_000 / unit.length));
+        const start = Date.now();
+        const inlines = parseInline(input);
+        expect(Date.now() - start).toBeLessThan(500);
+        expect(inlines.length).toBeGreaterThan(0);
+      });
+    }
+
+    it('stays linear on the ten thousand character case the em scan was reported on', () => {
+      const input = 'a *b c '.repeat(1430);
+      const start = Date.now();
+      expect(parseInline(input)).toEqual([{ type: 'text', value: input }]);
       expect(Date.now() - start).toBeLessThan(500);
     });
 
@@ -146,6 +199,27 @@ describe('markdown renderer', () => {
       const mathBlocks = parse(mathInput);
       expect(mathBlocks.length).toBe(1);
       expect(mathBlocks[0]?.type).toBe('math');
+      expect(Date.now() - start).toBeLessThan(500);
+    });
+
+    it('does not hang on a heading whose text has a long run of spaces inside it', () => {
+      const start = Date.now();
+      const blocks = parse('# x' + ' '.repeat(50000) + 'y');
+      expect(blocks[0]?.type).toBe('heading');
+      expect(Date.now() - start).toBeLessThan(500);
+    });
+
+    it('does not hang on a heading with a long run of spaces after its hash', () => {
+      const start = Date.now();
+      const blocks = parse('# ' + ' '.repeat(50000) + 'x');
+      expect(blocks).toEqual([{ type: 'heading', level: 1, children: [{ type: 'text', value: 'x' }] }]);
+      expect(Date.now() - start).toBeLessThan(500);
+    });
+
+    it('does not hang on a long run of backticks that never closes', () => {
+      const start = Date.now();
+      const blocks = parse('x ' + '`'.repeat(20000) + 'text');
+      expect(blocks.length).toBe(1);
       expect(Date.now() - start).toBeLessThan(500);
     });
   });
@@ -226,6 +300,85 @@ describe('markdown renderer', () => {
       renderInto(host, '```\nsecond\n```');
       expect(host.querySelectorAll('button.ai-code-btn').length).toBe(2);
       expect(host.querySelector('pre > code')?.textContent).toBe('second');
+    });
+  });
+
+  describe('ATX headings and inline code edges', () => {
+    const text = (value: string) => ({ type: 'text', value });
+
+    it('drops closing hashes and the spaces around them, and keeps hashes inside the text', () => {
+      expect(parse('## Title ##')).toEqual([{ type: 'heading', level: 2, children: [text('Title')] }]);
+      expect(parse('# a # b #')).toEqual([{ type: 'heading', level: 1, children: [text('a # b')] }]);
+      expect(parse('# C#')).toEqual([{ type: 'heading', level: 1, children: [text('C')] }]);
+    });
+
+    it('takes one to six hashes, and needs a space or a tab after them', () => {
+      expect(parse('######## eight')[0]?.type).toBe('paragraph');
+      expect(parse('######')[0]?.type).toBe('paragraph');
+      expect(parse('#\tcolumn')).toEqual([{ type: 'heading', level: 1, children: [text('column')] }]);
+      expect(parse('   ### three spaces')[0]?.type).toBe('heading');
+      expect(parse('    # four spaces')[0]?.type).toBe('paragraph');
+    });
+
+    it('closes a code span at the first run of the same length, backing off to a shorter opener when needed', () => {
+      expect(parseInline('`` ` ``')).toEqual([{ type: 'codespan', value: '`' }]);
+      expect(parseInline('``a`b``')).toEqual([{ type: 'codespan', value: 'a`b' }]);
+      expect(parseInline('``a`b')).toEqual([{ type: 'codespan', value: '`a' }, text('b')]);
+      expect(parseInline('a `b')).toEqual([text('a `b')]);
+    });
+  });
+
+  // ESCAPABLE is a string, and every string includes the empty one, so a
+  // backslash at the end of a block used to append `undefined` to the text.
+  // The table branch had no test at all, and the list's continuation rule is
+  // deliberately narrower than a paragraph's: these hold both in place.
+  describe('tables and list continuations', () => {
+    it('renders a header, aligned cells and body rows', () => {
+      const table = render('| a | b | c |\n|:--|:-:|--:|\n| 1 | **2** | 3 |\n| 4 | 5 | 6 |').firstChild as HTMLTableElement;
+      expect(table.tagName).toBe('TABLE');
+      const heads = [...table.querySelectorAll('thead th')] as HTMLElement[];
+      expect(heads.map((cell) => cell.textContent)).toEqual(['a', 'b', 'c']);
+      expect(heads.map((cell) => cell.style.textAlign)).toEqual(['left', 'center', 'right']);
+      const rows = [...table.querySelectorAll('tbody tr')];
+      expect(rows).toHaveLength(2);
+      const cells = [...rows[0]!.querySelectorAll('td')] as HTMLElement[];
+      expect(cells.map((cell) => cell.style.textAlign)).toEqual(['left', 'center', 'right']);
+      expect(cells[1]!.querySelector('strong')?.textContent).toBe('2');
+    });
+
+    it('keeps pipes in a paragraph when the next line is not a divider', () => {
+      const blocks = parse('a | b\nc | d');
+      expect(blocks).toHaveLength(1);
+      expect(blocks[0]).toMatchObject({ type: 'paragraph' });
+      expect(render('a | b\nc | d').querySelector('table')).toBeNull();
+    });
+
+    it('nests a heading or quote written under a list item rather than ending the list', () => {
+      const blocks = parse('- item\n  # inner\n  > quoted\n- next');
+      expect(blocks).toHaveLength(1);
+      const list = blocks[0] as { type: string; items: Array<Array<{ type: string }>> };
+      expect(list.type).toBe('list');
+      expect(list.items).toHaveLength(2);
+      expect(list.items[0]!.map((block) => block.type)).toEqual(['paragraph', 'heading', 'blockquote']);
+    });
+
+    it('ends a paragraph at a heading, a rule, a quote, an item or a fence', () => {
+      for (const start of ['# h', '---', '> q', '- i', '```', '$$x$$']) {
+        const blocks = parse(`text\n${start}`);
+        expect(blocks[0], start).toMatchObject({ type: 'paragraph' });
+        expect(blocks.length, start).toBeGreaterThan(1);
+      }
+    });
+  });
+
+  describe('a backslash at the end of a block', () => {
+    it('stays a literal backslash rather than rendering the word undefined', () => {
+      expect(render('C:\\Users\\').textContent).toBe('C:\\Users\\');
+      expect(render('# Path\\').textContent).not.toContain('undefined');
+    });
+
+    it('still escapes a punctuation character that follows it', () => {
+      expect(render('a\\*b').textContent).toBe('a*b');
     });
   });
 });

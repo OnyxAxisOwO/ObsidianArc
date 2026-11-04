@@ -4,6 +4,7 @@
 import OaBadge from '@/components/OaBadge.vue';
 import OaBadgeRow from '@/components/OaBadgeRow.vue';
 import { t } from '@/composables/useI18n';
+import { outcomeLabel } from '@/admin/outcome';
 
 const props = defineProps<{
   status: string;
@@ -12,12 +13,11 @@ const props = defineProps<{
 </script>
 
 <template>
-  <OaBadge v-if="props.status === 'ok'" tone="muted">{{ t('statusOk') }}</OaBadge>
-  <OaBadge v-else-if="props.status === 'aborted'" tone="muted">{{ t('statusStopped') }}</OaBadge>
+  <OaBadge v-if="props.status === 'ok' || props.status === 'aborted'" tone="muted">
+    {{ t(outcomeLabel(props.status)) }}
+  </OaBadge>
   <OaBadgeRow v-else>
-    <OaBadge tone="danger">
-      {{ props.status === 'rejected' ? t('statusRefused') : t('statusFailed') }}
-    </OaBadge>
+    <OaBadge tone="danger">{{ t(outcomeLabel(props.status)) }}</OaBadge>
     <OaBadge v-if="props.errorCode" tone="muted">{{ props.errorCode }}</OaBadge>
   </OaBadgeRow>
 </template>

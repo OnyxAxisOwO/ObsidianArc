@@ -7,11 +7,12 @@
 
 import { useSlots } from 'vue';
 
+// No active or disabled prop: a listbox draws its own selected row (OaSelect
+// sets .oa-menu-item.active on its rows itself), and no menu here is disabled
+// row by row. Neither is a prop until a caller needs it.
 const props = defineProps<{
   title: string;
   sub?: string | undefined;
-  active?: boolean;
-  disabled?: boolean;
 }>();
 
 const slots = useSlots();
@@ -19,12 +20,7 @@ const inRow = () => !!slots['leading'] || !!slots['trailing'];
 </script>
 
 <template>
-  <button
-    type="button"
-    class="oa-menu-item"
-    :class="{ active: props.active }"
-    :disabled="props.disabled"
-  >
+  <button type="button" class="oa-menu-item">
     <div v-if="inRow()" class="oa-menu-row">
       <slot name="leading" />
       <span class="oa-menu-item-title">{{ props.title }}</span>

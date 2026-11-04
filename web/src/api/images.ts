@@ -1,5 +1,6 @@
 // The image generation API.
 
+import type { PoWSolution } from './auth';
 import { api } from './client';
 
 export interface ImageGenerationItem {
@@ -7,6 +8,7 @@ export interface ImageGenerationItem {
   attachment_id?: string;
   url?: string;
   b64_json?: string;
+  mime?: string;
   revised_prompt?: string;
   created_at?: number;
 }
@@ -22,9 +24,11 @@ export interface ImageGenerationRecord {
   size: string;
   style: string;
   created_at: number;
+  /** The picture's type; absent when its row has gone, which names it .png. */
+  mime?: string;
 }
 
-export interface ImageGenerationRequest {
+interface ImageGenerationRequest {
   model_id: string;
   prompt: string;
   size?: string;
@@ -35,9 +39,13 @@ export interface ImageGenerationRequest {
   image?: string;
   /** Base64, no data: prefix — pictures for the prompt to work from. */
   images?: string[];
+  /** One-shot proofs for the lab's challenges, when the operator asked for them. */
+  turnstile?: string;
+  pow?: PoWSolution;
+  guards?: Record<string, string>;
 }
 
-export interface ImageGenerationResponse {
+interface ImageGenerationResponse {
   created: number;
   images: ImageGenerationItem[];
 }
@@ -46,10 +54,15 @@ export function generateImages(req: ImageGenerationRequest): Promise<ImageGenera
   return api.post<ImageGenerationResponse>('/api/images/generate', req);
 }
 
-export function listImageGenerations(params?: { limit?: number; before?: number }): Promise<{ generations: ImageGenerationRecord[] }> {
+export function listImageGenerations(params?: {
+  limit?: number;
+  before?: number;
+  beforeId?: string | undefined;
+}): Promise<{ generations: ImageGenerationRecord[] }> {
   const query = new URLSearchParams();
   if (params?.limit) query.set('limit', String(params.limit));
   if (params?.before) query.set('before', String(params.before));
+  if (params?.before && params.beforeId) query.set('before_id', params.beforeId);
   const qs = query.toString();
   return api.get<{ generations: ImageGenerationRecord[] }>(`/api/images/generations${qs ? `?${qs}` : ''}`);
 }

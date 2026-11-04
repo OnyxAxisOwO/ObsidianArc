@@ -2,8 +2,8 @@
 //
 // `theme/theme.ts` is unchanged: it still owns localStorage, the pre-paint
 // palette cache and the maths that turns one hue into a whole interface. It
-// already published changes through `onThemeChange`, which existed so the
-// hand-written screens could repaint themselves.
+// already publishes changes through `onThemeChange`, the hook for code that is
+// not reactive and has to repaint itself by hand.
 //
 // That subscription is now a single `ref` the header, the settings panel and
 // the charts all read, so a theme change repaints whatever is on screen
@@ -13,10 +13,14 @@ import { onScopeDispose, readonly, ref, type Ref } from 'vue';
 import {
   accentPreference,
   isDark,
+  modeLocked,
   nextThemeMode,
   onThemeChange,
+  ownWallpaper,
+  themeEnforced,
   themeMode,
   wallpaper,
+  type PaintedWallpaper,
   type ThemeMode,
   type Wallpaper,
 } from '@/theme/theme';
@@ -43,7 +47,10 @@ export function useTheme(): {
   mode(): ThemeMode;
   dark(): boolean;
   accent(): AccentPreference;
-  paper(): Wallpaper | null;
+  paper(): PaintedWallpaper | null;
+  ownPaper(): Wallpaper | null;
+  enforced(): boolean;
+  modeLocked(): boolean;
   next(): ThemeMode;
 } {
   subscribe();
@@ -53,6 +60,9 @@ export function useTheme(): {
     dark: () => (void version.value, isDark()),
     accent: () => (void version.value, accentPreference()),
     paper: () => (void version.value, wallpaper()),
+    ownPaper: () => (void version.value, ownWallpaper()),
+    enforced: () => (void version.value, themeEnforced()),
+    modeLocked: () => (void version.value, modeLocked()),
     next: () => nextThemeMode(),
   };
 }

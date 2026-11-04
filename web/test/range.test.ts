@@ -5,7 +5,6 @@ import OaRangeField from '../src/components/OaRangeField.vue';
 let app: App | undefined;
 afterEach(() => {
   app?.unmount();
-  document.body.textContent = '';
 });
 
 describe('range field', () => {

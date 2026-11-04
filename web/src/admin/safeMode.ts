@@ -9,23 +9,34 @@
 // is remembered across page navigations and refreshes.
 
 import { computed, ref, watch } from 'vue';
-import type { StringKey } from '@/i18n';
+import type { StringKey } from '@/composables/useI18n';
 
 export type SafeCategory = 'users' | 'providers' | 'credentials' | 'billing' | 'logs';
 
-export interface SafeCategoryInfo {
+interface SafeCategoryInfo {
   key: SafeCategory;
   labelKey: StringKey;
   hintKey: StringKey;
 }
 
-export const SAFE_CATEGORIES: readonly SafeCategoryInfo[] = [
+// The categories are named again below, in the stored shape and its defaults,
+// and those are Records the compiler checks for a missing key. This list is
+// the one it could not check, and a category left out of it would still mask
+// but have no switch, and be skipped by "select all" and by the count. The
+// assertion after it makes that a type error too, at no cost to the bundle:
+// the page that reads it rides in the first paint.
+export const SAFE_CATEGORIES = [
   { key: 'users', labelKey: 'safeModeCategoryUsers', hintKey: 'safeModeCategoryUsersHint' },
   { key: 'providers', labelKey: 'safeModeCategoryProviders', hintKey: 'safeModeCategoryProvidersHint' },
   { key: 'credentials', labelKey: 'safeModeCategoryCredentials', hintKey: 'safeModeCategoryCredentialsHint' },
   { key: 'billing', labelKey: 'safeModeCategoryBilling', hintKey: 'safeModeCategoryBillingHint' },
   { key: 'logs', labelKey: 'safeModeCategoryLogs', hintKey: 'safeModeCategoryLogsHint' },
-] as const;
+] as const satisfies readonly SafeCategoryInfo[];
+
+type UnlistedCategory = Exclude<SafeCategory, (typeof SAFE_CATEGORIES)[number]['key']>;
+// Fails to compile, naming the category, when one is missing from the list.
+type CategoryListIsComplete = [UnlistedCategory] extends [never] ? true : UnlistedCategory;
+true satisfies CategoryListIsComplete;
 
 export const STORAGE_KEY = 'obsidian-arc-admin-safe-mode';
 export const MASK_PLACEHOLDER = '******';
@@ -35,9 +46,8 @@ interface StoredSafeMode {
   categories: Record<SafeCategory, boolean>;
 }
 
-function loadStored(): StoredSafeMode {
+function parseStored(raw: string | null): StoredSafeMode {
   try {
-    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(STORAGE_KEY) : null;
     if (raw) {
       const parsed = JSON.parse(raw);
       if (typeof parsed === 'object' && parsed !== null) {
@@ -54,7 +64,7 @@ function loadStored(): StoredSafeMode {
       }
     }
   } catch {
-    // Local storage unavailable or unparseable
+    // Unparseable: fall back to the defaults below
   }
   return {
     enabled: false,
@@ -68,9 +78,30 @@ function loadStored(): StoredSafeMode {
   };
 }
 
+function loadStored(): StoredSafeMode {
+  try {
+    return parseStored(typeof localStorage !== 'undefined' ? localStorage.getItem(STORAGE_KEY) : null);
+  } catch {
+    // Local storage unavailable
+    return parseStored(null);
+  }
+}
+
 const initial = loadStored();
 export const safeModeEnabled = ref(initial.enabled);
 export const safeModeCategories = ref<Record<SafeCategory, boolean>>(initial.categories);
+
+// The state belongs to the browser, not to one tab. Without this, a tab opened
+// before a change made elsewhere writes its stale copy of the other settings
+// the next time anything toggles, and silently undoes that change.
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (event) => {
+    if (event.key !== STORAGE_KEY || event.newValue === null) return;
+    const next = parseStored(event.newValue);
+    safeModeEnabled.value = next.enabled;
+    safeModeCategories.value = next.categories;
+  });
+}
 
 function persist(): void {
   try {

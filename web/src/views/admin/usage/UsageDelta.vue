@@ -29,7 +29,7 @@ const state = computed(() => {
   <span
     v-if="state"
     class="oa-delta"
-    :class="[state.kind, { worse: props.inverse && state.kind === 'up', better: props.inverse && state.kind === 'down' }]"
+    :class="[state.kind, { worse: props.inverse && state.kind === 'up' }]"
     :title="t('deltaTitle')"
   >
     <template v-if="state.kind === 'new'">{{ t('deltaNew') }}</template>

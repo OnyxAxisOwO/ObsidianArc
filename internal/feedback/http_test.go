@@ -358,6 +358,10 @@ func TestTheOperatorsNameIsWithheldWhenTheInstanceSaysSo(t *testing.T) {
 	if strings.Contains(body, `"username":"other"`) {
 		t.Errorf("thread with the switch off = %s, want no operator name in it at all", body)
 	}
+	// Nor the id, which identifies the operator as well as the name does.
+	if strings.Contains(body, staff.ID) {
+		t.Errorf("thread with the switch off = %s, want no operator id in it either", body)
+	}
 	// The reader's own turns are still theirs, and the report still names its
 	// author to its author: the switch is about staff, not about anonymity.
 	if !strings.Contains(body, `"username":"author"`) {

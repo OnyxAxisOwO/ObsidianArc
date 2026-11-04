@@ -16,6 +16,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/text"
 )
 
@@ -53,9 +54,10 @@ type Group struct {
 var (
 	ErrNotFound      = errors.New("group: not found")
 	ErrNameTaken     = errors.New("group: a group with that name already exists")
-	ErrInvalidName   = errors.New("group: name must be 1-40 characters")
+	ErrInvalidName   = fmt.Errorf("group: name must be 1-%d characters", MaxNameChars)
 	ErrDeleteLast    = errors.New("group: the last group cannot be deleted")
 	ErrDeleteDefault = errors.New("group: the default group cannot be deleted; make another group the default first")
+	ErrUnsetDefault  = errors.New("group: the default group cannot be cleared; make another group the default instead")
 )
 
 const (
@@ -93,6 +95,22 @@ type CreateInput struct {
 
 func (s *Store) Create(ctx context.Context, q database.Queryer, in CreateInput) (Group, error) {
 	if q == nil {
+		// Making a default is two statements, and run alone each autocommits.
+		// Two such creates can then each clear the other's default and leave
+		// none. The admin path takes the instance lock and passes its own
+		// transaction; a standalone caller gets the same lock and transaction.
+		if in.IsDefault {
+			var record Group
+			err := s.db.Tx(ctx, func(tx *database.Tx) error {
+				if err := settings.Lock(ctx, tx); err != nil {
+					return err
+				}
+				var err error
+				record, err = s.Create(ctx, tx, in)
+				return err
+			})
+			return record, err
+		}
 		q = s.db
 	}
 	name, err := checkName(in.Name)
@@ -124,7 +142,7 @@ func (s *Store) Create(ctx context.Context, q database.Queryer, in CreateInput) 
 		record.APIAccess, record.AllowStats, record.AllowDeleteConversations, record.AllowTerminal, record.ShowExpiry,
 		record.SortOrder, record.CreatedAt, record.UpdatedAt)
 	if err != nil {
-		if isUnique(err) {
+		if database.IsUnique(err) {
 			return Group{}, ErrNameTaken
 		}
 		return Group{}, fmt.Errorf("group: create: %w", err)
@@ -207,6 +225,25 @@ type Update struct {
 
 func (s *Store) Update(ctx context.Context, q database.Queryer, groupID string, in Update) (Group, error) {
 	if q == nil {
+		// Moving or clearing the default is a check and then a write, and run
+		// alone each statement autocommits. Two standalone updates can clear
+		// each other's new default and leave none. A clear that found its group
+		// not the default can also land after a concurrent make-default of that
+		// group and undo it, so clearing is locked too, not only moving. The
+		// instance lock and a single transaction close both windows, as they do
+		// for Create.
+		if in.IsDefault != nil {
+			var record Group
+			err := s.db.Tx(ctx, func(tx *database.Tx) error {
+				if err := settings.Lock(ctx, tx); err != nil {
+					return err
+				}
+				var err error
+				record, err = s.Update(ctx, tx, groupID, in)
+				return err
+			})
+			return record, err
+		}
 		q = s.db
 	}
 	sets := []string{}
@@ -259,15 +296,37 @@ func (s *Store) Update(ctx context.Context, q database.Queryer, groupID string, 
 	if len(sets) == 0 {
 		return s.ByID(ctx, q, groupID)
 	}
+	// Exactly one default is the invariant. Clearing the default without
+	// naming another leaves none, which Default would then paper over by
+	// picking the first group. Refused here, so the only way to move the
+	// default is to make another group the default, which clears this one.
+	if in.IsDefault != nil && !*in.IsDefault {
+		current, err := s.ByID(ctx, q, groupID)
+		if err != nil {
+			return Group{}, err
+		}
+		if current.IsDefault {
+			return Group{}, ErrUnsetDefault
+		}
+	}
 
 	sets = append(sets, "updated_at = ?")
 	args = append(args, time.Now().UnixMilli(), groupID)
 
-	if _, err := q.Exec(ctx, `UPDATE user_groups SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...); err != nil {
-		if isUnique(err) {
+	result, err := q.Exec(ctx, `UPDATE user_groups SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...)
+	if err != nil {
+		if database.IsUnique(err) {
 			return Group{}, ErrNameTaken
 		}
 		return Group{}, fmt.Errorf("group: update: %w", err)
+	}
+	// A group deleted between the caller's read and this write matches no row.
+	// Refusing here keeps the default-clear below from unsetting the real
+	// default on behalf of a group that is not there.
+	if affected, err := result.RowsAffected(); err != nil {
+		return Group{}, fmt.Errorf("group: update: %w", err)
+	} else if affected == 0 {
+		return Group{}, ErrNotFound
 	}
 	if in.IsDefault != nil && *in.IsDefault {
 		if err := s.clearOtherDefaults(ctx, q, groupID); err != nil {
@@ -281,8 +340,16 @@ func (s *Store) Delete(ctx context.Context, q database.Queryer, groupID string) 
 	if q == nil {
 		q = s.db
 	}
-	if _, err := q.Exec(ctx, `DELETE FROM user_groups WHERE id = ?`, groupID); err != nil {
+	result, err := q.Exec(ctx, `DELETE FROM user_groups WHERE id = ?`, groupID)
+	if err != nil {
 		return fmt.Errorf("group: delete: %w", err)
+	}
+	// A delete that matched nothing is a group that was already gone, and the
+	// caller's check was made against a row that no longer exists.
+	if removed, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("group: delete: %w", err)
+	} else if removed == 0 {
+		return ErrNotFound
 	}
 	return nil
 }
@@ -299,7 +366,7 @@ func (s *Store) clearOtherDefaults(ctx context.Context, q database.Queryer, keep
 	return nil
 }
 
-type rowScanner interface{ Scan(dest ...any) error }
+type rowScanner = database.RowScanner
 
 func scan(row rowScanner) (Group, error) {
 	var record Group
@@ -322,9 +389,4 @@ func checkName(value string) (string, error) {
 		return "", ErrInvalidName
 	}
 	return trimmed, nil
-}
-
-func isUnique(err error) bool {
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "unique") || strings.Contains(message, "duplicate")
 }

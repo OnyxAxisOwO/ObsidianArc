@@ -1,5 +1,7 @@
 <script setup lang="ts">
-// The dropdown the model chip, the bell and the account button all use.
+// The dropdown the bell, the account button, the rail's row menus and the
+// composer's menu use. Not the model chip: its popover changes face and
+// height while open, which this panel does not do, so it has its own.
 //
 // Only one menu is open at a time; opening a second closes the first, which
 // is what stops two overlapping panels when a user clicks straight from one
@@ -11,12 +13,17 @@
 // holding a stale list.
 
 import { nextTick, onBeforeUnmount, ref } from 'vue';
-import { onClickOutside, onKeyStroke } from '@vueuse/core';
 
 const props = defineProps<{
   /** Extra class on the positioning wrapper, for alignment overrides. */
   groupClass?: string;
   menuClass?: string;
+  /**
+   * Opens upwards, for a caller whose own class does the placing. The shared
+   * `oa-menu-up` is recognised without it; a caller's own class name is not
+   * this component's to know.
+   */
+  up?: boolean;
 }>();
 
 // Long enough for the transition in the stylesheet; a few ms over, so the
@@ -64,7 +71,7 @@ function fit(): void {
   const effectiveWidth = Math.min(el.offsetWidth, room);
   const g = group.value;
   const isLeft = el.classList.contains('oa-menu-left');
-  const isUp = el.classList.contains('oa-menu-up') || el.classList.contains('open-up');
+  const isUp = props.up || el.classList.contains('oa-menu-up');
   const originY = isUp ? 'bottom' : 'top';
   let shift = 0;
 
@@ -126,6 +133,7 @@ async function show(): Promise<void> {
   window.clearTimeout(hideTimer);
   open.value = true;
   mounted.value = true;
+  listen(true);
 
   // Let Vue mount the element into the DOM first
   await nextTick();
@@ -157,6 +165,7 @@ function close(): void {
   open.value = false;
   shown.value = false;
   others.delete(close);
+  listen(false);
   window.removeEventListener('resize', onResize);
   resizeObserver?.disconnect();
   resizeObserver = null;
@@ -171,10 +180,49 @@ function toggle(): void {
   else show();
 }
 
-onClickOutside(group, () => close());
-onKeyStroke('Escape', () => close());
+// Capture, and the default prevented, so a panel open beneath the menu does not
+// close with it: the panel yields to a key that has already been handled.
+function onKey(event: KeyboardEvent): void {
+  if (event.key !== 'Escape' || !open.value) return;
+  event.preventDefault();
+  close();
+}
+
+// Attached while open and taken off on close, rather than for the menu's whole
+// life: a list mounts one menu per row, and each held two document listeners
+// that every key and click ran through for nothing. Attached from inside the
+// press that opens the menu, after the window's capture phase for that click
+// has run, so the opening click cannot count as one outside.
+// The menu needs only composed-path containment. Keeping that small rule here
+// avoids shipping iframe, ignore-list and multi-root handling on every page.
+let pressedInside = false;
+function contains(event: Event): boolean {
+  return !!group.value && event.composedPath().includes(group.value);
+}
+function onPointer(event: Event): void {
+  pressedInside = contains(event);
+}
+function onOutside(event: MouseEvent): void {
+  if (!contains(event) && (event.detail === 0 || !pressedInside)) close();
+}
+function listen(on: boolean): void {
+  if (on) {
+    pressedInside = false;
+    document.addEventListener('keydown', onKey, true);
+    window.addEventListener('pointerdown', onPointer, true);
+    window.addEventListener('click', onOutside, true);
+  } else {
+    document.removeEventListener('keydown', onKey, true);
+    window.removeEventListener('pointerdown', onPointer, true);
+    window.removeEventListener('click', onOutside, true);
+  }
+}
 
 onBeforeUnmount(() => {
+  // A show() still waiting on nextTick checks this before it attaches the
+  // observer and the resize listener, which nothing would then remove.
+  open.value = false;
+  listen(false);
   window.removeEventListener('resize', onResize);
   resizeObserver?.disconnect();
   resizeObserver = null;

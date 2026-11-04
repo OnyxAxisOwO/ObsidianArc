@@ -5,8 +5,11 @@
 // never used an authenticator app, and the order matters: an app before a
 // picture to scan, a code from it before anything changes, and the recovery
 // codes last — the only moment they exist in plain text. Nothing on the
-// account changes until the third step succeeds, so abandoning the wizard at
-// any point before it leaves the account exactly as it was.
+// account changes until the third step succeeds, so abandoning the wizard
+// before then leaves the account exactly as it was. The third step is the
+// point of no return: it turns two-step verification on, and the codes it
+// returns are shown only on the fourth. Leaving after that loses them, which
+// is why the page asks before it goes.
 //
 // The same component is drawn in three places — the security settings, the
 // screen the policy holds an account at, and the backoffice's gate — so it
@@ -18,8 +21,12 @@ import { computed, nextTick, ref } from 'vue';
 import type { Account } from '@/api/auth';
 import { saveAsFile } from '@/api/backup';
 import { ApiError } from '@/api/client';
+import { useLatestTimeout } from '@/composables/useLatestTimeout';
+import { useLeaveWarning } from '@/composables/useLeaveWarning';
+import { apiErrorText } from '@/lib/api-error';
 import { beginTwoFactor, enableTwoFactor, type TwoFactorSetup } from '@/api/twofactor';
 import { copyToClipboard } from '@/chat/markdown';
+import OaTextField from '@/components/OaTextField.vue';
 import { t, type StringKey } from '@/composables/useI18n';
 import { IconCheck, IconCopy, IconDownload } from '@/icons';
 
@@ -47,6 +54,9 @@ const index = computed(() => STEPS.findIndex((entry) => entry.id === step.value)
 const setup = ref<TwoFactorSetup | null>(null);
 const showKey = ref(false);
 const code = ref('');
+// Turning this on signs every other device out, so the server asks the
+// account for its password too — unless it has none to ask for.
+const password = ref('');
 const busy = ref(false);
 const error = ref('');
 const recovery = ref<string[]>([]);
@@ -55,6 +65,11 @@ const copied = ref('');
 let enabledAccount: Account | null = null;
 
 const codeField = ref<HTMLInputElement | null>(null);
+const passwordField = ref<InstanceType<typeof OaTextField> | null>(null);
+const needsPassword = computed(() => setup.value?.password_required === true);
+/** Everything the confirm button needs before it can be pressed. */
+const ready = computed(() =>
+  code.value.replace(/\D/g, '').length === 6 && (!needsPassword.value || password.value !== ''));
 
 /** The suggestions as tags. One string per language rather than a list of
  *  keys, because which apps are worth naming differs by where people are. */
@@ -64,12 +79,15 @@ const apps = computed(() => t('twoFactorAppsList').split('·').map((name) => nam
 const groupedKey = computed(() => (setup.value?.secret ?? '').replace(/(.{4})(?=.)/g, '$1 '));
 
 function refusal(failure: unknown): string {
-  if (!(failure instanceof ApiError)) return String(failure);
+  if (!(failure instanceof ApiError)) return apiErrorText(failure);
   switch (failure.code) {
     case 'two_factor_code': return t('twoFactorCodeWrong');
     case 'two_factor_no_setup': return t('twoFactorNoSetup');
     case 'two_factor_unavailable': return t('twoFactorUnavailable');
-    default: return failure.message;
+    case 'password_required': return t('twoFactorPasswordRequired');
+    case 'current_password_wrong': return t('currentPasswordWrong');
+    case 'reauth_required': return t('reauthForTwoFactor');
+    default: return apiErrorText(failure);
   }
 }
 
@@ -93,45 +111,70 @@ async function toVerify(): Promise<void> {
   error.value = '';
   step.value = 'verify';
   await nextTick();
-  codeField.value?.focus();
+  if (needsPassword.value) passwordField.value?.focus();
+  else codeField.value?.focus();
 }
 
 async function verify(): Promise<void> {
   const digits = code.value.replace(/\D/g, '');
   if (busy.value || digits.length !== 6) return;
+  if (needsPassword.value && password.value === '') {
+    error.value = t('twoFactorPasswordRequired');
+    return;
+  }
   busy.value = true;
   error.value = '';
   try {
-    const result = await enableTwoFactor(digits);
+    const result = needsPassword.value
+      ? await enableTwoFactor(digits, password.value)
+      : await enableTwoFactor(digits);
     enabledAccount = result.user;
     recovery.value = result.recovery_codes;
+    password.value = '';
     step.value = 'save';
   } catch (failure) {
     error.value = refusal(failure);
     // An expired setup cannot be confirmed by any code; the way on is a new
     // secret, which is the first step's button.
     if (failure instanceof ApiError && failure.code === 'two_factor_no_setup') step.value = 'app';
-    code.value = '';
-    await nextTick();
-    codeField.value?.focus();
+    if (failure instanceof ApiError
+      && (failure.code === 'current_password_wrong' || failure.code === 'password_required')) {
+      // The code is still good for its thirty seconds; only the password is
+      // asked for again.
+      password.value = '';
+      await nextTick();
+      passwordField.value?.focus();
+    } else {
+      code.value = '';
+      await nextTick();
+      codeField.value?.focus();
+    }
   } finally {
     busy.value = false;
   }
 }
 
-/** Six digits is the whole answer, so there is nothing to wait for. */
+/** Six digits is the whole answer, so there is nothing to wait for — unless
+ *  the password has not been typed yet, which the button then waits on. */
 function onCodeInput(event: Event): void {
   code.value = (event.target as HTMLInputElement).value;
-  if (code.value.replace(/\D/g, '').length === 6) void verify();
+  if (code.value.replace(/\D/g, '').length === 6 && (!needsPassword.value || password.value !== '')) {
+    void verify();
+  }
 }
+
+// A confirmation clears only if it is still the value that was copied last, so
+// one line's confirmation does not clear another's.
+const COPY_FLASH_MS = 1500;
+const copiedLater = useLatestTimeout();
 
 function copy(value: string): void {
   void copyToClipboard(value).then((ok) => {
     if (!ok) return;
     copied.value = value;
-    window.setTimeout(() => {
+    copiedLater(() => {
       if (copied.value === value) copied.value = '';
-    }, 1500);
+    }, COPY_FLASH_MS);
   });
 }
 
@@ -152,6 +195,12 @@ function finish(): void {
   if (!saved.value || !enabledAccount) return;
   emit('done', enabledAccount);
 }
+
+// Closing or reloading the tab on the last step leaves two-step verification
+// on with codes nobody has seen, and they cannot be shown again. The browser's
+// prompt is the only thing that can hold the reader there, so it is asked for
+// until the codes are acknowledged.
+useLeaveWarning(() => step.value === 'save' && !saved.value);
 </script>
 
 <template>
@@ -243,6 +292,15 @@ function finish(): void {
         <h3 class="oa-2fa-title">{{ t('twoFactorVerifyTitle') }}</h3>
         <p class="oa-2fa-desc">{{ t('twoFactorVerifyBody', { issuer: setup.issuer }) }}</p>
       </header>
+      <OaTextField
+        v-if="needsPassword"
+        ref="passwordField"
+        v-model="password"
+        :label="t('currentPassword')"
+        :hint="t('twoFactorPasswordHint')"
+        type="password"
+        autocomplete="current-password"
+      />
       <div class="oa-field">
         <input
           ref="codeField"
@@ -264,7 +322,7 @@ function finish(): void {
         <button
           type="submit"
           class="oa-btn primary"
-          :disabled="busy || code.replace(/\D/g, '').length !== 6"
+          :disabled="busy || !ready"
         >
           {{ busy ? t('twoFactorVerifying') : t('twoFactorVerifyAndEnable') }}
         </button>

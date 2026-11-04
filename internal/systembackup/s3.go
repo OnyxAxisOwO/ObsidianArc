@@ -31,7 +31,7 @@ type S3Client struct {
 }
 
 func NewS3Client(cfg Config) (*S3Client, error) {
-	if err := ValidateConfig(cfg); err != nil {
+	if err := validateS3Config(cfg); err != nil {
 		return nil, err
 	}
 	endpoint, err := url.Parse(cfg.Endpoint)
@@ -46,7 +46,7 @@ func NewS3Client(cfg Config) (*S3Client, error) {
 	}, nil
 }
 
-func ValidateConfig(cfg Config) error {
+func validateS3Config(cfg Config) error {
 	endpoint, err := url.Parse(strings.TrimSpace(cfg.Endpoint))
 	if err != nil || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" {
 		return invalidConfig("Storage endpoint must be a base URL without credentials, query, or fragment.")
@@ -114,12 +114,10 @@ func (c *S3Client) PutObject(ctx context.Context, key string, body io.Reader, si
 	if err != nil {
 		return fmt.Errorf("storage upload failed: %w", err)
 	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+	drainAndClose(response.Body)
+	if !isSuccess(response.StatusCode) {
 		return responseError("upload", response)
 	}
-	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
 	return nil
 }
 
@@ -132,12 +130,10 @@ func (c *S3Client) DeleteObject(ctx context.Context, key string) error {
 	if err != nil {
 		return fmt.Errorf("storage delete failed: %w", err)
 	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+	drainAndClose(response.Body)
+	if !isSuccess(response.StatusCode) {
 		return responseError("delete", response)
 	}
-	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
 	return nil
 }
 
@@ -169,9 +165,8 @@ func (c *S3Client) ListObjects(ctx context.Context, prefix string, visit func(li
 		if err != nil {
 			return fmt.Errorf("storage list failed: %w", err)
 		}
-		if response.StatusCode < 200 || response.StatusCode >= 300 {
-			_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
-			_ = response.Body.Close()
+		if !isSuccess(response.StatusCode) {
+			drainAndClose(response.Body)
 			return responseError("list", response)
 		}
 		var page listResult

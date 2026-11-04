@@ -43,6 +43,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -61,8 +62,9 @@ import (
 // Guard is the spend check, shared with the browser gateway rather than
 // reimplemented: one account, a bounded number of open generations, and an
 // allowance reserved at the worst case. The release it returns gives the
-// reservation back and is called however the turn ends.
-type Guard func(context.Context, user.User, model.Model) (func(), error)
+// reservation back and is called however the turn ends. The int is how many
+// pictures the call may bill, one for anything that is not an image call.
+type Guard func(context.Context, user.User, model.Model, int) (func(), error)
 
 type Handlers struct {
 	settings *settings.Service
@@ -76,6 +78,30 @@ type Handlers struct {
 	// here is accounted for identically to one spent in a browser.
 	Guard  Guard
 	OnTurn func(context.Context, chat.TurnRecord)
+
+	// The operator's per-picture limit, read per request so a change takes
+	// effect without a restart. The browser reads the same setting, so /v1 and
+	// the browser cannot disagree about how large a picture may be. Nil or zero
+	// means the built-in default.
+	MaxUploadBytes func() int64
+
+	// The two holds the browser's gates apply, with the same predicates they
+	// use, so the two doors cannot disagree about who is held. Those gates
+	// read the session cookie and never see a bearer key, so a key has to be
+	// checked here. Read per request, so a policy switched on takes effect on
+	// the next call. Nil means no hold; the server wires both.
+	MustEnrolTwoFactor func(user.User) bool
+	MustBindOIDC       func(context.Context, user.User) (bool, error)
+
+	// Bounds how many request bodies each account may be reading at once. It
+	// belongs to this Handlers, so to this server, and every /v1 body is read
+	// through it. See bodyPlaces.
+	bodies bodyPlaces
+
+	// How long a body may take to arrive once its place is granted. Zero means
+	// bodyReadWindow. Tests shorten it, so a real server can show the window
+	// running out without waiting minutes.
+	bodyWindow time.Duration
 }
 
 func NewHandlers(
@@ -143,8 +169,14 @@ func (h *Handlers) serve(next handler) http.HandlerFunc {
 // them changes.
 func (h *Handlers) serveAs(render func(http.ResponseWriter, error), next handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Before authenticate, so a refused request is still a row marked as an
+		// API call. The account is added by authenticate once it is known.
+		reqlog.Annotate(r.Context(), reqlog.Annotation{Channel: reqlog.ChannelAPI})
+
 		who, err := h.authenticate(r)
 		if err != nil {
+			annotateFailure(r, err)
+			logFailure(r, err)
 			render(w, err)
 			return
 		}
@@ -170,22 +202,55 @@ func (h *Handlers) serveAs(render func(http.ResponseWriter, error), next handler
 		})
 
 		if err := next(w, r, who); err != nil {
-			var rendered apiError
-			if asAPIError(err, &rendered) {
-				reqlog.Annotate(r.Context(), reqlog.Annotation{ErrorCode: rendered.code})
-			}
+			annotateFailure(r, err)
+			logFailure(r, err)
 			render(w, err)
 		}
 	}
+}
+
+// annotateFailure puts the error code of an answer on its request-log row. A
+// refusal from authenticate and a failure from a handler both go through it,
+// so the log reads the same whichever of the two answered the request.
+func annotateFailure(r *http.Request, err error) {
+	var rendered apiError
+	if asAPIError(err, &rendered) {
+		reqlog.Annotate(r.Context(), reqlog.Annotation{ErrorCode: rendered.code})
+	}
+}
+
+// logFailure writes the cause of a server-side failure to the log. The envelope
+// withholds it on purpose, and the request log has only the status and the
+// path, so without this a database error answered as a 500 leaves no trace of
+// what failed. Client errors are not logged here: they are the caller's doing.
+func logFailure(r *http.Request, err error) {
+	var rendered apiError
+	if !asAPIError(err, &rendered) {
+		rendered = internalError(err)
+	}
+	if rendered.status < http.StatusInternalServerError {
+		return
+	}
+	// A caller who hung up cancels whatever it was waiting on, and the lookup
+	// that was interrupted is not a fault on this side. Logged, every disconnect
+	// during sign-in would read as an error.
+	if r.Context().Err() != nil && errors.Is(err, context.Canceled) {
+		return
+	}
+	slog.ErrorContext(r.Context(), "API request failed",
+		"code", rendered.code, "error", rendered.cause)
 }
 
 // authenticate resolves the bearer token to an account and checks every
 // condition that must hold before it may spend anything.
 //
 // The failures are deliberately indistinguishable from one another: a bad
-// key, a revoked key, a key belonging to a banned account and a key belonging
-// to a group without API access all answer the same way, so the endpoint
-// cannot be used to learn which of those is true.
+// key, a revoked key and a key belonging to a group without API access all
+// answer the same way, so the endpoint cannot be used to learn which of those
+// is true. A banned account is the exception, as it is at sign-in: only a
+// working key reaches that answer, so it tells nobody anything they could not
+// learn by holding the key, and the person holding it is owed the reason —
+// a client that only says "invalid key" sends them to look for a typo.
 func (h *Handlers) authenticate(r *http.Request) (caller, error) {
 	if !h.settings.Bool(settings.APIEnabled) {
 		return caller{}, apiError{
@@ -201,9 +266,18 @@ func (h *Handlers) authenticate(r *http.Request) (caller, error) {
 		return caller{}, unauthorized("No API key provided. Send it as: Authorization: Bearer <key>.")
 	}
 
+	// Only a lookup that found nothing is a bad key. A database failure here
+	// answered as one would send the client to replace a working key, and it
+	// would never reach the log.
 	key, err := h.keys.Resolve(r.Context(), token)
 	if err != nil {
 		if errors.Is(err, apikey.ErrPaused) {
+			// Named like the refusals below, so the request log says whose key was
+			// paused. A failed lookup only leaves the row unnamed; the answer is
+			// the same either way.
+			if account, lookupErr := h.users.ByID(r.Context(), nil, key.UserID); lookupErr == nil {
+				reqlog.Annotate(r.Context(), reqlog.Annotation{UserID: account.ID, Username: account.Username})
+			}
 			return caller{}, apiError{
 				status:  http.StatusUnauthorized,
 				kind:    "invalid_request_error",
@@ -211,11 +285,27 @@ func (h *Handlers) authenticate(r *http.Request) (caller, error) {
 				message: "This API key has been paused. Resume it in your account settings to continue.",
 			}
 		}
+		if !errors.Is(err, apikey.ErrNotFound) {
+			return caller{}, internalError(err)
+		}
 		return caller{}, invalidKey()
 	}
 
 	account, err := h.users.ByID(r.Context(), nil, key.UserID)
-	if err != nil || !account.IsActive() {
+	if err != nil {
+		if !errors.Is(err, user.ErrNotFound) {
+			return caller{}, internalError(err)
+		}
+		return caller{}, invalidKey()
+	}
+	// Named before any refusal below, so the request log says whose key was
+	// refused and why. Only an unknown key is logged without a name: there is
+	// no account to put on the row.
+	reqlog.Annotate(r.Context(), reqlog.Annotation{UserID: account.ID, Username: account.Username})
+	if account.Status == user.StatusDisabled {
+		return caller{}, banned(account.BanReason)
+	}
+	if !account.IsActive() {
 		return caller{}, invalidKey()
 	}
 	if !account.IsAdmin() && account.APIRestrictedAt(time.Now()) {
@@ -227,21 +317,59 @@ func (h *Handlers) authenticate(r *http.Request) (caller, error) {
 		}
 	}
 
-	// No confirmation check here. It used to be a third copy of one — the
-	// gateway's guard has it, and so does the upload path — and it was the
-	// copy that was wrong: it left out whether verification is in force at
-	// all, so an instance with no SMTP server refused every API request from
-	// an account that predated the setting, and refused the resend that would
-	// have fixed it. Guard runs before anything is spent and has the whole
-	// condition; listing what a key may use costs nothing and is the same
-	// thing the browser lets an unconfirmed account do.
+	// No confirmation check here. The gateway's guard and the upload path hold
+	// the rule, and they run before anything is spent with the whole condition
+	// in view. A copy here would have to decide whether verification is in
+	// force at all, and would refuse an account the rest of the site lets
+	// through. Listing what a key may use costs nothing and is what the browser
+	// already lets an unconfirmed account do.
 
 	// Administrators bypass the per-group grant, the way they bypass every
 	// other group restriction — but not the instance-wide switch above.
 	if !account.IsAdmin() {
 		membership, err := h.groups.ByID(r.Context(), nil, account.GroupID)
-		if err != nil || !membership.APIAccess {
+		if err != nil {
+			if !errors.Is(err, group.ErrNotFound) {
+				return caller{}, internalError(err)
+			}
 			return caller{}, invalidKey()
+		}
+		if !membership.APIAccess {
+			return caller{}, invalidKey()
+		}
+	}
+
+	// The two holds the session gates apply. A key issued before the operator
+	// switched a policy on would otherwise keep spending through it. Unlike the
+	// refusals above these name the hold: whoever holds the key is the account
+	// that has to enrol or link, and the browser says the same. They come after
+	// the grant check so a key in a group without API access still answers
+	// exactly as a bad key does.
+	if h.MustEnrolTwoFactor != nil && h.MustEnrolTwoFactor(account) {
+		return caller{}, apiError{
+			status:  http.StatusForbidden,
+			kind:    "permission_error",
+			code:    "two_factor_enrolment_required",
+			message: "Set up two-step sign-in before continuing.",
+		}
+	}
+	if h.MustBindOIDC != nil {
+		must, err := h.MustBindOIDC(r.Context(), account)
+		if err != nil {
+			// The browser's binding gate lets the account through on this same
+			// error. Here it refuses instead: letting a held key through on a
+			// failed lookup is the one thing the hold exists to prevent, and the
+			// client can simply ask again. The caller of authenticate logs the
+			// failure once, with its cause.
+			return caller{}, internalError(err)
+		}
+		if must {
+			return caller{}, apiError{
+				status:  http.StatusForbidden,
+				kind:    "permission_error",
+				code:    "oidc_binding_required",
+				message: "Link an OpenID Connect identity before continuing.",
+			}
 		}
 	}
 	return caller{account: account, key: key}, nil
@@ -300,10 +428,8 @@ func (h *Handlers) getModel(w http.ResponseWriter, r *http.Request, who caller) 
 	}
 	wanted := r.PathValue("id")
 	refs := publicRefs(available)
-	for _, record := range available {
-		if matchesRef(record, refs[record.ID], wanted) {
-			return writeJSON(w, http.StatusOK, describeModel(record, refs[record.ID]))
-		}
+	if record, ok := findListed(available, refs, wanted); ok {
+		return writeJSON(w, http.StatusOK, describeModel(record, refs[record.ID]))
 	}
 	return unknownModel(wanted)
 }
@@ -325,12 +451,12 @@ func describeModel(record model.Model, ref string) modelObject {
 // advertise it under: the API name an administrator set, or failing that the
 // model id they entered, which is the name the upstream itself knows it by.
 //
-// It used to be the row id, which is a ULID — permanent, correct, and
-// unusable. Somebody filling in a config file, or reading a dropdown their
-// client built from /v1/models, was handed twenty-six random characters and
-// no way to tell one model from another. The model id is the string people
-// already expect to type into an OpenAI-compatible client, so it is the one
-// this instance answers to.
+// The row id is not used: it is a ULID, permanent and correct but unusable.
+// Someone filling in a config file, or reading a dropdown their client built
+// from /v1/models, would get twenty-six random characters and no way to tell
+// one model from another. The model id is the string people already expect
+// to type into an OpenAI-compatible client, so it is the one this instance
+// answers to.
 //
 // That does mean the listing names the upstream model, and often its vendor
 // with it. An operator who would rather it did not sets an API name on the
@@ -345,60 +471,39 @@ func describeModel(record model.Model, ref string) modelObject {
 func publicRefs(records []model.Model) map[string]string {
 	claims := make(map[string]int, len(records))
 	for _, record := range records {
-		if name := publicName(record); name != "" {
+		if name := model.PublicName(record.APIName, record.ModelID); name != "" {
 			claims[name]++
 		}
 	}
 
+	// model.APIRef holds the rules, because the lookup a request goes through
+	// has to give out the same names this listing does.
 	refs := make(map[string]string, len(records))
 	for _, record := range records {
-		name := publicName(record)
-		switch {
-		case name == "":
-			refs[record.ID] = record.ID
-		case record.APIName != "":
-			// Somebody chose this one and a unique index keeps it theirs.
-			// Qualifying a chosen name would defeat choosing it.
-			refs[record.ID] = record.APIName
-		case claims[name] > 1:
-			// One upstream model reached through two providers — a primary
-			// and a fallback — is two rows under one id. Handing both the
-			// same identifier would make one unreachable, so both are
-			// qualified: both, not the second, because which one is "second"
-			// depends on a sort order an administrator can change.
-			refs[record.ID] = name + "-" + tail(record.ID)
-		default:
-			refs[record.ID] = name
-		}
+		refs[record.ID] = model.APIRef(record.ID, record.ModelID, record.APIName,
+			claims[model.PublicName(record.APIName, record.ModelID)])
 	}
 	return refs
 }
 
-// The name this instance answers to for a model, before any qualifying.
-func publicName(record model.Model) string {
-	if record.APIName != "" {
-		return record.APIName
+// findListed resolves a model id against the listing with model.PickAPIRow,
+// the ranking model.FindAPIModel uses, so a GET and a POST naming the same
+// model reach the same row. `refs` is what the listing gave out — the API
+// name where one is set, and only that: the upstream id is not a fourth
+// spelling.
+func findListed(available []model.Model, refs map[string]string, wanted string) (model.Model, bool) {
+	rows := make([]model.APIRow, 0, len(available))
+	for _, record := range available {
+		ref := refs[record.ID]
+		rows = append(rows, model.APIRow{
+			ID: record.ID, ModelID: record.ModelID, APIName: record.APIName,
+			DisplayName: record.DisplayName, Ref: ref, Qualified: ref != record.ModelID,
+		})
 	}
-	return record.ModelID
-}
-
-// The last few characters of a ULID: the random tail, so two rows created in
-// the same millisecond still differ here.
-func tail(rowID string) string {
-	lowered := strings.ToLower(rowID)
-	if len(lowered) <= 6 {
-		return lowered
+	if i := model.PickAPIRow(rows, wanted); i >= 0 {
+		return available[i], true
 	}
-	return lowered[len(lowered)-6:]
-}
-
-// The three spellings every endpoint accepts for one model. `ref` is what the
-// listing gave out — the API name where one is set, and only that: the
-// upstream id is not a fourth spelling.
-func matchesRef(record model.Model, ref, wanted string) bool {
-	return record.ID == wanted ||
-		strings.EqualFold(ref, wanted) ||
-		strings.EqualFold(record.DisplayName, wanted)
+	return model.Model{}, false
 }
 
 // available is what this caller may actually send to: the same listing the
@@ -458,6 +563,10 @@ func (h *Handlers) resolveModel(ctx context.Context, who caller, wanted string) 
 	return modelID, nil
 }
 
+// keyModelIDs is the set of models a key may use; nil means any model. A key
+// that names one model in ModelID alone must stay limited to it. The key store
+// fills the list whenever it sets ModelID, so this branch is not reached today,
+// but dropping it would turn such a key into one that may use every model.
 func keyModelIDs(key apikey.Key) []string {
 	if len(key.ModelIDs) > 0 {
 		return key.ModelIDs
@@ -478,6 +587,11 @@ func matchesRestriction(record model.Model, restrictions []string) bool {
 }
 
 // --- errors -------------------------------------------------------------------
+
+// statusClientClosedRequest answers a request the client abandoned before it
+// was served. No standard code names that, and nobody reads the answer, so the
+// value only has to be one the logs can recognise.
+const statusClientClosedRequest = 499
 
 // apiError is a failure in the shape OpenAI clients parse. It is separate
 // from httpx.Error because the two vocabularies differ: this one carries a
@@ -514,13 +628,26 @@ func invalidKey() apiError {
 	return unauthorized("Incorrect API key provided, or it is no longer valid.")
 }
 
+// The reason is the administrator's own words, in whatever language they
+// wrote it; the sentence around it is English like every other answer here.
+func banned(reason string) apiError {
+	message := "This account has been banned."
+	if reason = strings.TrimSpace(reason); reason != "" {
+		message = "This account has been banned. Reason: " + reason
+	}
+	return apiError{
+		status:  http.StatusForbidden,
+		kind:    "permission_error",
+		code:    "account_banned",
+		message: message,
+	}
+}
+
 // One wording for all three protocols, and it carries both numbers.
 //
-// The refusal used to be "Too many tools in one request." and nothing else,
-// which is a dead end for everyone: the person sees no way to act on it, and
-// the operator cannot tell 257 from 5000 without asking them to count. Five
-// different people hit it in a week and not one report said how many they
-// had sent.
+// The refusal names the number, because "Too many tools in one request." alone
+// is a dead end: the person has no way to act on it, and the operator cannot
+// tell 257 from 5000 without asking them to count.
 func tooManyToolsMessage(declared int) string {
 	return "Too many tools in one request: " + strconv.Itoa(declared) +
 		" declared, at most " + strconv.Itoa(maxTools) + "."

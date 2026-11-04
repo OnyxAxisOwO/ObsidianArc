@@ -9,9 +9,9 @@ import { computed, ref } from 'vue';
 import { api } from '@/api/client';
 import type { StringKey } from '@/i18n';
 import { t } from '@/composables/useI18n';
-import { currentPreferences, syncPreferences } from '@/stores/session';
+import { currentPreferences, onSignOut, syncPreferences } from '@/stores/session';
 
-export interface ModelCapabilities {
+interface ModelCapabilities {
   supports_reasoning: boolean;
   supports_images: boolean;
   supports_vision: boolean;
@@ -35,6 +35,8 @@ export interface ReasoningTier {
 export interface AvailableModel extends ModelCapabilities {
   id: string;
   display_name: string;
+  /** The identifier advertised by the instance’s OpenAI-compatible API. */
+  api_name?: string;
   description: string;
   avatar: string;
   usable?: boolean;
@@ -60,9 +62,9 @@ export interface AvailableModel extends ModelCapabilities {
  * define its own tiers, so what is valid here is decided per model — by the
  * list the reader was offered, which the gateway checks the value against.
  */
-export type Effort = string;
+type Effort = string;
 
-export interface ReasoningState {
+interface ReasoningState {
   enabled: boolean;
   effort: Effort;
 }
@@ -117,6 +119,26 @@ export const models = ref<AvailableModel[]>([]);
 export const selectedID = ref('');
 export const reasoning = ref<ReasoningState>({ enabled: false, effort: 'medium' });
 
+// Whether the account's list has come back, or failed, since sign-in. Until it
+// has, an empty picker only means the list has not arrived yet; the setup card
+// waits for this rather than telling every reload that no models are configured.
+const listed = ref(false);
+export const modelsListed = computed(() => listed.value);
+
+// Bumped on sign-out. A list fetched for the account that left is dropped, so
+// it cannot land on the picker of whoever signs in next.
+let generation = 0;
+
+// The picker is one account's decision, so the next account starts from the
+// picker's defaults rather than the last account's pick.
+onSignOut(() => {
+  generation += 1;
+  listed.value = false;
+  models.value = [];
+  selectedID.value = '';
+  reasoning.value = { enabled: false, effort: 'medium' };
+});
+
 // The picker offers every model the account may use, image models included.
 // Being able to generate in the image lab says nothing about whether a model
 // can hold a conversation — most that draw can — and filtering them out here
@@ -131,7 +153,9 @@ export const currentModel = computed<AvailableModel | null>(
 export function restorePreferences(): void {
   const preferences = currentPreferences.value;
   const stored = preferences['default_model_id'];
-  if (typeof stored === 'string') selectedID.value = stored;
+  // Without a stored default, an id left over from another account is not this
+  // account's choice, so it is cleared rather than kept.
+  selectedID.value = typeof stored === 'string' ? stored : '';
 
   const effort = preferences['reasoning_effort'];
   reasoning.value = {
@@ -156,7 +180,16 @@ export function setReasoning(next: ReasoningState): void {
 }
 
 export async function loadModels(): Promise<void> {
-  const result = await api.get<{ models: AvailableModel[] }>('/api/models');
+  const account = generation;
+  const result = await api.get<{ models: AvailableModel[] }>('/api/models').catch((failure: unknown) => {
+    // A failed list is an answer too: the picker is empty and the setup card
+    // says so, as it did before the flag existed.
+    if (account === generation) listed.value = true;
+    throw failure;
+  });
+  // Signed out while the list was on its way: it is the account that left's.
+  if (account !== generation) return;
+  listed.value = true;
   models.value = result.models;
 
   const usable = result.models.filter((model) => model.usable !== false);

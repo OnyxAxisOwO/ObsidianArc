@@ -25,7 +25,14 @@ const (
 	archiveFormat      = 1
 	archiveKeyPurpose  = "obsidian-arc/system-backup-key-check"
 	archiveKeySentinel = "Obsidian Arc instance backup key check v1"
-	maxArchiveRowBytes = 64 << 20
+	// Twice the largest attachment an operator may configure
+	// (settings.MaxAttachmentCeilingMB): a blob travels base64-encoded, which
+	// inflates it by a third, and the JSONL wrapper adds a little more. At
+	// the old 64 MiB an attachment at the very ceiling failed every backup
+	// for as long as the row existed. The restore side reads rows through a
+	// scanner bounded by this same constant, so one number keeps both halves
+	// of the round trip in step.
+	maxArchiveRowBytes = 128 << 20
 	maxArchiveExpanded = 8 << 30
 	manifestEntryName  = "manifest.json"
 	archiveEntryPrefix = "data/"
@@ -194,10 +201,11 @@ func writeTable(ctx context.Context, q database.Queryer, archive *zip.Writer, ta
 	query := `SELECT ` + strings.Join(quotedColumns, ",") + ` FROM "` + table + `"`
 	var args []any
 	if table == "settings" {
-		// This row only coordinates scheduler/restore writers across replicas.
-		// It is recreated by the destination and must not be replayed as data.
-		query += ` WHERE key <> ?`
-		args = append(args, schedulerLockKey)
+		// These rows are the scheduler's own state: they coordinate writers across
+		// replicas and count the source's failed runs. Replaying them would hand
+		// the destination the source's scheduler, so it recreates them instead.
+		query += ` WHERE key NOT IN (?, ?)`
+		args = append(args, schedulerLockKey, failureCountKey)
 	}
 	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
@@ -229,7 +237,7 @@ func writeTable(ctx context.Context, q database.Queryer, archive *zip.Writer, ta
 			return fmt.Errorf("system backup: encode table %s: %w", table, err)
 		}
 		if len(row)+1 > maxArchiveRowBytes {
-			return fmt.Errorf("system backup: a row in %s exceeds the 64 MiB row limit", table)
+			return fmt.Errorf("system backup: a row in %s exceeds the %d MiB row limit", table, maxArchiveRowBytes>>20)
 		}
 		row = append(row, '\n')
 		if err := budget.add(uint64(len(row))); err != nil {

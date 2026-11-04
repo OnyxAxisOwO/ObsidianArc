@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -128,6 +129,8 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 
 type accountPayload struct {
 	user.User
+	ShowSignupUserAgent bool   `json:"show_signup_user_agent"`
+	DefaultAvatar       string `json:"default_avatar,omitempty"`
 	// Flattened onto the account so the interface can label a user's group
 	// without a second request.
 	GroupName        string `json:"group_name"`
@@ -181,6 +184,13 @@ func (h *Handlers) account(r *http.Request, account user.User) accountPayload {
 		AllowArchiveConversations: account.IsAdmin() || (h.settings != nil && h.settings.Bool(settings.AllowArchive)),
 		AllowTerminal:             account.IsAdmin(),
 		GroupShowExpiry:           true,
+	}
+	payload.ShowSignupUserAgent = account.IsAdmin() || h.settings == nil || h.settings.Bool(settings.ProfileShowSignupUserAgent)
+	if !payload.ShowSignupUserAgent {
+		payload.User.SignupUserAgent = ""
+	}
+	if h.settings != nil {
+		payload.DefaultAvatar = h.settings.DefaultAvatarURL(account.Email)
 	}
 	if h.service != nil {
 		payload.TwoFactorEnrol = h.service.MustEnrolTwoFactor(account)
@@ -241,6 +251,7 @@ func (h *Handlers) site(w http.ResponseWriter, r *http.Request) error {
 		"setup_required":              !populated,
 		"health_show_users":           h.settings.Bool(settings.HealthShowUsers),
 		"leaderboard_show_users":      h.settings.Bool(settings.LeaderboardShowUsers),
+		"ascii_field":                 h.settings.Bool(settings.ThemeAsciiField),
 		"allow_archive_conversations": allowArchive,
 		// So the sign-up form can mark the field required and say which
 		// addresses will be accepted, instead of finding out on submit.
@@ -266,11 +277,16 @@ func (h *Handlers) site(w http.ResponseWriter, r *http.Request) error {
 		"pow_on_signup":             populated && (h.settings.RegistrationCaptchaMode() == settings.CaptchaModePoW || h.settings.RegistrationCaptchaMode() == settings.CaptchaModeBoth),
 		"turnstile_site_key":        h.turnstileSiteKey(!populated),
 		"turnstile_on_login":        populated && h.settings.Bool(settings.TurnstileOnLogin),
-		"turnstile_on_signup":       populated && (h.settings.RegistrationCaptchaMode() == settings.CaptchaModeTurnstile || h.settings.RegistrationCaptchaMode() == settings.CaptchaModeBoth),
-		"turnstile_on_api_key":      h.settings.Bool(settings.TurnstileOnAPIKey),
-		"turnstile_on_redeem":       h.settings.Bool(settings.TurnstileOnRedeem),
-		"turnstile_on_feedback":     h.settings.Bool(settings.TurnstileOnFeedback),
-		"turnstile_on_chat_speed":   h.settings.Int(settings.ChatChallengeRequests, 0) > 0,
+		// Advertised only where the server checks it. The mode alone is not that:
+		// on a default instance Turnstile is the mode but its switch is off, and
+		// a widget drawn there would have nothing to check it against.
+		"turnstile_on_signup":     populated && (h.settings.RegistrationCaptchaMode() == settings.CaptchaModeTurnstile || h.settings.RegistrationCaptchaMode() == settings.CaptchaModeBoth) && h.settings.SignupTurnstileOn(),
+		"turnstile_on_api_key":    h.settings.Bool(settings.TurnstileOnAPIKey),
+		"turnstile_on_redeem":     h.settings.Bool(settings.TurnstileOnRedeem),
+		"turnstile_on_feedback":   h.settings.Bool(settings.TurnstileOnFeedback),
+		"turnstile_on_images":     h.settings.Bool(settings.TurnstileOnImages),
+		"pow_on_images":           h.settings.Bool(settings.PoWOnImages),
+		"turnstile_on_chat_speed": h.settings.Int(settings.ChatChallengeRequests, 0) > 0,
 		// The compiled-in plugins, each with whatever its browser half needs
 		// — see Extend. A plugin that is not in this build is not named, and
 		// the browser fetches none of its code.
@@ -333,6 +349,8 @@ func (h *Handlers) site(w http.ResponseWriter, r *http.Request) error {
 			"dismissible": h.settings.Bool(settings.HomeNoticeDismissible),
 		},
 		"login_background": h.loginBackgrounds(),
+		"backgrounds":      BackgroundURLs(h.settings),
+		"theme":            SiteTheme(h.settings),
 		"logo_url":         h.siteLogoURL(),
 	})
 }
@@ -363,23 +381,75 @@ func (h *Handlers) getSiteLogo(w http.ResponseWriter, r *http.Request) error {
 	header.Set("Cache-Control", "public, max-age=31536000, immutable")
 	header.Set("Content-Disposition", "inline; filename=\"logo\"")
 	header.Set("ETag", fmt.Sprintf(`"%x-%x"`, at, len(data)))
-	header.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
+	// An SVG opened directly is a document, and a <foreignObject> in it can
+	// carry a login form that submits to another site, under this origin's
+	// name. The sandbox gives the document an opaque origin and no forms;
+	// form-action is the same refusal for a browser that reads only that.
+	header.Set("Content-Security-Policy",
+		"default-src 'none'; style-src 'unsafe-inline'; sandbox; form-action 'none'")
 	header.Set("X-Content-Type-Options", "nosniff")
 
 	http.ServeContent(w, r, "", time.UnixMilli(at), bytes.NewReader(data))
 	return nil
 }
 
+// loginBackgrounds is the shape this field had before pages and the
+// signed-in set existed: the signed-out images by variant. A tab still
+// running the older script reads it; the current one reads backgrounds.
 func (h *Handlers) loginBackgrounds() map[string]string {
 	if h.settings == nil {
 		return map[string]string{}
 	}
-	raw := h.settings.LoginBackgrounds()
-	out := make(map[string]string, len(raw))
-	for v, at := range raw {
-		out[v] = fmt.Sprintf("/api/site/login-background/%s?v=%d", v, at)
+	out := map[string]string{}
+	for v, bg := range h.settings.LoginBackgrounds() {
+		if bg.HTML || strings.HasPrefix(v, settings.AppBgPrefix) {
+			continue
+		}
+		out[v] = fmt.Sprintf("/api/site/login-background/%s?v=%d", v, bg.UpdatedAt)
 	}
 	return out
+}
+
+// BackgroundURL is one stored background as the browser draws it.
+type BackgroundURL struct {
+	URL  string `json:"url"`
+	HTML bool   `json:"html"`
+}
+
+// BackgroundURLs is every stored background, both sets, by variant. Shared
+// with the backoffice's settings listing so the two cannot describe the same
+// row differently.
+func BackgroundURLs(svc *settings.Service) map[string]BackgroundURL {
+	out := map[string]BackgroundURL{}
+	if svc == nil {
+		return out
+	}
+	for v, bg := range svc.LoginBackgrounds() {
+		out[v] = BackgroundURL{
+			URL:  fmt.Sprintf("/api/site/login-background/%s?v=%d", v, bg.UpdatedAt),
+			HTML: bg.HTML,
+		}
+	}
+	return out
+}
+
+// SiteTheme is the instance's own look, for every reader including one who
+// has not signed in: the palette is painted before anybody is known.
+func SiteTheme(svc *settings.Service) map[string]any {
+	if svc == nil {
+		return map[string]any{}
+	}
+	return map[string]any{
+		"mode":              svc.Get(settings.ThemeMode),
+		"accent":            svc.Get(settings.ThemeAccent),
+		"custom_accent":     svc.Get(settings.ThemeCustomAccent),
+		"background_accent": svc.Get(settings.ThemeBackgroundTint),
+		"dim":               svc.Int(settings.ThemeWallpaperDim, 0),
+		"blur":              svc.Int(settings.ThemeWallpaperBlur, 0),
+		"translucency":      svc.Int(settings.ThemeTranslucency, 0),
+		"panel_blur":        svc.Int(settings.ThemePanelBlur, 0),
+		"enforce":           svc.Bool(settings.ThemeEnforce),
+	}
 }
 
 func (h *Handlers) getLoginBackground(w http.ResponseWriter, r *http.Request) error {
@@ -406,6 +476,19 @@ func (h *Handlers) getLoginBackground(w http.ResponseWriter, r *http.Request) er
 	header.Set("Content-Disposition", "inline")
 	header.Set("ETag", fmt.Sprintf(`"%x-%x"`, at, len(data)))
 	header.Set("X-Content-Type-Options", "nosniff")
+	if mime == settings.HTMLBackgroundMime {
+		// An operator's page, run as a page: scripts, inline styles and
+		// whatever it fetches from anywhere, because an animated background
+		// is usually a canvas and a library from a CDN. The sandbox
+		// directive is what makes that safe to serve from this origin — it
+		// gives the document an opaque origin of its own, so it has no
+		// cookies, no storage and no reach into the API, even when somebody
+		// opens the URL directly rather than through the frame. Framed by
+		// this site only, which the shell's DENY would otherwise forbid.
+		header.Set("Content-Security-Policy",
+			"sandbox allow-scripts; default-src * data: blob: 'unsafe-inline' 'unsafe-eval'; frame-ancestors 'self'")
+		header.Set("X-Frame-Options", "SAMEORIGIN")
+	}
 
 	http.ServeContent(w, r, "", time.UnixMilli(at), bytes.NewReader(data))
 	return nil
@@ -571,6 +654,12 @@ func (h *Handlers) register(w http.ResponseWriter, r *http.Request) error {
 		InviteCode: body.InviteCode,
 	})
 	if err != nil {
+		// Only the handler has the response, so the header is set here; the body
+		// field comes from registrationError, which says the same number.
+		var limited *RateLimitError
+		if errors.As(err, &limited) {
+			w.Header().Set("Retry-After", strconv.Itoa(int(limited.RetryAfter.Seconds())+1))
+		}
 		return h.registrationError(err)
 	}
 
@@ -616,9 +705,10 @@ func (h *Handlers) login(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		var limited *RateLimitError
 		if errors.As(err, &limited) {
-			w.Header().Set("Retry-After", strconv.Itoa(int(limited.RetryAfter.Seconds())+1))
+			seconds := int(limited.RetryAfter.Seconds()) + 1
+			w.Header().Set("Retry-After", strconv.Itoa(seconds))
 			return httpx.TooManyRequests("too_many_attempts", limited.Error()).
-				WithDetails(map[string]any{"retry_after_seconds": int(limited.RetryAfter.Seconds()) + 1})
+				WithDetails(map[string]any{"retry_after_seconds": seconds})
 		}
 		// Coded, not just worded: the sign-in page says this in the reader's
 		// own language, and the server has no idea what that is.
@@ -638,13 +728,8 @@ func (h *Handlers) login(w http.ResponseWriter, r *http.Request) error {
 			}
 			return resp
 		}
-		if errors.Is(err, turnstile.ErrFailed) {
-			return httpx.ForbiddenCode("challenge_failed",
-				"The verification could not be completed. Try again.")
-		}
-		if errors.Is(err, turnstile.ErrUnavailable) {
-			return httpx.UnavailableCode("challenge_unavailable",
-				"Verification is unavailable right now. Try again shortly.")
+		if apiErr := turnstile.HTTPError(err); apiErr != nil {
+			return apiErr
 		}
 		// A plugin guard's refusal is already worded and coded by the
 		// plugin that refused.
@@ -699,6 +784,8 @@ type profileRequest struct {
 	Email    *string `json:"email"`
 	// Plugin account fields to change, by key.
 	Fields map[string]string `json:"fields"`
+	// Only read when the address is changing: see Service.UpdateProfile.
+	CurrentPassword string `json:"current_password"`
 }
 
 func (h *Handlers) updateProfile(w http.ResponseWriter, r *http.Request) error {
@@ -720,8 +807,13 @@ func (h *Handlers) updateProfile(w http.ResponseWriter, r *http.Request) error {
 		Bio:      body.Bio,
 		Email:    body.Email,
 		Fields:   body.Fields,
-	})
+	}, body.CurrentPassword)
 	if err != nil {
+		if errors.Is(err, ErrPasswordRequired) || errors.Is(err, ErrCurrentPasswordWrong) ||
+			errors.Is(err, ErrReauthRequired) || errors.Is(err, ErrSessionNotFound) ||
+			errors.As(err, new(*RateLimitError)) {
+			return TranslateTwoFactorError(w, err)
+		}
 		return profileError(err)
 	}
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"user": h.account(r, updated)})
@@ -741,16 +833,47 @@ func (h *Handlers) changePassword(w http.ResponseWriter, r *http.Request) error 
 		return err
 	}
 
-	err := h.service.ChangePassword(r.Context(), account.ID, body.CurrentPassword, body.NewPassword, session.ID)
+	// The new token travels back in this browser's cookie, so only a request that
+	// presented this session can be given it. A call the server makes to itself
+	// (the web terminal runs commands in process under the browser's session)
+	// has no cookie to answer with; it ends every session, its own included,
+	// rather than rotating one that nobody holds.
+	sessionID := ""
+	if presented := h.service.TokenFrom(r); presented != "" && HashToken(presented) == session.ID {
+		sessionID = session.ID
+	}
+
+	token, err := h.service.ChangePassword(r.Context(), account.ID, body.CurrentPassword, body.NewPassword, sessionID)
 	switch {
 	case err == nil:
+		if token != "" {
+			h.service.SetCookie(w, token)
+		}
 		return httpx.NoContent(w)
+	case errors.Is(err, ErrSessionNotFound):
+		// The session that asked was ended while the change was being made. The
+		// password is left as it was, and the caller has to sign in again. The code
+		// is the session one, so the page signs out rather than showing the
+		// sentence on a screen that is still signed in.
+		return httpx.UnauthorizedCode("session_required", "Sign in to continue.")
+	case errors.Is(err, ErrReauthRequired):
+		// Not a 401: the session is fine, it is only too old to vouch for a first
+		// password. A 401 would make the screen sign the person out, when all
+		// that is asked is a fresh sign-in with their provider.
+		return httpx.ForbiddenCode("reauth_required", "Sign in again with your provider to set a password.")
 	case errors.Is(err, ErrCurrentPasswordWrong):
-		return httpx.Unauthorized("Current password is incorrect.")
+		// Coded and a 400, as the profile and two-factor paths answer the same
+		// refusal: the page translates the code, and a 401 would read to any
+		// caller as a lost session.
+		return httpx.BadRequestCode("current_password_wrong", "That password is not correct.")
 	case errors.Is(err, ErrPasswordUnchanged):
-		return httpx.BadRequest("The new password is the same as the current one.")
-	case errors.Is(err, ErrPasswordTooShort), errors.Is(err, ErrPasswordTooLong):
-		return httpx.BadRequest("%s", err.Error())
+		return httpx.BadRequestCode("password_unchanged", "The new password is the same as the current one.")
+	case errors.Is(err, ErrPasswordTooShort):
+		return httpx.BadRequestCode("password_too_short", "Password must be at least %d characters.", MinPasswordChars)
+	case errors.Is(err, ErrPasswordTooLong):
+		return httpx.BadRequestCode("password_too_long", "Password must be at most %d characters.", MaxPasswordChars)
+	case errors.As(err, new(*RateLimitError)):
+		return TranslateTwoFactorError(w, err)
 	default:
 		return httpx.Internal(err)
 	}
@@ -947,6 +1070,17 @@ func (h *Handlers) registrationError(err error) error {
 			"Too many accounts have been created just now. Try again shortly.").
 			WithDetails(map[string]any{"retry_after_seconds": seconds})
 	}
+	// Only the invite guessing budget answers with this error on a registration:
+	// the sign-in budget is not spent here.
+	var limited *RateLimitError
+	if errors.As(err, &limited) {
+		seconds := int(limited.RetryAfter.Seconds()) + 1
+		return httpx.TooManyRequests("too_many_attempts", limited.Error()).
+			WithDetails(map[string]any{"retry_after_seconds": seconds})
+	}
+	if errors.Is(err, errSignupRetry) {
+		return httpx.Conflict("signup_retry", "Another account was being opened at the same moment. Send the sign-up again.")
+	}
 
 	switch {
 	case errors.Is(err, ErrRegistrationClosed):
@@ -959,7 +1093,11 @@ func (h *Handlers) registrationError(err error) error {
 		return httpx.BadRequestCode("invite_invalid", "That invite code is not valid.")
 	case errors.Is(err, pow.ErrMissingSolution):
 		return httpx.BadRequestCode("pow_required", "Proof of work challenge solution is required.")
-	case errors.Is(err, pow.ErrExpired):
+	// Expired, or issued before activity raised the difficulty. The browser
+	// answers the second the way it answers the first, by fetching a new
+	// challenge, so both share that code rather than falling through to a
+	// server fault.
+	case errors.Is(err, pow.ErrExpired), errors.Is(err, pow.ErrBelowTier):
 		return httpx.BadRequestCode("pow_expired", "Proof of work challenge has expired. Please try again.")
 	case errors.Is(err, pow.ErrInvalidSignature):
 		return httpx.BadRequestCode("pow_invalid_signature", "Invalid proof of work challenge signature.")
@@ -969,14 +1107,8 @@ func (h *Handlers) registrationError(err error) error {
 		return httpx.BadRequestCode("pow_invalid_nonce", "Invalid proof of work solution.")
 	case errors.Is(err, pow.ErrReplayed):
 		return httpx.BadRequestCode("pow_replayed", "Proof of work challenge salt has already been used.")
-	case errors.Is(err, turnstile.ErrFailed):
-		return httpx.ForbiddenCode("challenge_failed",
-			"The verification could not be completed. Try again.")
-	case errors.Is(err, turnstile.ErrUnavailable):
-		// Not the visitor's fault, and a different status so a monitor can
-		// tell an outage at Cloudflare from a wave of bots.
-		return httpx.UnavailableCode("challenge_unavailable",
-			"Verification is unavailable right now. Try again shortly.")
+	case errors.Is(err, turnstile.ErrFailed), errors.Is(err, turnstile.ErrUnavailable):
+		return turnstile.HTTPError(err)
 	case errors.As(err, new(*GuardRefusal)):
 		// A plugin guard's refusal is already worded and coded by the plugin
 		// that refused; WriteError finds the *httpx.Error inside it.
@@ -1009,7 +1141,7 @@ func profileError(err error) error {
 	// own language and say what would be acceptable instead.
 	var domain *EmailDomainError
 	if errors.As(err, &domain) {
-		return httpx.BadRequest("%s", domain.Error()).
+		return httpx.BadRequestCode("email_domain", "%s", domain.Error()).
 			WithDetails(map[string]any{"allowed_domains": domain.Allowed})
 	}
 	if fieldErr := FieldHTTPError(err); fieldErr != nil {
@@ -1022,43 +1154,28 @@ func profileError(err error) error {
 	case errors.Is(err, usercheck.ErrUnavailable):
 		return httpx.UnavailableCode("email_screening_unavailable", "Email screening is temporarily unavailable. Try again shortly.")
 	case errors.Is(err, ErrEmailRequired):
-		return httpx.BadRequest("An email address is required on this server.")
-	case errors.Is(err, user.ErrInvalidUsername),
-		errors.Is(err, user.ErrInvalidEmail),
-		errors.Is(err, user.ErrNicknameTooLong),
-		errors.Is(err, user.ErrBioTooLong),
-		errors.Is(err, user.ErrAvatarTooLong),
-		errors.Is(err, ErrPasswordTooShort),
-		errors.Is(err, ErrPasswordTooLong):
-		return httpx.BadRequest("%s", trimPackagePrefix(err.Error()))
+		return httpx.BadRequestCode("email_required", "An email address is required on this server.")
+	case errors.Is(err, user.ErrInvalidUsername):
+		return httpx.BadRequestCode("invalid_username", "Username must be 3-32 characters of letters, digits, dot, dash or underscore.")
+	case errors.Is(err, user.ErrInvalidEmail):
+		return httpx.BadRequestCode("invalid_email", "Email address is not valid.")
+	case errors.Is(err, user.ErrNicknameTooLong):
+		return httpx.BadRequestCode("nickname_too_long", "Nickname must be 32 characters or fewer.")
+	case errors.Is(err, user.ErrBioTooLong):
+		return httpx.BadRequestCode("bio_too_long", "Bio must be 500 characters or fewer.")
+	case errors.Is(err, user.ErrAvatarTooLong):
+		return httpx.BadRequestCode("avatar_too_long", "Avatar is too large.")
+	case errors.Is(err, ErrPasswordTooShort):
+		return httpx.BadRequestCode("password_too_short", "Password must be at least %d characters.", MinPasswordChars)
+	case errors.Is(err, ErrPasswordTooLong):
+		return httpx.BadRequestCode("password_too_long", "Password must be at most %d characters.", MaxPasswordChars)
 	case errors.Is(err, user.ErrEmailTaken):
 		return httpx.Conflict("email_taken", "That email address is already registered.")
 	case errors.Is(err, user.ErrNotFound):
-		return httpx.NotFound("No such account.")
+		return httpx.NotFoundCode("account_not_found", "No such account.")
 	default:
 		return httpx.Internal(err)
 	}
-}
-
-// Sentinel errors are namespaced for the log ("user: ...", "auth: ..."); the
-// browser should see the sentence, not the package it came from.
-func trimPackagePrefix(message string) string {
-	for _, prefix := range []string{"user: ", "auth: ", "group: "} {
-		if len(message) > len(prefix) && message[:len(prefix)] == prefix {
-			return capitalise(message[len(prefix):])
-		}
-	}
-	return capitalise(message)
-}
-
-func capitalise(value string) string {
-	if value == "" {
-		return value
-	}
-	if value[0] >= 'a' && value[0] <= 'z' {
-		return string(value[0]-32) + value[1:]
-	}
-	return value
 }
 
 func (h *Handlers) captchaMode(firstAccount bool) string {
@@ -1105,6 +1222,7 @@ func (h *Handlers) turnstileSiteKey(firstAccount bool) string {
 		!h.settings.Bool(settings.TurnstileOnAPIKey) &&
 		!h.settings.Bool(settings.TurnstileOnRedeem) &&
 		!h.settings.Bool(settings.TurnstileOnFeedback) &&
+		!h.settings.Bool(settings.TurnstileOnImages) &&
 		h.settings.Int(settings.ChatChallengeRequests, 0) <= 0 {
 		return ""
 	}

@@ -8,11 +8,12 @@
 // real code under test.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, ref, type App } from 'vue';
+import { createApp, h, ref, type App } from 'vue';
 import { api } from '@/api/client';
 import { providePanelHost } from '@/composables/usePanelHost';
 import { changeLanguage, t } from '@/composables/useI18n';
 import UsagePanel from '@/views/UsagePanel.vue';
+import { settle } from './helpers';
 
 vi.mock('@/api/client', () => ({
   ApiError: class ApiError extends Error {
@@ -67,15 +68,10 @@ beforeEach(async () => {
 afterEach(() => {
   app?.unmount();
   app = null;
-  document.body.textContent = '';
   vi.clearAllMocks();
   vi.useRealTimers();
 });
 
-async function settle(): Promise<void> {
-  await vi.advanceTimersByTimeAsync(0);
-  await nextTick();
-}
 
 async function mountPanel(): Promise<void> {
   const panelHost = document.createElement('div');

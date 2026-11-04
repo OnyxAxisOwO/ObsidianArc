@@ -11,13 +11,14 @@
 // touches the message that moved. The fast path was the thing most likely to
 // go subtly wrong, and it is gone rather than reimplemented.
 
-import { computed, ref } from 'vue';
+import { computed, ref, shallowRef } from 'vue';
 import {
   archiveConversation as archiveConversationApi,
   deleteAllConversations,
   deleteConversation,
   getConversation,
   listConversations,
+  moveConversation as moveConversationApi,
   renameConversation,
   sendTurn,
   uploadAttachment,
@@ -27,14 +28,23 @@ import {
 } from '@/api/chat';
 import { ApiError } from '@/api/client';
 import { t, type StringKey } from '@/composables/useI18n';
-import { pendingMode, pendingProjectID } from '@/stores/workspace';
-import { currentPreferences, currentUser } from '@/stores/session';
+import { apiErrorText, storedErrorText } from '@/lib/api-error';
+import { refreshProjects } from '@/stores/projects';
+import { pendingProjectID } from '@/stores/workspace';
+import { currentPreferences, currentUser, onSignOut, siteInfo } from '@/stores/session';
 import { ImageError, prepareImage, type PreparedImage } from './image';
 import { currentModel, reasoning } from './useModels';
 import { markFlying, resetFlightState } from './useSendAnimation';
 
 export const MAX_MESSAGE_CHARS = 32000;
-export const MAX_IMAGES = 6;
+const MAX_IMAGES = 6;
+/**
+ * How many conversations each of the rail's two reads asks for — the server's
+ * own default, asked for by name so the rail can tell when a read came back
+ * full and its search, which only filters what is held, may be missing older
+ * ones.
+ */
+export const RAIL_LIMIT = 60;
 const SUGGESTIONS_SHOWN = 3;
 
 // A text file becomes part of the message rather than an attachment: both
@@ -44,6 +54,7 @@ const SUGGESTIONS_SHOWN = 3;
 // feature and not a file picker.
 const MAX_FILE_BYTES = 256 * 1024;
 const MAX_FILE_CHARS = 24000;
+const TRUNCATION_MARK = '\n… (truncated)';
 
 export const TEXT_FILE_ACCEPT = [
   '.txt', '.md', '.markdown', '.csv', '.tsv', '.json', '.jsonl', '.yaml', '.yml',
@@ -71,7 +82,7 @@ export interface Pending {
   startedAt: number;
 }
 
-export interface ComposerAttachment {
+interface ComposerAttachment {
   ref: AttachmentRef;
   preview: string;
 }
@@ -80,6 +91,12 @@ export interface ComposerAttachment {
 
 export const conversations = ref<Conversation[]>([]);
 export const activeID = ref('');
+/**
+ * How long a switch's rise stays on, for the transcript and the rail's row.
+ * A little over the 0.34s the rise animations in _chat.scss run, so their last
+ * frame is not cut off by the class going.
+ */
+export const RISE_MS = 400;
 export const messages = ref<Message[]>([]);
 export const busy = ref(false);
 export const editingID = ref('');
@@ -99,7 +116,14 @@ export const draft = ref('');
 export const dragging = ref(false);
 export const suggestions = ref<Array<(typeof SUGGESTION_KEYS)[number]>>(pickSuggestions(SUGGESTIONS_SHOWN));
 
-let controller: AbortController | null = null;
+// A ref, not a plain variable: stoppable is computed from it, and a plain
+// variable would leave that computed stale when a turn hands over to its
+// post-turn reload.
+const controller = shallowRef<AbortController | null>(null);
+// Bumped by resetChat. Whatever an await brings back after a sign-out was
+// asked for by the account that signed out, so it is dropped rather than
+// written into the next account's composer or rail.
+let generation = 0;
 
 /**
  * Deltas arrive faster than the screen redraws, so they are applied per frame.
@@ -179,8 +203,20 @@ export const switchTick = ref(0);
 const pendingView = ref(-1);
 
 export const active = computed(() => conversations.value.find((entry) => entry.id === activeID.value) ?? null);
+/**
+ * Either of the rail's reads came back full, so there may be conversations
+ * older than any it holds. Set by refreshList, which is the only place that
+ * knows what the server was asked; a row archived or deleted since does not
+ * make the reads any less full.
+ */
+export const railFull = ref(false);
+// The loose read came back full: a loose conversation older than every loose
+// one held would not be in the rail had it been read again.
+let looseFull = false;
+// A read started before a move, rename or removal must not restore its old filing.
+let listRevision = 0;
 export const isEmpty = computed(() => messages.value.length === 0 && !busy.value);
-export const stoppable = computed(() => busy.value && controller !== null);
+export const stoppable = computed(() => busy.value && controller.value !== null);
 /** The streamed block is rendered by the conversation it is being written into. */
 export const showPending = computed(() => busy.value && pending.value !== null && pendingView.value === switchTick.value);
 
@@ -192,6 +228,16 @@ export const showPending = computed(() => busy.value && pending.value !== null &
  */
 export const statsWanted = computed(
   () => currentUser.value?.allow_stats !== false && currentPreferences.value['show_stats'] === true,
+);
+/**
+ * The instance's switch is the ceiling and the reader's own sits under it, the
+ * way the timing line's group permission does. The reader's is stored only
+ * when they turn it off, so an account that never opened the setting follows
+ * the instance.
+ */
+export const asciiFieldAllowed = computed(() => siteInfo.value.ascii_field !== false);
+export const asciiFieldWanted = computed(
+  () => asciiFieldAllowed.value && currentPreferences.value['ascii_field'] !== false,
 );
 export const canDelete = computed(() => currentUser.value?.allow_delete_conversations !== false);
 export const canArchive = computed(() => currentUser.value?.allow_archive_conversations !== false);
@@ -222,11 +268,27 @@ function setFlash(text: string): void {
   flash.value = text;
 }
 
+/**
+ * What a reader is shown for a request that failed. An ApiError carries text the
+ * server wrote for a reader; anything else is a network or runtime failure
+ * (`TypeError: Failed to fetch`), whose English is for a developer, so it is
+ * logged and the translated generic sentence is shown instead.
+ */
+export function failureText(error: unknown): string {
+  if (error instanceof ApiError) return apiErrorText(error);
+  console.warn('chat request failed', error);
+  return t('failed');
+}
+
 function scrollToEnd(): void {
   scrollTick.value += 1;
 }
 
 // --- attachments ----------------------------------------------------------------
+
+// Uploads that have started and not yet landed. They hold a slot each, so two
+// picks in a row cannot both see room for the same six pictures.
+let pendingUploads = 0;
 
 /**
  * One file at a time rather than in parallel: each is decoded and re-encoded
@@ -234,34 +296,59 @@ function scrollToEnd(): void {
  * up the page for a noticeable moment.
  */
 export async function addImages(list: FileList | File[] | null): Promise<void> {
-  if (busy.value || !status.value.configured || !status.value.vision) return;
+  if (busy.value || !status.value.configured) return;
 
   const files = Array.from(list ?? []).filter((file) => file.type.startsWith('image/'));
   if (!files.length) return;
+  // Said rather than silent: the picker and the paste offered this, and a
+  // refused picture with no word about it looks like a broken app.
+  if (!status.value.vision) {
+    setFlash(t('imagesUnsupported'));
+    return;
+  }
 
-  const room = MAX_IMAGES - attachments.value.length;
+  const room = MAX_IMAGES - attachments.value.length - pendingUploads;
   if (files.length > room) setFlash(t('tooManyImages', { count: MAX_IMAGES }));
   if (room <= 0) return;
 
-  for (const file of files.slice(0, room)) {
-    let prepared: PreparedImage;
+  const account = generation;
+  for (const file of files) {
+    // Checked and counted with no await in between, so no other call can take
+    // the last slot between the check and the increment.
+    if (attachments.value.length + pendingUploads >= MAX_IMAGES) break;
+    pendingUploads += 1;
     try {
-      prepared = await prepareImage(file);
-    } catch (error) {
-      setFlash(error instanceof ImageError && error.kind === 'too-large' ? t('imageTooLarge') : t('imageFailed'));
-      continue;
-    }
-    try {
-      const { attachment } = await uploadAttachment({
-        mime: prepared.mime,
-        data: prepared.data,
-        width: prepared.width,
-        height: prepared.height,
-      });
-      attachments.value = [...attachments.value, { ref: attachment, preview: prepared.previewURL }];
-    } catch (error) {
-      URL.revokeObjectURL(prepared.previewURL);
-      setFlash(error instanceof ApiError ? error.message : t('imageFailed'));
+      let prepared: PreparedImage;
+      try {
+        prepared = await prepareImage(file);
+      } catch (error) {
+        setFlash(error instanceof ImageError && error.kind === 'too-large' ? t('imageTooLarge') : t('imageFailed'));
+        continue;
+      }
+      // Signed out while the picture was decoded: it is not uploaded under the
+      // next account's session, which would be the wrong person's file.
+      if (account !== generation) {
+        URL.revokeObjectURL(prepared.previewURL);
+        return;
+      }
+      try {
+        const { attachment } = await uploadAttachment({
+          mime: prepared.mime,
+          data: prepared.data,
+          width: prepared.width,
+          height: prepared.height,
+        });
+        if (account !== generation) {
+          URL.revokeObjectURL(prepared.previewURL);
+          return;
+        }
+        attachments.value = [...attachments.value, { ref: attachment, preview: prepared.previewURL }];
+      } catch (error) {
+        URL.revokeObjectURL(prepared.previewURL);
+        setFlash(error instanceof ApiError ? apiErrorText(error) : t('imageFailed'));
+      }
+    } finally {
+      pendingUploads -= 1;
     }
   }
 }
@@ -286,6 +373,7 @@ function clearAttachments(): void {
 export async function addTextFiles(list: FileList | File[] | null): Promise<void> {
   if (busy.value || !status.value.configured) return;
 
+  const account = generation;
   for (const file of Array.from(list ?? [])) {
     if (file.size > MAX_FILE_BYTES) {
       setFlash(t('fileTooLarge'));
@@ -299,6 +387,9 @@ export async function addTextFiles(list: FileList | File[] | null): Promise<void
       setFlash(t('imageFailed'));
       continue;
     }
+    // The file was read by the account that has since signed out; its text
+    // stays out of the next account's draft.
+    if (account !== generation) return;
 
     // A binary file read as text comes back full of replacement characters;
     // sending that wastes tokens and tells the model nothing.
@@ -307,14 +398,32 @@ export async function addTextFiles(list: FileList | File[] | null): Promise<void
       continue;
     }
 
-    let body = text;
-    if (body.length > MAX_FILE_CHARS) body = `${body.slice(0, MAX_FILE_CHARS)}\n… (truncated)`;
+    // The message the server receives is the whole draft, so a file is cut to
+    // what is left after the text already there, not only to its own cap.
+    // trimEnd, not /\s*$/: the regex retries from every position in a long run
+    // of spaces, which is quadratic on a pasted block of them.
+    const existing = draft.value.trimEnd();
+    const prefix = existing ? existing.length + 2 : 0;
+    const fence = fenceFor(text);
+    const frame = (content: string): string =>
+      `${file.name}:\n\n${fence}${fenceLanguage(file.name)}\n${content}\n${fence}\n`;
+    const room = Math.min(MAX_FILE_CHARS, MAX_MESSAGE_CHARS - prefix - frame('').length);
 
-    const fence = '```';
-    const block = `${file.name}:\n\n${fence}${fenceLanguage(file.name)}\n${body}\n${fence}\n`;
-    const existing = draft.value.replace(/\s*$/, '');
+    let body = text;
+    let cut = false;
+    if (body.length > room) {
+      const keep = room - TRUNCATION_MARK.length;
+      if (keep <= 0) {
+        setFlash(t('fileTooLarge'));
+        continue;
+      }
+      body = `${body.slice(0, keep)}${TRUNCATION_MARK}`;
+      cut = true;
+    }
+
+    const block = frame(body);
     draft.value = existing ? `${existing}\n\n${block}` : block;
-    setFlash(t('fileAdded', { name: file.name }));
+    setFlash(t(cut ? 'fileTruncated' : 'fileAdded', { name: file.name }));
   }
 }
 
@@ -323,6 +432,11 @@ export async function addTextFiles(list: FileList | File[] | null): Promise<void
 interface TurnOptions {
   content?: string;
   attachmentIDs?: string[];
+  /**
+   * The pictures this turn carries, for the optimistic row. Not the composer's
+   * staged list: an edit-and-resend carries the message's own pictures.
+   */
+  sentAttachments?: AttachmentRef[];
   truncateFrom?: string;
   conversationID?: string;
 }
@@ -330,9 +444,15 @@ interface TurnOptions {
 export const chatChallenge = ref<TurnOptions | null>(null);
 export const chatChallengeError = ref('');
 
-export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done' | 'challenge'> {
+/**
+ * `unsent` means the server never took the turn: it refused the request before
+ * any stream opened. The text is put back into the composer, because nothing
+ * was saved and the optimistic row is about to be replaced by the server copy.
+ */
+export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done' | 'challenge' | 'unsent'> {
   if (busy.value || !status.value.configured) return 'done';
   recentReasoningID.value = '';
+  const account = generation;
   const conversationID = turn.conversationID ?? activeID.value;
 
   // Optimistic local rewind, so the transcript reacts before the server
@@ -341,13 +461,13 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
     const cut = messages.value.findIndex((message) => message.id === turn.truncateFrom);
     if (cut >= 0) messages.value = messages.value.slice(0, cut);
   }
-  if (turn.content || turn.attachmentIDs?.length || attachments.value.length) {
+  if (turn.content || turn.attachmentIDs?.length) {
     const userMessage: Message = {
       id: `local-${Date.now()}`,
       seq: messages.value.length + 1,
       role: 'user',
       content: turn.content ?? '',
-      attachments: attachments.value.map((entry) => entry.ref),
+      attachments: turn.sentAttachments ?? [],
       created_at: Date.now(),
     };
     markFlying(userMessage.id);
@@ -363,6 +483,10 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
   pendingView.value = switchTick.value;
   pendingID.value = conversationID;
   let turnID = conversationID;
+  // Read once, here, for both the request and the rail's stub: the reader may
+  // point the composer at another folder before the server has answered, and
+  // the conversation is in the folder the request named.
+  const openingProject = conversationID ? '' : pendingProjectID.value;
   setFlash('');
   scrollToEnd();
   // justSentID deliberately stays set for the turn. Clearing it here, in the
@@ -371,8 +495,14 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
   // stops being on screen when the screen moves to another conversation or
   // resets, and those are where it is cleared.
 
-  controller = new AbortController();
-  let failed = false;
+  // The turn's own controller: resetChat clears the shared one on sign-out,
+  // and this function still has to read its signal afterwards.
+  const turnController = new AbortController();
+  controller.value = turnController;
+  // Set once the server has taken the turn. After that the user message exists
+  // on the server, so a failure must not hand the text back to the composer.
+  let accepted = false;
+  let unsent = false;
 
   try {
     await sendTurn(
@@ -383,12 +513,9 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
         ...(turn.attachmentIDs?.length ? { attachment_ids: turn.attachmentIDs } : {}),
         ...(turn.truncateFrom ? { truncate_from_message_id: turn.truncateFrom } : {}),
         // Only on the turn that opens the conversation. On a later one the
-        // server ignores them anyway, and sending a stale toggle would read
-        // as an attempt to change a thread's character after the fact.
-        ...(conversationID ? {} : {
-          mode: pendingMode.value,
-          ...(pendingProjectID.value ? { project_id: pendingProjectID.value } : {}),
-        }),
+        // server ignores it anyway, and sending a stale one would read as an
+        // attempt to move a thread after the fact.
+        ...(openingProject ? { project_id: openingProject } : {}),
         reasoning: {
           enabled: status.value.reasoningAvailable && status.value.reasoningEnabled,
           effort: status.value.reasoningEffort,
@@ -397,46 +524,17 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
       },
       {
         onStart: (payload) => {
+          accepted = true;
           turnID = payload.conversation_id;
           pendingID.value = turnID;
           // Adopting the new id is how the first message of a conversation
           // lands in it — but only if the reader is still on the screen that
           // sent it. Having wandered off, being pulled back is not a fix.
           if (!activeID.value && watching()) activeID.value = turnID;
-          upsertConversationStub(payload.conversation_id, payload.title);
+          upsertConversationStub(payload.conversation_id, payload.title, openingProject);
         },
         onDelta: (text) => bufferDelta(text),
         onReasoning: (text) => bufferDelta('', text),
-        // A work turn's calls become rows of their own rather than living on
-        // `pending`, which is keyed to whatever conversation is on screen —
-        // messages.value is the specific transcript this turn belongs to, so
-        // that is where each call has to land for a reader who switched away
-        // and back to still find it in place. `watching()` is still the
-        // guard: a reader on a *different* conversation must not see another
-        // turn's calls spliced into what they are reading.
-        onToolCall: (payload) => {
-          if (!watching()) return;
-          messages.value = messages.value.concat([{
-            id: payload.id,
-            seq: messages.value.length + 1,
-            role: 'assistant',
-            content: '',
-            created_at: Date.now(),
-            toolCall: { id: payload.id, name: payload.name, arguments: payload.arguments, done: false },
-          }]);
-          scrollToEnd();
-        },
-        onToolResult: (payload) => {
-          if (!watching()) return;
-          // Reassigned rather than patched in place: mutating a streamed
-          // block through its existing array reference has silently
-          // truncated a transcript here before (c434c2a).
-          messages.value = messages.value.map((entry) => (
-            entry.id === payload.id && entry.toolCall
-              ? { ...entry, toolCall: { ...entry.toolCall, output: payload.output, failed: payload.failed, done: true } }
-              : entry
-          ));
-        },
         onDone: (payload) => {
           // A notice about this turn is only readable where the turn is. Said
           // over a conversation the reader switched to, it would be about
@@ -447,20 +545,24 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
           else if (payload.stopped) setFlash(t('stopped'));
         },
         onError: (payload) => {
-          failed = true;
+          // An error before `start` can only be the server rolling back its own
+          // opening transaction, so nothing was saved and the text can go back
+          // to the composer, as a refused request does.
+          if (!accepted) unsent = true;
           // Not lost when the reader is elsewhere: the server writes an error
           // row, so opening the conversation shows what went wrong.
-          if (watching()) setFlash(payload.message);
+          // The server's sentence is English and is only the fallback: a code the
+          // interface has a reader's version of is shown in the reader's language.
+          if (watching()) setFlash(storedErrorText(payload.code, payload.message));
         },
       },
-      controller.signal,
+      turnController.signal,
     );
   } catch (error) {
-    if (!controller.signal.aborted) {
+    if (!turnController.signal.aborted) {
       if (error instanceof ApiError &&
           (error.code === 'chat_challenge_required' || error.code === 'challenge_failed' ||
            error.code === 'challenge_unavailable')) {
-        failed = true;
         // The server rejects before creating a turn. Remove the optimistic
         // copy so solving or cancelling the challenge cannot duplicate text.
         const last = messages.value[messages.value.length - 1];
@@ -470,14 +572,28 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
         chatChallenge.value = { ...turn, conversationID };
         chatChallengeError.value = error.code === 'chat_challenge_required' ? '' : error.message;
       } else {
-        failed = true;
-        if (watching()) setFlash(error instanceof ApiError ? error.message : String(error));
+        // The server commits the user's message before it sends `start`, so a
+        // dropped connection or an abort in between leaves the message on the
+        // server. Only a refusal answered with a status, before the stream
+        // opened, means the turn was never taken.
+        if (!accepted && error instanceof ApiError && error.status > 0) unsent = true;
+        if (watching()) setFlash(failureText(error));
       }
     }
   } finally {
     settleDeltas();
-    controller = null;
+    if (controller.value === turnController) controller.value = null;
   }
+  // What the reader was looking at when the stream ended. Read after
+  // settleDeltas so the last buffered text is in it.
+  const partial = pending.value;
+  const stoppedWithText = turnController.signal.aborted &&
+    !!(partial?.answer.trim() || partial?.reasoning.trim());
+
+  // A sign-out ended this turn: resetChat already cleared the transcript, the
+  // busy flag and the pending block, and the next account may have started a
+  // turn of its own since. Nothing here may touch that.
+  if (account !== generation) return 'done';
 
   try {
     // Keep the streamed block on screen until the saved row is ready. Clearing
@@ -485,7 +601,8 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
     // Only reload the conversation that owns this turn: the reader may have
     // moved on while it was streaming.
     if (activeID.value === turnID) {
-      await reloadActive();
+      if (stoppedWithText) await reloadUntilSaved(turnID);
+      else await reloadActive();
       scrollToEnd();
     }
   } finally {
@@ -493,26 +610,41 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
     pending.value = null;
     pendingID.value = '';
   }
-  if (!failed) setFlash(flash.value);
   void refreshList();
-  return chatChallenge.value ? 'challenge' : 'done';
+  if (chatChallenge.value) return 'challenge';
+  if (unsent) {
+    if (turn.content) draft.value = draft.value.trim() ? `${turn.content}\n\n${draft.value}` : turn.content;
+    return 'unsent';
+  }
+  return 'done';
+}
+
+/** Drops the composer's staged pictures that a turn carried, and no others. */
+function releaseAttachments(ids: string[]): void {
+  const sent = new Set(ids);
+  for (const entry of attachments.value) {
+    if (sent.has(entry.ref.id)) URL.revokeObjectURL(entry.preview);
+  }
+  // A picture whose upload finished while the turn was streaming was not part
+  // of it, and stays staged for the next message.
+  attachments.value = attachments.value.filter((entry) => !sent.has(entry.ref.id));
 }
 
 export async function submit(): Promise<void> {
   if (busy.value || !status.value.configured) return;
 
   const text = draft.value.trim();
-  const ids = attachments.value.map((entry) => entry.ref.id);
+  const staged = attachments.value.map((entry) => entry.ref);
+  const ids = staged.map((ref) => ref.id);
   if (!text && !ids.length) return;
 
   draft.value = '';
-  const previews = attachments.value.map((entry) => entry.preview);
-  const result = await runTurn({ content: text, attachmentIDs: ids });
+  const result = await runTurn({ content: text, attachmentIDs: ids, sentAttachments: staged });
 
-  if (result === 'challenge') return;
-
-  for (const url of previews) URL.revokeObjectURL(url);
-  attachments.value = [];
+  // A challenge keeps the text and the pictures for when it is solved, and a
+  // refused turn keeps them in the composer for another try.
+  if (result !== 'done') return;
+  releaseAttachments(ids);
 }
 
 export async function completeChatChallenge(token: string): Promise<void> {
@@ -521,9 +653,8 @@ export async function completeChatChallenge(token: string): Promise<void> {
   chatChallenge.value = null;
   chatChallengeError.value = '';
   const result = await runTurn(turn, token);
-  if (result === 'challenge') return;
-  for (const entry of attachments.value) URL.revokeObjectURL(entry.preview);
-  attachments.value = [];
+  if (result !== 'done') return;
+  releaseAttachments(turn.attachmentIDs ?? []);
 }
 
 export function cancelChatChallenge(): void {
@@ -539,19 +670,37 @@ export function cancelChatChallenge(): void {
  * upstream stops billing.
  */
 export function stop(): void {
-  controller?.abort();
+  controller.value?.abort();
 }
 
 // --- conversations ---------------------------------------------------------------
 
-function upsertConversationStub(id: string, title: string): void {
+/**
+ * A conversation a turn has just opened inside a folder. The folder's list is
+ * read separately from the rail's, and a collapsed folder reads nothing, so
+ * this is how the folder hears it should open and read itself — or the
+ * conversation being written into would have no row anywhere in the rail.
+ */
+export const lastOpenedInFolder = ref<{ id: string; projectID: string; seq: number } | null>(null);
+
+// The project is the one the turn opened the conversation in. Without it a
+// conversation started inside a folder sat among the loose ones until the
+// list was read again at the end of the turn.
+function upsertConversationStub(id: string, title: string, projectID: string): void {
+  listRevision += 1;
   const existing = conversations.value.find((entry) => entry.id === id);
   if (existing) {
     if (title) existing.title = title;
     return;
   }
+  if (projectID) {
+    lastOpenedInFolder.value = { id, projectID, seq: (lastOpenedInFolder.value?.seq ?? 0) + 1 };
+    // The folder's count is the server's, and the server has just added one.
+    void refreshProjects().catch(() => {});
+  }
   conversations.value = [{
     id,
+    ...(projectID ? { project_id: projectID } : {}),
     title,
     model_id: status.value.modelID,
     pinned: false,
@@ -561,10 +710,34 @@ function upsertConversationStub(id: string, title: string): void {
   }, ...conversations.value];
 }
 
+/** The server's order for a list of conversations: pinned first, then newest, then id. */
+function railOrder(a: Conversation, b: Conversation): number {
+  if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+  if (a.updated_at !== b.updated_at) return b.updated_at - a.updated_at;
+  return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+}
+
+/**
+ * Two reads, merged. The newest conversations of every kind are what the
+ * search and the header need; the newest loose ones are what the loose list
+ * draws. One read of the newest alone left the loose list empty for an
+ * account whose latest conversations were all filed, with older loose ones
+ * reachable from nowhere.
+ */
 export async function refreshList(): Promise<void> {
+  const account = generation;
+  const revision = ++listRevision;
   try {
-    const { conversations: list } = await listConversations();
-    conversations.value = list;
+    const [{ conversations: newest }, { conversations: loose }] = await Promise.all([
+      listConversations({ limit: RAIL_LIMIT }),
+      listConversations({ limit: RAIL_LIMIT, project_id: '' }),
+    ]);
+    if (account !== generation || revision !== listRevision) return;
+    const merged = new Map<string, Conversation>();
+    for (const entry of [...newest, ...loose]) if (!merged.has(entry.id)) merged.set(entry.id, entry);
+    conversations.value = [...merged.values()].sort(railOrder);
+    looseFull = loose.length >= RAIL_LIMIT;
+    railFull.value = newest.length >= RAIL_LIMIT || looseFull;
   } catch {
     // The rail is a convenience; a failed refresh leaves the last copy.
   }
@@ -583,20 +756,35 @@ async function reloadActive(): Promise<void> {
     // from, never to whatever happens to be on screen when they arrive.
     if (activeID.value !== id) return;
     messages.value = list;
-    if (conversation) {
-      if (conversation.project_id) {
-        pendingProjectID.value = conversation.project_id;
-        pendingMode.value = 'work';
-      } else {
-        pendingProjectID.value = '';
-        pendingMode.value = (conversation.mode as 'chat' | 'work') || 'chat';
-      }
-    }
+    // Mirrored so the project rail marks the project the open thread lives
+    // in. It cannot move the thread: runTurn sends it only on the turn that
+    // opens a conversation, and leaving this screen for a new chat resets it.
+    if (conversation) pendingProjectID.value = conversation.project_id || '';
   } catch (error) {
-    if (error instanceof ApiError && error.status === 404 && activeID.value === id) {
-      activeID.value = '';
-      messages.value = [];
+    if (error instanceof ApiError && error.status === 404) {
+      if (activeID.value === id) dropActive();
+      return;
     }
+    // The transcript is empty after a failure, which reads as a conversation
+    // with nothing in it. Said only while the reader is still on it: a failure
+    // for a conversation they have left is not theirs to see.
+    if (activeID.value === id) setFlash(failureText(error));
+  }
+}
+
+/**
+ * A stopped answer is saved by the server after the connection that asked for
+ * it has closed, and the client gets no signal when that write lands, so read
+ * until the row shows up. The schedule is bounded (about 2.2 s): past it the
+ * composer is released anyway, rather than held on a save that never comes.
+ */
+async function reloadUntilSaved(id: string): Promise<void> {
+  for (const delay of [0, 150, 300, 600, 1200]) {
+    if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+    if (activeID.value !== id) return;
+    await reloadActive();
+    if (activeID.value !== id) return;
+    if (messages.value[messages.value.length - 1]?.role === 'assistant') return;
   }
 }
 
@@ -607,6 +795,14 @@ async function reloadActive(): Promise<void> {
  * an answer is no longer waiting to look at anything else.
  */
 export async function openConversation(id: string): Promise<void> {
+  // Selecting the conversation already on screen changes nothing. Clearing the
+  // transcript here blanked it for a reload, and a double-click on a row (which
+  // is how a rename starts) selects it twice. An empty transcript is still
+  // loaded, so a failed read can be tried again by selecting it.
+  if (id && id === activeID.value && messages.value.length > 0) {
+    historyOpen.value = false;
+    return;
+  }
   activeID.value = id;
   editingID.value = '';
   justSentID.value = '';
@@ -625,9 +821,20 @@ export async function openConversation(id: string): Promise<void> {
 }
 
 export function startNewConversation(): void {
+  leaveForNewConversation('');
+}
+
+export function startProjectConversation(projectID: string): void {
+  leaveForNewConversation(projectID);
+}
+
+/**
+ * The one way to an empty composer, so "new chat" and "new chat in a project"
+ * cannot drift apart: they differ only in where the next conversation opens.
+ */
+function leaveForNewConversation(projectID: string): void {
   activeID.value = '';
-  pendingProjectID.value = '';
-  pendingMode.value = 'chat';
+  pendingProjectID.value = projectID;
   messages.value = [];
   editingID.value = '';
   justSentID.value = '';
@@ -641,97 +848,313 @@ export function startNewConversation(): void {
   switchTick.value += 1;
 }
 
-export function startProjectConversation(projectID: string): void {
+/**
+ * The open conversation stopped existing for this reader — archived, deleted,
+ * or gone on the server. Not a switch: no rise, and the composer keeps what is
+ * staged in it. But a turn still streaming into that conversation must stop
+ * drawing here, or its block keeps writing over the blank screen until the
+ * turn ends. Detaching the view does that and nothing else; the turn still
+ * finishes, and the server still saves it.
+ */
+function dropActive(): void {
   activeID.value = '';
-  pendingProjectID.value = projectID;
-  pendingMode.value = 'work';
   messages.value = [];
-  editingID.value = '';
-  justSentID.value = '';
-  recentReasoningID.value = '';
-  historyOpen.value = false;
-  resetFlightState();
-  clearAttachments();
-  switchTick.value += 1;
+  if (watching()) pendingView.value = -1;
 }
 
-export async function rename(conversation: Conversation): Promise<void> {
-  const next = window.prompt(t('renamePrompt'), conversation.title);
-  if (next === null) return;
+/**
+ * The conversation whose title is being edited in its row. One for both lists,
+ * so starting a rename in one row ends any other, wherever it was begun.
+ */
+export const renamingID = ref('');
+
+/**
+ * Saves the title typed into a row. Ending the edit comes first: the field
+ * goes as it is submitted, and a blur from its going must find nothing left to
+ * submit. An emptied field or an unchanged title is a cancel, not a request.
+ * The new title shows at once, since the field it was typed into has already
+ * closed; a refusal puts the old one back and says why.
+ */
+export async function rename(conversation: Conversation, next: string): Promise<void> {
+  if (renamingID.value !== conversation.id) return;
+  renamingID.value = '';
+  const title = next.trim();
+  if (!title || title === conversation.title) return;
+  // The rail and the header read their own copies, which are not the objects
+  // a project row was given, so the rail's entry is renamed as well.
+  const listed = conversations.value.find((entry) => entry.id === conversation.id);
+  const before = conversation.title;
+  const listedBefore = listed?.title;
+  listRevision += 1;
+  conversation.title = title;
+  if (listed) listed.title = title;
   try {
-    const { conversation: updated } = await renameConversation(conversation.id, next.trim());
+    const { conversation: updated } = await renameConversation(conversation.id, title);
+    listRevision += 1;
     conversation.title = updated.title;
+    if (listed) listed.title = updated.title;
   } catch (error) {
-    setFlash(error instanceof ApiError ? error.message : String(error));
+    // Only undo what this rename wrote: a later rename made while this one
+    // was in flight owns the title now, and its own outcome decides it.
+    if (conversation.title === title) conversation.title = before;
+    if (listed && listedBefore !== undefined && listed.title === title) listed.title = listedBefore;
+    setFlash(failureText(error));
   }
 }
 
-export async function archiveConversation(conversation: Conversation): Promise<void> {
+/** True only when the server accepted it and the rail has been updated. */
+export async function archiveConversation(conversation: Conversation): Promise<boolean> {
   try {
     await archiveConversationApi(conversation.id, true);
   } catch (error) {
-    setFlash(error instanceof ApiError ? error.message : String(error));
-    return;
+    setFlash(failureText(error));
+    return false;
   }
+  listRevision += 1;
   conversations.value = conversations.value.filter((entry) => entry.id !== conversation.id);
-  if (activeID.value === conversation.id) {
-    activeID.value = '';
-    messages.value = [];
-  }
+  if (activeID.value === conversation.id) dropActive();
   setFlash(t('archiveSuccess'));
+  return true;
 }
 
-export async function unarchiveConversation(id: string): Promise<void> {
+// Resolves to whether the conversation left the archive. The failure is also a
+// flash, but a caller that drops the row from its own list needs the answer, not
+// the message on screen.
+export async function unarchiveConversation(id: string): Promise<boolean> {
   try {
     await archiveConversationApi(id, false);
     await refreshList();
     setFlash(t('unarchiveSuccess'));
+    return true;
   } catch (error) {
-    setFlash(error instanceof ApiError ? error.message : String(error));
+    setFlash(failureText(error));
+    return false;
   }
 }
 
-export async function removeConversation(conversation: Conversation): Promise<void> {
+/** True only when the server deleted it and the rail has been updated. */
+export async function removeConversation(conversation: Conversation): Promise<boolean> {
   try {
     await deleteConversation(conversation.id);
   } catch (error) {
-    setFlash(error instanceof ApiError ? error.message : String(error));
+    setFlash(failureText(error));
+    return false;
+  }
+  listRevision += 1;
+  conversations.value = conversations.value.filter((entry) => entry.id !== conversation.id);
+  if (activeID.value === conversation.id) dropActive();
+  return true;
+}
+
+// --- filing into folders ------------------------------------------------------
+//
+// A folder is a project on the server. Filing is one PATCH, and nothing on
+// screen moves until it has been answered: a refused move must leave every
+// list as it was, and the only way to be sure of that is not to have changed
+// any of them yet.
+
+/**
+ * The last move the server accepted. The folders hold lists of their own,
+ * read separately from the rail's, and this is how they hear that a row left
+ * one of them or arrived in another — including a conversation too old to be
+ * in the rail, whose move changes nothing the rail holds. `from` is the
+ * folder the caller saw it in, '' for none or not known.
+ */
+export const lastMove = ref<{ id: string; projectID: string; from: string; seq: number } | null>(null);
+
+/**
+ * True only when the server filed it and every list has been told. `from` is
+ * where the caller's row was, for a conversation the rail does not hold; the
+ * rail's own copy says where it was when it has one.
+ */
+export async function moveConversation(conversationID: string, projectID: string, from = ''): Promise<boolean> {
+  const account = generation;
+  let updated: Conversation;
+  try {
+    ({ conversation: updated } = await moveConversationApi(conversationID, projectID));
+  } catch (error) {
+    if (account === generation) setFlash(failureText(error));
+    return false;
+  }
+  if (account !== generation) return false;
+  listRevision += 1;
+  const filed = updated.project_id || '';
+  const listed = conversations.value.find((entry) => entry.id === conversationID);
+  const left = listed ? listed.project_id || '' : from;
+  if (listed) {
+    listed.project_id = filed;
+  } else if (!filed) {
+    // Out of a folder and into the loose list: the rail is in the server's
+    // order, so it is placed there, and left out when the loose read was full
+    // and it sorts after everything held — it would not be in the rail had
+    // the rail been read again.
+    const at = conversations.value.findIndex((entry) => railOrder(updated, entry) < 0);
+    if (at >= 0) conversations.value.splice(at, 0, updated);
+    else if (!looseFull) conversations.value.push(updated);
+  }
+  // The open conversation is the composer's folder, as reloadActive mirrors it.
+  if (activeID.value === conversationID) pendingProjectID.value = filed;
+  lastMove.value = { id: conversationID, projectID: filed, from: left, seq: (lastMove.value?.seq ?? 0) + 1 };
+  // The counts are the server's, which include archived conversations the
+  // client never lists. A failed read leaves the old counts; the move itself
+  // has happened, so it is not reported as a failure.
+  void refreshProjects().catch(() => {});
+  return true;
+}
+
+/**
+ * A deleted folder keeps its conversations, which the server takes out of it.
+ * The rail's copies still name it, and would otherwise be filed under a
+ * folder that no longer exists — in no list at all — until the next read.
+ */
+export function releaseConversations(projectID: string): void {
+  listRevision += 1;
+  for (const entry of conversations.value) {
+    if (entry.project_id === projectID) entry.project_id = '';
+  }
+  // Deleted folders can hold older rows the rail has never cached.
+  void refreshList();
+}
+
+/** The type a dragged row carries. A file has its own, so the rail can tell them apart. */
+export const CONVERSATION_DRAG_TYPE = 'application/x-arc-conversation';
+
+interface DraggedConversation { id: string; projectID: string }
+
+/**
+ * The row being dragged. A dragover cannot read what is being dragged, only
+ * its types, so this is what lets a folder decline the conversation already
+ * in it rather than light up for a drop that would do nothing.
+ */
+export const draggedConversation = ref<DraggedConversation | null>(null);
+
+/**
+ * Where a drop would land, for the highlight: a folder's id, '' for the loose
+ * list, null for nowhere. One for the whole rail, so two targets can never be
+ * lit at once.
+ */
+export const dropTarget = ref<string | null>(null);
+
+export function startConversationDrag(event: DragEvent, conversation: Conversation): void {
+  const transfer = event.dataTransfer;
+  if (!transfer) return;
+  const projectID = conversation.project_id || '';
+  // Only the custom type, never text/plain: with text on it, a row dropped on
+  // the composer would type its JSON into the draft.
+  transfer.setData(CONVERSATION_DRAG_TYPE, JSON.stringify({ id: conversation.id, project_id: projectID }));
+  transfer.effectAllowed = 'move';
+  draggedConversation.value = { id: conversation.id, projectID };
+}
+
+export function endConversationDrag(): void {
+  draggedConversation.value = null;
+  dropTarget.value = null;
+}
+
+/**
+ * Whether a drag over a target that files into `projectID` may drop there,
+ * marking it as the target when it may. The caller prevents the default only
+ * on true, which is what tells the browser this is a place to drop.
+ */
+export function offerConversationDrop(event: DragEvent, projectID: string): boolean {
+  const types = event.dataTransfer?.types;
+  if (!types || Array.prototype.indexOf.call(types, CONVERSATION_DRAG_TYPE) === -1) return false;
+  // A drag begun in another tab has the type but not the ref; it is let
+  // through, and the drop reads what it carries and decides there.
+  const dragged = draggedConversation.value;
+  if (dragged && dragged.projectID === projectID) {
+    // Whatever was lit is behind the pointer now, and letting go here does
+    // nothing, so nothing may stay lit.
+    dropTarget.value = null;
+    return false;
+  }
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+  dropTarget.value = projectID;
+  return true;
+}
+
+/** Files the row a drop carries into `projectID`; a drop where it already is does nothing. */
+export async function dropConversation(event: DragEvent, projectID: string): Promise<void> {
+  const raw = event.dataTransfer?.getData(CONVERSATION_DRAG_TYPE) ?? '';
+  if (!raw) return;
+  event.preventDefault();
+  // The source row may be gone by the time its dragend would fire — it leaves
+  // the list it was dropped out of — so the drag ends here as well.
+  endConversationDrag();
+  let id = '';
+  let from = '';
+  try {
+    const parsed = JSON.parse(raw) as { id?: unknown; project_id?: unknown };
+    if (typeof parsed.id === 'string') id = parsed.id;
+    if (typeof parsed.project_id === 'string') from = parsed.project_id;
+  } catch {
     return;
   }
-  conversations.value = conversations.value.filter((entry) => entry.id !== conversation.id);
-  if (activeID.value === conversation.id) {
-    activeID.value = '';
-    messages.value = [];
-  }
+  if (!id) return;
+  // The rail's copy is newer than what the drag carried when it has one.
+  const listed = conversations.value.find((entry) => entry.id === id);
+  if (listed) from = listed.project_id || '';
+  if (from === projectID) return;
+  await moveConversation(id, projectID, from);
 }
 
 export async function clearEverything(): Promise<void> {
   if (!conversations.value.length) return;
+  const account = generation;
   try {
     await deleteAllConversations();
   } catch (error) {
-    setFlash(error instanceof ApiError ? error.message : String(error));
+    // A failure that comes back after sign-out is the account that left's.
+    if (account === generation) setFlash(failureText(error));
     return;
   }
+  // Signed out while the delete was in flight. Whoever is signed in now may hold
+  // a rail that predates the delete (the same account's sign-in read can), so it
+  // is read again rather than cleared.
+  if (account !== generation) {
+    if (currentUser.value) void refreshList();
+    return;
+  }
+  listRevision += 1;
   conversations.value = [];
+  railFull.value = false;
+  looseFull = false;
   activeID.value = '';
   messages.value = [];
 }
 
 /**
- * Leaving the chat mid-generation aborts the turn; the server still saves
- * whatever streamed before that.
+ * Clears everything one account left on screen: the open conversation, the
+ * draft, what is staged, the project it was pointed into, and a turn that is
+ * still streaming. Leaving the chat mid-generation aborts the turn; the server
+ * still saves whatever streamed before that.
  */
 export function resetChat(): void {
-  controller?.abort();
-  controller = null;
+  generation += 1;
+  controller.value?.abort();
+  controller.value = null;
+  // Deltas buffered for the turn being cut off must not land in the pending
+  // block of whichever turn runs next.
+  if (frame) cancelAnimationFrame(frame);
+  frame = 0;
+  bufferedAnswer = '';
+  bufferedReasoning = '';
+  // Whatever the cut-off turn still reports is for a screen that is gone.
+  pendingView.value = -1;
+  resetFlightState();
   clearAttachments();
+  listRevision += 1;
   conversations.value = [];
+  railFull.value = false;
+  looseFull = false;
   messages.value = [];
   activeID.value = '';
+  pendingProjectID.value = '';
   editingID.value = '';
   justSentID.value = '';
   recentReasoningID.value = '';
+  historyOpen.value = false;
   draft.value = '';
   flash.value = '';
   chatChallenge.value = null;
@@ -739,8 +1162,16 @@ export function resetChat(): void {
   pending.value = null;
   pendingID.value = '';
   busy.value = false;
+  endConversationDrag();
+  lastMove.value = null;
+  lastOpenedInFolder.value = null;
+  renamingID.value = '';
   suggestions.value = pickSuggestions(SUGGESTIONS_SHOWN);
 }
+
+// session.ts cannot import this module, which imports it, so the store
+// registers its own reset and every sign-out runs it.
+onSignOut(resetChat);
 
 export { setFlash };
 
@@ -755,6 +1186,17 @@ function pickSuggestions(count: number): Array<(typeof SUGGESTION_KEYS)[number]>
   return picked;
 }
 
+/**
+ * A fence one backtick longer than any run that starts a line of the file.
+ * A file with its own three-backtick line would close the wrapper early, and
+ * everything after it would be read as prose.
+ */
+function fenceFor(body: string): string {
+  let longest = 2;
+  for (const match of body.matchAll(/^[ \t]*(`+)/gm)) longest = Math.max(longest, match[1]!.length);
+  return '`'.repeat(longest + 1);
+}
+
 /** The fence language, so a code file arrives highlighted rather than as prose. */
 function fenceLanguage(name: string): string {
   const extension = name.slice(name.lastIndexOf('.') + 1).toLowerCase();
@@ -766,7 +1208,9 @@ function fenceLanguage(name: string): string {
     yaml: 'yaml', yml: 'yaml', toml: 'toml', xml: 'xml', html: 'html', css: 'css',
     md: 'markdown', markdown: 'markdown', csv: 'csv', tsv: 'csv',
   };
-  return known[extension] ?? '';
+  // A file named `x.constructor` or `x.__proto__` would otherwise read
+  // Object's own members as a language tag.
+  return Object.hasOwn(known, extension) ? known[extension]! : '';
 }
 
 /**

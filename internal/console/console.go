@@ -15,15 +15,22 @@
 package console
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"net/http"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/audit"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugingate"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
@@ -34,9 +41,9 @@ type Response struct {
 }
 
 // AuditRecord is one executed command, handed to Options.Audit. Line has
-// already had every Flag.Sensitive value replaced with *** — the engine
-// builds it, not the transport, so a masking bug cannot leak a secret to
-// two different callers in two different ways.
+// already had every Flag.Sensitive and Arg.Sensitive value replaced with
+// *** — the engine builds it, not the transport, so a masking bug cannot
+// leak a secret to two different callers in two different ways.
 type AuditRecord struct {
 	Actor     user.User
 	Line      string
@@ -59,6 +66,10 @@ type Options struct {
 	Dispatch Dispatcher
 	Version  string
 	SiteName func() string
+	// ShowVersion reports whether the build version is shown to accounts that
+	// are not administrators. It is the setting /api/health honours; the console
+	// must not answer around it. Nil means shown.
+	ShowVersion func() bool
 	// Audit records one executed command. Never nil in production wiring;
 	// a nil Audit simply means nothing is recorded, which is what lets a
 	// unit test build a Console without a security-events store.
@@ -66,6 +77,11 @@ type Options struct {
 	SSH   SSHInfo
 	// Which plugins are on; nil lets every command through.
 	Plugins plugingate.Gate
+	// SecretSetting reports whether a settings key holds a credential that
+	// the console does not know of itself: those of plugins installed while
+	// the server runs, which only the server's settings service has. Nil
+	// means the compiled-in answer alone.
+	SecretSetting func(key string) bool
 }
 
 // Console is the command engine. It holds no per-session state — Session
@@ -102,6 +118,14 @@ type Session struct {
 	Colour    bool // may emit ANSI SGR and cursor/erase sequences
 	Lang      string
 	JSON      bool // `format json` is in effect for this session
+
+	// Reauthorize answers the account this session may run as now. Actor is
+	// only what the request or connection that opened the session saw at the
+	// time, and a command that outlives that moment (watch, for up to a day)
+	// asks again before each run after the first. An error means the sign-in
+	// or the access has ended, and the command stops. Nil means nothing live
+	// stands behind the session, so Actor is all there is.
+	Reauthorize func(ctx context.Context) (user.User, error)
 }
 
 // Result is what Execute answers after one line, whatever the command's own
@@ -120,8 +144,8 @@ type Result struct {
 // is unexported, so only cmd_session.go can produce it.
 var errExit = errors.New("console: end session")
 
-// unaudited is exactly the exclusion list section 4 of the contract names:
-// every pure session command that touches no admin API and changes nothing
+// unaudited is the list of commands kept out of the audit trail: every pure
+// session command that touches no admin API and changes nothing
 // but the session it runs in. Everything else — including `exit`/`quit`,
 // which end the session, and `watch`, which repeats a command that is
 // itself audited on every iteration — is worth a record.
@@ -130,12 +154,25 @@ var unaudited = map[string]bool{
 	"version": true, "lang": true, "format": true, "echo": true,
 }
 
+// unparsedLine stands in for a line that did not tokenize, so the record says
+// that one was refused without saying what it said.
+const unparsedLine = "(unparsed input)"
+
 // Execute runs one line end to end: tokenize, resolve the command,
 // check its permission, parse its flags, refuse a destructive command
 // without --yes, run it, and render whatever it returns. Every one of
 // those steps writes what the user should see to out before returning —
 // Result is what the transport needs, not what the user reads.
 func (c *Console) Execute(ctx context.Context, s *Session, out io.Writer, line string) Result {
+	// The line's output reaches the transport in buffered chunks, not write by
+	// write. A table is written a cell at a time, and each write that reaches a
+	// browser costs an SSE frame and a flush, and each one that reaches SSH a
+	// channel packet and a stall timer. A watch flushes after every run itself
+	// (Runtime.flushOut), so a repeating command still shows each run as it ends.
+	buf := bufio.NewWriter(out)
+	defer buf.Flush()
+	out = buf
+
 	start := time.Now()
 	trimmed := strings.TrimSpace(line)
 	if trimmed == "" {
@@ -144,7 +181,13 @@ func (c *Console) Execute(ctx context.Context, s *Session, out io.Writer, line s
 
 	tokens, err := Tokenize(trimmed)
 	if err != nil {
-		RenderError(out, s.Colour, s.JSON, err)
+		// The line never tokenized, so --json is read from its raw words: a
+		// refusal under --json is still the JSON envelope, not prose.
+		RenderError(out, s.Colour, s.JSON || wantsJSON(strings.Fields(trimmed)), err)
+		// No command was found, so there is no name to write, and the line is
+		// not written either: an unclosed quote is often a password typed with
+		// a stray character, and the record must not carry it.
+		c.emit(ctx, s, unparsedLine, false, "parse_error")
 		return Result{Code: "parse_error", Elapsed: time.Since(start)}
 	}
 	return c.runTokens(ctx, s, out, tokens, start)
@@ -154,32 +197,60 @@ func (c *Console) runTokens(ctx context.Context, s *Session, out io.Writer, toke
 	if len(tokens) == 0 {
 		return Result{OK: true, Elapsed: time.Since(start)}
 	}
+	// Set here rather than per dispatch: every API call a command makes, and
+	// every nested run a watch makes, then reaches the dispatcher with the
+	// address of the person typing it.
+	ctx = withCaller(ctx, s.IP)
+	// The audit trail would otherwise record a typed command as a click.
+	ctx = audit.WithVia(ctx, "console:"+s.Transport)
 
-	name, rest, found := c.match(tokens)
+	// A refusal is written before ParseFlags has read the line, so whether the
+	// caller asked for JSON is read from the tokens here as well as from the
+	// session: a pipeline must not receive prose where it expects an object.
+	jsonWanted := s.JSON || wantsJSON(tokens)
+
+	// One lookup for the whole line. A plugin's commands can be removed between
+	// two lookups, and the second would then answer nothing for a command the
+	// first one had just found.
+	cmd, name, rest, found := c.resolve(tokens)
 	if !found {
-		renderUnknown(out, s, name)
+		renderUnknown(out, s, jsonWanted, name)
 		return Result{Code: "unknown_command", Elapsed: time.Since(start)}
 	}
-	cmd, _ := c.reg.lookup(name)
 
 	if !hasPermission(s.Actor, cmd.Permission) {
-		renderPermissionDenied(out, s, cmd)
+		renderPermissionDenied(out, s, jsonWanted, cmd)
+		c.recordRefusal(ctx, s, cmd, "permission_denied")
 		return Result{Code: "permission_denied", Elapsed: time.Since(start)}
 	}
 
 	parsed, err := ParseFlags(rest, cmd.Flags)
+	if err == nil {
+		err = refuseLooseValues(cmd, parsed)
+	}
 	if err != nil {
-		RenderError(out, s.Colour, s.JSON, err)
+		RenderError(out, s.Colour, jsonWanted, err)
+		c.recordRefusal(ctx, s, cmd, "parse_error")
 		return Result{Code: "parse_error", Elapsed: time.Since(start)}
 	}
 
 	if parsed.Help {
-		renderCommandHelp(out, s, cmd, c.reg)
+		renderCommandHelp(out, s, cmd)
 		return Result{OK: true, Elapsed: time.Since(start)}
 	}
 
+	// The arguments were parsed, so the record is the line as it was typed with
+	// every extra positional masked, as any other one is. A name alone would
+	// hide what was refused from the people who read the trail.
+	if err := refuseSurplusArgs(cmd, parsed, s.Lang); err != nil {
+		RenderError(out, s.Colour, jsonWanted, err)
+		c.recordAudit(ctx, s, cmd, parsed, false, "parse_error")
+		return Result{Code: "parse_error", Elapsed: time.Since(start)}
+	}
+
 	if cmd.Destructive && !parsed.Yes {
-		renderConfirmRequired(out, s, cmd)
+		renderConfirmRequired(out, s, jsonWanted, cmd)
+		c.recordAudit(ctx, s, cmd, parsed, false, "confirmation_required")
 		return Result{Code: "confirmation_required", Elapsed: time.Since(start)}
 	}
 
@@ -195,7 +266,7 @@ func (c *Console) runTokens(ctx context.Context, s *Session, out io.Writer, toke
 		jsonFlag: parsed.JSON,
 	}
 
-	runErr := cmd.Run(ctx, rt)
+	runErr := runRecovered(ctx, cmd, rt)
 	elapsed := time.Since(start)
 
 	ok := runErr == nil
@@ -215,37 +286,96 @@ func (c *Console) runTokens(ctx context.Context, s *Session, out io.Writer, toke
 	return Result{OK: ok, Code: code, Elapsed: elapsed}
 }
 
-// match finds the longest registered command name that is a prefix of
+// resolve finds the longest registered command name that is a prefix of
 // tokens, up to 4 words — every command today is 1 or 2 words ("clear",
 // "user edit"), and the cap just keeps a wildly long unknown line from
-// costing more than a handful of map lookups.
-func (c *Console) match(tokens []string) (name string, rest []string, found bool) {
+// costing more than a handful of map lookups. The command it returns is the
+// one the caller must run: looking the name up again later can find nothing,
+// because a plugin may have been switched off in between.
+func (c *Console) resolve(tokens []string) (cmd *Command, name string, rest []string, found bool) {
 	max := len(tokens)
 	if max > 4 {
 		max = 4
 	}
 	for n := max; n >= 1; n-- {
 		candidate := strings.Join(tokens[:n], " ")
-		if _, ok := c.reg.lookup(candidate); ok {
-			return candidate, tokens[n:], true
+		if hit, ok := c.reg.lookup(candidate); ok {
+			return hit, candidate, tokens[n:], true
 		}
 	}
-	return tokens[0], tokens[1:], false
+	return nil, tokens[0], tokens[1:], false
+}
+
+// wantsJSON reports whether the line asks for --json before any "--". Every
+// flag after "--" is a positional, so it cannot be the request.
+func wantsJSON(tokens []string) bool {
+	for _, tok := range tokens {
+		if tok == "--" {
+			return false
+		}
+		if tok == "--json" {
+			return true
+		}
+	}
+	return false
+}
+
+// runRecovered runs one command's Run and turns a panic in it into an ordinary
+// internal error. The SSH goroutine's recoverSession would also stop a panic
+// from ending the process, but it ends the whole session and leaves the command
+// unaudited. Recovering here gives both transports the same audited internal
+// error and keeps the session open. The panic value and stack go
+// to the server log only: the value can carry text the command was handed, and
+// the terminal reads what it is shown.
+func runRecovered(ctx context.Context, cmd *Command, rt *Runtime) (err error) {
+	defer func() {
+		p := recover()
+		if p == nil {
+			return
+		}
+		slog.ErrorContext(ctx, "console command panicked",
+			"command", cmd.Name,
+			"panic", p,
+			"stack", string(debug.Stack()),
+		)
+		message := Text{EN: "Something went wrong on our side. The server has logged it.", ZH: "服务器内部出错，已记入日志。"}
+		err = &CallError{Status: http.StatusInternalServerError, Code: "internal", Message: message.For(rt.Session.Lang)}
+	}()
+	return cmd.Run(ctx, rt)
 }
 
 func (c *Console) recordAudit(ctx context.Context, s *Session, cmd *Command, parsed ParsedArgs, ok bool, code string) {
 	if c.opts.Audit == nil || unaudited[cmd.Name] {
 		return
 	}
-	// Detached like every other post-request write in this project
-	// (internal/security's own Record calls, chat/http.go's save): the
-	// command already ran and the actor already did it, so a reader
-	// closing the tab a moment later must not erase the record of that.
+	c.emit(ctx, s, c.auditLine(cmd, parsed), ok, code)
+}
+
+// recordRefusal records a command that was turned away before it ran, with its
+// name and nothing else. Its arguments were never parsed, so nothing has said
+// which of them is secret, and a password typed where a flag was meant is one of
+// the usual reasons a line is refused.
+func (c *Console) recordRefusal(ctx context.Context, s *Session, cmd *Command, code string) {
+	if c.opts.Audit == nil || unaudited[cmd.Name] {
+		return
+	}
+	c.emit(ctx, s, cmd.Name, false, code)
+}
+
+// emit hands one record to the audit sink. Detached like every other
+// post-request write in this project (internal/security's own Record calls,
+// chat/http.go's save): the command already ran, or was refused, and the actor
+// already did it, so a reader closing the tab a moment later must not erase the
+// record of that.
+func (c *Console) emit(ctx context.Context, s *Session, line string, ok bool, code string) {
+	if c.opts.Audit == nil {
+		return
+	}
 	recCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	c.opts.Audit(recCtx, AuditRecord{
 		Actor:     s.Actor,
-		Line:      auditLine(cmd, parsed),
+		Line:      line,
 		Transport: s.Transport,
 		IP:        s.IP,
 		OK:        ok,
@@ -256,11 +386,27 @@ func (c *Console) recordAudit(ctx context.Context, s *Session, cmd *Command, par
 // auditLine rebuilds a readable command line from the parsed result rather
 // than reusing the raw input, which is what lets it mask a Sensitive flag's
 // value — the raw tokens have already forgotten which one that was.
-func auditLine(cmd *Command, parsed ParsedArgs) string {
+//
+// Positional arguments are masked the same way (Arg.Sensitive, and
+// Command.SecretArgs for the ones that are secret only on some lines): the
+// line is read by every administrator who holds the security grant, who are
+// not the people a code or a credential was typed for. A positional the
+// command does not declare is masked too, which covers a command that declares
+// none: a value typed where a flag was meant is the usual one, and nothing
+// else says which of the extra tokens it is.
+func (c *Console) auditLine(cmd *Command, parsed ParsedArgs) string {
 	var b strings.Builder
 	b.WriteString(cmd.Name)
-	for _, a := range parsed.Args {
+	var secret map[int]bool
+	if cmd.SecretArgs != nil {
+		secret = cmd.SecretArgs(c, parsed.Args)
+	}
+	for i, a := range parsed.Args {
 		b.WriteByte(' ')
+		if secret[i] || argSensitive(cmd, i) {
+			b.WriteString("***")
+			continue
+		}
 		b.WriteString(quoteIfNeeded(a))
 	}
 	for _, f := range cmd.Flags {
@@ -278,6 +424,12 @@ func auditLine(cmd *Command, parsed ParsedArgs) string {
 				b.WriteByte('=')
 				b.WriteString(quoteIfNeeded(value))
 			}
+		} else if value != "true" {
+			// A bare boolean given an explicit value is recorded with it.
+			// "--trusted" alone reads as on, and the line is what an
+			// administrator reads to learn what was switched off.
+			b.WriteByte('=')
+			b.WriteString(quoteIfNeeded(value))
 		}
 	}
 	if parsed.Yes {
@@ -289,71 +441,151 @@ func auditLine(cmd *Command, parsed ParsedArgs) string {
 	return b.String()
 }
 
+// secretSetting reports whether key is a settings key whose value must not be
+// written to the audit trail. Three sources, because no one of them is the
+// whole answer: the credentials the core defines, those a compiled-in plugin
+// declared (settings.Lookup), and those of plugins installed at run time,
+// which only the server's own settings service knows (Options.SecretSetting).
+// The last line is a name check for the day a list is behind the keys: a
+// credential that is logged once is logged for good, a harmless value masked
+// by mistake costs a reader one `setting get`.
+func (c *Console) secretSetting(key string) bool {
+	switch key {
+	case settings.TurnstileSecretKey, settings.OAuthGitHubSecret, settings.OAuthGoogleSecret, settings.OAuthOIDCClientSecret:
+		return true
+	}
+	if d, ok := settings.Lookup(key); ok && d.Secret {
+		return true
+	}
+	if c.opts.SecretSetting != nil && c.opts.SecretSetting(key) {
+		return true
+	}
+	lower := strings.ToLower(key)
+	for _, word := range []string{"secret", "password", "passwd", "token", "api_key", "apikey", "private_key", "credential"} {
+		if strings.Contains(lower, word) {
+			return true
+		}
+	}
+	return false
+}
+
+// secretFrom is a SecretArgs that masks every positional from first on, for a
+// command whose head names what the record is about and whose tail is the
+// secret, typed where a flag was meant.
+func secretFrom(first int) func(*Console, []string) map[int]bool {
+	return func(_ *Console, args []string) map[int]bool {
+		masked := map[int]bool{}
+		for i := first; i < len(args); i++ {
+			masked[i] = true
+		}
+		return masked
+	}
+}
+
+// argSensitive reports whether the i-th positional is secret. A token past the
+// declared list is secret too: the last declaration must not be read as
+// describing it, or a password typed after `user create <name>` would inherit
+// that argument's non-sensitive status and be written in clear.
+func argSensitive(cmd *Command, i int) bool {
+	if i >= len(cmd.Args) {
+		return true
+	}
+	return cmd.Args[i].Sensitive
+}
+
+// quoteIfNeeded quotes anything that could be mistaken for more than one
+// token or for something other than text. The audit line is one row that a
+// reader parses by eye: a value carrying a newline, an escape or a look-alike
+// space could otherwise end that row early and start a forged one, or move
+// the cursor of whoever reads it on a terminal.
 func quoteIfNeeded(s string) string {
-	if s == "" || strings.ContainsAny(s, " \t\"'") {
+	if s == "" || strings.IndexFunc(s, func(r rune) bool {
+		return r == '"' || r == '\'' || unicode.IsSpace(r) || !unicode.IsPrint(r)
+	}) >= 0 {
 		return strconv.Quote(s)
 	}
 	return s
+}
+
+// visibleVersion is the build string this account may read, and whether it may
+// read one at all. The version is only a string, but it tells a member which
+// build an attacker would need to target, which is the reason the operator can
+// hide it.
+func (c *Console) visibleVersion(actor user.User) (string, bool) {
+	if c.opts.ShowVersion != nil && !c.opts.ShowVersion() && !actor.IsAdmin() {
+		return "", false
+	}
+	return c.opts.Version, true
 }
 
 // Banner is the SSH login banner and the web terminal's first block.
 func (c *Console) Banner(s *Session) string {
 	site := "Obsidian Arc"
 	if c.opts.SiteName != nil {
-		if name := c.opts.SiteName(); name != "" {
+		if name := sanitize(c.opts.SiteName()); name != "" {
 			site = name
 		}
 	}
+	// The nickname is free text the account chose; the banner is drawn on a
+	// terminal like everything else.
+	who := sanitize(s.Actor.DisplayName())
 
+	// Each line is kept in both languages and read in the session's, so a
+	// session never shows one line in each.
+	role := roleLabel(s.Actor.Role)
 	var b strings.Builder
-	if s.Lang == "zh" {
-		fmt.Fprintf(&b, "%s — 终端\n", site)
-		fmt.Fprintf(&b, "已登录：%s（%s）\n", s.Actor.DisplayName(), roleLabel(s.Actor.Role, s.Lang))
-		if c.opts.SSH.Enabled {
-			fmt.Fprintf(&b, "SSH：%s，主机指纹 %s\n", c.opts.SSH.Addr, c.opts.SSH.Fingerprint)
-		}
-		b.WriteString("输入 'help' 开始，或 'help -k <关键字>' 搜索命令。")
-	} else {
-		fmt.Fprintf(&b, "%s — Terminal\n", site)
-		fmt.Fprintf(&b, "Signed in as %s (%s)\n", s.Actor.DisplayName(), roleLabel(s.Actor.Role, s.Lang))
-		if c.opts.SSH.Enabled {
-			fmt.Fprintf(&b, "SSH: %s, host fingerprint %s\n", c.opts.SSH.Addr, c.opts.SSH.Fingerprint)
-		}
-		b.WriteString("Type 'help' to get started, or 'help -k <word>' to search.")
+	b.WriteString(Text{EN: site + " — Terminal", ZH: site + " — 终端"}.For(s.Lang) + "\n")
+	b.WriteString(Text{
+		EN: "Signed in as " + who + " (" + role.EN + ")",
+		ZH: "已登录：" + who + "（" + role.ZH + "）",
+	}.For(s.Lang) + "\n")
+	if c.opts.SSH.Enabled {
+		b.WriteString(Text{
+			EN: "SSH: " + c.opts.SSH.Addr + ", host fingerprint " + c.opts.SSH.Fingerprint,
+			ZH: "SSH：" + c.opts.SSH.Addr + "，主机指纹 " + c.opts.SSH.Fingerprint,
+		}.For(s.Lang) + "\n")
 	}
+	b.WriteString(Text{
+		EN: "Type 'help' to get started, or 'help -k <word>' to search.",
+		ZH: "输入 'help' 开始，或 'help -k <关键字>' 搜索命令。",
+	}.For(s.Lang))
 	return b.String()
 }
 
-func roleLabel(role user.Role, lang string) string {
-	// Every account has a terminal now, so the banner names what the reader
-	// is rather than assuming an administrator.
-	if role == user.RoleUser {
-		if lang == "zh" {
-			return "成员"
-		}
-		return "member"
+// roleLabel names an account's role for the banner. Every account has a terminal
+// now, so the banner names what the reader is rather than assuming an
+// administrator.
+func roleLabel(role user.Role) Text {
+	switch role {
+	case user.RoleUser:
+		return Text{EN: "member", ZH: "成员"}
+	case user.RoleSuperAdmin:
+		return Text{EN: "super admin", ZH: "超级管理员"}
 	}
-	if role == user.RoleSuperAdmin {
-		if lang == "zh" {
-			return "超级管理员"
-		}
-		return "super admin"
-	}
-	if lang == "zh" {
-		return "管理员"
-	}
-	return "admin"
+	return Text{EN: "admin", ZH: "管理员"}
 }
 
-func renderUnknown(out io.Writer, s *Session, name string) {
-	if s.Lang == "zh" {
-		fmt.Fprintf(out, "未知命令 %q。输入 'help' 查看可用命令。\n", name)
+// refuse writes a refusal the way the caller reads output. In text it is the
+// sentence a terminal reads; under --json it is the {"error":…} envelope a
+// failing command writes, because `… --json | jq` must not receive prose where
+// it expects an object. Every refusal goes through here so no path forgets which
+// of the two it is.
+func refuse(out io.Writer, jsonMode bool, code, message string) {
+	if jsonMode {
+		RenderError(out, false, true, &CallError{Code: code, Message: message})
 		return
 	}
-	fmt.Fprintf(out, "Unknown command %q. Type 'help' to see what is available.\n", name)
+	fmt.Fprintln(out, message)
 }
 
-func renderPermissionDenied(out io.Writer, s *Session, cmd *Command) {
+func renderUnknown(out io.Writer, s *Session, jsonMode bool, name string) {
+	refuse(out, jsonMode, "unknown_command", Text{
+		EN: fmt.Sprintf("Unknown command %q. Type 'help' to see what is available.", name),
+		ZH: fmt.Sprintf("未知命令 %q。输入 'help' 查看可用命令。", name),
+	}.For(s.Lang))
+}
+
+func renderPermissionDenied(out io.Writer, s *Session, jsonMode bool, cmd *Command) {
 	grant := cmd.Permission
 	if grant == "" {
 		// Unreachable in practice: hasPermission("") is true for any
@@ -362,17 +594,15 @@ func renderPermissionDenied(out io.Writer, s *Session, cmd *Command) {
 		// invariant is ever broken.
 		grant = "administrators"
 	}
-	if s.Lang == "zh" {
-		fmt.Fprintf(out, "权限不足：此命令需要 %q 权限。\n", grant)
-		return
-	}
-	fmt.Fprintf(out, "permission denied: this command needs the %q grant\n", grant)
+	refuse(out, jsonMode, "permission_denied", Text{
+		EN: fmt.Sprintf("permission denied: this command needs the %q grant", grant),
+		ZH: fmt.Sprintf("权限不足：此命令需要 %q 权限。", grant),
+	}.For(s.Lang))
 }
 
-func renderConfirmRequired(out io.Writer, s *Session, cmd *Command) {
-	if s.Lang == "zh" {
-		fmt.Fprintf(out, "此操作不可撤销：加上 --yes（或 -y）确认，例如 %s --yes\n", cmd.Name)
-		return
-	}
-	fmt.Fprintf(out, "this is destructive: add --yes (or -y) to confirm, e.g. %s --yes\n", cmd.Name)
+func renderConfirmRequired(out io.Writer, s *Session, jsonMode bool, cmd *Command) {
+	refuse(out, jsonMode, "confirmation_required", Text{
+		EN: fmt.Sprintf("this is destructive: add --yes (or -y) to confirm, e.g. %s --yes", cmd.Name),
+		ZH: fmt.Sprintf("此操作不可撤销：加上 --yes（或 -y）确认，例如 %s --yes", cmd.Name),
+	}.For(s.Lang))
 }

@@ -1,15 +1,17 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
-import { ArrowUpRight, ArrowDownLeft, ArrowUpLeft, ChartNoAxesCombined, CircleAlert, Coins, RefreshCw, CalendarDays, Activity } from 'lucide-vue-next';
+import { ArrowUpCircle, ArrowUpRight, ArrowDownLeft, ArrowUpLeft, ChartNoAxesCombined, CircleAlert, Coins, CalendarDays, Activity } from 'lucide-vue-next';
+import { RouterLink } from 'vue-router';
 import { adminApi, type Dashboard, type UsageBreakdown } from '@/admin/api';
+import { hasCloudflareNotice, loadUpdateStatus, releaseLink, updateStatus } from '@/admin/update';
 import OaChart from '@/components/OaChart.vue';
 import OaCellStack from '@/components/OaCellStack.vue';
 import OaIconButton from '@/components/OaIconButton.vue';
-import { currentLanguage, t, tn } from '@/composables/useI18n';
-import { IconSpark, IconUsers, IconServer, IconChevron } from '@/icons';
-import { compactNumber, relativeTime, tokenFigure } from '@/lib/format';
+import { t, tn } from '@/composables/useI18n';
+import { IconSpark, IconUsers, IconServer, IconChevron, IconRefresh } from '@/icons';
+import { compactNumber, localeTag, relativeTime, tokenFigure } from '@/lib/format';
 import { fold, type ChartShape } from '@/lib/chart';
-import { canAdmin } from '@/stores/session';
+import { canAdmin, isSuperAdmin } from '@/stores/session';
 import { maskUser, maskProvider, maskBilling } from '@/admin/safeMode';
 import AdminDashboardTrend from './AdminDashboardTrend.vue';
 import AdminFailure from './AdminFailure.vue';
@@ -18,9 +20,10 @@ import { useAdminView } from './adminView';
 import UsageDelta from './usage/UsageDelta.vue';
 import UsageHeatmap from './usage/UsageHeatmap.vue';
 import { formatDuration, percent } from './usage/scale';
+import { failureText } from './shared';
 
 const view = useAdminView();
-view.setTitle(t('navDashboard'));
+view.setTitle(() => t('navDashboard'));
 const data = ref<Dashboard | null>(null);
 const error = ref('');
 const busy = ref(false);
@@ -28,7 +31,7 @@ const updatedAt = ref(0);
 const ranking = ref<'models' | 'users'>('models');
 const shape = ref<ChartShape>(dashboardShape);
 const heatMetric = ref<'requests' | 'total_tokens'>(dashboardHeatMetric);
-const locale = computed(() => currentLanguage() === 'zh' ? 'zh-CN' : 'en-US');
+const locale = computed(() => localeTag());
 const dateLabel = computed(() => new Date(updatedAt.value || Date.now()).toLocaleDateString(locale.value, {
   month: 'long', day: 'numeric', weekday: 'long',
 }));
@@ -39,22 +42,18 @@ const updatedLabel = computed(() => updatedAt.value ? t('dashboardUpdated', {
 const detailsOpen = ref(false);
 const detailsAnimating = ref(false);
 let detailsTimer = 0;
+// Matches the 0.28s transition the collapse runs in (_dashboard.scss). The body
+// stays open for that long after a close so the transition has room to play;
+// change one and the other drifts.
+const DETAILS_TRANSITION_MS = 280;
 
 function toggleDetails(): void {
   window.clearTimeout(detailsTimer);
-  if (detailsOpen.value) {
-    detailsOpen.value = false;
-    detailsAnimating.value = true;
-    detailsTimer = window.setTimeout(() => {
-      detailsAnimating.value = false;
-    }, 280);
-  } else {
-    detailsOpen.value = true;
-    detailsAnimating.value = true;
-    detailsTimer = window.setTimeout(() => {
-      detailsAnimating.value = false;
-    }, 280);
-  }
+  detailsOpen.value = !detailsOpen.value;
+  detailsAnimating.value = true;
+  detailsTimer = window.setTimeout(() => {
+    detailsAnimating.value = false;
+  }, DETAILS_TRANSITION_MS);
 }
 
 onBeforeUnmount(() => {
@@ -133,12 +132,21 @@ async function load(): Promise<void> {
     data.value = await adminApi.dashboard('tokens');
     updatedAt.value = Date.now();
   } catch (failure) {
-    error.value = failure instanceof Error ? failure.message : String(failure);
+    error.value = failureText(failure);
   } finally {
     busy.value = false;
   }
 }
-onMounted(load);
+// Both notices are for the super administrator alone; the store only ever
+// holds an answer for one, and the check repeats that rule where it is read.
+const availableUpdate = computed(() => (isSuperAdmin.value && updateStatus.value?.update_available ? updateStatus.value : null));
+const updateLink = computed(() => (availableUpdate.value ? releaseLink(availableUpdate.value) : null));
+const cloudflareNotice = computed(() => isSuperAdmin.value && hasCloudflareNotice(updateStatus.value));
+
+onMounted(() => {
+  void load();
+  if (isSuperAdmin.value) void loadUpdateStatus();
+});
 
 function onHeatMetric(next: 'requests' | 'total_tokens'): void { heatMetric.value = next; dashboardHeatMetric = next; }
 </script>
@@ -165,11 +173,27 @@ let dashboardHeatMetric: 'requests' | 'total_tokens' = 'requests';
         <span class="oa-dashboard-date"><CalendarDays :size="14" aria-hidden="true" />{{ dateLabel }}</span>
         <div><span class="oa-dashboard-updated" role="status">{{ updatedLabel }}</span>
           <OaIconButton class="oa-icon-btn oa-dashboard-refresh" :label="t('refresh')" :disabled="busy" @click="load">
-            <RefreshCw :size="14" :class="{ 'is-refreshing': busy }" aria-hidden="true" />
+            <IconRefresh :size="14" :class="{ 'is-refreshing': busy }" aria-hidden="true" />
           </OaIconButton>
         </div>
       </div>
     </header>
+
+    <section v-if="availableUpdate" id="secUpdateNotice" class="oa-dashboard-card oa-dashboard-notice" role="status">
+      <ArrowUpCircle :size="18" aria-hidden="true" />
+      <div>
+        <strong>{{ t('updateNoticeLine', { version: availableUpdate.latest }) }}</strong>
+        <p>{{ t('updateCurrentVersion', { version: availableUpdate.current }) }}</p>
+      </div>
+      <a v-if="updateLink" class="oa-dashboard-link" :href="updateLink" target="_blank" rel="noopener noreferrer">{{ t('updateOpenRelease') }}<ArrowUpRight :size="14" aria-hidden="true" /></a>
+    </section>
+    <section v-if="cloudflareNotice" id="secCloudflareNotice" class="oa-dashboard-card oa-dashboard-notice is-warning" role="status">
+      <CircleAlert :size="18" aria-hidden="true" />
+      <div>
+        <strong>{{ t('cloudflareNoticeTitle') }}</strong>
+        <p>{{ t('cloudflareNoticeBody') }}</p>
+      </div>
+    </section>
 
     <section class="oa-dashboard-metrics" :aria-label="t('secLast24h')">
       <article class="oa-dashboard-metric oa-dashboard-metric-featured">
@@ -210,7 +234,7 @@ let dashboardHeatMetric: 'requests' | 'total_tokens' = 'requests';
 
     <section id="secInstance" class="oa-dashboard-resources" :aria-label="t('secInstance')">
       <div class="oa-dashboard-resources-label"><span class="oa-dashboard-dot" />{{ t('dashboardWorkspace') }}</div>
-      <component :is="canAdmin(resource.key) ? 'RouterLink' : 'div'" v-for="resource in resources" :key="resource.key"
+      <component :is="canAdmin(resource.key) ? RouterLink : 'div'" v-for="resource in resources" :key="resource.key"
         :to="canAdmin(resource.key) ? `/admin/${resource.key}` : undefined" class="oa-dashboard-resource">
         <span class="oa-dashboard-resource-icon"><component :is="resource.icon" :size="17" /></span>
         <span class="oa-dashboard-resource-copy"><span>{{ resource.label }} <strong>{{ resource.value.toLocaleString(locale) }}</strong></span><small>{{ resource.note }}</small></span>
@@ -269,6 +293,9 @@ let dashboardHeatMetric: 'requests' | 'total_tokens' = 'requests';
             :aria-hidden="detailsOpen ? undefined : 'true'"
           >
             <div class="oa-dashboard-details-body">
+              <!-- A plain table rather than OaTable: these rows are read only, and
+                   their look is the dashboard's own (_dashboard.scss), which an
+                   OaTable would redraw underneath it. -->
               <div class="oa-dashboard-table-wrap" tabindex="0" :aria-label="t('dashboardRankDetails')">
                 <table class="oa-dashboard-table">
                   <thead><tr><th>{{ ranking === 'models' ? t('colModel') : t('colUser') }}</th><th>{{ t('colRequests') }}</th><th>{{ t('colTokens') }}</th><th>{{ t('colCredits') }}</th></tr></thead>
@@ -326,6 +353,8 @@ let dashboardHeatMetric: 'requests' | 'total_tokens' = 'requests';
         <RouterLink v-if="canAdmin('usage')" to="/admin/usage" class="oa-dashboard-link">{{ t('dashboardViewUsage') }}<ArrowUpRight :size="14" aria-hidden="true" /></RouterLink>
       </div>
       <p v-if="!data.recent.length" class="oa-dashboard-empty"><ChartNoAxesCombined :size="26" aria-hidden="true" />{{ t('noRequestsYet') }}</p>
+      <!-- A plain table for the same reason as the rankings above: read only,
+           drawn in the dashboard's own style. -->
       <div v-else class="oa-dashboard-table-wrap" tabindex="0" :aria-label="t('secRecentRequests')">
         <table class="oa-dashboard-table oa-dashboard-recent-table">
           <thead><tr><th>{{ t('colUser') }}</th><th>{{ t('colModel') }}</th><th class="oa-dashboard-numeric">{{ t('colTokens') }}</th><th class="oa-dashboard-numeric">{{ t('colTook') }}</th><th>{{ t('colStatus') }}</th><th class="oa-dashboard-when">{{ t('colWhen') }}</th></tr></thead>

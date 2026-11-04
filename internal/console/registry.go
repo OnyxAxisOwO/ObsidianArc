@@ -68,21 +68,22 @@ package console
 //     --json and the session's `format json`: when either is set they print
 //     the server's own response body instead of building a table, so a
 //     command almost never needs its own JSON branch.
-//   - Permission is copied from the route table in API.md, verbatim — the
-//     engine's own comma-list check (hasPermission, below) is only the
-//     friendly refusal; the dispatched request is re-checked by the real
-//     admin.Handlers.Routes wrapper regardless.
+//   - Permission is copied from the route table in internal/admin (admin.Routes),
+//     verbatim — the engine's own comma-list check (hasPermission, below) is
+//     only the friendly refusal; the dispatched request is re-checked by the
+//     real admin.Handlers.Routes wrapper regardless.
 //
-// A destructive command additionally sets Destructive: true and checks
-// rt.Confirmed() is unnecessary in the common case — Execute already refuses
-// to call Run at all until --yes (or -y) is present. Confirmed exists for a
-// command that wants to branch on it anyway (a dry-run summary before the
-// real call, say).
+// A destructive command sets Destructive: true and needs no check of its own in
+// the common case — Execute already refuses to call Run at all until --yes (or
+// -y) is present. Confirmed exists for a command that wants to branch on it
+// anyway (a dry-run summary before the real call, say).
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -123,11 +124,31 @@ type Arg struct {
 	Name     string
 	Hint     Text
 	Required bool
+	// Sensitive arguments are recorded as *** in the audit trail, like a
+	// Sensitive flag. The audit line is rebuilt from parsed tokens that have
+	// no names to tell a code from a username, so only the command's own
+	// declaration can say which positional is a secret. On the last declared
+	// argument it also covers every extra token after it, which is how a
+	// value with spaces in it reaches a command that joins them.
+	Sensitive bool
+	// Rest on the last declared argument says the command reads every token
+	// after it, joined with spaces, so more positionals than declared is what
+	// it asked for. Without it, a command that writes and is given extra
+	// positionals is refused, rather than acting on the first and dropping the
+	// rest.
+	Rest bool
 }
 
 // Flag is one named flag. Value is the placeholder shown in help and the
-// spec ("TEXT", "N", "DURATION"); an empty Value means the flag is boolean —
-// its presence alone is the signal, as with --hidden or --enabled.
+// spec ("TEXT", "N", "DURATION"), and it is also what the value must be:
+// BOOL is true or false, N, D and PORT an integer, MS an integer of epoch
+// milliseconds, F a decimal number and DURATION a Go duration. ParseFlags
+// refuses a value that does not fit before the command's Run is called, so a
+// Run never reads a malformed number as 0, which for some flags means never
+// expire, permanent, or unlimited. Any other placeholder is free text, and the
+// command checks it. An empty Value makes the flag a bare switch: its presence
+// alone is the signal, and a following true or false is taken as its value. A
+// BOOL flag is not a switch, so one given without a value is refused.
 //
 // A command must not declare "-h", "--help", "--json", "-y" or "--yes": the
 // engine recognises all five on every command already (see parse.go and
@@ -167,10 +188,15 @@ type Command struct {
 	Permission  string
 	Destructive bool
 	// Endpoints are the admin routes this command calls, "METHOD /path" —
-	// what help prints under "Calls:" and what a route-parity test (added
-	// once every noun's commands exist) checks against admin.Routes.
+	// what help prints under "Calls:" and what the route-parity test in
+	// commands_test.go checks against admin.Routes.
 	Endpoints []string
 	Run       func(ctx context.Context, rt *Runtime) error
+	// SecretArgs names the positional arguments, by index, that hold a
+	// secret on this line though Arg.Sensitive cannot say so for the command
+	// as a whole: the value of `setting set` is a credential only when its
+	// key is one. Consulted in addition to Arg.Sensitive.
+	SecretArgs func(c *Console, args []string) map[int]bool
 	// The plugin that registered it. A switched-off plugin's commands are
 	// not found, not listed and not completed — the same as a build without
 	// it.
@@ -195,11 +221,27 @@ func registerCommand(cmd Command) {
 // and adds its commands from its own init the same way a cmd_*.go file does.
 // Commands for a plugin's routes belong with the plugin: the route-parity
 // test here reads admin.go alone, and a plugin's routes are not in it.
-func Register(cmd Command) { registerCommand(cmd) }
+//
+// cmd.Plugin must name the plugin. An empty owner is core, which the gate
+// always allows, so a plugin command that forgot it would keep running after
+// the plugin is switched off. RegisterCore is the spelling for commands the
+// core owns.
+func Register(cmd Command) {
+	if cmd.Plugin == "" {
+		panic("console: " + cmd.Name + " was registered with no Plugin; a plugin's command must name its owner, or it is core and stays on when the plugin is off")
+	}
+	registerCommand(cmd)
+}
+
+// RegisterCore registers a command the core owns, such as the plugin manager's
+// own `plugin` commands, which must exist whatever plugins are installed.
+func RegisterCore(cmd Command) { registerCommand(cmd) }
 
 // ResolveUser is how a plugin's command reads an account argument: an id as
 // it stands, or a username looked up through the same admin list the core
-// commands use, with the same "no such user" and "which one" answers.
+// commands use, with the same "no such user" and "which one" answers. The
+// lookup itself lives with the other shared helpers in helpers.go; these two
+// are the exported door to it.
 func ResolveUser(rt *Runtime, ref string) (string, error) { return resolveUserRef(rt, ref) }
 
 // RequireArg is the first positional argument, or the error the core
@@ -240,6 +282,22 @@ func (r *registry) lookup(name string) (*Command, bool) {
 		return nil, false
 	}
 	return cmd, true
+}
+
+// writes reports whether running the command can change anything: it is
+// destructive, or one of its requests is not a GET. Commands that only create
+// (invite create, key create) are not marked destructive, so the request
+// method is what says so.
+func (cmd *Command) writes() bool {
+	if cmd.Destructive {
+		return true
+	}
+	for _, endpoint := range cmd.Endpoints {
+		if !strings.HasPrefix(endpoint, "GET ") {
+			return true
+		}
+	}
+	return false
 }
 
 // CommandsOf lists the commands plugin registered, for its manifest.
@@ -304,6 +362,12 @@ func (r *registry) add(plugin string, cmds []Command) error {
 }
 
 // check is add without adding. The caller holds the lock.
+//
+// A name that shares whole words with another owner's name is refused as well
+// as an exact duplicate. match takes the longest name a line starts with, so a
+// package's "user list export" would run in place of the core's "user list",
+// under the package's own grant, and a bare "user" would take every "user ..."
+// line the core does not claim.
 func (r *registry) check(plugin string, cmds []Command) error {
 	for _, cmd := range cmds {
 		if cmd.Name == "" || cmd.Run == nil {
@@ -312,8 +376,20 @@ func (r *registry) check(plugin string, cmds []Command) error {
 		if existing, dup := r.commands[cmd.Name]; dup && existing.Plugin != plugin {
 			return fmt.Errorf("console: %s is already a command", cmd.Name)
 		}
+		for name, existing := range r.commands {
+			if existing.Plugin != plugin && sharesWords(name, cmd.Name) {
+				return fmt.Errorf("console: %s would take the words of %s", cmd.Name, name)
+			}
+		}
 	}
 	return nil
+}
+
+// sharesWords reports whether one command name is the other, or extends it by
+// whole words. "user list" and "user list export" share words; "user lister"
+// does not share them with "user list".
+func sharesWords(a, b string) bool {
+	return a == b || strings.HasPrefix(a, b+" ") || strings.HasPrefix(b, a+" ")
 }
 
 // remove drops everything plugin registered.
@@ -398,10 +474,9 @@ func hasPermission(actor user.User, permissions string) bool {
 }
 
 // CallError is what Runtime.Call returns for an HTTP-level failure (status
-// >= 400). It carries the admin API's own error code so the renderer can
-// show it dim beside the message, exactly as section 1.5 of the contract
-// asks: "error: <message>" plus the code, HTTP status only when there is no
-// message.
+// >= 300, see Call). It carries the admin API's own error code so the renderer
+// can show it dim beside the message: "error: <message>" plus the code, and the
+// HTTP status only when there is no message.
 type CallError struct {
 	Status  int
 	Code    string
@@ -425,6 +500,11 @@ type Runtime struct {
 	yes      bool
 	jsonFlag bool
 	rawJSON  []byte
+
+	// The references list read by this run, see references(). It is dropped by
+	// any write, so a name resolved after a change sees the change.
+	refs     any
+	refsRead bool
 }
 
 // Arg returns the i-th positional argument, or "" past the end — a command
@@ -466,8 +546,10 @@ func (rt *Runtime) StringOr(name, def string) string {
 	return def
 }
 
-// Int parses the flag's value as a base-10 integer; 0 if absent or not a
-// number. Use IntOr for any other default.
+// Int parses the flag's value as a base-10 integer; 0 if absent. A value that
+// is not an integer never gets here: ParseFlags refuses it for any flag
+// declared with a numeric placeholder, so 0 means the flag was not given.
+// Use IntOr for any other default.
 func (rt *Runtime) Int(name string) int {
 	n, err := strconv.Atoi(rt.flags[normalizeFlagName(name)])
 	if err != nil {
@@ -485,27 +567,27 @@ func (rt *Runtime) IntOr(name string, def int) int {
 }
 
 // Bool reports whether a boolean flag is set. A bare "--hidden" is true; an
-// explicit "--hidden=false" is false; an absent flag is false.
+// explicit "--hidden=false" or "--hidden false" is false; an absent flag is
+// false.
 func (rt *Runtime) Bool(name string) bool {
 	raw, ok := rt.flags[normalizeFlagName(name)]
 	if !ok {
 		return false
 	}
-	if raw == "" {
-		return true
-	}
-	b, err := strconv.ParseBool(raw)
+	b, err := parseBoolValue(raw)
 	if err != nil {
-		// A malformed explicit value ("--hidden=maybe") still means the
-		// flag was given, and a command asking a plain yes/no question
-		// should not silently read that as "no".
-		return true
+		// ParseFlags has already refused a value that is not a boolean, so
+		// this is unreachable for a declared flag. Were it reached, false is
+		// the answer that changes nothing; true would switch on whatever the
+		// flag guards.
+		return false
 	}
 	return b
 }
 
-// Duration parses the flag's value with time.ParseDuration; 0 if absent or
-// unparseable. Use DurationOr for any other default.
+// Duration parses the flag's value with time.ParseDuration; 0 if absent. A
+// value that is not a duration is refused by ParseFlags before Run, as Int's
+// is. Use DurationOr for any other default.
 func (rt *Runtime) Duration(name string) time.Duration {
 	d, err := time.ParseDuration(rt.flags[normalizeFlagName(name)])
 	if err != nil {
@@ -534,23 +616,33 @@ func normalizeFlagName(name string) string { return strings.TrimLeft(name, "-") 
 // produces: map[string]any, []any, string, float64, bool, or nil).
 //
 // A non-nil error is either a transport failure (should not happen for an
-// in-process call) or, for a status >= 400, a *CallError carrying the admin
+// in-process call) or, for a status >= 300, a *CallError carrying the admin
 // API's own code and message — return it from Run as-is and the engine
 // renders it exactly the way a failed dispatch is supposed to look.
 func (rt *Runtime) Call(method, path string, body any) (any, int, error) {
+	// A write may change what the references list holds, even one that fails
+	// part way, so the list is read again after it.
+	if method != http.MethodGet {
+		rt.refsRead = false
+	}
 	resp, err := rt.console.opts.Dispatch(rt.Ctx, rt.Session.Actor, method, path, body)
 	if err != nil {
 		return nil, 0, err
 	}
 	rt.rawJSON = resp.Body
 
+	// The body is decoded whatever the status, but a decode failure is reported
+	// only for a success status: a ServeMux 404 or 405 is text/plain, and a
+	// decode error there would hide the status the caller needs. A 3xx is a
+	// failure too: no admin route redirects, so one from the in-process mux
+	// means the path was rewritten and nothing ran.
 	var decoded any
 	if len(resp.Body) > 0 {
-		if jsonErr := json.Unmarshal(resp.Body, &decoded); jsonErr != nil {
+		if jsonErr := json.Unmarshal(resp.Body, &decoded); jsonErr != nil && resp.Status < 300 {
 			return nil, resp.Status, fmt.Errorf("console: decode response: %w", jsonErr)
 		}
 	}
-	if resp.Status >= 400 {
+	if resp.Status >= 300 {
 		failure := newCallError(resp.Status, decoded)
 		if hint := twoFactorHint(failure.Code, rt.Session.Lang); hint != "" {
 			failure.Message = hint
@@ -560,21 +652,30 @@ func (rt *Runtime) Call(method, path string, body any) (any, int, error) {
 	return decoded, resp.Status, nil
 }
 
+// MayCall reports whether a request this command makes with method may go
+// out. A read is always allowed. Anything else needs a command that writes:
+// the refusals that keep a read-only command from changing things (the
+// partial-name refusal, watch --count) are keyed on what it declares, so a
+// package that declared only reads must not reach a write through console.call.
+func (rt *Runtime) MayCall(method string) bool {
+	return method == "GET" || (rt.cmd != nil && rt.cmd.writes())
+}
+
 // twoFactorHint turns the backoffice's two refusals into the command that
 // answers them. In the browser the page draws a place to type the code; here
 // the code is typed by hand, so the refusal has to say where.
 func twoFactorHint(code, lang string) string {
 	switch code {
 	case "two_factor_backoffice_verify":
-		if lang == "zh" {
-			return "此命令需要先输入验证码：2fa backoffice <验证码>（验证器应用中的六位数字，或一个恢复码）"
-		}
-		return "this command needs a code first: 2fa backoffice <code> (six digits from your app, or a recovery code)"
+		return Text{
+			EN: "this command needs a code first: 2fa backoffice <code> (six digits from your app, or a recovery code)",
+			ZH: "此命令需要先输入验证码：2fa backoffice <验证码>（验证器应用中的六位数字，或一个恢复码）",
+		}.For(lang)
 	case "two_factor_backoffice":
-		if lang == "zh" {
-			return "此命令需要先为你的账户开启两步验证：2fa setup"
-		}
-		return "this command needs two-step sign-in on your account first: 2fa setup"
+		return Text{
+			EN: "this command needs two-step sign-in on your account first: 2fa setup",
+			ZH: "此命令需要先为你的账户开启两步验证：2fa setup",
+		}.For(lang)
 	}
 	return ""
 }
@@ -592,7 +693,9 @@ func (rt *Runtime) CallRaw(method, path string, body any) ([]byte, int, error) {
 		return nil, 0, err
 	}
 	rt.rawJSON = resp.Body
-	if resp.Status >= 400 {
+	// A 3xx is refused as Call refuses it: no admin route redirects, so one
+	// here means the path was rewritten and the body is not the export.
+	if resp.Status >= 300 {
 		var decoded any
 		if len(resp.Body) > 0 {
 			_ = json.Unmarshal(resp.Body, &decoded)
@@ -654,17 +757,86 @@ func (rt *Runtime) Fields(pairs [][2]string) error {
 	return nil
 }
 
+// FieldsOf is Fields for a "show" command that listed a collection and
+// picked one record out of it. The most recent Call is that list, so the
+// passthrough would print every row under --json; here the picked record is
+// the JSON, and the text view is the same block Fields draws.
+//
+// This is the one exception to RenderJSON's rule that --json shows the server's
+// bytes: the record is encoded again from the value it was decoded into, so its
+// keys come out sorted, its strings escaped the way Go escapes them, and its
+// numbers through float64. Cutting the record out of the raw response would keep
+// all of that, but no caller needs it badly enough to carry the code.
+func (rt *Runtime) FieldsOf(record any, pairs [][2]string) error {
+	if rt.effectiveJSON() {
+		raw, err := json.Marshal(record)
+		if err != nil {
+			return err
+		}
+		return RenderJSON(rt.Out, raw)
+	}
+	RenderFields(rt.Out, rt.Session.Colour, pairs)
+	return nil
+}
+
 // Printf writes plain text to the session, with no ANSI of its own — a
 // command that wants colour uses Table/Fields/Errorf, which already know
 // the session's rules.
+//
+// Whatever the arguments hold is data, so the formatted result goes through
+// sanitizeText on its way out: a command that prints a title, a body or an
+// error from a row cannot hand the terminal an escape sequence, and none of
+// them has to remember to ask. Line feeds and tabs are the layout and stay.
 func (rt *Runtime) Printf(format string, args ...any) {
-	fmt.Fprintf(rt.Out, format, args...)
+	io.WriteString(rt.Out, sanitizeText(fmt.Sprintf(format, args...)))
 }
 
 // Errorf builds an error the way fmt.Errorf does. It does not write
 // anything itself — Execute renders whatever error Run returns exactly
 // once, through the same path a *CallError takes, so a command never needs
-// to know how errors are displayed.
+// to know how errors are displayed. Commands build errors through the
+// Runtime rather than fmt for the same reason: the one place that renders a
+// failure is also the one place that decides its form.
 func (rt *Runtime) Errorf(format string, args ...any) error {
 	return fmt.Errorf(format, args...)
+}
+
+// Fail is Errorf for a message kept in both languages, written in the
+// session's language. With no arguments the text is used as it stands, so a %
+// in it is not read as a verb; with arguments, both languages take them in the
+// same order.
+func (rt *Runtime) Fail(t Text, args ...any) error {
+	msg := t.For(rt.Session.Lang)
+	if len(args) == 0 {
+		return errors.New(msg)
+	}
+	return fmt.Errorf(msg, args...)
+}
+
+// Say is Printf for a message kept in both languages, written in the session's
+// language and sanitized the same way.
+func (rt *Runtime) Say(t Text) {
+	rt.Printf("%s", t.For(rt.Session.Lang))
+}
+
+// confirm ends a command that changed something and has nothing else to show.
+// Under --json it prints the empty object every other write prints, so a
+// pipeline reading stdout gets a document; in text it names the outcome in one
+// line.
+func (rt *Runtime) confirm(done Text) error {
+	if rt.effectiveJSON() {
+		return rt.Fields(nil)
+	}
+	rt.Printf("%s\n", done.For(rt.Session.Lang))
+	return nil
+}
+
+// flushOut hands whatever the command has buffered to the transport. Execute
+// buffers a whole line, and a watch flushes after each run and before it
+// waits, so each tick's output appears as the tick runs instead of only when
+// the watch ends.
+func (rt *Runtime) flushOut() {
+	if f, ok := rt.Out.(interface{ Flush() error }); ok {
+		_ = f.Flush()
+	}
 }

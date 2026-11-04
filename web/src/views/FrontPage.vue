@@ -1,4 +1,9 @@
 <script setup lang="ts">
+// Imported here rather than by index.scss so that Vite emits it as this
+// chunk's stylesheet and loads it before the chunk runs: the page never
+// paints unstyled, and a reader who never lands on it never downloads it.
+import '@/styles/_front.scss';
+import { SOURCE_URL } from '@/lib/source';
 // The product's own front page.
 //
 // The other two front doors are the operator's: `intro` is HTML they wrote,
@@ -14,11 +19,13 @@
 // from. What it adds is depth and motion, which is what a front page is for.
 //
 // The motion is deliberately cheap. Reveals are one IntersectionObserver
-// over the whole page rather than one per element; the aurora, the grid, the
-// motes and the connectors are CSS keyframes on `transform` and `opacity`
-// only, so they composite rather than repaint; the only per-frame JavaScript
-// is the counters, and they stop when they land. The hero's background, which
-// never stops, is paused by a second observer once it is scrolled away.
+// over the whole page rather than one per element. Most of the motion is CSS
+// keyframes on `transform` and `opacity` only, so it composites rather than
+// repaints; the connectors and the headline's sheen are the exceptions, since
+// they move a background position, so they are paused off screen too. The
+// only per-frame JavaScript is the counters, and they stop when they land.
+// The hero and the flow diagram are paused by a second observer once they
+// scroll away.
 // Everything here is off under `prefers-reduced-motion: reduce` — this page
 // moves more than any other, so it has more to switch off.
 //
@@ -27,7 +34,7 @@
 // a colour — and that is kept deliberately: a hue hardcoded here would be the
 // one surface in the product that ignored the accent (AGENTS.md).
 
-import { onMounted, onBeforeUnmount, ref, computed } from 'vue';
+import { onMounted, onBeforeUnmount, ref, computed, h } from 'vue';
 import { useRouter } from 'vue-router';
 import { useEventListener, usePreferredReducedMotion } from '@vueuse/core';
 import HomeNotice from '@/announce/HomeNotice.vue';
@@ -40,10 +47,20 @@ import {
 import { siteInfo } from '@/stores/session';
 
 const DOCS_URL = 'https://obsidianarc.pages.dev';
-const SOURCE_URL = 'https://github.com/OnyxAxisOwO/ObsidianArc';
 
 const router = useRouter();
 const site = computed(() => siteInfo.value);
+
+// The sign-up call to action, the same button under the headline and on the
+// closing card. The header's is lighter on purpose and stays in the template.
+function SignUpCta() {
+  return site.value.registration_enabled
+    ? h('button', { type: 'button', class: 'oa-btn primary oa-front-cta', onClick: () => router.push('/register') }, [
+        t('frontCreateAccount'),
+        h(IconChevronRight, { size: 15 }),
+      ])
+    : null;
+}
 const reducedMotion = usePreferredReducedMotion();
 const still = computed(() => reducedMotion.value === 'reduce');
 
@@ -53,7 +70,7 @@ const still = computed(() => reducedMotion.value === 'reduce');
 // position — the progress bar, the reveals, the anchors — therefore reads
 // this element and not the window.
 const page = ref<HTMLElement | null>(null);
-const progress = ref(0);
+const progressBar = ref<HTMLElement | null>(null);
 const scrolled = ref(false);
 
 /** Protocol and product names, which stay English on purpose (AGENTS.md). */
@@ -133,13 +150,21 @@ const SESSION = [
 ] as const;
 
 const step = ref(0);
-const typed = ref('');
+// The line being typed is written straight to its element. Held in a ref, every
+// keystroke would re-render this whole page, about eighteen times a second.
+const typedLine = ref<HTMLElement | null>(null);
+let typed = '';
 const typing = ref(true);
-const current = computed(() => SESSION[step.value] ?? SESSION[0]!);
+const current = computed(() => SESSION[step.value] ?? SESSION[0]);
 // The output belongs to the command that finished typing, so it appears only
 // once the line is whole. Typing `model list` above a usage table for half a
 // second reads as the terminal answering the wrong question.
 const output = computed(() => (typing.value ? [] : current.value.output));
+
+function showTyped(text: string): void {
+  typed = text;
+  if (typedLine.value) typedLine.value.textContent = text;
+}
 
 let timer = 0;
 let frame = 0;
@@ -148,24 +173,40 @@ let frame = 0;
 // state has gone — the teardown-ordering trap AGENTS.md describes.
 let alive = true;
 
-/** Types the current command, holds the answer, then moves to the next. */
+/**
+ * Types the current command, holds the answer, then moves to the next.
+ *
+ * `timer` is cleared on entry: the terminal's observer tells "nothing is
+ * scheduled" from "a timeout is pending" by it, to know whether to restart.
+ */
+// Timing of the typed command in the hero: the speed of each character, the
+// pause once a command is fully typed, and the pause before the next one.
+const TYPE_STEP_MS = 55;
+const HOLD_COMMAND_MS = 2600;
+const PAUSE_BETWEEN_MS = 420;
+// The header changes its look once the page has moved this far.
+const SCROLLED_AFTER_PX = 24;
+// Each feature card enters a little after the one before it.
+const ENTRANCE_STAGGER_MS = 70;
+
 function tick(): void {
+  timer = 0;
   if (!alive) return;
   const command = current.value.command;
-  if (typed.value.length < command.length) {
-    typed.value = command.slice(0, typed.value.length + 1);
-    timer = window.setTimeout(tick, 55);
+  if (typed.length < command.length) {
+    showTyped(command.slice(0, typed.length + 1));
+    timer = window.setTimeout(tick, TYPE_STEP_MS);
     return;
   }
   if (typing.value) {
     typing.value = false;
-    timer = window.setTimeout(tick, 2600);
+    timer = window.setTimeout(tick, HOLD_COMMAND_MS);
     return;
   }
   step.value = (step.value + 1) % SESSION.length;
-  typed.value = '';
+  showTyped('');
   typing.value = true;
-  timer = window.setTimeout(tick, 420);
+  timer = window.setTimeout(tick, PAUSE_BETWEEN_MS);
 }
 
 /** Runs the counters up once, when the facts come into view. */
@@ -191,8 +232,11 @@ function onScroll(): void {
   const node = page.value;
   if (!node) return;
   const travel = node.scrollHeight - node.clientHeight;
-  progress.value = travel > 0 ? Math.min(1, node.scrollTop / travel) : 0;
-  scrolled.value = node.scrollTop > 24;
+  // Written to the bar, not held in a ref: a ref the template reads would
+  // re-render this whole page on every scroll event.
+  const share = travel > 0 ? Math.min(1, node.scrollTop / travel) : 0;
+  if (progressBar.value) progressBar.value.style.transform = `scaleX(${share})`;
+  scrolled.value = node.scrollTop > SCROLLED_AFTER_PX;
 }
 
 function jump(id: string): void {
@@ -234,7 +278,8 @@ function onPointer(event: PointerEvent): void {
 }
 
 let observer: IntersectionObserver | null = null;
-let heroObserver: IntersectionObserver | null = null;
+let idleObserver: IntersectionObserver | null = null;
+let termObserver: IntersectionObserver | null = null;
 
 onMounted(() => {
   const node = page.value;
@@ -249,7 +294,7 @@ onMounted(() => {
   if (still.value || typeof IntersectionObserver === 'undefined') {
     node.querySelectorAll('.oa-front-reveal').forEach((el) => el.classList.add('shown'));
     counted.value = FACTS.map((fact) => fact.value);
-    typed.value = SESSION[0]!.command;
+    showTyped(SESSION[0].command);
     typing.value = false;
     return;
   }
@@ -273,15 +318,36 @@ onMounted(() => {
 
   // A second observer, because it answers a different question in the
   // opposite direction. The reveals are a one-way door; the hero's background
-  // is a switch that has to turn back on when the reader scrolls up to it.
-  // Folding both into one callback would mean the reveal observer could never
-  // unobserve what it had revealed.
-  const hero = node.querySelector('.oa-front-hero');
-  if (hero) {
-    heroObserver = new IntersectionObserver(([entry]) => {
-      hero.classList.toggle('idle', !entry?.isIntersecting);
+  // and the flow's wires are switches that have to turn back on when the
+  // reader scrolls up to them. Folding both into one callback would mean the
+  // reveal observer could never unobserve what it had revealed.
+  //
+  // The flow shares this observer with the hero: each entry names its own
+  // element, so one callback can switch either one.
+  const idleTargets = [node.querySelector('.oa-front-hero'), node.querySelector('.oa-front-flow')]
+    .filter((el): el is Element => el !== null);
+  if (idleTargets.length) {
+    const watcher = new IntersectionObserver((entries) => {
+      for (const entry of entries) entry.target.classList.toggle('idle', !entry.isIntersecting);
     }, { root: node });
-    heroObserver.observe(hero);
+    idleTargets.forEach((el) => watcher.observe(el));
+    idleObserver = watcher;
+  }
+
+  // The demo types on for as long as the page is open, so it runs only while
+  // its pane is on screen. Stopping the timer, not just skipping the redraw,
+  // is what stops the work.
+  const terminal = node.querySelector('.oa-front-term');
+  if (terminal) {
+    termObserver = new IntersectionObserver(([entry]) => {
+      if (entry?.isIntersecting) {
+        if (!timer) tick();
+      } else if (timer) {
+        window.clearTimeout(timer);
+        timer = 0;
+      }
+    }, { root: node });
+    termObserver.observe(terminal);
   }
   tick();
 });
@@ -292,8 +358,10 @@ onBeforeUnmount(() => {
   cancelAnimationFrame(frame);
   observer?.disconnect();
   observer = null;
-  heroObserver?.disconnect();
-  heroObserver = null;
+  idleObserver?.disconnect();
+  idleObserver = null;
+  termObserver?.disconnect();
+  termObserver = null;
 });
 
 useEventListener(page, 'scroll', onScroll, { passive: true });
@@ -301,7 +369,7 @@ useEventListener(page, 'scroll', onScroll, { passive: true });
 
 <template>
   <div ref="page" class="oa-front" :class="{ still }">
-    <div class="oa-front-progress" :style="{ transform: `scaleX(${progress})` }" />
+    <div ref="progressBar" class="oa-front-progress" />
 
     <header class="oa-front-head" :class="{ lifted: scrolled }">
       <a class="oa-landing-brand" href="/" @click.prevent="jump('front-top')">
@@ -355,14 +423,7 @@ useEventListener(page, 'scroll', onScroll, { passive: true });
         </h1>
         <p class="oa-front-lede">{{ t('frontHeroBody') }}</p>
         <div class="oa-front-actions">
-          <button
-            v-if="site.registration_enabled"
-            type="button"
-            class="oa-btn primary oa-front-cta"
-            @click="router.push('/register')"
-          >
-            {{ t('frontCreateAccount') }}<IconChevronRight :size="15" />
-          </button>
+          <SignUpCta />
           <button type="button" class="oa-btn oa-front-cta" @click="router.push('/login')">
             {{ t('frontOpenChat') }}
           </button>
@@ -407,7 +468,7 @@ useEventListener(page, 'scroll', onScroll, { passive: true });
           v-for="(feature, index) in FEATURES"
           :key="feature.title"
           class="oa-front-card oa-front-reveal"
-          :style="{ '--oa-front-delay': `${index * 70}ms` }"
+          :style="{ '--oa-front-delay': `${index * ENTRANCE_STAGGER_MS}ms` }"
           @pointermove="onPointer"
         >
           <span class="oa-front-card-icon"><component :is="feature.icon" :size="17" /></span>
@@ -484,7 +545,7 @@ useEventListener(page, 'scroll', onScroll, { passive: true });
           <div class="oa-front-term">
             <div class="oa-front-term-line">
               <span class="oa-front-prompt">arc&gt;</span>
-              <span>{{ typed }}</span>
+              <span ref="typedLine" />
               <span v-if="typing" class="oa-front-caret" aria-hidden="true" />
             </div>
             <!-- Keyed by index, not by the line: these are lines of console
@@ -507,20 +568,13 @@ useEventListener(page, 'scroll', onScroll, { passive: true });
       </div>
     </section>
 
-    <section class="oa-front-section oa-front-close oa-front-reveal">
+    <section class="oa-front-section oa-front-reveal">
       <div class="oa-front-close-card">
         <span class="oa-front-blob close" aria-hidden="true" />
         <h2>{{ t('frontCtaTitle') }}</h2>
         <p>{{ t('frontCtaBody') }}</p>
         <div class="oa-front-actions">
-          <button
-            v-if="site.registration_enabled"
-            type="button"
-            class="oa-btn primary oa-front-cta"
-            @click="router.push('/register')"
-          >
-            {{ t('frontCreateAccount') }}<IconChevronRight :size="15" />
-          </button>
+          <SignUpCta />
           <button type="button" class="oa-btn oa-front-cta" @click="router.push('/login')">
             {{ t('frontSignIn') }}
           </button>

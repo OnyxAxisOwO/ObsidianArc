@@ -5,9 +5,8 @@
 // thresholds, user-facing uptime visibility, and manual uptime reset into a
 // single screen.
 
-import { computed, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { adminApi, type ModelHealth } from '@/admin/api';
-import { ApiError } from '@/api/client';
 import { loadModels } from '@/chat/useModels';
 import OaBadge from '@/components/OaBadge.vue';
 import OaSearchField from '@/components/OaSearchField.vue';
@@ -24,9 +23,11 @@ import { t } from '@/composables/useI18n';
 import { maskProvider } from '@/admin/safeMode';
 import AdminFailure from './AdminFailure.vue';
 import { useAdminView } from './adminView';
+import { failureText, runLoad } from './shared';
+import { FEEDBACK_FLASH_MS } from '@/lib/flash';
 
 const view = useAdminView();
-view.setTitle(t('navAvailability'), t('availabilitySubtitle'));
+view.setTitle(() => t('navAvailability'), () => t('availabilitySubtitle'));
 
 const error = ref('');
 const loaded = ref(false);
@@ -34,9 +35,18 @@ const models = ref<ModelHealth[]>([]);
 const flash = ref('');
 const flashSuccess = ref('');
 const saveLabel = ref('');
+// Kept so a newer label is not cleared by an older timer (a second save
+// inside the 1.5s showed the button blank while it was still saving), and so
+// leaving the page cancels it.
+let saveLabelTimer = 0;
+// The same for the success line, which two actions share: a reset's 3s timer
+// used to cut short the result of a test run started inside it.
+let flashSuccessTimer = 0;
 const busy = ref(false);
 const resetting = ref(false);
 const probing = ref(false);
+// Lives for one run: stopping aborts the stream, and the server stops probing.
+let probeAbort: AbortController | null = null;
 const probeCompleted = ref(0);
 const probeTotal = ref(0);
 
@@ -50,23 +60,35 @@ const form = ref({
   healthRetainDays: 14 as number | null,
 });
 
+// A blank box is not a value. It used to be saved as the default it stood for,
+// and then the box was left blank on screen, so the page showed one number and
+// stored another. A blank box now keeps the save shut until a number is typed,
+// and "0" is how auto-disable is turned off.
 function collect(): Record<string, string> {
   return {
     'health.probe': String(form.value.healthProbe),
-    'health.window_minutes': String(form.value.healthWindow ?? 30),
-    'health.disable_after': String(form.value.healthDisableAfter ?? 0),
-    'health.disable_below': String(form.value.healthDisableBelow ?? 0),
-    'health.warn_below': String(form.value.healthWarnBelow ?? 90),
+    'health.window_minutes': String(form.value.healthWindow ?? ''),
+    'health.disable_after': String(form.value.healthDisableAfter ?? ''),
+    'health.disable_below': String(form.value.healthDisableBelow ?? ''),
+    'health.warn_below': String(form.value.healthWarnBelow ?? ''),
     'health.show_users': String(form.value.healthShowUsers),
-    'health.retain_days': String(form.value.healthRetainDays ?? 14),
+    'health.retain_days': String(form.value.healthRetainDays ?? ''),
   };
 }
 
-const { dirty, accept } = useSettingsDraft(collect);
+const settingsValid = computed(() => {
+  const f = form.value;
+  return f.healthWindow !== null && f.healthDisableAfter !== null && f.healthDisableBelow !== null
+    && f.healthWarnBelow !== null && f.healthRetainDays !== null;
+});
+
+const { dirty, changes, accept } = useSettingsDraft(collect);
 
 async function save(): Promise<void> {
-  if (!loaded.value || error.value || busy.value) return;
-  const values = collect();
+  if (!loaded.value || error.value || busy.value || !settingsValid.value) return;
+  // Only what this page changed, so the save cannot undo another screen's edit.
+  const values = changes();
+  if (Object.keys(values).length === 0) return;
   busy.value = true;
   saveLabel.value = t('saving');
   flash.value = '';
@@ -75,12 +97,24 @@ async function save(): Promise<void> {
     await adminApi.saveSettings(values);
     accept(values);
     saveLabel.value = t('saved');
-    window.setTimeout(() => { saveLabel.value = ''; }, 1500);
+    window.clearTimeout(saveLabelTimer);
+    saveLabelTimer = window.setTimeout(() => { saveLabel.value = ''; }, FEEDBACK_FLASH_MS);
   } catch (failure) {
-    flash.value = failure instanceof ApiError ? failure.message : String(failure);
+    flash.value = failureText(failure);
     saveLabel.value = '';
   } finally {
     busy.value = false;
+  }
+}
+
+// What follows a change the server has already committed. A failed read-back
+// does not undo it, so it is reported as a stale page beside the success line
+// rather than as a failed action, which would contradict that line.
+async function reloadFigures(): Promise<void> {
+  try {
+    await Promise.all([refreshHealth(), loadModels()]);
+  } catch {
+    flash.value = t('couldNotLoad');
   }
 }
 
@@ -91,10 +125,11 @@ async function resetUptime(): Promise<void> {
   try {
     await adminApi.resetHealth();
     flashSuccess.value = t('resetUptimeDone');
-    window.setTimeout(() => { flashSuccess.value = ''; }, 3000);
-    await Promise.all([refreshHealth(), loadModels()]);
+    window.clearTimeout(flashSuccessTimer);
+    flashSuccessTimer = window.setTimeout(() => { flashSuccess.value = ''; }, 3000);
+    await reloadFigures();
   } catch (failure) {
-    flash.value = failure instanceof ApiError ? failure.message : String(failure);
+    flash.value = failureText(failure);
   } finally {
     resetting.value = false;
   }
@@ -106,23 +141,35 @@ async function probeAllModels(): Promise<void> {
   probeTotal.value = 0;
   flash.value = '';
   flashSuccess.value = '';
+  const abort = new AbortController();
+  probeAbort = abort;
   try {
     const result = await adminApi.probeAllModels((progress) => {
       probeCompleted.value = progress.completed;
       probeTotal.value = progress.total;
-    });
+    }, { signal: abort.signal });
     flashSuccess.value = t('probeAllModelsDone', {
       succeeded: result.succeeded,
       total: result.total,
       failed: result.failed,
+      skipped: result.skipped,
     });
-    window.setTimeout(() => { flashSuccess.value = ''; }, 5000);
-    await Promise.all([refreshHealth(), loadModels()]);
+    window.clearTimeout(flashSuccessTimer);
+    flashSuccessTimer = window.setTimeout(() => { flashSuccess.value = ''; }, 5000);
+    await reloadFigures();
   } catch (failure) {
-    flash.value = failure instanceof ApiError ? failure.message : String(failure);
+    // Only a code the interface has a sentence for is translated; any other
+    // keeps the server's sentence, which an administrator may need verbatim.
+    if (abort.signal.aborted) flash.value = t('stopped');
+    else flash.value = failureText(failure);
   } finally {
     probing.value = false;
+    probeAbort = null;
   }
+}
+
+function stopProbe(): void {
+  probeAbort?.abort();
 }
 
 // A health refresh must not reload settings and discard a policy draft.
@@ -136,8 +183,7 @@ const counts = computed(() => ({
 }));
 
 async function load(): Promise<void> {
-  error.value = '';
-  try {
+  await runLoad(async () => {
     const [settingsData, healthData] = await Promise.all([
       adminApi.settings(),
       adminApi.health(),
@@ -154,11 +200,7 @@ async function load(): Promise<void> {
     };
     models.value = healthData.models;
     accept();
-  } catch (failure) {
-    error.value = failure instanceof Error ? failure.message : String(failure);
-  } finally {
-    loaded.value = true;
-  }
+  }, { error, loaded });
 }
 
 const categories: WorkbenchGroup[] = [
@@ -168,6 +210,10 @@ const categories: WorkbenchGroup[] = [
 ];
 
 onMounted(load);
+onBeforeUnmount(() => {
+  window.clearTimeout(saveLabelTimer);
+  window.clearTimeout(flashSuccessTimer);
+});
 </script>
 
 <template>
@@ -175,13 +221,14 @@ onMounted(load);
     <span v-if="loaded && !error" class="oa-control-save-state" :class="{ dirty }" role="status">
       <span class="oa-dashboard-dot" />{{ dirty ? t('controlUnsaved') : t('controlSaved') }}
     </span>
-    <button type="button" class="oa-btn primary" :disabled="busy || !loaded || !!error" @click="save">
+    <button type="button" class="oa-btn primary" :disabled="busy || !loaded || !!error || !settingsValid" @click="save">
       {{ saveLabel || t('save') }}
     </button>
   </Teleport>
   <AdminFailure v-if="error" :message="error" @retry="load" />
   <p v-else-if="!loaded" class="oa-table-empty">{{ t('loading') }}</p>
   <AdminWorkbench v-else page="availability" :groups="categories" :searchable="false" v-slot="{ visible }">
+    <p v-if="!settingsValid" class="oa-field-hint" role="alert">{{ t('settingNumberRequired') }}</p>
     <div v-show="visible('modelHealthOverview')" class="oa-health-summary oa-control-card-wide">
       <div><IconPulse :size="22" /><span>{{ t('controlTotalModels') }}</span><strong>{{ models.length }}</strong></div>
       <div><span>{{ t('uptimeOperational') }}</span><strong>{{ counts.up }}</strong></div>
@@ -194,6 +241,7 @@ onMounted(load);
         <button type="button" class="oa-btn" :disabled="probing || resetting" @click="probeAllModels">
           {{ probing ? probeTotal > 0 ? t('probeAllModelsProgress', { completed: probeCompleted, total: probeTotal }) : t('probeAllModelsRunning') : t('probeAllModels') }}
         </button>
+        <button v-if="probing" type="button" class="oa-btn" @click="stopProbe">{{ t('stop') }}</button>
         <a href="/uptime" target="_blank" rel="noopener" class="oa-btn">{{ t('viewUptimePage') }}</a>
       </div></template>
       <OaSearchField v-model="modelQuery" :label="t('controlHealthSearch')" />

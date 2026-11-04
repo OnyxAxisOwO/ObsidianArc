@@ -15,7 +15,6 @@ package compat
 // chunk shape, and an error envelope of its own.
 
 import (
-	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -84,7 +83,7 @@ type anthropicInBlock struct {
 
 func (h *Handlers) messages(w http.ResponseWriter, r *http.Request, who caller) error {
 	var body messagesRequest
-	if err := decode(w, r, &body); err != nil {
+	if err := h.decode(w, r, who, &body); err != nil {
 		return err
 	}
 
@@ -98,7 +97,7 @@ func (h *Handlers) messages(w http.ResponseWriter, r *http.Request, who caller) 
 		return err
 	}
 
-	release, err := h.reserve(r.Context(), who, resolved)
+	release, err := h.reserve(r.Context(), who, resolved, 1)
 	if err != nil {
 		return err
 	}
@@ -118,8 +117,9 @@ func (h *Handlers) buildMessagesRequest(body messagesRequest, resolved model.Res
 		return adapter.ChatRequest{}, anthropicBadRequest("At least one message is required.")
 	}
 	messages := make([]adapter.Message, 0, len(body.Messages))
+	pictureLimit := h.pictureCeiling()
 	for _, incoming := range body.Messages {
-		blocks, err := readAnthropicContent(incoming.Content)
+		blocks, err := readAnthropicContent(incoming.Content, false, pictureLimit)
 		if err != nil {
 			return adapter.ChatRequest{}, err
 		}
@@ -168,7 +168,13 @@ func (h *Handlers) buildMessagesRequest(body messagesRequest, resolved model.Res
 	reasoning := adapter.Reasoning{}
 	if body.Thinking != nil && body.Thinking.Type == "enabled" &&
 		resolved.Model.SupportsReasoning && resolved.Upstream.SupportsReasoning {
-		reasoning = adapter.Reasoning{Enabled: true, Budget: body.Thinking.BudgetTokens}
+		// The budget is the caller's to name but not to spend past the
+		// operator's ceiling: the upstream request raises max_tokens to fit
+		// the budget, and nothing else caps that raise on this path.
+		budget, fits := adapter.ClampThinkingBudget(body.Thinking.BudgetTokens, anthropicOutputLimit(resolved))
+		if fits {
+			reasoning = adapter.Reasoning{Enabled: true, Budget: budget}
+		}
 	}
 
 	// Absent means false here, as it does everywhere: this protocol's clients
@@ -210,10 +216,7 @@ func splitToolResults(blocks []adapter.Part) (results, rest []adapter.Part) {
 // upstream API this does not insist on max_tokens: a caller that leaves it
 // out gets the model's own ceiling rather than a refusal.
 func anthropicCeiling(resolved model.Resolved, asked int) int {
-	limit := resolved.Upstream.MaxOutputTokens
-	if limit == 0 {
-		limit = resolved.Model.MaxOutputTokens
-	}
+	limit := anthropicOutputLimit(resolved)
 	if asked <= 0 {
 		return limit
 	}
@@ -221,6 +224,17 @@ func anthropicCeiling(resolved model.Resolved, asked int) int {
 		return limit
 	}
 	return asked
+}
+
+// anthropicOutputLimit is the most output the operator allows this model, or
+// zero when none is set. The upstream's own figure wins, since that is the one
+// the provider enforces.
+func anthropicOutputLimit(resolved model.Resolved) int {
+	limit := resolved.Upstream.MaxOutputTokens
+	if limit == 0 {
+		limit = resolved.Model.MaxOutputTokens
+	}
+	return limit
 }
 
 func readAnthropicSystem(raw json.RawMessage) (string, error) {
@@ -251,7 +265,15 @@ func readAnthropicSystem(raw json.RawMessage) (string, error) {
 	return out.String(), nil
 }
 
-func readAnthropicContent(raw json.RawMessage) ([]adapter.Part, error) {
+// readAnthropicContent reads a message's content, or a tool_result's when
+// inToolResult is set. A result holds text and nothing that nests, and an image
+// inside one is refused rather than read: the provider takes a result as text,
+// so a decoded picture would be checked and then never seen by the model.
+// Each level copies its children while the parent is still live, so a result
+// inside a result would hold its payload once per level, and a request a few
+// thousand levels deep would hold it thousands of times. Refusing the nesting
+// keeps every byte decoded a fixed number of times, however deep the body goes.
+func readAnthropicContent(raw json.RawMessage, inToolResult bool, pictureLimit int64) ([]adapter.Part, error) {
 	trimmed := strings.TrimSpace(string(raw))
 	if trimmed == "" || trimmed == "null" {
 		return nil, nil
@@ -272,13 +294,19 @@ func readAnthropicContent(raw json.RawMessage) ([]adapter.Part, error) {
 
 	out := make([]adapter.Part, 0, len(blocks))
 	for _, block := range blocks {
+		if inToolResult && (block.Type == "tool_result" || block.Type == "tool_use") {
+			return nil, anthropicBadRequest("A tool_result may contain only text blocks.")
+		}
 		switch block.Type {
 		case "text", "":
 			if strings.TrimSpace(block.Text) != "" {
 				out = append(out, adapter.Part{Kind: adapter.PartText, Text: block.Text})
 			}
 		case "image":
-			part, err := readAnthropicImage(block)
+			if inToolResult {
+				return nil, anthropicBadRequest("A tool_result may contain only text blocks: an image cannot travel inside one. Send the picture in a user message instead.")
+			}
+			part, err := readAnthropicImage(block, pictureLimit)
 			if err != nil {
 				return nil, err
 			}
@@ -297,7 +325,7 @@ func readAnthropicContent(raw json.RawMessage) ([]adapter.Part, error) {
 			if block.ToolUseID == "" {
 				return nil, anthropicBadRequest("A tool_result block must name the call it answers in tool_use_id.")
 			}
-			nested, err := readAnthropicContent(block.Content)
+			nested, err := readAnthropicContent(block.Content, true, pictureLimit)
 			if err != nil {
 				return nil, err
 			}
@@ -318,7 +346,7 @@ func readAnthropicContent(raw json.RawMessage) ([]adapter.Part, error) {
 	return out, nil
 }
 
-func readAnthropicImage(block anthropicInBlock) (adapter.Part, error) {
+func readAnthropicImage(block anthropicInBlock, pictureLimit int64) (adapter.Part, error) {
 	// Only inline bytes. A url source would have this server fetch an address
 	// of the caller's choosing, which is the request forgery primitive the
 	// other surface refuses for the same reason.
@@ -333,7 +361,11 @@ func readAnthropicImage(block anthropicInBlock) (adapter.Part, error) {
 	if err != nil {
 		return adapter.Part{}, anthropicBadRequest("Image data is not valid base64.")
 	}
-	return adapter.Part{Kind: adapter.PartImage, MediaType: block.Source.MediaType, Data: data}, nil
+	checked, sniffed, err := inlinePicture(data, pictureLimit)
+	if err != nil {
+		return adapter.Part{}, anthropicBadRequest(pictureRefusal(err, pictureLimit))
+	}
+	return adapter.Part{Kind: adapter.PartImage, MediaType: sniffed, Data: checked}, nil
 }
 
 func readAnthropicTools(declared []anthropicInTool) ([]adapter.Tool, error) {
@@ -534,7 +566,8 @@ func (h *Handlers) messagesStreamed(
 		return nil
 	}
 
-	result, chatErr := h.registry.Chat(r.Context(), resolved.Provider, request, sink)
+	clientGone := false
+	result, chatErr := h.registry.Chat(r.Context(), resolved.Provider, request, watchWrites(sink, &clientGone))
 	usage = usage.Merge(result.Usage)
 
 	// A provider that could not stream answered all at once, and the answer
@@ -559,10 +592,10 @@ func (h *Handlers) messagesStreamed(
 	}
 	closeText()
 
-	h.record(context.WithoutCancel(r.Context()), who, resolved, requestID, usage, startedAt, chatErr)
+	gone := h.settleStream(r, who, resolved, requestID, usage, startedAt, chatErr, clientGone)
 
 	if chatErr != nil {
-		if r.Context().Err() != nil {
+		if gone {
 			return nil
 		}
 		rendered := translateUpstream(chatErr)
@@ -570,6 +603,7 @@ func (h *Handlers) messagesStreamed(
 			"type":  "error",
 			"error": map[string]any{"type": anthropicErrorType(rendered.status), "message": rendered.message},
 		})
+		logFailure(r, rendered)
 		return nil
 	}
 
@@ -709,7 +743,7 @@ func messageID(requestID string) string { return "msg_" + requestID }
 // a fifth moves when it compacts; having none moves whether it can.
 func (h *Handlers) countTokens(w http.ResponseWriter, r *http.Request, who caller) error {
 	var body messagesRequest
-	if err := decode(w, r, &body); err != nil {
+	if err := h.decode(w, r, who, &body); err != nil {
 		return err
 	}
 

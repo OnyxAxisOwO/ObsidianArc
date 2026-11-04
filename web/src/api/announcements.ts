@@ -32,10 +32,16 @@ export function fetchAnnouncements(): Promise<AnnouncementFeed> {
   return api.get<AnnouncementFeed>('/api/announcements');
 }
 
+/** One published announcement with its body, for the sheet a reader opens. */
+export function fetchAnnouncement(id: string): Promise<Announcement> {
+  return api.get<Announcement>(`/api/announcements/${encodeURIComponent(id)}`);
+}
+
 export function markRead(id: string): Promise<void> {
   return api.post<void>(`/api/announcements/${encodeURIComponent(id)}/read`, {});
 }
 
-export function markAllRead(): Promise<void> {
-  return api.post<void>('/api/announcements/read', {});
+/** Marks the listed announcements read. The server writes only the ones that are published. */
+export function markAllRead(ids: string[]): Promise<void> {
+  return api.post<void>('/api/announcements/read', { ids });
 }

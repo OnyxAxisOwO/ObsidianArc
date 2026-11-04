@@ -8,6 +8,7 @@ import { changeLanguage, t, tn } from '../src/composables/useI18n';
 import { absoluteTime } from '../src/lib/format';
 import * as markdown from '../src/chat/markdown';
 import InvitesSection from '../src/views/settings/InvitesSection.vue';
+import { mountComponent, settle, button } from './helpers';
 
 // The "Invites" settings card: claiming somebody else's code (always
 // present), and — when personal invites are on — an account's own code, its
@@ -38,6 +39,7 @@ const ON: ProfileInvites = {
 };
 
 let app: App | undefined;
+let unmount: (() => void) | undefined;
 let host: HTMLElement;
 
 beforeEach(async () => {
@@ -49,42 +51,17 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  unmount?.();
+  unmount = undefined;
   app?.unmount();
   app = undefined;
-  document.body.textContent = '';
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
 
-async function settle(): Promise<void> {
-  for (let i = 0; i < 3; i++) {
-    if (vi.isFakeTimers()) {
-      await vi.advanceTimersByTimeAsync(0);
-    } else {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
-    await nextTick();
-  }
-}
 
 async function mount(component: Component, props: Record<string, unknown> = {}): Promise<void> {
-  const panels = document.createElement('div');
-  document.body.append(panels);
-  app = createApp({
-    setup() {
-      providePanelHost(shallowRef(panels));
-      return () => h(component, props);
-    },
-  });
-  app.mount(host);
-  await settle();
-}
-
-function button(label: string): HTMLButtonElement {
-  const found = [...host.querySelectorAll<HTMLButtonElement>('button')]
-    .find((node) => node.textContent?.trim() === label);
-  if (!found) throw new Error(`Button not found: ${label}`);
-  return found;
+  unmount = await mountComponent(component, props, { host });
 }
 
 function claimInput(): HTMLInputElement {
@@ -105,7 +82,7 @@ describe('the invites card', () => {
     await mount(InvitesSection);
 
     expect(host.textContent).toContain(t('inviteClaimTitle'));
-    expect(() => button(t('inviteClaimSubmit'))).not.toThrow();
+    expect(() => button(host, t('inviteClaimSubmit'))).not.toThrow();
     expect(host.textContent).not.toContain(t('inviteYourCode'));
   });
 
@@ -180,12 +157,11 @@ describe('the invites card', () => {
 
     vi.useFakeTimers();
     try {
-      // First click
       copyButtons[0]!.click();
       await vi.advanceTimersByTimeAsync(10);
       expect(copyButtons[0]!.textContent?.trim()).toBe(t('copied'));
 
-      // Rapid second click after 500ms
+      // Each click restarts the 1500ms reset, so the label holds from the last one.
       await vi.advanceTimersByTimeAsync(500);
       copyButtons[0]!.click();
       await vi.advanceTimersByTimeAsync(10);
@@ -208,7 +184,7 @@ describe('the invites card', () => {
     await mount(InvitesSection);
     expect(host.textContent).toContain(t('inviteUsageLimited', { used: 1, limit: 10 }));
 
-    app?.unmount();
+    unmount?.();
     host.textContent = '';
     vi.spyOn(invitesApi, 'fetchProfileInvites').mockResolvedValue({ ...ON, limit: 0 });
     await mount(InvitesSection);
@@ -233,7 +209,7 @@ describe('the invites card', () => {
     await mount(InvitesSection);
 
     await type(claimInput(), 'PARTNER1');
-    button(t('inviteClaimSubmit')).click();
+    button(host, t('inviteClaimSubmit')).click();
     await settle();
 
     expect(claim).toHaveBeenCalledWith('PARTNER1');
@@ -255,11 +231,11 @@ describe('the invites card', () => {
       await mount(InvitesSection);
 
       await type(claimInput(), 'CODE1');
-      button(t('inviteClaimSubmit')).click();
+      button(host, t('inviteClaimSubmit')).click();
       await settle();
 
       expect(host.textContent).toContain(expected);
-      app?.unmount();
+      unmount?.();
       host.textContent = '';
     }
   });
@@ -273,7 +249,7 @@ describe('the invites card', () => {
     );
     expect(host.querySelector('.oa-meter')).not.toBeNull();
 
-    app?.unmount();
+    unmount?.();
     host.textContent = '';
     vi.spyOn(invitesApi, 'fetchProfileInvites').mockResolvedValue({ ...ON, reward_cards: 0, next_reward_in: 0 });
     await mount(InvitesSection);
@@ -314,9 +290,9 @@ describe('the invites card', () => {
       .mockResolvedValue({ ...ON, code: 'ZZZZ9999', used: 0, invitees: [] });
     await mount(InvitesSection);
 
-    button(t('inviteRegenerate')).click();
+    button(host, t('inviteRegenerate')).click();
     await settle();
-    button(t('confirmWord')).click();
+    button(host, t('confirmWord')).click();
     await settle();
 
     expect(regenerate).toHaveBeenCalled();
@@ -333,11 +309,13 @@ describe('the invites card', () => {
 
     // Claim box is still rendered
     expect(host.textContent).toContain(t('inviteClaimTitle'));
-    expect(() => button(t('inviteClaimSubmit'))).not.toThrow();
+    expect(() => button(host, t('inviteClaimSubmit'))).not.toThrow();
 
-    // Error and retry button are shown
-    expect(host.textContent).toContain('Network connection failed');
-    const retryBtn = button(t('retry'));
+    // Error and retry button are shown; a server failure reads as the screen's
+    // own line rather than the English it came with.
+    expect(host.textContent).not.toContain('Network connection failed');
+    expect(host.textContent).toContain(t('failed'));
+    const retryBtn = button(host, t('retry'));
     expect(retryBtn).not.toBeNull();
 
     // Clicking retry reloads the data
@@ -356,7 +334,7 @@ describe('the invites card', () => {
     await mount(InvitesSection);
 
     await type(claimInput(), 'LIFETIME');
-    button(t('inviteClaimSubmit')).click();
+    button(host, t('inviteClaimSubmit')).click();
     await settle();
 
     expect(claim).toHaveBeenCalledWith('LIFETIME');
@@ -370,7 +348,7 @@ describe('the invites card', () => {
       .mockResolvedValue({ group_id: 'g1', group_name: 'Basic', days: 7, expires_at: Date.now() + 7 * 86400000 });
     await mount(InvitesSection);
 
-    button(t('inviteClaimSubmit')).click();
+    button(host, t('inviteClaimSubmit')).click();
     await settle();
 
     expect(router.replace).toHaveBeenCalledWith({ path: '/settings', query: {} });
@@ -382,9 +360,9 @@ describe('the invites card', () => {
       .mockRejectedValue(new ApiError(429, 'too_many_attempts', 'rate limited', { retry_after_seconds: 45 }));
     await mount(InvitesSection);
 
-    button(t('inviteRegenerate')).click();
+    button(host, t('inviteRegenerate')).click();
     await settle();
-    button(t('confirmWord')).click();
+    button(host, t('confirmWord')).click();
     await settle();
 
     expect(host.textContent).toContain(t('tooManyAttempts', { count: 45 }));
@@ -418,3 +396,22 @@ describe('the invites card', () => {
   });
 });
 
+describe('the claim box in search and in the address bar', () => {
+  it('stays in view when the search asks for what it does', async () => {
+    vi.spyOn(invitesApi, 'fetchProfileInvites').mockResolvedValue(OFF);
+    await mount(InvitesSection, { query: 'redeem' });
+    expect(host.querySelector<HTMLElement>('.oa-settings-panel')!.style.display).not.toBe('none');
+    expect(claimInput()).toBeTruthy();
+  });
+
+  it('takes the code out of the address once it is in the claim box', async () => {
+    route.query = { claim: 'PARTNER1', tab: 'x' };
+    vi.spyOn(invitesApi, 'fetchProfileInvites').mockResolvedValue(OFF);
+    await mount(InvitesSection);
+    expect(claimInput().value).toBe('PARTNER1');
+    expect(router.replace).toHaveBeenCalledTimes(1);
+    const [target] = router.replace.mock.calls[0]! as [{ path: string; query: Record<string, string> }];
+    expect(target.path).toBe('/settings');
+    expect(target.query).toEqual({ tab: 'x' });
+  });
+});

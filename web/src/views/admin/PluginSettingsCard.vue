@@ -16,12 +16,12 @@ defineProps<{
   /** The values being edited, by key. Secrets are empty until typed into. */
   draft: Record<string, string>;
   /** What is stored for each secret, as the server masked it. */
-  hints: Record<string, string>;
+  storedMasks: Record<string, string>;
 }>();
 </script>
 
 <template>
   <AdminControlCard :id="section.id" :title="section.title()" :hint="section.hint?.() ?? ''" :icon="section.icon ?? IconSliders">
-    <PluginSettingControls :section="section" :draft="draft" :hints="hints" />
+    <PluginSettingControls :controls="section.controls" :draft="draft" :stored-masks="storedMasks" />
   </AdminControlCard>
 </template>

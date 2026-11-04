@@ -81,14 +81,14 @@ type TwoFactorEvent struct {
 }
 
 func (s *Service) twoFactorEvent(ctx context.Context, kind string, account user.User, ip string) {
-	if s.OnTwoFactor == nil {
+	if s.Hooks.OnTwoFactor == nil {
 		return
 	}
 	// Detached and bounded: the change is committed, and an audit write that
 	// failed or hung must not turn it into a failure the person sees.
 	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	s.OnTwoFactor(recordCtx, TwoFactorEvent{Kind: kind, Account: account, IP: ip})
+	s.Hooks.OnTwoFactor(recordCtx, TwoFactorEvent{Kind: kind, Account: account, IP: ip})
 }
 
 // --- policy -------------------------------------------------------------------
@@ -248,7 +248,9 @@ func (s *Service) KeepBackofficeOpen(ctx context.Context, account user.User) {
 		if session.BackofficeAt == 0 || now.Sub(time.UnixMilli(session.BackofficeAt)) < 30*time.Second {
 			return
 		}
-		if err := s.sessions.SetBackofficeAt(ctx, session.ID, now.UnixMilli()); err != nil {
+		// The row decides, not the snapshot above: it may have been left, or
+		// slid by a parallel request, since Attach read it.
+		if err := s.sessions.ExtendBackofficeVisit(ctx, session.ID, now.UnixMilli(), now.Add(-30*time.Second).UnixMilli()); err != nil {
 			slog.WarnContext(ctx, "could not extend a backoffice visit", "error", err)
 		}
 		return
@@ -421,6 +423,10 @@ type TwoFactorSetup struct {
 		Size int    `json:"size"`
 		Path string `json:"path"`
 	} `json:"qr"`
+	// Whether confirming will ask for the account's password, so the wizard
+	// draws the field before the person has typed a code that would then be
+	// refused for want of it.
+	PasswordRequired bool `json:"password_required"`
 }
 
 // BeginTwoFactor hands out a fresh secret for scanning. Nothing changes for
@@ -433,6 +439,10 @@ func (s *Service) BeginTwoFactor(ctx context.Context, account user.User) (TwoFac
 	}
 	if account.TwoFactorEnabled() {
 		return TwoFactorSetup{}, ErrTwoFactorEnabled
+	}
+	hash, err := s.users.PasswordHash(ctx, nil, account.ID)
+	if err != nil {
+		return TwoFactorSetup{}, err
 	}
 
 	secretText := totp.NewSecret()
@@ -453,9 +463,10 @@ func (s *Service) BeginTwoFactor(ctx context.Context, account user.User) (TwoFac
 	}
 
 	setup := TwoFactorSetup{
-		Secret:  secretText,
-		Issuer:  s.TwoFactorIssuer(),
-		Account: account.Username,
+		Secret:           secretText,
+		Issuer:           s.TwoFactorIssuer(),
+		Account:          account.Username,
+		PasswordRequired: hash != "",
 	}
 	setup.URI = totp.URI(setup.Issuer, setup.Account, secretText)
 	code, err := qr.Encode([]byte(setup.URI))
@@ -474,14 +485,30 @@ func (s *Service) BeginTwoFactor(ctx context.Context, account user.User) (TwoFac
 // Every other session on the account is signed out: none of them proved the
 // second factor, and a stolen one should not outlive the lock that was just
 // fitted because somebody suspected it.
-func (s *Service) EnableTwoFactor(ctx context.Context, userID, code, keepSessionID, ip, userAgent string) ([]string, user.User, error) {
+//
+// That sign-out is also why it takes the account's password, where it has
+// one. A session is all a stolen cookie is; if it were enough, the thief
+// would enrol their own authenticator, end the owner's sessions everywhere,
+// and leave the owner unable to get back in. Where the account has no
+// password, the proof is a sign-in made just now, the same rule provider
+// connect applies: nothing else in a request proves the owner is here.
+func (s *Service) EnableTwoFactor(ctx context.Context, userID, password, code, keepSessionID, ip, userAgent string) ([]string, user.User, error) {
 	if !s.TwoFactorAvailable() {
 		return nil, user.User{}, ErrTwoFactorUnavailable
+	}
+	// Before the transaction, because it is an Argon2 verification. The hash it
+	// checked against is read again under the row lock below.
+	checkedHash, err := s.confirmNewSignIn(ctx, userID, password, keepSessionID)
+	if err != nil {
+		return nil, user.User{}, err
 	}
 	codes := totp.RecoveryCodes()
 	digests, err := s.recoveryDigests(codes)
 	if err != nil {
 		return nil, user.User{}, err
+	}
+	if s.hooks.beforeEnableWrite != nil {
+		s.hooks.beforeEnableWrite()
 	}
 
 	var updated user.User
@@ -490,12 +517,32 @@ func (s *Service) EnableTwoFactor(ctx context.Context, userID, code, keepSession
 		if err := lockAccount(ctx, tx, userID); err != nil {
 			return err
 		}
+		if s.hooks.afterEnableLock != nil {
+			s.hooks.afterEnableLock()
+		}
 		account, err := s.users.ByID(ctx, tx, userID)
 		if err != nil {
 			return err
 		}
 		if account.TwoFactorEnabled() {
 			return ErrTwoFactorEnabled
+		}
+		// The password was checked before this transaction began. Under the row
+		// lock the stored hash must still be the one it was checked against, or a
+		// change that committed in between would be sealed over by an enrolment
+		// its owner never proved. An account with no password was judged by a
+		// sign-in made recently, which is read under the lock as well.
+		current, err := s.users.PasswordHash(ctx, tx, userID)
+		if err != nil {
+			return err
+		}
+		if current != checkedHash {
+			return ErrCurrentPasswordWrong
+		}
+		if checkedHash == "" {
+			if err := s.requireRecentSignIn(ctx, tx, userID, keepSessionID); err != nil {
+				return err
+			}
 		}
 		row, found, err := s.readTwoFactor(ctx, tx, userID)
 		if err != nil {
@@ -596,8 +643,8 @@ func (s *Service) checkCode(ctx context.Context, userID, candidate string) (stri
 		if err != nil {
 			return "", fmt.Errorf("auth: spend code: %w", err)
 		}
-		if spent, err := result.RowsAffected(); err != nil || spent != 1 {
-			return "", ErrTwoFactorCode
+		if err := spentOne(result); err != nil {
+			return "", err
 		}
 		return "code", nil
 	}
@@ -664,7 +711,9 @@ func (s *Service) spendCode(ctx context.Context, account user.User, candidate, i
 	if err != nil {
 		return err
 	}
-	attempt.finish(attemptSucceeded)
+	// Releases the reservation without forgiving the failures before it: a
+	// guesser who is eventually right must not get a clean count back.
+	attempt.finish(attemptCancelled)
 	if method == "recovery" {
 		s.twoFactorEvent(ctx, "recovery_used", account, ip)
 	}
@@ -717,15 +766,32 @@ func (s *Service) CompleteSignIn(ctx context.Context, token, code, ip, ua string
 		return user.User{}, "", err
 	}
 	now := time.Now().UnixMilli()
-	_ = s.users.MarkLogin(ctx, account.ID, now)
+	if err := s.users.MarkLogin(ctx, account.ID, now); err != nil {
+		slog.WarnContext(ctx, "could not record the sign-in", "user", account.ID, "error", err)
+	}
 	account.LastLoginAt = now
 	return account, full, nil
+}
+
+// spentOne reports whether the conditional write moved exactly one row. A
+// driver that cannot say how many rows it moved is a server fault, so its error
+// is returned as one: read as a wrong code, it would send an operator looking
+// for a user who mistyped when the database is what failed.
+func spentOne(result interface{ RowsAffected() (int64, error) }) error {
+	spent, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("auth: count spent code: %w", err)
+	}
+	if spent != 1 {
+		return ErrTwoFactorCode
+	}
+	return nil
 }
 
 // secondStep decides what a proven first factor buys: the whole session, or
 // the pending half and a request for the code.
 func (s *Service) secondStep(ctx context.Context, account user.User, remembered, ip, ua string) (string, error) {
-	if account.TwoFactorEnabled() && !s.rememberedBrowser(remembered, account) {
+	if account.TwoFactorEnabled() && !s.rememberedBrowser(ctx, remembered, account) {
 		token, _, err := s.sessions.CreatePending(ctx, account.ID, pendingSignInTTL, ip, ua)
 		if err != nil {
 			return "", err
@@ -736,7 +802,9 @@ func (s *Service) secondStep(ctx context.Context, account user.User, remembered,
 	if err != nil {
 		return "", err
 	}
-	_ = s.users.MarkLogin(ctx, account.ID, time.Now().UnixMilli())
+	if err := s.users.MarkLogin(ctx, account.ID, time.Now().UnixMilli()); err != nil {
+		slog.WarnContext(ctx, "could not record the sign-in", "user", account.ID, "error", err)
+	}
 	return token, nil
 }
 
@@ -755,7 +823,15 @@ func (s *Service) DisableTwoFactor(ctx context.Context, account user.User, code,
 	if err := s.spendCode(ctx, account, code, ip); err != nil {
 		return user.User{}, err
 	}
-	updated, err := s.clearTwoFactor(ctx, account.ID, nil)
+	// The check above reads the caller's snapshot, which can predate a
+	// promotion or a policy change. The same test is repeated on the row read
+	// under the account lock, inside the transaction that deletes the factor.
+	updated, err := s.clearTwoFactor(ctx, account.ID, func(_ database.Queryer, fresh user.User) error {
+		if s.TwoFactorMandatory(fresh) {
+			return ErrTwoFactorMandatory
+		}
+		return nil
+	})
 	if err != nil {
 		return user.User{}, err
 	}
@@ -960,10 +1036,16 @@ func (s *Service) TwoFactorAdoption(ctx context.Context) (TwoFactorAdoption, err
 
 func (s *Service) rememberCookieName() string { return s.cfg.CookieName + "_2fa" }
 
-func (s *Service) rememberSignature(userID string, issuedAt, epoch int64) string {
+// rememberSignature also binds the cookie to the password hash it was issued
+// under. Without that a remembered browser outlives a password change: somebody
+// holding the cookie and the password that came after it would still skip the
+// code. The digest keeps the hash itself out of the cookie.
+func (s *Service) rememberSignature(userID string, issuedAt, epoch int64, credential string) string {
+	credentialDigest := sha256.Sum256([]byte(credential))
 	mac := hmac.New(sha256.New, s.twoFactorKey)
 	mac.Write([]byte("remember\x00" + userID + "\x00" +
-		strconv.FormatInt(issuedAt, 10) + "\x00" + strconv.FormatInt(epoch, 10)))
+		strconv.FormatInt(issuedAt, 10) + "\x00" + strconv.FormatInt(epoch, 10) + "\x00" +
+		base64.RawURLEncoding.EncodeToString(credentialDigest[:])))
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
@@ -976,7 +1058,7 @@ func (s *Service) RememberedFrom(r *http.Request) string {
 	return cookie.Value
 }
 
-func (s *Service) rememberedBrowser(value string, account user.User) bool {
+func (s *Service) rememberedBrowser(ctx context.Context, value string, account user.User) bool {
 	days := s.RememberDays()
 	if value == "" || days <= 0 || !s.TwoFactorAvailable() || !account.TwoFactorEnabled() {
 		return false
@@ -989,7 +1071,11 @@ func (s *Service) rememberedBrowser(value string, account user.User) bool {
 	if err != nil {
 		return false
 	}
-	want := s.rememberSignature(account.ID, issuedAt, account.TwoFactorAt)
+	credential, err := s.users.PasswordHash(ctx, nil, account.ID)
+	if err != nil {
+		return false
+	}
+	want := s.rememberSignature(account.ID, issuedAt, account.TwoFactorAt, credential)
 	if !hmac.Equal([]byte(parts[2]), []byte(want)) {
 		return false
 	}
@@ -1000,15 +1086,19 @@ func (s *Service) rememberedBrowser(value string, account user.User) bool {
 
 // Remember sets the cookie after a code was accepted and asked to be
 // remembered. It does nothing where the operator has not allowed it.
-func (s *Service) Remember(w http.ResponseWriter, account user.User) {
+func (s *Service) Remember(ctx context.Context, w http.ResponseWriter, account user.User) {
 	days := s.RememberDays()
 	if days <= 0 || !s.TwoFactorAvailable() || !account.TwoFactorEnabled() {
+		return
+	}
+	credential, err := s.users.PasswordHash(ctx, nil, account.ID)
+	if err != nil {
 		return
 	}
 	issuedAt := time.Now().UnixMilli()
 	http.SetCookie(w, &http.Cookie{
 		Name:     s.rememberCookieName(),
-		Value:    account.ID + "." + strconv.FormatInt(issuedAt, 10) + "." + s.rememberSignature(account.ID, issuedAt, account.TwoFactorAt),
+		Value:    account.ID + "." + strconv.FormatInt(issuedAt, 10) + "." + s.rememberSignature(account.ID, issuedAt, account.TwoFactorAt, credential),
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   s.cfg.SecureCookie,

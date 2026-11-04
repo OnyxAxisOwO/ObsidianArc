@@ -65,6 +65,32 @@ var (
 	fieldsFrozen atomic.Bool
 )
 
+// storedColumns are the core's columns that no query here selects into a User
+// but that exist on the table: the folded login names, the password hash, the
+// invite counter and the sign-up rate key. A field is written by any account's
+// own profile edit, so one named like these would let a user rewrite who they
+// log in as, reset a counter the invite rewards are limited by, or choose the
+// address group its sign-up is counted in. A test holds this list and
+// baseColumns together to the migrated schema, so a column added to users
+// without being listed fails there, not in production.
+var storedColumns = []string{"username_lower", "email_lower", "password_hash", "invite_reward_count", "signup_rate_key"}
+
+// isCoreColumn reports whether key is a column of the users table the core
+// owns.
+func isCoreColumn(key string) bool {
+	for _, core := range strings.Split(baseColumns, ",") {
+		if strings.TrimSpace(core) == key {
+			return true
+		}
+	}
+	for _, core := range storedColumns {
+		if core == key {
+			return true
+		}
+	}
+	return false
+}
+
 // DefineField adds a plugin's column. Called from the plugin's init.
 func DefineField(f Field) {
 	if fieldsFrozen.Load() {
@@ -73,10 +99,14 @@ func DefineField(f Field) {
 	if !fieldKeyRE.MatchString(f.Key) {
 		panic("user: invalid field key " + f.Key)
 	}
-	for _, core := range strings.Split(baseColumns, ",") {
-		if strings.TrimSpace(core) == f.Key {
-			panic("user: field " + f.Key + " is a core column")
-		}
+	if isCoreColumn(f.Key) {
+		panic("user: field " + f.Key + " is a core column")
+	}
+	// An empty owner reads as core, which is always on: the column would then
+	// be selected and written on every account even while its migration has
+	// not run or was purged.
+	if f.Plugin == "" {
+		panic("user: field " + f.Key + " has no owning plugin")
 	}
 	for _, other := range fields {
 		if other.Key == f.Key {
@@ -170,10 +200,8 @@ func (s *Store) checkNewField(f Field, plugin string) error {
 	if !fieldKeyRE.MatchString(f.Key) {
 		return fmt.Errorf("user: invalid field key %s", f.Key)
 	}
-	for _, core := range strings.Split(baseColumns, ",") {
-		if strings.TrimSpace(core) == f.Key {
-			return fmt.Errorf("user: field %s is a core column", f.Key)
-		}
+	if isCoreColumn(f.Key) {
+		return fmt.Errorf("user: field %s is a core column", f.Key)
 	}
 	for _, other := range fields {
 		if other.Key == f.Key {
@@ -301,10 +329,31 @@ func (s *Store) takenField(message string) string {
 		if !f.Unique {
 			continue
 		}
-		if strings.Contains(message, "users."+f.Key) || strings.Contains(message, "ux_users_"+f.Key) ||
-			strings.Contains(message, "("+f.Key+")") {
+		if namesColumn(message, "users."+f.Key) || namesColumn(message, "ux_users_"+f.Key) ||
+			namesColumn(message, "("+f.Key+")") {
 			return f.Key
 		}
 	}
 	return ""
+}
+
+// namesColumn reports whether message contains name as a whole identifier. A
+// bare substring match let a field keyed user claim users.username_lower, and
+// wechat claim users.wechat_id, so the byte after the match must end the name.
+func namesColumn(message, name string) bool {
+	for rest := message; ; {
+		at := strings.Index(rest, name)
+		if at < 0 {
+			return false
+		}
+		end := at + len(name)
+		if end == len(rest) || !isColumnByte(rest[end]) {
+			return true
+		}
+		rest = rest[end:]
+	}
+}
+
+func isColumnByte(c byte) bool {
+	return c == '_' || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
 }

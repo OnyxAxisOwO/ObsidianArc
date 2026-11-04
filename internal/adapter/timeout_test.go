@@ -120,3 +120,35 @@ func TestNoProviderTimeoutLeavesTheRequestUnbounded(t *testing.T) {
 		t.Errorf("answer = %q", result.Text)
 	}
 }
+
+// The model listing is a provider call like any other, and the operator's
+// timeout bounds it as well: the admin catalogue asks each provider for its
+// list, and a provider that never answers that is no different.
+func TestAProviderTimeoutEndsAModelListingThatNeverAnswers(t *testing.T) {
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		<-release
+	}))
+	defer server.Close()
+	defer close(release)
+
+	started := time.Now()
+	_, err := testRegistry().ListModels(context.Background(),
+		Provider{Kind: KindOpenAI, BaseURL: server.URL, APIKey: "k", Timeout: 300 * time.Millisecond})
+	if err == nil {
+		t.Fatal("a provider that never listed its models was not given up on")
+	}
+	// The transport's own header timeout is five seconds in the test registry,
+	// so anything past three means the provider's setting was not the bound.
+	if elapsed := time.Since(started); elapsed > 3*time.Second {
+		t.Errorf("gave up after %s; the timeout is 300ms", elapsed)
+	}
+
+	var upstream *Error
+	if !asAdapterError(err, &upstream) {
+		t.Fatalf("error is not an adapter error: %v", err)
+	}
+	if upstream.Kind != ErrorNetwork {
+		t.Errorf("kind = %v, want %v", upstream.Kind, ErrorNetwork)
+	}
+}

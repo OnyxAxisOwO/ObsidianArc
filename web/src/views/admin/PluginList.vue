@@ -5,16 +5,21 @@
 // masked while safe mode is on is the backoffice's, so the plugin marks
 // such cells and this component masks them.
 
-import { computed, onMounted, ref } from 'vue';
-import { ApiError } from '@/api/client';
+import { computed, onMounted, ref, watch } from 'vue';
+import { rememberedPageSize } from '@/lib/page-size';
 import { maskUser } from '@/admin/safeMode';
 import OaBadge from '@/components/OaBadge.vue';
 import OaCellStack from '@/components/OaCellStack.vue';
 import OaTable from '@/components/OaTable.vue';
 import type { Column, PageState } from '@/components/table-types';
+import { t } from '@/composables/useI18n';
+import { useLatestRequest } from '@/composables/useLatestRequest';
 import { IconFile } from '@/icons';
-import type { AdminListSpec, ListCell } from '@/plugins/types';
+import type { AdminListSpec, ListCell, RecordDetail } from '@/plugins/types';
 import AdminControlCard from './AdminControlCard.vue';
+import PluginRecordPanel from './PluginRecordPanel.vue';
+import { useOpenRecord } from './openRecord';
+import { failureText } from './shared';
 
 type Row = Record<string, unknown>;
 
@@ -22,8 +27,16 @@ const props = defineProps<{ spec: AdminListSpec }>();
 
 const rows = ref<Row[]>([]);
 const total = ref(0);
-const paging = ref<PageState>({ page: 1, pageSize: 20 });
-const error = ref('');
+const paging = ref<PageState>({ page: 1, pageSize: rememberedPageSize() });
+// Kept apart: a failed page has a retry that loads the page again, and a
+// failed record has none, so one message could not say which it is.
+const listError = ref('');
+const openError = ref('');
+// Each load and each open takes a ticket and only the newest answer is shown:
+// a page change or a second row click does not wait for the one before it, so
+// the older answer can land last.
+const pageRequest = useLatestRequest();
+const openRequest = useLatestRequest();
 
 const columns = computed<Array<Column<Row>>>(() => props.spec.columns.map((column) => ({
   key: column.key,
@@ -33,14 +46,17 @@ const columns = computed<Array<Column<Row>>>(() => props.spec.columns.map((colum
 })));
 
 async function load(): Promise<void> {
-  error.value = '';
+  const ticket = pageRequest.begin();
+  listError.value = '';
   try {
     const result = await props.spec.load(
       (paging.value.page - 1) * paging.value.pageSize, paging.value.pageSize);
+    if (!pageRequest.isCurrent(ticket)) return;
     rows.value = result.rows;
     total.value = result.total;
   } catch (failure) {
-    error.value = failure instanceof ApiError ? failure.message : String(failure);
+    if (!pageRequest.isCurrent(ticket)) return;
+    listError.value = failureText(failure);
   }
 }
 
@@ -59,26 +75,105 @@ function cell(key: string, row: Row): ListCell {
   };
 }
 
+// The record open beside the table, when the plugin lets its rows open.
+const opened = ref<RecordDetail | null>(null);
+const openedRow = ref<Row | null>(null);
+// Each record opened gets a key of its own. The panel keeps its drafts from
+// setup, so two records sharing a key would show the first one's typing on the
+// second; rows are not required to carry an id to tell them apart.
+const openedKey = ref(0);
+
+// One record open per page: another list taking the panel closes this one's.
+// Only another list taking it counts: its closing leaves this list's own open
+// in flight, which is still the record the reader last asked for.
+const self = Symbol(props.spec.id);
+const openOwner = useOpenRecord();
+watch(openOwner, (owner) => {
+  if (owner !== null && owner !== self) close();
+});
+
+// Closing also retires an open still in flight. Without that, a record the
+// reader had already dismissed would appear once its detail arrived.
+function close(): void {
+  openRequest.invalidate();
+  opened.value = null;
+  openedRow.value = null;
+  if (openOwner.value === self) openOwner.value = null;
+}
+
+async function open(row: Row): Promise<void> {
+  if (!props.spec.detail) return;
+  const ticket = openRequest.begin();
+  openError.value = '';
+  try {
+    const detail = await props.spec.detail(row);
+    if (!openRequest.isCurrent(ticket)) return;
+    openOwner.value = self;
+    opened.value = detail;
+    openedRow.value = row;
+    openedKey.value = ticket;
+  } catch (failure) {
+    if (!openRequest.isCurrent(ticket)) return;
+    openError.value = failureText(failure);
+  }
+}
+
+// An action may have moved the row (a pending report is now decided), so the
+// table and the open record are both read again.
+async function acted(): Promise<void> {
+  // Read before the load: an open that starts while the table is read again
+  // must be seen as newer than this refresh, or the record it fetched would
+  // overwrite the one it opened.
+  const before = openRequest.current();
+  const row = openedRow.value;
+  await load();
+  if (!row || !props.spec.detail || !openRequest.isCurrent(before)) return;
+  try {
+    const detail = await props.spec.detail(row);
+    // Closing the panel during the fetch must not reopen it on this record.
+    if (openRequest.isCurrent(before) && openedRow.value === row) opened.value = detail;
+  } catch {
+    // The panel keeps what it showed; the action's own answer is on it.
+  }
+}
+
 onMounted(load);
 </script>
 
 <template>
   <AdminControlCard :id="spec.id" class="oa-control-card-wide" :title="spec.title()" :hint="spec.hint?.() ?? ''" :icon="spec.icon ?? IconFile">
-    <p v-if="error" class="oa-field-hint">{{ error }}</p>
+    <!-- The table stays under the error: its page controls are the only way to
+         ask for another page, so hiding them leaves one failed page stuck. -->
+    <p v-if="listError" class="oa-field-hint">
+      {{ listError }}
+      <button type="button" class="oa-btn small" @click="load()">{{ t('tryAgain') }}</button>
+    </p>
+    <p v-if="openError" class="oa-field-hint">{{ openError }}</p>
     <OaTable
-      v-else
       :pagination="{ ...paging, total }"
       :columns="columns"
       :rows="rows"
       :empty="spec.empty()"
+      :selectable="!!spec.detail"
       @page="changePage"
+      @select="open"
     >
       <template v-for="column in spec.columns" :key="column.key" #[`cell-${column.key}`]="{ row }">
-        <OaBadge v-if="cell(column.key, row).badge" :tone="cell(column.key, row).badge!.tone">
-          {{ cell(column.key, row).title }}
-        </OaBadge>
-        <OaCellStack v-else :title="cell(column.key, row).title" :sub="cell(column.key, row).sub" />
+        <!-- One call per cell: the plugin's cell() runs each time it is read, and
+             a cell can be read for its badge, its text and its sub-line. -->
+        <template v-for="value in [cell(column.key, row)]" :key="column.key">
+          <OaBadge v-if="value.badge" :tone="value.badge.tone">{{ value.title }}</OaBadge>
+          <OaCellStack v-else :title="value.title" :sub="value.sub" />
+        </template>
       </template>
     </OaTable>
   </AdminControlCard>
+
+  <PluginRecordPanel
+    v-if="opened"
+    :key="openedKey"
+    :detail="opened"
+    @close="close"
+    @done="acted"
+  />
 </template>

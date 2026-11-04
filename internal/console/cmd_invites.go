@@ -51,6 +51,14 @@ func normaliseInviteRef(raw string) string {
 	return out.String()
 }
 
+// The server takes at most 200 rows a page. The cap on pages bounds a search
+// text short enough to match nearly every code: past it the operator is asked
+// for the full code rather than left to wait on hundreds of requests.
+const (
+	inviteSearchPageSize = 200
+	inviteSearchMaxPages = 25
+)
+
 // resolveInviteRef resolves ref to an invite code's id via
 // GET /api/admin/invites, the same shape resolveUserRef gives account
 // commands. The code text is tried first and an id only after: a custom
@@ -60,24 +68,40 @@ func normaliseInviteRef(raw string) string {
 // "invite revoke ab12-cd34" and "invite revoke AB12CD34" both work.
 func resolveInviteRef(rt *Runtime, ref string) (string, error) {
 	norm := normaliseInviteRef(ref)
-	q := url.Values{"kind": {"all"}, "status": {"all"}, "q": {norm}, "limit": {"50"}}
-	data, _, err := rt.Call(http.MethodGet, "/api/admin/invites?"+q.Encode(), nil)
-	if err != nil {
-		return "", err
-	}
-	for _, raw := range asSlice(asMap(data)["codes"]) {
-		c := asMap(raw)
-		if asStr(c["code"]) == norm {
-			return asStr(c["id"]), nil
+	// The search is newest-first, so an older exact match can sit past the first
+	// page. Pages are read until the code turns up or the search is exhausted;
+	// "no such invite code" is only true once every match has been seen.
+	for offset, pages := 0, 0; ; pages++ {
+		if pages == inviteSearchMaxPages {
+			return "", rt.Fail(Text{
+				EN: fmt.Sprintf("more than %d codes match: give the full code", inviteSearchMaxPages*inviteSearchPageSize),
+				ZH: fmt.Sprintf("匹配的邀请码超过 %d 个，请给出完整的邀请码", inviteSearchMaxPages*inviteSearchPageSize),
+			})
+		}
+		q := url.Values{
+			"kind": {"all"}, "status": {"all"}, "q": {norm},
+			"limit": {strconv.Itoa(inviteSearchPageSize)}, "offset": {strconv.Itoa(offset)},
+		}
+		data, _, err := rt.Call(http.MethodGet, "/api/admin/invites?"+q.Encode(), nil)
+		if err != nil {
+			return "", err
+		}
+		page := asSlice(asMap(data)["codes"])
+		for _, raw := range page {
+			c := asMap(raw)
+			if asStr(c["code"]) == norm {
+				return asStr(c["id"]), nil
+			}
+		}
+		offset += len(page)
+		if len(page) == 0 || offset >= int(asNum(asMap(data)["total"])) {
+			break
 		}
 	}
 	if id.Valid(ref) {
 		return ref, nil
 	}
-	if rt.Session.Lang == "zh" {
-		return "", fmt.Errorf("没有这个邀请码")
-	}
-	return "", fmt.Errorf("no such invite code")
+	return "", rt.Fail(Text{EN: fmt.Sprintf("no such invite code"), ZH: fmt.Sprintf("没有这个邀请码")})
 }
 
 // parseDateFlag reads an inclusive calendar date ("2006-01-02"): the code
@@ -92,10 +116,7 @@ func parseDateFlag(rt *Runtime, flag string) (int64, error) {
 	raw := rt.String(flag)
 	t, err := time.ParseInLocation("2006-01-02", raw, time.Local)
 	if err != nil {
-		if rt.Session.Lang == "zh" {
-			return 0, fmt.Errorf("--%s 需要 YYYY-MM-DD 格式的日期", flag)
-		}
-		return 0, fmt.Errorf("--%s needs a date in YYYY-MM-DD format", flag)
+		return 0, rt.Fail(Text{EN: fmt.Sprintf("--%s needs a date in YYYY-MM-DD format", flag), ZH: fmt.Sprintf("--%s 需要 YYYY-MM-DD 格式的日期", flag)})
 	}
 	return t.AddDate(0, 0, 1).UnixMilli(), nil
 }
@@ -121,10 +142,7 @@ func parseGroupDays(rt *Runtime, raw string) (days, daysMax int, err error) {
 }
 
 func badGroupDays(rt *Runtime) error {
-	if rt.Session.Lang == "zh" {
-		return fmt.Errorf("--group-days 需要一个整数，或 N-M 形式的区间")
-	}
-	return fmt.Errorf("--group-days needs an integer, or a range like N-M")
+	return rt.Fail(Text{EN: "--group-days needs an integer, or a range like N-M", ZH: "--group-days 需要一个整数，或 N-M 形式的区间"})
 }
 
 // inviteCodeRow renders one Code the same way in `invite list` and
@@ -153,7 +171,7 @@ func inviteCodeRow(c map[string]any) []string {
 	}
 	return []string{
 		asStr(c["id"]), displayInviteCode(asStr(c["code"])), asStr(c["kind"]), name, asStr(c["status"]),
-		owner, group, fmt.Sprint(asNum(c["uses"])), fmt.Sprint(asNum(c["claims"])), maxUses,
+		owner, group, formatNumber(asNum(c["uses"])), formatNumber(asNum(c["claims"])), maxUses,
 		formatMS(c["expires_at"]), formatMS(c["created_at"]),
 	}
 }
@@ -161,6 +179,12 @@ func inviteCodeRow(c map[string]any) []string {
 var inviteListHeaders = []string{
 	"id", "code", "kind", "name", "status", "owner", "group", "uses", "claims", "max_uses", "expires", "created",
 }
+
+// maxInviteDays is a sanity limit on --days, not an overflow guard: the expiry
+// is computed with AddDate, which does the calendar arithmetic in days. The
+// old time.Duration(days)*24*time.Hour wrapped past about 106,750 days, so that
+// is the ceiling this bound must stay under.
+const maxInviteDays = 100000
 
 func init() {
 	registerCommand(Command{
@@ -217,11 +241,8 @@ func init() {
 				return err
 			}
 			if !rt.effectiveJSON() {
-				if rt.Session.Lang == "zh" {
-					rt.Printf("\n共 %v 个\n", asNum(asMap(data)["total"]))
-				} else {
-					rt.Printf("\n%v total\n", asNum(asMap(data)["total"]))
-				}
+				total := formatNumber(asNum(asMap(data)["total"]))
+				rt.Say(Text{EN: fmt.Sprintf("\n%v total\n", total), ZH: fmt.Sprintf("\n共 %v 个\n", total)})
 			}
 			return nil
 		},
@@ -244,7 +265,7 @@ func init() {
 				"accepts before it stops working; 0 means unlimited, the shape a partner link wants. " +
 				"--group puts every account that registers with the code into that group; --group-days " +
 				"is how many days the membership lasts, or a range N-M to draw a different random " +
-				"length for each registration (a partner's '3-7 day trial'); 0 alone means permanent. " +
+				"length for each registration (a partner's '3-7 day trial'); 0 alone means permanent, and a range starts at 1 or more. " +
 				"Give at most one of --days (from now) or --expires (a calendar date) for when the code " +
 				"itself stops being redeemable; neither means it never expires.\n\n" +
 				"--partner turns this into a named partner code rather than a plain batch one: it " +
@@ -258,7 +279,7 @@ func init() {
 				"折叠规则与手动输入邀请码相同（大小写和连字符不影响匹配）。--uses 是该码能被使用几次后失效，" +
 				"0 表示不限次数，合作链接通常这样设置。--group 会让用该码注册的账户加入该分组；--group-days " +
 				"是成员身份的天数，也可以给一个区间 N-M，让每次注册各自抽取不同的随机天数（例如合作方的" +
-				"「3-7 天试用」）；单独的 0 表示永久。--days（从现在起）和 --expires（具体日期）最多给一个，" +
+				"「3-7 天试用」）；单独的 0 表示永久，区间的起点至少为 1。--days（从现在起）和 --expires（具体日期）最多给一个，" +
 				"控制邀请码本身何时失效；两者都不给表示永不失效。\n\n" +
 				"--partner 把这个码变成一个命名的合作方码，而不是普通批量码：需要 --code、--group，且数量" +
 				"必须是 1（不给 --count 时默认就是 1）；它还会让这个码可以被**已有账户**领取（见 me invite " +
@@ -267,7 +288,7 @@ func init() {
 		},
 		Flags: []Flag{
 			{Name: "--count", Hint: Text{EN: "how many to generate, 1-500, default 1", ZH: "生成数量，1-500，默认 1"}, Value: "N", Default: "1"},
-			{Name: "--code", Hint: Text{EN: "one custom code instead of generating; only with count 1", ZH: "指定一个自定义码，而非自动生成；仅限数量为 1 时"}, Value: "CUSTOM"},
+			{Name: "--code", Hint: Text{EN: "one custom code instead of generating; only with count 1", ZH: "指定一个自定义码，而非自动生成；仅限数量为 1 时"}, Value: "CUSTOM", Sensitive: true},
 			{Name: "--uses", Hint: Text{EN: "max registrations, 0-100000, 0 = unlimited, default 1", ZH: "最多可注册次数，0-100000，0 表示不限，默认 1"}, Value: "N", Default: "1"},
 			{Name: "--days", Hint: Text{EN: "code expires this many days from now", ZH: "邀请码在这么多天后失效"}, Value: "N"},
 			{Name: "--expires", Hint: Text{EN: "code expires on this calendar date, YYYY-MM-DD", ZH: "邀请码在此日期失效，格式 YYYY-MM-DD"}, Value: "YYYY-MM-DD"},
@@ -287,10 +308,7 @@ func init() {
 		Endpoints:  []string{"POST /api/admin/invites"},
 		Run: func(_ context.Context, rt *Runtime) error {
 			if rt.Present("days") && rt.Present("expires") {
-				if rt.Session.Lang == "zh" {
-					return rt.Errorf("--days 和 --expires 最多给一个")
-				}
-				return rt.Errorf("give at most one of --days or --expires")
+				return rt.Fail(Text{EN: "give at most one of --days or --expires", ZH: "--days 和 --expires 最多给一个"})
 			}
 
 			body := bodyBuilder{}
@@ -312,7 +330,11 @@ func init() {
 				}
 				body["expires_at"] = ms
 			case rt.Present("days"):
-				body["expires_at"] = time.Now().Add(time.Duration(rt.Int("days")) * 24 * time.Hour).UnixMilli()
+				days := rt.Int("days")
+				if days < 1 || days > maxInviteDays {
+					return rt.Fail(Text{EN: fmt.Sprintf("--days must be between 1 and %d", maxInviteDays), ZH: fmt.Sprintf("--days 必须在 1 到 %d 之间", maxInviteDays)})
+				}
+				body["expires_at"] = time.Now().AddDate(0, 0, days).UnixMilli()
 			}
 
 			if rt.Present("group") {
@@ -337,7 +359,8 @@ func init() {
 				body["kind"] = "partner"
 				body["name"] = rt.String("partner")
 			}
-			if rt.Present("no-existing") {
+			// Bool, not Present: "--no-existing false" is given, and must not refuse existing accounts.
+			if rt.Bool("no-existing") {
 				body["allow_existing"] = false
 			}
 
@@ -426,7 +449,7 @@ func init() {
 					if asStr(u["reward_skipped"]) != "" {
 						rewarded = asStr(u["reward_skipped"])
 					} else {
-						rewarded = fmt.Sprintf("+%v cards", asNum(u["reward_cards"]))
+						rewarded = fmt.Sprintf("+%v cards", formatNumber(asNum(u["reward_cards"])))
 					}
 				}
 				// via tells a fresh registration (invite_uses, which can earn
@@ -434,10 +457,16 @@ func init() {
 				// claim (invite_claims, which never does) — see invite.Use.
 				rows = append(rows, []string{
 					asStr(u["user_id"]), asStr(u["username"]), asStr(u["nickname"]), asStr(u["via"]),
-					fmt.Sprint(asNum(u["group_days"])), formatMS(u["created_at"]), rewarded,
+					formatNumber(asNum(u["group_days"])), formatMS(u["created_at"]), rewarded,
 				})
 			}
-			return rt.Table([]string{"user_id", "username", "nickname", "via", "group_days", "joined", "reward"}, rows)
+			if err := rt.Table([]string{"user_id", "username", "nickname", "via", "group_days", "joined", "reward"}, rows); err != nil {
+				return err
+			}
+			if total := int(asNum(asMap(data)["total"])); total > len(rows) && !rt.effectiveJSON() {
+				rt.Say(Text{EN: fmt.Sprintf("showing the newest %d of %d.\n", len(rows), total), ZH: fmt.Sprintf("仅显示最新的 %d 条，共 %d 条。\n", len(rows), total)})
+			}
+			return nil
 		},
 	})
 
@@ -458,9 +487,9 @@ func init() {
 			m := asMap(data)
 			jsonMode := rt.effectiveJSON()
 			if err := rt.Fields([][2]string{
-				{"active", fmt.Sprint(asNum(m["active"]))},
-				{"uses_total", fmt.Sprint(asNum(m["uses_total"]))},
-				{"uses_7d", fmt.Sprint(asNum(m["uses_7d"]))},
+				{"active", formatNumber(asNum(m["active"]))},
+				{"uses_total", formatNumber(asNum(m["uses_total"]))},
+				{"uses_7d", formatNumber(asNum(m["uses_7d"]))},
 			}); err != nil {
 				return err
 			}
@@ -473,7 +502,7 @@ func init() {
 				t := asMap(raw)
 				rows = append(rows, []string{
 					asStr(t["user_id"]), asStr(t["username"]), asStr(t["nickname"]),
-					fmt.Sprint(asNum(t["invites"])), fmt.Sprint(asNum(t["rewarded"])),
+					formatNumber(asNum(t["invites"])), formatNumber(asNum(t["rewarded"])),
 				})
 			}
 			RenderTable(rt.Out, rt.Session.Width, rt.Session.Colour, []string{"user_id", "username", "nickname", "invites", "rewarded"}, rows)
@@ -484,7 +513,7 @@ func init() {
 				p := asMap(raw)
 				partnerRows = append(partnerRows, []string{
 					asStr(p["id"]), displayInviteCode(asStr(p["code"])), asStr(p["name"]),
-					fmt.Sprint(asNum(p["registrations"])), fmt.Sprint(asNum(p["claims"])),
+					formatNumber(asNum(p["registrations"])), formatNumber(asNum(p["claims"])),
 				})
 			}
 			RenderTable(rt.Out, rt.Session.Width, rt.Session.Colour, []string{"id", "code", "name", "registrations", "claims"}, partnerRows)

@@ -6,6 +6,9 @@ var AdminPermissions = []string{
 	"dashboard", "groups", "users", "providers", "models", "availability",
 	"usage", "resources", "codes", "logs", "security", "settings",
 	"announcements", "feedback", "administrators", "invites", "leaderboard",
+	// Reading the administrators' audit trail. Its own grant rather than
+	// part of logs: it shows what every other administrator did.
+	"audit",
 	// The plugins screen, split three ways so a super administrator can let
 	// somebody look without switching, and switch without removing.
 	"plugins", "plugins_manage", "plugins_remove",

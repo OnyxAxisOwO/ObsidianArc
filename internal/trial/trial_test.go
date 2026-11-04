@@ -74,6 +74,75 @@ func TestBudgetForgetsAnExpiredWindow(t *testing.T) {
 	}
 }
 
+// The entry used to be made before the instance ceiling was looked at, so a
+// caller turned away at the door still left something behind — and the
+// refusals are exactly what a flood sends.
+func TestRefusedRequestsAllocateNothing(t *testing.T) {
+	b := newBudget()
+
+	for i := 0; i < burstPerInstance; i++ {
+		if ok, _ := b.take(fmt.Sprintf("203.0.113.%d", i/burstPerAddress)); !ok {
+			t.Fatalf("turn %d was refused before the ceiling", i+1)
+		}
+	}
+	held := len(b.windows)
+
+	for i := 0; i < 2000; i++ {
+		if ok, _ := b.take(fmt.Sprintf("198.51.%d.%d", i/250, i%250)); ok {
+			t.Fatal("a turn past the instance ceiling was allowed")
+		}
+	}
+	if got := len(b.windows); got != held {
+		t.Errorf("%d windows after the refusals, want the %d from before", got, held)
+	}
+}
+
+func TestBudgetWindowsHaveACeiling(t *testing.T) {
+	b := newBudget()
+	now := time.Now()
+	for i := 0; i < maxWindows; i++ {
+		b.windows[fmt.Sprintf("full-%d", i)] = &window{startAt: now}
+	}
+
+	if ok, _ := b.take("198.51.100.7"); ok {
+		t.Fatal("a new address was admitted into a full map")
+	}
+	if len(b.windows) != maxWindows {
+		t.Errorf("map grew to %d", len(b.windows))
+	}
+	// A known address is still served.
+	if ok, _ := b.take("full-3"); !ok {
+		t.Error("a tracked address was refused")
+	}
+
+	// Dead entries are what makes room.
+	for _, w := range b.windows {
+		w.startAt = now.Add(-budgetWindow - time.Minute)
+	}
+	if ok, _ := b.take("198.51.100.7"); !ok {
+		t.Error("the map never made room for a new address")
+	}
+	if len(b.windows) != 1 {
+		t.Errorf("%d windows left after the sweep, want only the new one", len(b.windows))
+	}
+}
+
+func TestBudgetTreatsAnIPv6SubnetAsOneVisitor(t *testing.T) {
+	b := newBudget()
+
+	for i := 0; i < burstPerAddress; i++ {
+		if ok, _ := b.take(fmt.Sprintf("2001:db8:0:1::%x", i+1)); !ok {
+			t.Fatalf("turn %d refused", i+1)
+		}
+	}
+	if ok, _ := b.take("2001:db8:0:1:dead:beef::1"); ok {
+		t.Error("a new address in the same /64 got a fresh budget")
+	}
+	if ok, _ := b.take("2001:db8:0:2::1"); !ok {
+		t.Error("another /64 was refused")
+	}
+}
+
 // --- the turn limit -----------------------------------------------------------
 
 // Counting the turns in the request body was counting a number the client
@@ -193,5 +262,63 @@ func TestTrialOutputIsCappedBelowTheModel(t *testing.T) {
 	// A model that can produce less than the trial allows still wins.
 	if got := trialMaxTokens(120); got != 120 {
 		t.Errorf("with a smaller model ceiling: %d, want 120", got)
+	}
+}
+
+// A turn turned away because every slot is held never reaches the provider, so
+// it must not be charged. Charging it first let a burst that overflowed the
+// slots spend the instance's hourly ceiling, refusing every visitor after it.
+func TestBusyTurnsSpendNothing(t *testing.T) {
+	b := newBudget()
+
+	holds := make([]func(), 0, maxConcurrent)
+	for i := 0; i < maxConcurrent; i++ {
+		release, ok := b.enter()
+		if !ok {
+			t.Fatalf("slot %d of an allowed %d was refused", i+1, maxConcurrent)
+		}
+		holds = append(holds, release)
+	}
+
+	for i := 0; i < 2*burstPerInstance; i++ {
+		_, _, why := b.admit(fmt.Sprintf("198.51.%d.%d", i/250, i%250))
+		if why != refusedBusy {
+			t.Fatalf("turn %d with every slot held: refusal %v, want refusedBusy", i+1, why)
+		}
+	}
+	if b.instance.spent != 0 || len(b.windows) != 0 {
+		t.Errorf("busy refusals spent %d instance turns across %d windows", b.instance.spent, len(b.windows))
+	}
+
+	holds[0]()
+	release, _, why := b.admit("198.51.100.7")
+	if why != admitted {
+		t.Fatalf("a freed slot did not admit the turn: %v", why)
+	}
+	release()
+	if b.instance.spent != 1 {
+		t.Errorf("the admitted turn spent %d instance turns, want 1", b.instance.spent)
+	}
+}
+
+// Refused for the address's own budget, the turn must give its slot back, or
+// a visitor who is out of turns would hold one of the few generations open.
+func TestExhaustedTurnsReleaseTheirSlot(t *testing.T) {
+	b := newBudget()
+	for i := 0; i < burstPerAddress; i++ {
+		release, _, why := b.admit("198.51.100.7")
+		if why != admitted {
+			t.Fatalf("turn %d of an allowed %d refused: %v", i+1, burstPerAddress, why)
+		}
+		release()
+	}
+
+	if _, retryAfter, why := b.admit("198.51.100.7"); why != refusedExhausted {
+		t.Fatalf("turn past the address budget: refusal %v, want refusedExhausted", why)
+	} else if retryAfter <= 0 {
+		t.Errorf("retry after = %v, want a positive wait", retryAfter)
+	}
+	if b.inFlight != 0 {
+		t.Errorf("%d slots still held after a refused turn", b.inFlight)
 	}
 }

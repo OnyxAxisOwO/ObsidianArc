@@ -109,8 +109,15 @@ func TestVerifyConsumesTheTokenExactlyOnce(t *testing.T) {
 		t.Fatalf("issue: %v", err)
 	}
 
+	if again, _ := f.users.ByID(ctx, nil, account.ID); again.EmailProvenAt != 0 {
+		t.Fatal("an address counted as proved before its link was followed")
+	}
 	if _, err := f.auth.Verify(ctx, token); err != nil {
 		t.Fatalf("verify: %v", err)
+	}
+	// Following the link is the proof a provider sign-in may later link on.
+	if again, _ := f.users.ByID(ctx, nil, account.ID); again.EmailProvenAt == 0 {
+		t.Error("following the link did not record the address as proved")
 	}
 	// A verification link is a credential. Replaying it must fail, or a
 	// forwarded mail keeps working forever.
@@ -140,6 +147,9 @@ func TestVerificationCodeConfirmsAndConsumesTheLink(t *testing.T) {
 
 	if err := f.auth.VerifyCode(ctx, account.ID, code); err != nil {
 		t.Fatalf("verify code: %v", err)
+	}
+	if again, _ := f.users.ByID(ctx, nil, account.ID); again.EmailProvenAt == 0 {
+		t.Error("the mailed code did not record the address as proved")
 	}
 	if _, err := f.auth.Verify(ctx, token); !errors.Is(err, ErrVerificationInvalid) {
 		t.Fatalf("link remained usable after code verification: %v", err)
@@ -278,7 +288,7 @@ func TestVerificationCodeBudgetSurvivesResendAndAddressChange(t *testing.T) {
 	}
 
 	newAddress := "member2@example.com"
-	updated, err := f.auth.UpdateProfile(ctx, account.ID, user.ProfileUpdate{Email: &newAddress})
+	updated, err := f.auth.UpdateProfile(ctx, account.ID, user.ProfileUpdate{Email: &newAddress}, "a-good-password")
 	if err != nil {
 		t.Fatalf("change address: %v", err)
 	}
@@ -1031,7 +1041,9 @@ func TestParallelResendsLeaveWithOneLink(t *testing.T) {
 	var deliveredErr error
 	select {
 	case deliveredErr = <-results:
-	case <-time.After(5 * time.Second):
+	// Failed delivery has its own five-second database cleanup deadline;
+	// an equal test deadline races that cleanup on a loaded runner.
+	case <-time.After(15 * time.Second):
 		t.Fatal("held mail request did not return after the connection closed")
 	}
 	wg.Wait()
@@ -1082,4 +1094,60 @@ func holdVerificationMail(t *testing.T, f *fixture) (<-chan struct{}, func()) {
 		releaseMail()
 	})
 	return reached, releaseMail
+}
+
+// The reward is persisted after the verification has committed, so a browser
+// that disconnects at that point must not take the reward with it. The hook
+// cancels the request's own context, the way a dropped connection does, and
+// then looks at the context it was handed.
+func TestRewardAfterVerificationSurvivesADisconnect(t *testing.T) {
+	for _, viaCode := range []bool{false, true} {
+		name := "link"
+		if viaCode {
+			name = "code"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			verifying(t, f)
+			ctx := context.Background()
+			if _, _, err := f.auth.Register(ctx, RegisterInput{Username: "founder", Password: "a-good-password"}); err != nil {
+				t.Fatal(err)
+			}
+			account, _, err := f.auth.Register(ctx, RegisterInput{
+				Username: "member", Email: "member@example.com", Password: "a-good-password",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			token, err := f.auth.issueVerification(ctx, f.db, account.ID, account.Email)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			reqCtx, disconnect := context.WithCancel(ctx)
+			defer disconnect()
+			var offered bool
+			var rewardErr error
+			f.auth.Hooks.RewardInvite = func(rewardCtx context.Context, _ string, _ bool) {
+				disconnect()
+				offered = true
+				rewardErr = rewardCtx.Err()
+			}
+
+			if viaCode {
+				err = f.auth.VerifyCode(reqCtx, account.ID, f.auth.verificationCode(token))
+			} else {
+				_, err = f.auth.Verify(reqCtx, token)
+			}
+			if err != nil {
+				t.Fatalf("verify: %v", err)
+			}
+			if !offered {
+				t.Fatal("the reward was not offered after verification")
+			}
+			if rewardErr != nil {
+				t.Fatalf("the reward ran on a cancelled context: %v", rewardErr)
+			}
+		})
+	}
 }

@@ -57,7 +57,7 @@ function onClosed(): void {
 </script>
 
 <template>
-  <OaOverlay v-slot="{ close }" overlay-class="oa-modal-overlay" @close="onClosed">
+  <OaOverlay v-slot="{ close }" overlay-class="oa-modal-overlay" :label="title" @close="onClosed">
     <div class="oa-auth-card oa-modal-card oa-typed-confirm" role="alertdialog" aria-modal="true" :aria-label="title">
       <OaIconButton class="oa-icon-btn oa-modal-close" :label="t('close')" @click="close">
         <IconClose :size="16" />

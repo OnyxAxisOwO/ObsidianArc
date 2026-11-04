@@ -32,7 +32,10 @@ function visible(id: string): boolean { return visibleIds.value.has(id); }
 function select(id: string): void {
   selected.value = id;
   query.value = '';
-  if (route.hash) void router.replace({ hash: '' });
+  // The query stays whole: a side panel is named in it (usePanelExit), and a
+  // location with only a hash resolves to an empty query, which would take the
+  // panel away along with the anchor.
+  if (route.hash) void router.replace({ path: route.path, query: route.query, hash: '' });
 }
 // Keep global search links working even when their target is in a closed
 // category. v-show in the pages preserves drafts and conditional controls.

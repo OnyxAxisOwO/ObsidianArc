@@ -3,9 +3,12 @@ package invite
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 )
 
 // TestCreatePartnerRequiresItsFourFields checks every combination Create's
@@ -306,5 +309,80 @@ func TestCreateRandomCodeExhaustsRetries(t *testing.T) {
 	}
 	if calls != 5 {
 		t.Fatalf("codeGenerator calls = %d, want 5", calls)
+	}
+}
+
+// The search is a LIKE, and an unescaped "_" matched every row on SQLite. The
+// owner's name is matched lower-cased and escaped, so the underscore is a
+// character in the name and nothing more.
+func TestCodeSearchTreatsWildcardsAsCharacters(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	if err := f.store.settings.SetMany(ctx, map[string]string{
+		settings.InvitesUserEnabled: "true",
+	}); err != nil {
+		t.Fatalf("set settings: %v", err)
+	}
+	underscored := f.account(t, "a_b")
+	plain := f.account(t, "axb")
+	ownUnderscored, err := f.store.PersonalCode(ctx, underscored.ID)
+	if err != nil {
+		t.Fatalf("personal code: %v", err)
+	}
+	if _, err := f.store.PersonalCode(ctx, plain.ID); err != nil {
+		t.Fatalf("personal code: %v", err)
+	}
+
+	codes, total, err := f.store.List(ctx, ListFilter{Query: "_"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(codes) != 1 || codes[0].ID != ownUnderscored.ID {
+		t.Fatalf("searching for \"_\" found %d codes, want only the one owned by a_b", total)
+	}
+
+	upper, total, err := f.store.List(ctx, ListFilter{Query: "A_B"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(upper) != 1 || upper[0].ID != ownUnderscored.ID {
+		t.Fatalf("searching for \"A_B\" found %d codes, want the a_b owner's code", total)
+	}
+}
+
+// Uses stops at maxUsesListed, and nothing in its result said so. UsesTotal
+// is what lets the administrator's audit tell a complete list from the newest
+// page of a longer one.
+func TestUsesTotalCountsWhatTheListLeavesOut(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	target, err := f.groups.Create(ctx, nil, group.CreateInput{Name: "Audit Group"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := f.partnerCode(t, "AUDITCODE", target.ID, 0, 0, 0)
+	now := time.Now().UnixMilli()
+
+	const registrations = maxUsesListed + 1
+	for i := 0; i < registrations; i++ {
+		invitee := f.account(t, fmt.Sprintf("audit-invitee-%03d", i))
+		if _, err := f.db.Exec(ctx,
+			`INSERT INTO invite_uses (user_id, code_id, inviter_id, group_days, created_at, rewarded_at, reward_cards, reward_skipped)
+			 VALUES (?, ?, '', 0, ?, 0, 0, '')`,
+			invitee.ID, code.ID, now-int64(i)); err != nil {
+			t.Fatalf("record use %d: %v", i, err)
+		}
+	}
+
+	uses, err := f.store.Uses(ctx, code.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	total, err := f.store.UsesTotal(ctx, code.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(uses) != maxUsesListed || total != registrations {
+		t.Fatalf("list holds %d and total is %d, want %d and %d", len(uses), total, maxUsesListed, registrations)
 	}
 }

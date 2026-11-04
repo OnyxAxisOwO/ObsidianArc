@@ -4,8 +4,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
 	"runtime/debug"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -13,21 +13,37 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 )
 
-// cspCache holds the last header this middleware built, keyed on the inputs
+// cspCache holds the last policy this middleware assembled, with the inputs
 // that produced it. See SecurityHeaders.
 type cspCache struct {
-	key    string
-	policy string
+	challenge bool
+	extra     string
+	policy    string
 }
 
-// joinOrigins is the extra origins as one space-separated list, blanks and
-// anything carrying a space or a semicolon dropped: an origin is one token
-// of the header, and a value that could end a directive is not an origin.
+// originRE is a scheme, a host that names one machine and an optional port:
+// the host-source of a policy with no wildcard and no path in it. A wildcard
+// here would be a site-wide grant (script-src https://*), and a path would be a
+// narrower grant than the page ever means to give.
+var originRE = regexp.MustCompile(`^https?://(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*|\[[0-9A-Fa-f:.]+\])(?::[0-9]{1,5})?$`)
+
+// ValidOrigin reports whether s may widen the page's policy: an http(s) origin
+// without wildcard or path, or the literal blob:. Everything else a source list
+// can say — a bare scheme, a keyword such as 'unsafe-eval', a wildcard — lets
+// code or data from anywhere in, which nothing that asks for an origin has
+// any business doing.
+func ValidOrigin(s string) bool {
+	return len(s) <= 255 && (s == "blob:" || originRE.MatchString(s))
+}
+
+// joinOrigins is the extra origins as one space-separated list. An origin is
+// one token of the header, so a value that could end a directive is not an
+// origin, and neither is anything ValidOrigin refuses.
 func joinOrigins(origins []string) string {
 	kept := make([]string, 0, len(origins))
 	for _, origin := range origins {
 		origin = strings.TrimSpace(origin)
-		if origin == "" || strings.ContainsAny(origin, " ;,\t\r\n") {
+		if !ValidOrigin(origin) {
 			continue
 		}
 		kept = append(kept, origin)
@@ -131,18 +147,21 @@ func Recover() Middleware {
 					"request_id", RequestIDFrom(r.Context()),
 					"stack", string(debug.Stack()),
 				)
-				if !Committed(w) {
-					_ = WriteJSON(w, http.StatusInternalServerError, map[string]any{
-						"error": map[string]any{
-							"code":    "internal",
-							"message": "Something went wrong on our side.",
-						},
-					})
-				}
+				// The stack is in the log above, so the answer carries only the envelope.
+				writeErrorBody(w, Internal(nil))
 			}()
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// isAPIPath reports whether a request belongs to the JSON API or to the
+// OpenAI-compatible /v1 surface, as opposed to a page or an asset. The logger,
+// the no-store header and the plain-HTTP redirect all ask this question, and
+// they must give the same answer: the logger once kept its own copy without
+// /v1, which demoted successful /v1 calls to debug along with the assets.
+func isAPIPath(path string) bool {
+	return strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/v1/")
 }
 
 // Logger writes one line per request. Static assets are logged at debug so a
@@ -160,7 +179,7 @@ func Logger() Middleware {
 				level = slog.LevelError
 			case rec.status >= 400:
 				level = slog.LevelWarn
-			case !strings.HasPrefix(r.URL.Path, "/api/"):
+			case !isAPIPath(r.URL.Path):
 				level = slog.LevelDebug
 			}
 
@@ -174,6 +193,69 @@ func Logger() Middleware {
 			)
 		})
 	}
+}
+
+// challengeOrigin is the one host Cloudflare Turnstile loads its script from,
+// draws its frame from, and reports to.
+const challengeOrigin = "https://challenges.cloudflare.com"
+
+const avatarImageSources = "https://gravatar.com/avatar/ https://www.gravatar.com/avatar/ https://0.gravatar.com/avatar/ https://1.gravatar.com/avatar/ https://2.gravatar.com/avatar/ https://weavatar.com/avatar/"
+
+// cspPolicy is the one place the policy exists. Every directive is fixed except
+// the origins the script, connection and image lists carry and whether a frame
+// list exists at all, so whatever combination of challenges an operator runs,
+// the output is readable here rather than reconstructed per combination.
+//
+// hashList is the script digests joined with a leading space, or empty. dev
+// replaces the production script rules, so hashList is not consulted then.
+func cspPolicy(dev bool, hashList string, challenge bool, extra string) string {
+	script := "script-src 'self'"
+	connect := "connect-src 'self'"
+	img := "img-src 'self' data: blob:"
+	frame := ""
+	if dev {
+		// Vite serves modules over its own origin and opens a websocket
+		// for hot reload; neither survives the production policy.
+		script += " 'unsafe-inline' 'unsafe-eval'"
+		connect += " ws: wss:"
+	} else if hashList != "" {
+		script += hashList
+	}
+	if challenge {
+		script += " " + challengeOrigin
+		connect += " " + challengeOrigin
+		// 'self' kept: without a frame list default-src grants it, and
+		// a page background drawn in a frame from this origin must not
+		// vanish the moment a challenge is switched on.
+		frame = "frame-src 'self' " + challengeOrigin
+	}
+	if extra != "" {
+		script += " " + extra
+		connect += " " + extra
+		img += " " + extra
+	}
+	// Only avatar image paths are granted; these hosts never join script-src
+	// or connect-src. The client separately validates hashes and parameters.
+	img += " " + avatarImageSources
+	parts := []string{
+		"default-src 'self'",
+		script,
+		"worker-src 'self' blob:",
+		"style-src 'self' 'unsafe-inline'",
+		img,
+		"font-src 'self' data:",
+		connect,
+	}
+	if frame != "" {
+		parts = append(parts, frame)
+	}
+	parts = append(parts,
+		"base-uri 'none'",
+		"form-action 'self'",
+		"frame-ancestors 'none'",
+		"object-src 'none'",
+	)
+	return strings.Join(parts, "; ")
 }
 
 // SecurityHeaders sets the response headers that constrain what a page loaded
@@ -199,8 +281,7 @@ func Logger() Middleware {
 // which is why both take functions rather than flags: the widening follows
 // the setting, and switching a challenge off takes its exception away with
 // it.
-const challengeOrigin = "https://challenges.cloudflare.com"
-
+//
 // challenging reports whether the Turnstile challenge is configured. Nil
 // means never; the same is true of origins, which reports the scheme and host
 // of every in-page service currently in use, or nothing.
@@ -211,61 +292,15 @@ func SecurityHeaders(dev bool, scriptHashes []string, challenging func() bool, o
 		hashList = " " + strings.Join(scriptHashes, " ")
 	}
 
-	// assemble is the one place the policy exists. Every directive is fixed
-	// except the origins the script, connection and image lists carry and
-	// whether a frame list exists at all — so whatever combination of
-	// challenges an operator runs, the output is readable here in one place
-	// rather than reconstructed per combination.
-	assemble := func(challenge bool, extra string) string {
-		script := "script-src 'self'"
-		connect := "connect-src 'self'"
-		img := "img-src 'self' data: blob:"
-		frame := ""
-		if dev {
-			// Vite serves modules over its own origin and opens a websocket
-			// for hot reload; neither survives the production policy.
-			script += " 'unsafe-inline' 'unsafe-eval'"
-			connect += " ws: wss:"
-		} else if hashList != "" {
-			script += hashList
-		}
-		if challenge {
-			script += " " + challengeOrigin
-			connect += " " + challengeOrigin
-			frame = "frame-src " + challengeOrigin
-		}
-		if extra != "" {
-			script += " " + extra
-			connect += " " + extra
-			img += " " + extra
-		}
-		parts := []string{
-			"default-src 'self'",
-			script,
-			"worker-src 'self' blob:",
-			"style-src 'self' 'unsafe-inline'",
-			img,
-			"font-src 'self' data:",
-			connect,
-		}
-		if frame != "" {
-			parts = append(parts, frame)
-		}
-		parts = append(parts,
-			"base-uri 'none'",
-			"form-action 'self'",
-			"frame-ancestors 'none'",
-			"object-src 'none'",
-		)
-		return strings.Join(parts, "; ")
-	}
-
-	// The inputs change about never, and building the string on every
-	// request would be the only allocation in this middleware — so the last
-	// answer is kept and reused until the inputs move. A racy store is
-	// harmless: two requests computing the same policy store the same thing.
+	// The policy is a function of two inputs, and the last one assembled is
+	// reused while both still match, since assembling it is most of the work
+	// this middleware does per request. The origins are read on every request
+	// because the set can change at any time, so joinOrigins still runs each
+	// time; only the assembly is saved. The store starts empty rather than with
+	// a zero cspCache, which would match a request that has neither input and
+	// send an empty policy. A racy store is harmless: two requests computing the
+	// same policy store the same thing.
 	var memo atomic.Pointer[cspCache]
-	memo.Store(&cspCache{})
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -275,13 +310,12 @@ func SecurityHeaders(dev bool, scriptHashes []string, challenging func() bool, o
 				extra = joinOrigins(origins())
 			}
 
-			key := strconv.FormatBool(challenge) + "|" + extra
 			active := ""
-			if got := memo.Load(); got != nil && got.key == key {
+			if got := memo.Load(); got != nil && got.challenge == challenge && got.extra == extra {
 				active = got.policy
 			} else {
-				active = assemble(challenge, extra)
-				memo.Store(&cspCache{key: key, policy: active})
+				active = cspPolicy(dev, hashList, challenge, extra)
+				memo.Store(&cspCache{challenge: challenge, extra: extra, policy: active})
 			}
 
 			header := w.Header()
@@ -297,7 +331,7 @@ func SecurityHeaders(dev bool, scriptHashes []string, challenging func() bool, o
 			// Authorization-header cache rules. Make the default safe for
 			// conversations, account details, admin data, and generated output.
 			// File handlers that intentionally permit private caching overwrite it.
-			if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/v1/") {
+			if isAPIPath(r.URL.Path) {
 				header.Set("Cache-Control", "no-store")
 			}
 			if !dev {
@@ -312,8 +346,9 @@ func SecurityHeaders(dev bool, scriptHashes []string, challenging func() bool, o
 // site. Together with a SameSite=Lax session cookie this is the whole CSRF
 // defence: no token table, no hidden form field, nothing to keep in sync.
 //
-// Sec-Fetch-Site is checked first because every current browser sends it and
-// it cannot be set by page script. Origin is the fallback for the rest.
+// The operator's allowlist is consulted first, then Sec-Fetch-Site, because
+// every current browser sends that header and page script cannot set it.
+// Origin is the fallback for clients that send no Sec-Fetch-Site.
 func SameOrigin(allowed []string) Middleware {
 	permitted := map[string]bool{}
 	for _, origin := range allowed {
@@ -328,6 +363,16 @@ func SameOrigin(allowed []string) Middleware {
 				return
 			}
 
+			// An operator-listed origin is checked before Sec-Fetch-Site:
+			// every current browser sends that header, so a cross-site or
+			// same-site origin the operator deliberately allowed would
+			// otherwise never reach this list.
+			origin := strings.ToLower(strings.TrimSpace(r.Header.Get("Origin")))
+			if origin != "" && permitted[strings.TrimRight(origin, "/")] {
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			switch r.Header.Get("Sec-Fetch-Site") {
 			case "same-origin", "none":
 				next.ServeHTTP(w, r)
@@ -337,15 +382,10 @@ func SameOrigin(allowed []string) Middleware {
 				return
 			}
 
-			origin := strings.ToLower(strings.TrimSpace(r.Header.Get("Origin")))
 			if origin == "" {
 				// No Origin and no Sec-Fetch-Site: an old browser or a
 				// non-browser client. A session cookie would not have been
 				// attached cross-site in the first place, so this is allowed.
-				next.ServeHTTP(w, r)
-				return
-			}
-			if permitted[strings.TrimRight(origin, "/")] {
 				next.ServeHTTP(w, r)
 				return
 			}

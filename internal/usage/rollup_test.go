@@ -554,6 +554,9 @@ func TestFilterUsesRollupBoundaries(t *testing.T) {
 		{"since and until equal", Filter{Since: 1000, Until: 1000}, false},
 		{"until before since", Filter{Since: 2000, Until: 1000}, false},
 		{"since and until over 1h", Filter{Since: 1000, Until: 1000 + 3600*1000}, true},
+		{"one account all time", Filter{UserID: "u"}, true},
+		{"one account until only", Filter{UserID: "u", Until: now}, false},
+		{"everyone until only", Filter{Until: now}, false},
 	}
 
 	for _, tc := range cases {
@@ -562,5 +565,68 @@ func TestFilterUsesRollupBoundaries(t *testing.T) {
 				t.Errorf("Filter%+v.usesRollup() = %v, want %v", tc.filter, got, tc.usesRollup)
 			}
 		})
+	}
+}
+
+// An account's all-time totals are read from the rollup, so they must equal
+// what the ledger says: the same figures through the raw path, which an Until
+// bound forces, and the figures the turns were written with.
+func TestAccountAllTimeTotalsAgreeWithTheLedger(t *testing.T) {
+	store, _, usr, grp := rollupFixture(t)
+	ctx := context.Background()
+	now := time.Now().UnixMilli()
+
+	turns := []Record{
+		{UserID: usr.ID, GroupID: grp.ID, ModelID: "m-1", ModelName: "Model 1",
+			InputTokens: 100, OutputTokens: 40, ReasoningTokens: 10, Credits: 1.5,
+			Status: StatusOK, StartedAt: now - 5*3600_000, DurationMS: 200},
+		{UserID: usr.ID, GroupID: grp.ID, ModelID: "m-2", ModelName: "Model 2",
+			InputTokens: 30, Credits: 0.5,
+			Status: StatusError, StartedAt: now - 3*3600_000, DurationMS: 50},
+		// A turn refused before a model was resolved has no model id, which the
+		// model count must leave out.
+		{UserID: usr.ID, GroupID: grp.ID, InputTokens: 7,
+			Status: StatusError, StartedAt: now - 60_000, DurationMS: 5},
+	}
+	for _, turn := range turns {
+		if err := store.Write(ctx, turn); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	allTime := Filter{UserID: usr.ID}
+	if !allTime.usesRollup() {
+		t.Fatal("an account's all-time filter should read the rollup")
+	}
+	fromRollup, err := store.Totals(ctx, allTime)
+	if err != nil {
+		t.Fatalf("rollup totals: %v", err)
+	}
+	ledgerFilter := Filter{UserID: usr.ID, Until: now + 3600_000}
+	if ledgerFilter.usesRollup() {
+		t.Fatal("an Until bound should keep the ledger path")
+	}
+	fromLedger, err := store.Totals(ctx, ledgerFilter)
+	if err != nil {
+		t.Fatalf("ledger totals: %v", err)
+	}
+	if fromRollup != fromLedger {
+		t.Fatalf("rollup totals %+v disagree with the ledger %+v", fromRollup, fromLedger)
+	}
+	want := Totals{Requests: 3, InputTokens: 137, OutputTokens: 40, ReasoningTokens: 10,
+		TotalTokens: 187, Credits: 2.0, Errors: 2, Users: 1, Models: 2, DurationMS: 255}
+	if fromRollup != want {
+		t.Fatalf("totals = %+v, want %+v", fromRollup, want)
+	}
+
+	recent, err := store.Recent(ctx, Filter{UserID: usr.ID, Limit: 2})
+	if err != nil {
+		t.Fatalf("recent: %v", err)
+	}
+	if len(recent) != 2 {
+		t.Fatalf("recent returned %d turns, want 2", len(recent))
+	}
+	if recent[0].ModelID != "" || recent[1].ModelID != "m-2" {
+		t.Fatalf("recent turns out of order: models %q then %q", recent[0].ModelID, recent[1].ModelID)
 	}
 }

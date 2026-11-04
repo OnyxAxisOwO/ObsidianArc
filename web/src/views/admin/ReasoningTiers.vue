@@ -11,7 +11,7 @@ import { ref, watch } from 'vue';
 import type { ReasoningTier } from '@/admin/api';
 import OaIconButton from '@/components/OaIconButton.vue';
 import { t } from '@/composables/useI18n';
-import { IconClose } from '@/icons';
+import { IconClose, IconPlus } from '@/icons';
 
 interface Row {
   id: string;
@@ -28,6 +28,13 @@ const rows = ref<Row[]>(props.modelValue.map((tier) => ({
   budget: tier.budget ? String(tier.budget) : '',
 })));
 
+// A budget that does not parse to a finite number is 0. Infinity is truthy, so
+// a `|| 0` fallback lets it through, and JSON sends it as null.
+function budgetOf(text: string): number {
+  const parsed = Number(text.trim());
+  return Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : 0;
+}
+
 // Half-filled rows are dropped here as well as on the server: a tier with no
 // name would be a blank stop on the slider, and one with no value could never
 // be told apart from its neighbour.
@@ -36,7 +43,7 @@ watch(rows, (next) => {
     .map((row) => ({
       id: row.id.trim(),
       name: row.name.trim(),
-      budget: Math.max(0, Math.trunc(Number(row.budget.trim()) || 0)),
+      budget: budgetOf(row.budget),
     }))
     .filter((tier) => tier.id !== '' && tier.name !== ''));
 }, { deep: true });
@@ -52,8 +59,13 @@ function remove(index: number): void {
 
 <template>
   <div class="oa-field">
-    <span class="oa-field-label">{{ t('reasoningTiers') }}</span>
-    <div class="oa-thinking-tiers">
+    <!-- Adding belongs to the list, so it sits on the list's own heading line
+         rather than as a button alone on a line under it. -->
+    <div class="oa-field-head">
+      <span class="oa-field-label">{{ t('reasoningTiers') }}</span>
+      <button type="button" class="oa-btn small" @click="add"><IconPlus :size="13" />{{ t('addTier') }}</button>
+    </div>
+    <div v-if="rows.length" class="oa-thinking-tiers">
       <div v-for="(row, index) in rows" :key="index" class="oa-thinking-tier">
         <!-- The column headers are the placeholders, which disappear the
              moment a row is filled in, so the name has to survive somewhere a
@@ -88,7 +100,6 @@ function remove(index: number): void {
         </OaIconButton>
       </div>
     </div>
-    <button type="button" class="oa-btn" @click="add">{{ t('addTier') }}</button>
     <span class="oa-field-hint">{{ t('reasoningTiersHint') }}</span>
   </div>
 </template>

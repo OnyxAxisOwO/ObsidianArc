@@ -45,7 +45,7 @@ function toggle(): void {
       :aria-expanded="isOpen"
       @click="toggle"
     >
-      {{ t(props.live ? 'reasoningLive' : 'reasoning') }}
+      <span :class="{ 'ai-shimmer': props.live }">{{ t(props.live ? 'reasoningLive' : 'reasoning') }}</span>
     </button>
     <div class="ai-thinking-content">
       <div ref="body" class="ai-thinking-body">{{ props.text }}</div>

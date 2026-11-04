@@ -1,11 +1,16 @@
 package arc
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"reflect"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // Rows is the result of a query, read whole: the server hands it over in one
@@ -134,50 +139,43 @@ func (r *Rows) Scan(dest ...any) error {
 
 func assign(dest, value any) error {
 	if value == nil {
-		switch d := dest.(type) {
-		case *string:
-			*d = ""
-		case *int:
-			*d = 0
-		case *int64:
-			*d = 0
-		case *bool:
-			*d = false
-		case *float64:
-			*d = 0
-		case *[]byte:
-			*d = nil
-		case *any:
-			*d = nil
+		switch dest.(type) {
+		case *string, *int, *int64, *bool, *float64, *[]byte, *any:
+			// A NULL reads as the type's zero value, which for each of these is
+			// the empty string, 0, false, nil bytes or nil.
+			reflect.ValueOf(dest).Elem().SetZero()
+			return nil
 		default:
 			return fmt.Errorf("cannot scan NULL into %T", dest)
 		}
-		return nil
 	}
 	switch d := dest.(type) {
 	case *any:
 		*d = value
 	case *string:
+		// A BLOB arrives as its tagged object and a list as a slice. Printing
+		// either would hand the plugin Go's syntax for it, with no error.
 		switch v := value.(type) {
 		case string:
 			*d = v
 		case json.Number:
 			*d = v.String()
+		case map[string]any, []any:
+			return fmt.Errorf("cannot scan %T into *string; scan a BLOB into *[]byte", value)
 		default:
 			*d = fmt.Sprint(v)
 		}
-	case *int64:
+	case *int, *int64:
 		n, err := integer(value)
 		if err != nil {
 			return err
 		}
-		*d = n
-	case *int:
-		n, err := integer(value)
-		if err != nil {
-			return err
+		switch p := d.(type) {
+		case *int:
+			*p = int(n)
+		case *int64:
+			*p = n
 		}
-		*d = int(n)
 	case *bool:
 		switch v := value.(type) {
 		case bool:
@@ -202,7 +200,10 @@ func assign(dest, value any) error {
 	case *[]byte:
 		switch v := value.(type) {
 		case map[string]any:
-			enc, _ := v["$b64"].(string)
+			enc, ok := v["$b64"].(string)
+			if !ok {
+				return errors.New("arc: a bytes cell has no $b64 text")
+			}
 			b, err := base64.StdEncoding.DecodeString(enc)
 			if err != nil {
 				return err
@@ -219,6 +220,9 @@ func assign(dest, value any) error {
 	return nil
 }
 
+// integer reads a value as a whole number, and refuses what is not one: text
+// with anything after the digits, or a fraction, would otherwise come back as
+// its leading part with no error.
 func integer(value any) (int64, error) {
 	switch v := value.(type) {
 	case json.Number:
@@ -226,28 +230,41 @@ func integer(value any) (int64, error) {
 			return n, nil
 		}
 		f, err := v.Float64()
-		return int64(f), err
+		if err != nil {
+			return 0, err
+		}
+		if f != math.Trunc(f) || f < math.MinInt64 || f >= math.MaxInt64 {
+			return 0, fmt.Errorf("%s is not a whole number that fits in 64 bits", v)
+		}
+		return int64(f), nil
 	case bool:
 		if v {
 			return 1, nil
 		}
 		return 0, nil
 	case string:
-		var n int64
-		_, err := fmt.Sscan(strings.TrimSpace(v), &n)
-		return n, err
+		return strconv.ParseInt(strings.TrimSpace(v), 10, 64)
 	}
 	return 0, fmt.Errorf("cannot scan %T into an integer", value)
 }
 
-// encodeArgs turns Go values into what the server binds: bytes as a tagged
-// string, everything else as itself.
+// encodeArgs turns Go values into what the server binds. Bytes go as a tagged
+// string, so a BLOB is a BLOB; a nil slice goes as null, which is NULL, because
+// an empty blob would fail IS NULL. A time goes as epoch milliseconds, the
+// convention every BIGINT timestamp in the core uses; sent as text it would
+// sort wrongly beside them. Everything else goes as itself.
 func encodeArgs(args []any) []any {
 	out := make([]any, len(args))
 	for i, a := range args {
 		switch v := a.(type) {
 		case []byte:
+			if v == nil {
+				out[i] = nil
+				continue
+			}
 			out[i] = map[string]string{"$b64": base64.StdEncoding.EncodeToString(v)}
+		case time.Time:
+			out[i] = v.UnixMilli()
 		default:
 			out[i] = a
 		}
@@ -258,7 +275,7 @@ func encodeArgs(args []any) []any {
 // decodeNumbers decodes JSON keeping numbers exact: a 64-bit integer through
 // float64 is a bug that shows up only on the row that matters.
 func decodeNumbers(raw json.RawMessage, v any) error {
-	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 	return dec.Decode(v)
 }

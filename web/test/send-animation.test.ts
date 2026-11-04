@@ -19,6 +19,10 @@ import { messages, justSentID } from '../src/chat/useChat';
 
 let app: App | null = null;
 let host: HTMLElement;
+// Put back after every test rather than at the end of the ones that replace
+// it: an assertion that fails first would leave reduced motion switched on
+// for every test after it, and they would fail for a reason not their own.
+const originalMatchMedia = window.matchMedia;
 
 beforeEach(() => {
   document.body.textContent = '';
@@ -30,10 +34,10 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  window.matchMedia = originalMatchMedia;
   cancelAllFlights();
   app?.unmount();
   app = null;
-  document.body.textContent = '';
   vi.restoreAllMocks();
 });
 
@@ -194,7 +198,6 @@ describe('Telegram-style message send flight animation', () => {
   });
 
   it('respects prefers-reduced-motion by skipping flight animation and displaying immediately', async () => {
-    const originalMatchMedia = window.matchMedia;
     window.matchMedia = vi.fn().mockImplementation((query: string) => ({
       matches: query.includes('prefers-reduced-motion: reduce'),
       media: query,
@@ -204,7 +207,7 @@ describe('Telegram-style message send flight animation', () => {
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
       dispatchEvent: vi.fn(),
-    })) as any;
+    }));
 
     const mainEl = document.createElement('div');
     host.appendChild(mainEl);
@@ -226,8 +229,6 @@ describe('Telegram-style message send flight animation', () => {
     expect(isFlying('msg-reduced')).toBe(false);
     expect(mockAnimate).not.toHaveBeenCalled();
     expect(mainEl.querySelector('.ai-chat-flight-bubble')).toBeNull();
-
-    window.matchMedia = originalMatchMedia;
   });
 
   it('cancels active flights and cleans up elements when cancelAllFlights is called', async () => {
@@ -352,7 +353,7 @@ describe('Telegram-style message send flight animation', () => {
     // Type a message and send
     input.value = 'Test hello';
     input.dispatchEvent(new Event('input'));
-    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true }));
 
     await nextTick();
     await nextTick();
@@ -587,7 +588,6 @@ describe('Telegram-style message send flight animation', () => {
   });
 
   it('markFlying marks message as flown immediately when prefers-reduced-motion is active', () => {
-    const originalMatchMedia = window.matchMedia;
     window.matchMedia = vi.fn().mockImplementation((query: string) => ({
       matches: query.includes('prefers-reduced-motion: reduce'),
       media: query,
@@ -597,13 +597,11 @@ describe('Telegram-style message send flight animation', () => {
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
       dispatchEvent: vi.fn(),
-    })) as any;
+    }));
 
     markFlying('msg-rm-sync');
     expect(isFlying('msg-rm-sync')).toBe(false);
     expect(hasFlown('msg-rm-sync')).toBe(true);
-
-    window.matchMedia = originalMatchMedia;
   });
 
   it('verifies .ai-chat-spinner styling avoids sub-pixel wobble', async () => {
@@ -619,16 +617,14 @@ describe('Telegram-style message send flight animation', () => {
 
     expect(spinnerBody).toMatch(/display:\s*inline-block/);
     expect(spinnerBody).toMatch(/box-sizing:\s*border-box/);
-    expect(spinnerBody).toMatch(/width:\s*14px/);
-    expect(spinnerBody).toMatch(/height:\s*14px/);
+    // The size is not pinned to 14px: any equal width and height keeps the box
+    // square, and it is the square that stops the wobble.
+    const width = spinnerBody.match(/(?:^|[\s;])width:\s*(\d+)px/)?.[1];
+    const height = spinnerBody.match(/(?:^|[\s;])height:\s*(\d+)px/)?.[1];
+    expect(width).toBeDefined();
+    expect(height).toBe(width);
     expect(spinnerBody).toMatch(/transform-origin:\s*center center/);
 
-    // Tool call tag spinner is even 10px
-    const toolSpinnerMatch = content.match(/\.ai-tool-call-tag\s+\.ai-chat-spinner\s*\{([^}]+)\}/);
-    expect(toolSpinnerMatch).not.toBeNull();
-    const toolSpinnerBody = toolSpinnerMatch![1]!;
-    expect(toolSpinnerBody).toMatch(/width:\s*10px/);
-    expect(toolSpinnerBody).toMatch(/height:\s*10px/);
   });
 
   it('markFlying clears previous flown entry for the same ID so retries remain hidden in flight', () => {

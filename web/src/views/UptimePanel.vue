@@ -7,15 +7,17 @@
 // chart with smooth accordion animation.
 
 import { computed, onMounted, ref } from 'vue';
-import { useRouter } from 'vue-router';
 import { api } from '@/api/client';
+import { apiErrorText } from '@/lib/api-error';
 import OaBadge from '@/components/OaBadge.vue';
 import OaFormSection from '@/components/OaFormSection.vue';
-import OaIconButton from '@/components/OaIconButton.vue';
+import OaFullscreenButton from '@/components/OaFullscreenButton.vue';
 import OaLineChart from '@/components/OaLineChart.vue';
 import OaPanel from '@/components/OaPanel.vue';
 import { t } from '@/composables/useI18n';
-import { IconChevron, IconCollapse, IconExpand } from '@/icons';
+import { usePanelExit } from '@/composables/usePanelExit';
+import { usePanelFullscreen } from '@/composables/usePanelFullscreen';
+import { IconChevron } from '@/icons';
 import { maskProvider } from '@/admin/safeMode';
 import { formatUptime } from '@/lib/format';
 import { canAdmin, siteInfo } from '@/stores/session';
@@ -37,10 +39,10 @@ interface UptimeResponse {
   models: ModelUptimeItem[];
 }
 
-const router = useRouter();
+const panels = usePanelExit();
 
 const panel = ref<InstanceType<typeof OaPanel> | null>(null);
-const fullscreen = ref(false);
+const { fullscreen, toggle: toggleFullscreen } = usePanelFullscreen(() => panel.value);
 
 const loading = ref(true);
 const error = ref('');
@@ -81,9 +83,6 @@ function collapseAll(): void {
   expanded.value = new Set();
 }
 
-function toggleFullscreen(): void {
-  fullscreen.value = panel.value?.toggleFullscreen() ?? false;
-}
 
 async function load(): Promise<void> {
   loading.value = true;
@@ -91,7 +90,7 @@ async function load(): Promise<void> {
   try {
     data.value = await api.get<UptimeResponse>('/api/uptime');
   } catch (err) {
-    error.value = err instanceof Error ? err.message : t('failed');
+    error.value = apiErrorText(err);
   } finally {
     loading.value = false;
   }
@@ -109,17 +108,10 @@ onMounted(load);
     :busy="loading"
     :error="error"
     body-class="oa-uptime-body"
-    @close="router.replace('/')"
+    @close="panels.close('replace')"
   >
     <template #actions>
-      <OaIconButton
-        class="oa-icon-btn"
-        :label="t(fullscreen ? 'exitFullscreen' : 'fullscreen')"
-        @click="toggleFullscreen"
-      >
-        <IconCollapse v-if="fullscreen" :size="16" />
-        <IconExpand v-else :size="16" />
-      </OaIconButton>
+      <OaFullscreenButton :fullscreen="fullscreen" @toggle="toggleFullscreen" />
     </template>
 
     <div v-if="data" class="oa-uptime-content">
@@ -219,10 +211,10 @@ onMounted(load);
                   :state="model.state"
                 />
                 <div class="oa-uptime-card-stats">
-                  <span class="oa-uptime-stat-item">
+                  <span>
                     {{ t('statRequests') }}: <strong>{{ model.total ?? 0 }}</strong>
                   </span>
-                  <span v-if="model.uptime !== undefined" class="oa-uptime-stat-item">
+                  <span v-if="model.uptime !== undefined">
                     {{ t('uptimeDayTitle') }}: <strong>{{ (model.uptime * 100).toFixed(1) }}%</strong>
                   </span>
                 </div>

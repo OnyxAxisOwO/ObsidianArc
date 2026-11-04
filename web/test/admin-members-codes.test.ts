@@ -1,19 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, shallowRef, type App, type Component } from 'vue';
+import { type Component } from 'vue';
 import AdminCodes from '../src/views/admin/AdminCodes.vue';
 import AdminUsers from '../src/views/admin/AdminUsers.vue';
 import GroupMembers from '../src/views/admin/GroupMembers.vue';
-import { adminApi, emptyPolicy, type Group, type RedemptionCode } from '../src/admin/api';
+import { adminApi, adminQueryParams, emptyPolicy, type Group, type RedemptionCode } from '../src/admin/api';
 import type { Account } from '../src/api/auth';
 import { saveAsFile } from '../src/api/backup';
-import { provideAdminView } from '../src/views/admin/adminView';
-import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
+import { MASK_PLACEHOLDER, safeModeCategories, safeModeEnabled } from '../src/admin/safeMode';
 import { adopt, forget } from '../src/stores/session';
+import { adminShell, mountComponent, settle, button } from './helpers';
+import { queriesSent } from './admin-query';
+import { makeAccount } from './fixtures/account';
 
 vi.mock('../src/api/backup', () => ({ saveAsFile: vi.fn() }));
 
-let app: App | undefined;
+let unmount: (() => void) | undefined;
 let host: HTMLElement;
 let panels: HTMLElement;
 let actions: HTMLElement;
@@ -27,27 +29,16 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  app?.unmount();
-  app = undefined;
-  document.body.textContent = '';
+  unmount?.();
+  unmount = undefined;
   vi.restoreAllMocks();
   forget();
   vi.mocked(saveAsFile).mockClear();
 });
 
-async function settle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await nextTick();
-}
 
-async function mount(component: Component, props = {}): Promise<void> {
-  app = createApp({ setup() {
-    providePanelHost(shallowRef(panels));
-    provideAdminView({ actionsHost: actions, setTitle: () => {}, reload: () => {}, params: [] });
-    return () => h(component, props);
-  } });
-  app.mount(host);
-  await settle();
+async function mount(component: Component, props: Record<string, unknown> = {}): Promise<void> {
+  unmount = await mountComponent(component, props, { host, panels, adminView: adminShell(actions) });
 }
 
 function input(node: HTMLInputElement, value: string): void {
@@ -55,24 +46,15 @@ function input(node: HTMLInputElement, value: string): void {
   node.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
-function button(root: ParentNode, label: string): HTMLButtonElement {
-  const found = [...root.querySelectorAll<HTMLButtonElement>('button')].find((node) => node.textContent?.trim() === label);
-  if (!found) throw new Error(`Button not found: ${label}`);
-  return found;
-}
-
 function code(value: string, at: string): RedemptionCode {
   return { id: value, code: value, cards: 1, claimed: 0, card_days: 10, expires_at: 0, note: '', created_at: new Date(at).getTime() };
 }
 
 describe('administrator roles on the user detail panel', () => {
-  const member: Account = {
-    id: 'member', username: 'member', nickname: 'Member', email: '', bio: '', avatar: '',
-    role: 'user', status: 'active', group_id: '', group_expires_at: 0, admin_permissions: [],
-    created_at: Date.now(), updated_at: Date.now(), last_login_at: 0, group_name: '',
-    email_verified: true, allow_stats: true, allow_delete_conversations: true,
-    api_restricted: false, api_restricted_until: 0, api_restriction_source: '',
-  };
+  const member = makeAccount({
+    id: 'member', username: 'member', nickname: 'Member', email: '', group_id: '', admin_permissions: [],
+    created_at: Date.now(), updated_at: Date.now(), group_name: '',
+  });
 
   async function openMember(permissions: string[]): Promise<void> {
     adopt({ ...member, id: 'operator', role: 'admin', admin_permissions: permissions });
@@ -206,6 +188,27 @@ describe('administrator roles on the user detail panel', () => {
     expect(panels.textContent).not.toContain(t('loading'));
   });
 
+  // A keys request that failed is not an account without keys: the panel says
+  // the keys could not be read, where the empty line would say there are none.
+  it('says the keys could not be read, rather than that there are none', async () => {
+    adopt({ ...member, id: 'operator', role: 'super_admin', admin_permissions: [] });
+    vi.spyOn(adminApi, 'groupOptions').mockResolvedValue({ groups: [] });
+    vi.spyOn(adminApi, 'users').mockResolvedValue({ users: [member], total: 1 });
+    vi.spyOn(adminApi, 'userKeys').mockRejectedValue(new Error('keys unavailable'));
+    vi.spyOn(adminApi, 'user').mockResolvedValue({
+      user: member, policy: emptyPolicy('user', member.id), usage: { windows: [], unlimited: true },
+      lifetime: { requests: 0, input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, total_tokens: 0, credits: 0, errors: 0, users: 0, models: 0, duration_ms: 0 },
+      cards: { total: 0, available: 0, used: 0, expired: 0, cards: [] },
+    });
+    await mount(AdminUsers);
+
+    host.querySelector<HTMLTableRowElement>('tbody tr')!.click();
+    await settle();
+
+    expect(panels.textContent).toContain('keys unavailable');
+    expect(panels.textContent).not.toContain(t('keysEmpty'));
+  });
+
 });
 
 // Granting and moving share one date field and sit next to each other, which
@@ -213,13 +216,10 @@ describe('administrator roles on the user detail panel', () => {
 // be able to mint a new one by pressing the wrong button, and the two must
 // not be able to disagree about which date they read.
 describe('moving the expiry on cards an account already holds', () => {
-  const holder: Account = {
-    id: 'holder', username: 'holder', nickname: 'Holder', email: '', bio: '', avatar: '',
-    role: 'user', status: 'active', group_id: '', group_expires_at: 0, admin_permissions: [],
-    created_at: Date.now(), updated_at: Date.now(), last_login_at: 0, group_name: '',
-    email_verified: true, allow_stats: true, allow_delete_conversations: true,
-    api_restricted: false, api_restricted_until: 0, api_restriction_source: '',
-  };
+  const holder = makeAccount({
+    id: 'holder', username: 'holder', nickname: 'Holder', email: '', group_id: '', admin_permissions: [],
+    created_at: Date.now(), updated_at: Date.now(), group_name: '',
+  });
 
   // Two spendable, one already lapsed — the lapsed one is invisible in the
   // list and still has to be counted by the button that would move it.
@@ -241,6 +241,7 @@ describe('moving the expiry on cards an account already holds', () => {
       lifetime: { requests: 0, input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, total_tokens: 0, credits: 0, errors: 0, users: 0, models: 0, duration_ms: 0 },
       cards: holding,
     });
+    vi.spyOn(adminApi, 'userCards').mockResolvedValue({ cards: holding });
     vi.spyOn(adminApi, 'userKeys').mockResolvedValue({ keys: [] });
     await mount(AdminUsers);
     host.querySelector<HTMLTableRowElement>('tbody tr')!.click();
@@ -272,7 +273,7 @@ describe('moving the expiry on cards an account already holds', () => {
     const move = vi.spyOn(adminApi, 'rescheduleCards').mockResolvedValue({ moved: 1 });
 
     pickDate('2030-01-02T03:04');
-    panels.querySelector<HTMLButtonElement>('.oa-card-row .oa-card-move')!.click();
+    panels.querySelector<HTMLButtonElement>('.oa-held-card .oa-card-reschedule')!.click();
     await settle();
 
     expect(move).toHaveBeenCalledWith(holder.id, {
@@ -288,7 +289,7 @@ describe('moving the expiry on cards an account already holds', () => {
     await openHolder();
     const drop = vi.spyOn(adminApi, 'revokeCard').mockResolvedValue(undefined);
 
-    const button = panels.querySelector<HTMLButtonElement>('.oa-card-row .oa-card-drop')!;
+    const button = panels.querySelector<HTMLButtonElement>('.oa-held-card .oa-card-drop')!;
     button.click();
     await settle();
     expect(drop).not.toHaveBeenCalled();
@@ -358,6 +359,24 @@ describe('moving the expiry on cards an account already holds', () => {
 });
 
 describe('redemption code creation and details', () => {
+  it('masks the code in the list while safe mode hides credentials', async () => {
+    vi.spyOn(adminApi, 'codes').mockResolvedValue({ codes: [code('SECRET-CODE-1', '2026-09-13T12:00:00')] });
+    const credentials = safeModeCategories.value.credentials;
+    safeModeEnabled.value = true;
+    safeModeCategories.value.credentials = true;
+    try {
+      await mount(AdminCodes);
+      await settle();
+
+      const row = host.querySelector<HTMLElement>('.oa-table tbody tr')!;
+      expect(row.textContent).not.toContain('SECRET-CODE-1');
+      expect(row.textContent).toContain(MASK_PLACEHOLDER);
+    } finally {
+      safeModeEnabled.value = false;
+      safeModeCategories.value.credentials = credentials;
+    }
+  });
+
   it('shows window variant as title when code has no custom name', async () => {
     const item = { ...code('5H-CODE', '2026-09-13T12:00:00'), windows: ['5h'], name: '' };
     vi.spyOn(adminApi, 'codes').mockResolvedValue({ codes: [item] });
@@ -453,7 +472,7 @@ const accounts = Array.from({ length: 25 }, (_, index) => ({
 describe('group member selection', () => {
   function users(): ReturnType<typeof vi.spyOn> {
     return vi.spyOn(adminApi, 'memberOptions').mockImplementation(async (query) => {
-      const params = new URLSearchParams(query);
+      const params = adminQueryParams(query);
       const offset = Number(params.get('offset'));
       return { users: accounts.slice(offset, offset + 20), total: accounts.length };
     });
@@ -463,7 +482,7 @@ describe('group member selection', () => {
     const listing = users();
     const assign = vi.spyOn(adminApi, 'assignGroupMembers').mockResolvedValue({ updated: 2 });
     await mount(GroupMembers, { group, groups: [group] });
-    expect(listing).toHaveBeenCalledWith(expect.stringContaining('group_id=premium'));
+    expect(queriesSent(listing).some((query) => query.includes('group_id=premium'))).toBe(true);
     host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click();
     button(host, t('next')).click();
     await settle();
@@ -487,7 +506,7 @@ describe('group member selection', () => {
     await settle();
     [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((node) => node.textContent?.trim() === t('allAccounts'))!.click();
     input(host.querySelector<HTMLInputElement>('input[type="search"]')!, 'far-away-account');
-    await vi.waitFor(() => expect(listing).toHaveBeenLastCalledWith('?q=far-away-account&limit=20&offset=0'));
+    await vi.waitFor(() => expect(queriesSent(listing).at(-1)).toBe('q=far-away-account&limit=20&offset=0'));
     await settle();
     host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click();
     input(host.querySelector<HTMLInputElement>('input[type="datetime-local"]')!, '2001-01-01T00:00');
@@ -503,5 +522,31 @@ describe('group member selection', () => {
     expect(assign).toHaveBeenCalledWith('premium', ['user-0'], 0);
     expect(host.textContent).toContain('Save failed');
     expect(host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked).toBe(true);
+  });
+  // A tick made under an earlier search is off the screen once the search
+  // changes. Save must not assign it along with the ones made under the new one.
+  it('does not save a tick made under an earlier search', async () => {
+    const listing = users();
+    // The shared fixture ignores the search term, so the pre-search row would
+    // stay on screen and the test would not exercise an off-screen tick.
+    listing.mockImplementation(async (query: string) => {
+      const q = new URLSearchParams(query).get('q') ?? '';
+      const hits = accounts.filter((a) => a.username.includes(q));
+      return { users: hits, total: hits.length };
+    });
+    const assign = vi.spyOn(adminApi, 'assignGroupMembers').mockResolvedValue({ updated: 1 });
+    await mount(GroupMembers, { group, groups: [group] });
+    host.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')[0]!.click();
+    await settle();
+    input(host.querySelector<HTMLInputElement>('input[type="search"]')!, 'member7');
+    await vi.waitFor(() => expect(queriesSent(listing).at(-1)).toContain('q=member7'));
+    await settle();
+    expect(host.textContent).toContain(t('membersSelected', { count: 0 }));
+
+    host.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')[0]!.click();
+    await settle();
+    button(host, t('saveMembers')).click();
+    await settle();
+    expect(assign).toHaveBeenCalledWith('premium', ['user-7'], 0);
   });
 });

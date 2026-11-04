@@ -74,12 +74,7 @@ func init() {
 			if _, _, err := rt.Call(http.MethodDelete, "/api/images/generations/"+url.PathEscape(ref), nil); err != nil {
 				return err
 			}
-			if rt.Session.Lang == "zh" {
-				rt.Printf("已删除。\n")
-			} else {
-				rt.Printf("deleted.\n")
-			}
-			return nil
+			return rt.confirm(Text{EN: "deleted.", ZH: "已删除。"})
 		},
 	})
 }

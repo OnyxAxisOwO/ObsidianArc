@@ -1,0 +1,204 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createApp, nextTick, type App } from 'vue';
+import ModelControl from '../src/chat/ModelControl.vue';
+import { models, reasoning, selectedID, setReasoning } from '../src/chat/useModels';
+
+// The real setter reaches the account's preferences over the network; the
+// only thing these tests need from it is whether it was called.
+vi.mock('../src/chat/useModels', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/chat/useModels')>()),
+  setReasoning: vi.fn(),
+}));
+
+const model = {
+  id: 'm1',
+  display_name: 'Model One',
+  description: '',
+  avatar: '',
+  supports_reasoning: true,
+  supports_images: false,
+  supports_vision: false,
+  supports_streaming: true,
+  supports_system_prompt: true,
+  supports_tools: false,
+  supports_image_gen: false,
+  supports_chat_image_gen: false,
+  context_window: 0,
+  max_output_tokens: 0,
+};
+
+let app: App | null = null;
+let host: HTMLElement;
+
+/** Opens the popover and returns the effort slider inside it. */
+async function openSlider(): Promise<HTMLInputElement> {
+  host.querySelector<HTMLButtonElement>('.ai-model-chip')!.click();
+  await nextTick();
+  const range = host.querySelector<HTMLInputElement>('.ai-effort-range');
+  expect(range).not.toBeNull();
+  return range!;
+}
+
+describe('ModelControl effort drag', () => {
+  beforeEach(() => {
+    document.body.textContent = '';
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    models.value = [model];
+    selectedID.value = model.id;
+    reasoning.value = { enabled: false, effort: 'medium' };
+    vi.mocked(setReasoning).mockClear();
+  });
+
+  afterEach(() => {
+    app?.unmount();
+    app = null;
+  });
+
+  it('commits the stop it was released on', async () => {
+    app = createApp(ModelControl);
+    app.mount(host);
+    const range = await openSlider();
+
+    range.dispatchEvent(new Event('pointerdown'));
+    range.value = '2';
+    range.dispatchEvent(new Event('input'));
+    window.dispatchEvent(new Event('pointerup'));
+
+    expect(setReasoning).toHaveBeenCalledTimes(1);
+    expect(setReasoning).toHaveBeenCalledWith({ enabled: true, effort: 'medium' });
+  });
+
+  it('slides old and new labels together, without restarting within a stop', async () => {
+    app = createApp(ModelControl);
+    app.mount(host);
+    const range = await openSlider();
+    const holder = host.querySelector('.ai-pop-effort-label')!;
+    const initial = holder.firstElementChild!;
+    const current = () => [...holder.children].find((node) => node.textContent === range.getAttribute('aria-valuetext'))!;
+    range.dispatchEvent(new Event('pointerdown'));
+    range.value = '1';
+    range.dispatchEvent(new Event('input'));
+    await nextTick();
+    const first = current();
+    expect(first).not.toBe(initial);
+    expect(initial.isConnected).toBe(true);
+    expect(initial.classList.contains('ai-effort-up-leave-active')).toBe(true);
+    expect(first.classList.contains('ai-effort-up-enter-active')).toBe(true);
+    expect(host.querySelector('.ai-pop-effort-label')).toBe(holder);
+
+    range.value = '1.2';
+    range.dispatchEvent(new Event('input'));
+    await nextTick();
+    expect(current()).toBe(first);
+
+    range.value = '2';
+    range.dispatchEvent(new Event('input'));
+    await nextTick();
+    expect(current()).not.toBe(first);
+    expect(first.isConnected).toBe(true);
+    expect(setReasoning).not.toHaveBeenCalled();
+
+    range.value = '1';
+    range.dispatchEvent(new Event('input'));
+    await nextTick();
+    expect(current().classList.contains('ai-effort-down-enter-active')).toBe(true);
+    await vi.waitFor(() => expect(holder.children).toHaveLength(1));
+    expect(holder.textContent).toBe(range.getAttribute('aria-valuetext'));
+    window.dispatchEvent(new Event('pointerup'));
+    expect(setReasoning).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not commit a drag the component was unmounted during', async () => {
+    app = createApp(ModelControl);
+    app.mount(host);
+    const range = await openSlider();
+
+    range.dispatchEvent(new Event('pointerdown'));
+    range.value = '2';
+    range.dispatchEvent(new Event('input'));
+    app.unmount();
+    app = null;
+
+    // Without the teardown the window listeners would still be attached here,
+    // and this release would write the account's setting from a dead component.
+    window.dispatchEvent(new Event('pointerup'));
+
+    expect(setReasoning).not.toHaveBeenCalled();
+  });
+
+  it('does not let a second finger orphan the first drag', async () => {
+    app = createApp(ModelControl);
+    app.mount(host);
+    const range = await openSlider();
+
+    // Two fingers on the track: the second press replaces the first drag's
+    // teardown, so the first drag's release listener has to come off with it.
+    range.dispatchEvent(new Event('pointerdown'));
+    range.dispatchEvent(new Event('pointerdown'));
+    range.value = '2';
+    range.dispatchEvent(new Event('input'));
+    app.unmount();
+    app = null;
+
+    window.dispatchEvent(new Event('pointerup'));
+
+    expect(setReasoning).not.toHaveBeenCalled();
+  });
+
+  // A side panel beside the composer also closes on Escape, and yields only to
+  // a key already handled. The chip's popover answered in the bubble phase
+  // without saying so, and one press closed both.
+  it('takes Escape before a panel beneath it, and marks it handled', async () => {
+    app = createApp(ModelControl);
+    app.mount(host);
+    await openSlider();
+
+    let seenByPanel: boolean | null = null;
+    const panel = (event: KeyboardEvent) => { seenByPanel = event.defaultPrevented; };
+    document.addEventListener('keydown', panel);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    document.removeEventListener('keydown', panel);
+
+    expect(seenByPanel).toBe(true);
+    await nextTick();
+    expect(host.querySelector('.ai-model-chip')!.getAttribute('aria-expanded')).not.toBe('true');
+  });
+
+  // Each face swap pins the height and clears it once the transition is done.
+  // A second swap inside the first one's transition used to be cut short when
+  // the first one's timer cleared the height the second had just set.
+  it('lets a later face swap keep its height when an earlier one finishes', async () => {
+    let target = 300;
+    const offset = vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(100);
+    const scroll = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(() => target);
+    app = createApp(ModelControl);
+    app.mount(host);
+    await openSlider();
+    vi.useFakeTimers();
+    try {
+      const pop = host.querySelector<HTMLElement>('.ai-model-pop-body')!;
+      host.querySelector<HTMLButtonElement>('.ai-pop-model')!.click();
+      await nextTick();
+      await nextTick();
+      expect(pop.style.height).toBe('300px');
+
+      vi.advanceTimersByTime(100);
+      target = 150;
+      host.querySelector<HTMLButtonElement>('.ai-pop-back')!.click();
+      await nextTick();
+      await nextTick();
+      expect(pop.style.height).toBe('150px');
+
+      // Past the first swap's deadline, inside the second's.
+      vi.advanceTimersByTime(150);
+      expect(pop.style.height).toBe('150px');
+      vi.advanceTimersByTime(100);
+      expect(pop.style.height).toBe('');
+    } finally {
+      vi.useRealTimers();
+      offset.mockRestore();
+      scroll.mockRestore();
+    }
+  });
+});

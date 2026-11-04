@@ -20,6 +20,15 @@ const props = defineProps<{
   wrapClass?: string;
   /** The class on the element that actually scrolls. */
   scrollClass?: string;
+  /**
+   * Whether the scroller takes focus, for content whose rows cannot take it
+   * themselves. Its scrollbar is hidden, so without this a keyboard user has
+   * no way to reach what is past the visible rows. Off by default: a chat
+   * transcript already has focus stops of its own.
+   */
+  focusable?: boolean;
+  /** The region's accessible name, used only when `focusable` is on. */
+  label?: string;
 }>();
 
 const emit = defineEmits<{
@@ -162,7 +171,14 @@ defineExpose({ scroller, update });
 
 <template>
   <div ref="container" :class="props.wrapClass">
-    <div ref="scroller" :class="props.scrollClass" @scroll.passive="onScroll">
+    <div
+      ref="scroller"
+      :class="props.scrollClass"
+      :tabindex="props.focusable ? 0 : undefined"
+      :role="props.focusable ? 'region' : undefined"
+      :aria-label="props.focusable ? props.label : undefined"
+      @scroll.passive="onScroll"
+    >
       <slot />
     </div>
     <div

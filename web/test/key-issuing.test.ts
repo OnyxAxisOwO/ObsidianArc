@@ -6,15 +6,15 @@
 // no, or saying it wrong, creates nothing.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, ref, type App } from 'vue';
+import { nextTick } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
 import * as keysAPI from '../src/api/keys';
 import { api } from '../src/api/client';
 import { changeLanguage, t } from '../src/composables/useI18n';
-import { providePanelHost } from '../src/composables/usePanelHost';
 import { installPlugins } from '../src/plugins/registry';
 import type { ArcPlugin, KeyConfirmation } from '../src/plugins/types';
 import KeysPanel from '../src/views/KeysPanel.vue';
+import { mountComponent, settle } from './helpers';
 
 const KEY: keysAPI.ApiKey = {
   id: 'key-1', name: 'My laptop', prefix: 'sk-test', disabled: false,
@@ -32,29 +32,17 @@ const question = (over: Partial<Record<keyof KeyConfirmation, string>> = {}): Ke
 
 const plugin = (keyIssuing: ArcPlugin['keyIssuing']): ArcPlugin => ({ name: 'demo', ...(keyIssuing ? { keyIssuing } : {}) });
 
-let app: App;
+let unmount: (() => void) | undefined;
 let host: HTMLElement;
 let panelHost: HTMLElement;
 
-async function settle(): Promise<void> {
-  for (let i = 0; i < 3; i += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await nextTick();
-  }
-}
-
 async function mount(): Promise<void> {
+  // The keys panel is the route itself here rather than a screen beside a
+  // catch-all, so it gets a router of its own.
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: KeysPanel }] });
   await router.push('/');
   await router.isReady();
-  app = createApp({
-    setup() {
-      providePanelHost(ref(panelHost));
-      return () => h(KeysPanel);
-    },
-  });
-  app.use(router).mount(host);
-  await settle();
+  unmount = await mountComponent(KeysPanel, {}, { host, panels: panelHost, router });
 }
 
 async function press(name = KEY.name): Promise<void> {
@@ -87,7 +75,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  app?.unmount();
+  unmount?.();
   host.remove();
   panelHost.remove();
   document.querySelectorAll('.oa-modal-overlay').forEach((node) => node.remove());

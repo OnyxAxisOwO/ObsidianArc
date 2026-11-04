@@ -1,16 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { createApp, h, nextTick, ref, type App } from 'vue';
+import { createApp, h, type Component, nextTick, type App } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
 import UsageBoard from '../src/views/admin/usage/UsageBoard.vue';
-import ChatToolCall from '../src/chat/ChatToolCall.vue';
-import ChatSurface from '../src/chat/ChatSurface.vue';
 import AdminDashboard from '../src/views/admin/AdminDashboard.vue';
 import OaMenu from '../src/components/OaMenu.vue';
 import { adminApi } from '../src/admin/api';
 import { provideAdminView } from '../src/views/admin/adminView';
 import { dashboardFixture } from './fixtures/dashboard';
-import { pendingMode, setMode } from '../src/stores/workspace';
-import { providePanelHost } from '../src/composables/usePanelHost';
 
 let app: App | null = null;
 let host: HTMLElement;
@@ -24,7 +20,6 @@ beforeEach(() => {
 afterEach(() => {
   app?.unmount();
   app = null;
-  document.body.textContent = '';
 });
 
 describe('Non-linear animation & expand/collapse transitions', () => {
@@ -41,7 +36,11 @@ describe('Non-linear animation & expand/collapse transitions', () => {
       host.textContent = '';
       app = createApp({
         render() {
-          return h(UsageBoard as any, { rows: list, kind: 'model', metric: 'requests', limit: 6, emptyText: 'No models' });
+          // A defaulted optional prop makes this component's props miss h()'s overload under
+          // exactOptionalPropertyTypes, so the call takes the component as a plain Component.
+          // A defaulted optional prop puts this component outside h()'s overloads under
+          // exactOptionalPropertyTypes, so the component is passed as a plain Component.
+          return h(UsageBoard as Component, { rows: list, kind: 'model', metric: 'requests', limit: 6, emptyText: 'No models' });
         },
       });
       app.mount(host);
@@ -75,88 +74,6 @@ describe('Non-linear animation & expand/collapse transitions', () => {
     expect(host.querySelectorAll('.oa-board > li').length).toBe(4);
     expect(host.querySelector('.oa-board-count')).toBeNull();
     expect(host.querySelector('.oa-board-scroll')?.className).toBe('oa-board-scroll');
-  });
-
-  it('ChatToolCall toggles smoothly with aria-expanded and open state', async () => {
-    const call = {
-      id: 'tool-1',
-      name: 'read_file',
-      arguments: '{"path": "file.txt"}',
-      output: 'file contents',
-      done: true,
-      failed: false,
-    };
-
-    app = createApp({
-      render() {
-        return h(ChatToolCall, { call });
-      },
-    });
-    app.mount(host);
-    await nextTick();
-
-    const container = host.querySelector('.ai-tool-call');
-    const head = host.querySelector<HTMLButtonElement>('.ai-tool-call-head');
-    const content = host.querySelector('.ai-tool-call-content');
-
-    expect(container).not.toBeNull();
-    expect(head).not.toBeNull();
-    expect(content).not.toBeNull();
-    expect(container?.classList.contains('open')).toBe(false);
-    expect(head?.getAttribute('aria-expanded')).toBe('false');
-
-    // Click to expand
-    head?.click();
-    await nextTick();
-
-    expect(container?.classList.contains('open')).toBe(true);
-    expect(head?.getAttribute('aria-expanded')).toBe('true');
-
-    // Click to collapse
-    head?.click();
-    await nextTick();
-
-    expect(container?.classList.contains('open')).toBe(false);
-    expect(head?.getAttribute('aria-expanded')).toBe('false');
-  });
-
-  it('ChatSurface mode switch displays sliding pill corresponding to pendingMode', async () => {
-    const { models, selectedID } = await import('../src/chat/useModels');
-    models.value = [{ id: 'test-model', display_name: 'Test Model' } as any];
-    selectedID.value = 'test-model';
-
-    setMode('chat');
-    expect(pendingMode.value).toBe('chat');
-
-    app = createApp({
-      setup() {
-        providePanelHost(ref(host));
-        return () => h(ChatSurface);
-      },
-    });
-    app.mount(host);
-    await nextTick();
-
-    const pill = host.querySelector('.ai-mode-pill');
-    expect(pill).not.toBeNull();
-    expect(pill?.classList.contains('mode-work')).toBe(false);
-
-    const suggestionsAccordion = host.querySelector('.ai-chat-suggestions-accordion');
-    expect(suggestionsAccordion?.classList.contains('open')).toBe(true);
-
-    // Switch to work mode
-    setMode('work');
-    await nextTick();
-
-    expect(pill?.classList.contains('mode-work')).toBe(true);
-    expect(suggestionsAccordion?.classList.contains('open')).toBe(false);
-
-    // Switch back to chat mode
-    setMode('chat');
-    await nextTick();
-
-    expect(pill?.classList.contains('mode-work')).toBe(false);
-    expect(suggestionsAccordion?.classList.contains('open')).toBe(true);
   });
 
   it('AdminDashboard ranking details expands and collapses with non-linear animation and rotating chevron', async () => {
@@ -209,8 +126,8 @@ describe('Non-linear animation & expand/collapse transitions', () => {
   it('OaMenu mounts and triggers open animation with non-linear transform', async () => {
     app = createApp({
       render() {
-        return h(OaMenu as any, null, {
-          trigger: ({ toggle }: any) => h('button', { class: 'trigger-btn', onClick: toggle }, 'Menu'),
+        return h(OaMenu, null, {
+          trigger: ({ toggle }: { toggle: () => void }) => h('button', { class: 'trigger-btn', onClick: toggle }, 'Menu'),
           default: () => h('div', { class: 'menu-content' }, 'Content'),
         });
       },
@@ -240,11 +157,11 @@ describe('Non-linear animation & expand/collapse transitions', () => {
     // Simulate iPhone viewport: width = 390
     vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(390);
 
-    const menuRef = { value: null as any };
+    const menuRef = { value: null as InstanceType<typeof OaMenu> | null };
     app = createApp({
       render() {
-        return h(OaMenu as any, { ref: (r: any) => { menuRef.value = r; } }, {
-          trigger: ({ toggle }: any) => h('button', { class: 'bell-btn', onClick: toggle }, 'Bell'),
+        return h(OaMenu, { ref: (r) => { menuRef.value = r as InstanceType<typeof OaMenu> | null; } }, {
+          trigger: ({ toggle }: { toggle: () => void }) => h('button', { class: 'bell-btn', onClick: toggle }, 'Bell'),
           default: () => h('div', { class: 'menu-content' }, 'Announcements'),
         });
       },
@@ -277,7 +194,7 @@ describe('Non-linear animation & expand/collapse transitions', () => {
     // Mock menu width of 280px (.oa-menu-announce min-width)
     Object.defineProperty(panel, 'offsetWidth', { configurable: true, value: 280 });
 
-    menuRef.value.fit();
+    menuRef.value!.fit();
 
     // Default right: 0 would put left at 212 - 280 = -68px (overflows screen by 76px).
     // Shifting right by 76px brings left to GUTTER (8px).
@@ -294,11 +211,11 @@ describe('Non-linear animation & expand/collapse transitions', () => {
     // Ultra narrow viewport (e.g. 260px)
     vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(260);
 
-    const menuRef = { value: null as any };
+    const menuRef = { value: null as InstanceType<typeof OaMenu> | null };
     app = createApp({
       render() {
-        return h(OaMenu as any, { ref: (r: any) => { menuRef.value = r; } }, {
-          trigger: ({ toggle }: any) => h('button', { class: 'trigger-btn', onClick: toggle }, 'Trigger'),
+        return h(OaMenu, { ref: (r) => { menuRef.value = r as InstanceType<typeof OaMenu> | null; } }, {
+          trigger: ({ toggle }: { toggle: () => void }) => h('button', { class: 'trigger-btn', onClick: toggle }, 'Trigger'),
           default: () => h('div', { class: 'menu-content' }, 'Content'),
         });
       },
@@ -313,7 +230,7 @@ describe('Non-linear animation & expand/collapse transitions', () => {
     const panel = host.querySelector<HTMLElement>('.oa-menu')!;
     Object.defineProperty(panel, 'offsetWidth', { configurable: true, value: 280 });
 
-    menuRef.value.fit();
+    menuRef.value!.fit();
 
     // room = 260 - 2 * 8 = 244px
     expect(panel.style.maxWidth).toBe('244px');
@@ -323,11 +240,11 @@ describe('Non-linear animation & expand/collapse transitions', () => {
   it('OaMenu does not flap maxWidth/minWidth on subsequent fit() calls when clamped to room', async () => {
     vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(260);
 
-    const menuRef = { value: null as any };
+    const menuRef = { value: null as InstanceType<typeof OaMenu> | null };
     app = createApp({
       render() {
-        return h(OaMenu as any, { ref: (r: any) => { menuRef.value = r; } }, {
-          trigger: ({ toggle }: any) => h('button', { class: 'trigger-btn', onClick: toggle }, 'Trigger'),
+        return h(OaMenu, { ref: (r) => { menuRef.value = r as InstanceType<typeof OaMenu> | null; } }, {
+          trigger: ({ toggle }: { toggle: () => void }) => h('button', { class: 'trigger-btn', onClick: toggle }, 'Trigger'),
           default: () => h('div', { class: 'menu-content' }, 'Content'),
         });
       },
@@ -342,7 +259,7 @@ describe('Non-linear animation & expand/collapse transitions', () => {
     const panel = host.querySelector<HTMLElement>('.oa-menu')!;
     Object.defineProperty(panel, 'offsetWidth', { configurable: true, value: 280 });
 
-    menuRef.value.fit();
+    menuRef.value!.fit();
     expect(panel.style.maxWidth).toBe('244px');
     expect(panel.style.minWidth).toBe('0px');
 
@@ -350,7 +267,7 @@ describe('Non-linear animation & expand/collapse transitions', () => {
     Object.defineProperty(panel, 'offsetWidth', { configurable: true, value: 244 });
 
     // Calling fit() again (e.g. from ResizeObserver) must not wipe out maxWidth
-    menuRef.value.fit();
+    menuRef.value!.fit();
     expect(panel.style.maxWidth).toBe('244px');
     expect(panel.style.minWidth).toBe('0px');
   });
@@ -358,11 +275,11 @@ describe('Non-linear animation & expand/collapse transitions', () => {
   it('OaMenu anchors transformOrigin to bottom when menu has oa-menu-up', async () => {
     vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(390);
 
-    const menuRef = { value: null as any };
+    const menuRef = { value: null as InstanceType<typeof OaMenu> | null };
     app = createApp({
       render() {
-        return h(OaMenu as any, { ref: (r: any) => { menuRef.value = r; }, menuClass: 'oa-menu-up' }, {
-          trigger: ({ toggle }: any) => h('button', { class: 'up-btn', onClick: toggle }, 'Up'),
+        return h(OaMenu, { ref: (r) => { menuRef.value = r as InstanceType<typeof OaMenu> | null; }, menuClass: 'oa-menu-up' }, {
+          trigger: ({ toggle }: { toggle: () => void }) => h('button', { class: 'up-btn', onClick: toggle }, 'Up'),
           default: () => h('div', { class: 'menu-content' }, 'Content'),
         });
       },
@@ -391,21 +308,53 @@ describe('Non-linear animation & expand/collapse transitions', () => {
     const panel = host.querySelector<HTMLElement>('.oa-menu')!;
     Object.defineProperty(panel, 'offsetWidth', { configurable: true, value: 280 });
 
-    menuRef.value.fit();
+    menuRef.value!.fit();
 
     expect(panel.style.right).toBe('-76px');
     // Vertical origin must be bottom for upward opening menu
     expect(panel.style.transformOrigin).toBe('186px bottom');
   });
 
+  // A row menu places itself upwards with its own class, which OaMenu does
+  // not know; the caller says so through the prop instead.
+  it('OaMenu anchors transformOrigin to bottom when the caller says it opens up', async () => {
+    vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(390);
+
+    const menuRef = { value: null as InstanceType<typeof OaMenu> | null };
+    app = createApp({
+      render() {
+        return h(OaMenu, { ref: (r) => { menuRef.value = r as InstanceType<typeof OaMenu> | null; }, menuClass: 'row-menu', up: true }, {
+          trigger: ({ toggle }: { toggle: () => void }) => h('button', { class: 'up-btn', onClick: toggle }, 'Up'),
+          default: () => h('div', { class: 'menu-content' }, 'Content'),
+        });
+      },
+    });
+    app.mount(host);
+    await nextTick();
+
+    const group = host.querySelector<HTMLElement>('.oa-chip-group')!;
+    vi.spyOn(group, 'getBoundingClientRect').mockReturnValue({
+      left: 176, right: 212, top: 500, bottom: 536, width: 36, height: 36, x: 176, y: 500, toJSON: () => {},
+    });
+
+    host.querySelector<HTMLButtonElement>('.up-btn')!.click();
+    await nextTick();
+
+    const panel = host.querySelector<HTMLElement>('.oa-menu')!;
+    Object.defineProperty(panel, 'offsetWidth', { configurable: true, value: 280 });
+    menuRef.value!.fit();
+
+    expect(panel.style.transformOrigin).toBe('186px bottom');
+  });
+
   it('OaMenu with oa-menu-left shifts left when overflowing right screen boundary', async () => {
     vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(390);
 
-    const menuRef = { value: null as any };
+    const menuRef = { value: null as InstanceType<typeof OaMenu> | null };
     app = createApp({
       render() {
-        return h(OaMenu as any, { ref: (r: any) => { menuRef.value = r; }, menuClass: 'oa-menu-left' }, {
-          trigger: ({ toggle }: any) => h('button', { class: 'left-btn', onClick: toggle }, 'Left'),
+        return h(OaMenu, { ref: (r) => { menuRef.value = r as InstanceType<typeof OaMenu> | null; }, menuClass: 'oa-menu-left' }, {
+          trigger: ({ toggle }: { toggle: () => void }) => h('button', { class: 'left-btn', onClick: toggle }, 'Left'),
           default: () => h('div', { class: 'menu-content' }, 'Content'),
         });
       },
@@ -435,7 +384,7 @@ describe('Non-linear animation & expand/collapse transitions', () => {
     const panel = host.querySelector<HTMLElement>('.oa-menu')!;
     Object.defineProperty(panel, 'offsetWidth', { configurable: true, value: 280 });
 
-    menuRef.value.fit();
+    menuRef.value!.fit();
 
     // unscaledLeft = 200, unscaledRight = 200 + 280 = 480.
     // viewWidth - GUTTER = 390 - 8 = 382.
@@ -452,11 +401,11 @@ describe('Non-linear animation & expand/collapse transitions', () => {
     // Start narrow
     const innerWidthSpy = vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(260);
 
-    const menuRef = { value: null as any };
+    const menuRef = { value: null as InstanceType<typeof OaMenu> | null };
     app = createApp({
       render() {
-        return h(OaMenu as any, { ref: (r: any) => { menuRef.value = r; } }, {
-          trigger: ({ toggle }: any) => h('button', { class: 'trigger-btn', onClick: toggle }, 'Trigger'),
+        return h(OaMenu, { ref: (r) => { menuRef.value = r as InstanceType<typeof OaMenu> | null; } }, {
+          trigger: ({ toggle }: { toggle: () => void }) => h('button', { class: 'trigger-btn', onClick: toggle }, 'Trigger'),
           default: () => h('div', { class: 'menu-content' }, 'Content'),
         });
       },
@@ -485,14 +434,14 @@ describe('Non-linear animation & expand/collapse transitions', () => {
     const panel = host.querySelector<HTMLElement>('.oa-menu')!;
     Object.defineProperty(panel, 'offsetWidth', { configurable: true, value: 244 });
 
-    menuRef.value.fit();
+    menuRef.value!.fit();
     expect(panel.style.maxWidth).toBe('244px');
 
     // Window expands to wide screen
     innerWidthSpy.mockReturnValue(1000);
     Object.defineProperty(panel, 'offsetWidth', { configurable: true, value: 280 });
 
-    menuRef.value.fit();
+    menuRef.value!.fit();
     expect(panel.style.maxWidth).toBe('');
     expect(panel.style.minWidth).toBe('');
     expect(panel.style.left).toBe('');

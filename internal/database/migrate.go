@@ -3,8 +3,10 @@ package database
 import (
 	"context"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -40,14 +42,11 @@ type migration struct {
 // A plugin's own new migrations are named <plugin>_NNNN_*.sql, which sorts
 // after every numbered core file and cannot collide with a later one.
 func (db *DB) Migrate(ctx context.Context, plugins ...fs.FS) ([]string, error) {
-	if _, err := db.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
-		version    TEXT PRIMARY KEY,
-		applied_at BIGINT NOT NULL
-	)`); err != nil {
-		return nil, fmt.Errorf("database: create schema_migrations: %w", err)
+	if err := db.ensureMigrationsTable(ctx); err != nil {
+		return nil, err
 	}
 
-	done, err := db.appliedVersions(ctx)
+	done, err := appliedSet(ctx, db)
 	if err != nil {
 		return nil, err
 	}
@@ -65,7 +64,11 @@ func (db *DB) applyPending(ctx context.Context, pending []migration, done map[st
 		if done[m.version] {
 			continue
 		}
-		if err := db.applyMigration(ctx, m); err != nil {
+		err := db.applyMigration(ctx, m)
+		if errors.Is(err, errRecordedElsewhere) {
+			continue
+		}
+		if err != nil {
 			return applied, err
 		}
 		applied = append(applied, m.version)
@@ -73,8 +76,8 @@ func (db *DB) applyPending(ctx context.Context, pending []migration, done map[st
 	return applied, nil
 }
 
-// MigrateFor brings a database to the schema a backup was taken from: the
-// core's files, and of the plugins' only the versions the backup's instance
+// MigrateFor brings a database to the schema a backup was taken from: of the
+// core's files and the plugins' alike, only the versions the backup's instance
 // had applied. Migrate would apply every plugin file it is handed, which is
 // wrong here — the schema check that follows compares tables and columns, so
 // a plugin the instance never installed, or removed with its data, would
@@ -84,13 +87,10 @@ func (db *DB) applyPending(ctx context.Context, pending []migration, done map[st
 // carried outranks one the deployment bundles. A version nobody supplies is
 // an error that names it: the archive holds tables nothing here can create.
 func (db *DB) MigrateFor(ctx context.Context, versions []string, plugins ...fs.FS) ([]string, error) {
-	if _, err := db.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
-		version    TEXT PRIMARY KEY,
-		applied_at BIGINT NOT NULL
-	)`); err != nil {
-		return nil, fmt.Errorf("database: create schema_migrations: %w", err)
+	if err := db.ensureMigrationsTable(ctx); err != nil {
+		return nil, err
 	}
-	done, err := db.appliedVersions(ctx)
+	done, err := appliedSet(ctx, db)
 	if err != nil {
 		return nil, err
 	}
@@ -98,13 +98,25 @@ func (db *DB) MigrateFor(ctx context.Context, versions []string, plugins ...fs.F
 	if err != nil {
 		return nil, err
 	}
-	have := make(map[string]bool, len(pending))
-	for _, m := range pending {
-		have[m.version] = true
-	}
 	wanted := make(map[string]bool, len(versions))
 	for _, version := range versions {
 		wanted[version] = true
+	}
+	// The core's files stop at the backup's versions as well. Taking all of them
+	// would leave an archive from an older build restored into a newer one at the
+	// newer schema, and the schema check that follows would then refuse a
+	// destination that can no longer take that archive. The restored server
+	// brings its own newer migrations up when it starts.
+	core := pending[:0]
+	for _, m := range pending {
+		if wanted[m.version] {
+			core = append(core, m)
+		}
+	}
+	pending = core
+	have := make(map[string]bool, len(pending))
+	for _, m := range pending {
+		have[m.version] = true
 	}
 	for _, source := range plugins {
 		found, err := readMigrations(db.Dialect(), []fs.FS{source})
@@ -132,8 +144,48 @@ func (db *DB) MigrateFor(ctx context.Context, versions []string, plugins ...fs.F
 	return db.applyPending(ctx, pending, done)
 }
 
-func (db *DB) appliedVersions(ctx context.Context) (map[string]bool, error) {
-	rows, err := db.Query(ctx, `SELECT version FROM schema_migrations`)
+// ensureMigrationsTable creates the bookkeeping table. PostgreSQL's IF NOT
+// EXISTS is an unlocked catalog check, so two processes booting one fresh
+// database can both pass it, and the loser fails on pg_type_typname_nsp_index
+// (23505). That error is raised only after the winner commits, so the table
+// exists when we look again.
+func (db *DB) ensureMigrationsTable(ctx context.Context) error {
+	_, err := db.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
+		version    TEXT PRIMARY KEY,
+		applied_at BIGINT NOT NULL
+	)`)
+	if err == nil {
+		return nil
+	}
+	return recoverMigrationsTable(err, func() error {
+		var n int
+		return db.QueryRow(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&n)
+	})
+}
+
+// recoverMigrationsTable decides what a failed CREATE TABLE means. The failure
+// is a lost race only if the table can be read back; when it cannot, the boot
+// error names both failures, because the collision alone would point the
+// operator at the wrong cause.
+func recoverMigrationsTable(createErr error, probe func() error) error {
+	if err := probe(); err != nil {
+		return fmt.Errorf("database: create schema_migrations: %w (reading it back also failed: %v)", createErr, err)
+	}
+	// There is no classifier here for "lost the race" as opposed to any other
+	// CREATE failure, and matching driver error text would be brittle, so the
+	// readable table is the gate. The error is logged rather than dropped: a
+	// failure that was not a race would otherwise show up only at the first
+	// claim, with nothing pointing back at this line.
+	slog.Warn("database: create schema_migrations failed but the table reads back; continuing",
+		"error", createErr)
+	return nil
+}
+
+// appliedSet returns the versions schema_migrations records. One read of the
+// table serves every caller: the table is small, and asking per version costs a
+// round trip each.
+func appliedSet(ctx context.Context, q Queryer) (map[string]bool, error) {
+	rows, err := q.Query(ctx, `SELECT version FROM schema_migrations`)
 	if err != nil {
 		return nil, fmt.Errorf("database: read schema_migrations: %w", err)
 	}
@@ -150,8 +202,48 @@ func (db *DB) appliedVersions(ctx context.Context) (map[string]bool, error) {
 	return done, rows.Err()
 }
 
+// errRecordedElsewhere means another process applied this migration after
+// applyPending read the applied set. Skipping it is the outcome the race should
+// have; it is not a failure.
+var errRecordedElsewhere = errors.New("database: migration already recorded")
+
+// applyMigration claims the version as the first statement of the transaction
+// that runs its DDL. The applied set read by Migrate is a snapshot, and a second
+// process booting against the same database can record the version between that
+// read and this transaction. Without the claim both would run the DDL, and the
+// loser would fail on a table that already exists and refuse to start. On
+// SQLite the write lock makes the loser wait for the winner; on PostgreSQL the
+// conflicting insert waits for the winner's commit. Either way only one side
+// runs the DDL.
 func (db *DB) applyMigration(ctx context.Context, m migration) error {
-	return db.Tx(ctx, func(tx *Tx) error { return runMigration(ctx, tx, m) })
+	return db.Tx(ctx, func(tx *Tx) error {
+		claimed, err := claimMigration(ctx, tx, m.version)
+		if err != nil {
+			return err
+		}
+		if !claimed {
+			return errRecordedElsewhere
+		}
+		return runStatements(ctx, tx, m)
+	})
+}
+
+// claimMigration records version as applied through q and reports whether this
+// caller was the one to record it. The unique key decides: a version another
+// process recorded first makes the insert a no-op, so the caller skips it.
+func claimMigration(ctx context.Context, q Queryer, version string) (bool, error) {
+	res, err := q.Exec(ctx,
+		`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)
+		 ON CONFLICT (version) DO NOTHING`,
+		version, time.Now().UnixMilli())
+	if err != nil {
+		return false, fmt.Errorf("database: claim migration %s: %w", version, err)
+	}
+	claimed, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("database: claim migration %s: %w", version, err)
+	}
+	return claimed > 0, nil
 }
 
 // MigrateIn applies the migrations in sources that are not yet recorded,
@@ -167,15 +259,19 @@ func (db *DB) MigrateIn(ctx context.Context, tx *Tx, sources ...fs.FS) ([]string
 	}
 	var applied []string
 	for _, m := range pending {
-		var recorded int
-		if err := tx.QueryRow(ctx,
-			`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, m.version).Scan(&recorded); err != nil {
-			return applied, fmt.Errorf("database: read schema_migrations: %w", err)
+		// Claimed before the DDL, as applyMigration does. A COUNT read here does not
+		// stop a second instance installing the same plugin from running the DDL
+		// too: on PostgreSQL the conflicting insert is what waits for the other
+		// side's commit, and the loser then skips instead of failing on a table
+		// that already exists.
+		claimed, err := claimMigration(ctx, tx, m.version)
+		if err != nil {
+			return applied, err
 		}
-		if recorded > 0 {
+		if !claimed {
 			continue
 		}
-		if err := runMigration(ctx, tx, m); err != nil {
+		if err := runStatements(ctx, tx, m); err != nil {
 			return applied, err
 		}
 		applied = append(applied, m.version)
@@ -196,16 +292,26 @@ func Versions(sources ...fs.FS) ([]string, error) {
 	return out, nil
 }
 
+// CoreVersions lists the migrations the core itself ships, sorted: the
+// versions no plugin's migration may share a name with, since all of them are
+// recorded in one table.
+func CoreVersions() ([]string, error) {
+	core, err := fs.Sub(migrationsFS, "migrations")
+	if err != nil {
+		return nil, fmt.Errorf("database: read migrations: %w", err)
+	}
+	return Versions(core)
+}
+
 // Applied reports which of versions schema_migrations records.
 func Applied(ctx context.Context, q Queryer, versions []string) (map[string]bool, error) {
-	out := map[string]bool{}
+	recorded, err := appliedSet(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]bool, len(versions))
 	for _, version := range versions {
-		var n int
-		if err := q.QueryRow(ctx,
-			`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, version).Scan(&n); err != nil {
-			return nil, fmt.Errorf("database: read schema_migrations: %w", err)
-		}
-		out[version] = n > 0
+		out[version] = recorded[version]
 	}
 	return out, nil
 }
@@ -240,16 +346,13 @@ func RunScripts(ctx context.Context, q Queryer, fsys fs.FS) error {
 	return nil
 }
 
-func runMigration(ctx context.Context, q Queryer, m migration) error {
+// runStatements runs a migration's DDL and records nothing; the caller has
+// already claimed the version or records it itself.
+func runStatements(ctx context.Context, q Queryer, m migration) error {
 	for i, stmt := range splitStatements(m.body) {
 		if _, err := q.Exec(ctx, stmt); err != nil {
 			return fmt.Errorf("database: migration %s statement %d: %w", m.version, i+1, err)
 		}
-	}
-	if _, err := q.Exec(ctx,
-		`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`,
-		m.version, time.Now().UnixMilli()); err != nil {
-		return fmt.Errorf("database: record migration %s: %w", m.version, err)
 	}
 	return nil
 }

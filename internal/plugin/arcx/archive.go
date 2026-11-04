@@ -12,6 +12,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing/fstest"
@@ -194,6 +195,9 @@ func Parse(data []byte) (*Package, error) {
 			if !strings.HasSuffix(rest, ".sql") {
 				return nil, invalid("%s: only .sql files go there", name)
 			}
+			if !sqlNameOK(pkg.Manifest.Name, rest) {
+				return nil, invalid("%s: a migration or purge file is named %s_<name>.sql, or NNNN_<name>.sql for one that moved out of the core", name, pkg.Manifest.Name)
+			}
 			if dir == "migrations" {
 				pkg.migrations[rest] = body
 			} else {
@@ -216,7 +220,42 @@ func Parse(data []byte) (*Package, error) {
 	if len(pkg.purge) > 0 && len(pkg.migrations) == 0 {
 		return nil, invalid("a purge without migrations has nothing to take back")
 	}
+	// Migrations and purge scripts run as the database's owner, outside the
+	// host's permission checks, so the manifest has to ask for db before any
+	// of their SQL is accepted. Otherwise a package that declares nothing
+	// would carry SQL the install dialog never shows.
+	if (len(pkg.migrations) > 0 || len(pkg.purge) > 0) && !pkg.Manifest.Has(PermDB) {
+		return nil, invalid("migrations and purge scripts run SQL against the database, so the manifest must declare the db permission")
+	}
 	return pkg, nil
+}
+
+// legacySQLRE is the shape of a core migration's name. A plugin may carry such
+// a name only because a migration that moves out of the core keeps its
+// version, so a database that ran it as the core's does not run it twice.
+var legacySQLRE = regexp.MustCompile(`^[0-9]{4}_[a-z0-9_]+\.sql$`)
+
+// sqlNameOK holds a package's migration and purge files to the names the
+// migration runner can tell apart: the file name is the version, and versions
+// of every owner share one table. A package's own are therefore prefixed with
+// its name, which no other package can have as a prefix (names carry no
+// underscore) and no core file starts with. The numbered form is the
+// exception for moved migrations; whether a number may be used at all is the
+// installer's question, since it depends on the core this build carries.
+func sqlNameOK(plugin, file string) bool {
+	if legacySQLRE.MatchString(file) {
+		return true
+	}
+	rest, ok := strings.CutPrefix(file, plugin+"_")
+	if !ok || rest == ".sql" {
+		return false
+	}
+	for _, r := range strings.TrimSuffix(rest, ".sql") {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '_' {
+			return false
+		}
+	}
+	return true
 }
 
 func assetExtensions() string {
@@ -310,6 +349,12 @@ func Pack(dir string) ([]byte, error) {
 			if strings.HasPrefix(part, ".") {
 				return nil
 			}
+		}
+		// A link is refused rather than followed. Reading it would store whatever
+		// it names under the link's own name, and a link to a device would never
+		// finish being read. Parse cannot catch this: it sees the bytes, not the link.
+		if !d.Type().IsRegular() {
+			return fmt.Errorf("arcx: %s is a link or special file; a package holds regular files only", filepath.ToSlash(p))
 		}
 		names = append(names, name)
 		return nil

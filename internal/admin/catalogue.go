@@ -2,10 +2,13 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/provider"
 )
@@ -13,6 +16,9 @@ import (
 // Providers and models: the administrative half of the catalogue.
 
 const maxProviderBody = 32 * 1024
+
+// A provider's own body carries its keys as well, as many as it may hold.
+const maxProviderKeysBody = maxProviderBody + provider.MaxAPIKeys*provider.MaxAPIKeyChars
 
 type providerRequest struct {
 	Name             string                  `json:"name"`
@@ -26,6 +32,13 @@ type providerRequest struct {
 	TimeoutSeconds   *int                    `json:"timeout_seconds"`
 	Enabled          *bool                   `json:"enabled"`
 	SortOrder        *int                    `json:"sort_order"`
+	// Keys typed beside the ones kept, for a provider that takes several.
+	APIKeys []string `json:"api_keys"`
+	// The positions of the stored keys to keep (on a duplicate, of the
+	// source's), and the hints those positions were read from.
+	KeepKeys    *[]int                `json:"keep_keys"`
+	KeyHints    []string              `json:"key_hints"`
+	KeyRotation *provider.KeyRotation `json:"key_rotation"`
 	// A provider to take the API key from, set when this request is a
 	// duplicate of an existing one. The key itself is never sent here — the
 	// browser has never had it.
@@ -38,22 +51,20 @@ func (h *Handlers) listProviders(w http.ResponseWriter, r *http.Request) error {
 		return httpx.Internal(err)
 	}
 	// provider.Provider has no API key field at all, so this cannot leak one.
+	// Header values leave as hints only, as in every other provider response.
+	for i := range records {
+		records[i] = records[i].Masked()
+	}
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"providers": records})
 }
 
 func (h *Handlers) createProvider(w http.ResponseWriter, r *http.Request) error {
 	var body providerRequest
-	if err := httpx.DecodeJSON(w, r, &body, maxProviderBody); err != nil {
+	if err := httpx.DecodeJSON(w, r, &body, maxProviderKeysBody); err != nil {
 		return err
 	}
-	// One or the other: a key typed into the form, or the id of the provider
-	// this one is a copy of. A duplicate arrives with neither a key nor a way
-	// to get one, which is the whole reason the second spelling exists.
-	if (body.APIKey == nil || *body.APIKey == "") && body.CopyKeyFrom == nil {
-		return httpx.BadRequest("An API key is required.")
-	}
-	if body.CopyKeyFrom != nil && !isValidID(*body.CopyKeyFrom) {
-		return httpx.BadRequest("Malformed provider id.")
+	if body.CopyKeyFrom != nil && !id.Valid(*body.CopyKeyFrom) {
+		return httpx.BadRequestCode("malformed_provider_id", "Malformed provider id.")
 	}
 
 	in := provider.CreateInput{
@@ -67,6 +78,10 @@ func (h *Handlers) createProvider(w http.ResponseWriter, r *http.Request) error 
 	}
 	if body.CopyKeyFrom != nil {
 		in.CopyKeyFrom = *body.CopyKeyFrom
+	}
+	in.APIKeys, in.KeepKeys, in.SeenKeyHints = body.APIKeys, body.KeepKeys, body.KeyHints
+	if body.KeyRotation != nil {
+		in.KeyRotation = *body.KeyRotation
 	}
 	if body.AllowInsecure != nil {
 		in.AllowInsecure = *body.AllowInsecure
@@ -90,11 +105,14 @@ func (h *Handlers) createProvider(w http.ResponseWriter, r *http.Request) error 
 		in.SortOrder = *body.SortOrder
 	}
 
-	record, err := h.providers.Create(r.Context(), in)
+	// The store decides whether this caller may choose the address, as it does
+	// for an edit, so there is one rule rather than a check here that could
+	// drift from it.
+	record, err := h.providers.Create(r.Context(), in, auth.MustUser(r.Context()).IsSuperAdmin())
 	if err != nil {
 		return translateProviderError(err)
 	}
-	return httpx.WriteJSON(w, http.StatusCreated, map[string]any{"provider": record})
+	return httpx.WriteJSON(w, http.StatusCreated, map[string]any{"provider": record.Masked()})
 }
 
 func (h *Handlers) updateProvider(w http.ResponseWriter, r *http.Request) error {
@@ -104,13 +122,17 @@ func (h *Handlers) updateProvider(w http.ResponseWriter, r *http.Request) error 
 	}
 
 	var body providerRequest
-	if err := httpx.DecodeJSON(w, r, &body, maxProviderBody); err != nil {
+	if err := httpx.DecodeJSON(w, r, &body, maxProviderKeysBody); err != nil {
 		return err
 	}
 
 	update := provider.Update{
 		AllowInsecure:    body.AllowInsecure,
 		APIKey:           body.APIKey,
+		AddKeys:          body.APIKeys,
+		KeepKeys:         body.KeepKeys,
+		SeenKeyHints:     body.KeyHints,
+		KeyRotation:      body.KeyRotation,
 		Headers:          body.Headers,
 		AnthropicVersion: body.AnthropicVersion,
 		ReasoningStyle:   body.ReasoningStyle,
@@ -131,11 +153,13 @@ func (h *Handlers) updateProvider(w http.ResponseWriter, r *http.Request) error 
 		update.BaseURL = &body.BaseURL
 	}
 
-	record, err := h.providers.Update(r.Context(), providerID, update)
+	// Whether the address may move is decided in the store, against the row it
+	// holds under its lock: a check made here on a copy could already be stale.
+	record, err := h.providers.Update(r.Context(), providerID, update, auth.MustUser(r.Context()).IsSuperAdmin())
 	if err != nil {
 		return translateProviderError(err)
 	}
-	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"provider": record})
+	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"provider": record.Masked()})
 }
 
 func (h *Handlers) deleteProvider(w http.ResponseWriter, r *http.Request) error {
@@ -144,7 +168,7 @@ func (h *Handlers) deleteProvider(w http.ResponseWriter, r *http.Request) error 
 		return err
 	}
 	if err := h.providers.Delete(r.Context(), providerID); err != nil {
-		return httpx.Internal(err)
+		return translateProviderError(err)
 	}
 	return httpx.NoContent(w)
 }
@@ -158,6 +182,17 @@ func (h *Handlers) detectModels(w http.ResponseWriter, r *http.Request) error {
 	providerID, err := pathID(r, "id")
 	if err != nil {
 		return err
+	}
+
+	// Listing sends the stored key upstream, and the operator has switched
+	// this provider off. Authorize refuses a disabled provider for the same
+	// reason, so the listing does too.
+	owner, err := h.providers.ByID(r.Context(), providerID)
+	if err != nil {
+		return translateProviderError(err)
+	}
+	if !owner.Enabled {
+		return httpx.Conflict("provider_disabled", "This provider is switched off. Switch it on before listing its models.")
 	}
 
 	resolved, err := h.providers.Resolve(r.Context(), providerID)
@@ -240,92 +275,12 @@ type modelRequest struct {
 	ReasoningTokenWeight *float64 `json:"reasoning_token_weight"`
 }
 
-func (h *Handlers) listModels(w http.ResponseWriter, r *http.Request) error {
-	providerID := r.URL.Query().Get("provider_id")
-	if providerID != "" && !isValidID(providerID) {
-		return httpx.BadRequest("Malformed provider id.")
-	}
-
-	records, err := h.models.ListAll(r.Context(), providerID)
-	if err != nil {
-		return httpx.Internal(err)
-	}
-
-	allGrants, err := h.models.AllModelGrants(r.Context())
-	if err != nil {
-		return httpx.Internal(err)
-	}
-	for i := range records {
-		records[i].GroupGrants = allGrants[records[i].ID]
-	}
-
-	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"models": records})
-}
-
-func (h *Handlers) createModel(w http.ResponseWriter, r *http.Request) error {
-	var body modelRequest
-	if err := httpx.DecodeJSON(w, r, &body, maxProviderBody); err != nil {
-		return err
-	}
-	if !isValidID(body.ProviderID) {
-		return httpx.BadRequest("A provider is required.")
-	}
-	if _, err := h.providers.ByID(r.Context(), body.ProviderID); err != nil {
-		return translateProviderError(err)
-	}
-	if err := h.checkRoute(r.Context(), "", body); err != nil {
-		return err
-	}
-
-	in := model.CreateInput{
-		ProviderID: body.ProviderID,
-		Enabled:    true,
-		Hidden:     body.Hidden != nil && *body.Hidden,
-		Capabilities: model.Capabilities{
-			SupportsStreaming:    true,
-			SupportsSystemPrompt: true,
-		},
-		// Neutral by default: one credit per thousand tokens either way, and
-		// nothing charged simply for asking.
-		Weights: model.Weights{InputToken: 1, OutputToken: 1, ReasoningToken: 1},
-	}
-	applyModelFields(&in.ModelID, &in.DisplayName, &in.Description, &in.Avatar,
-		&in.Enabled, &in.SortOrder, &in.Capabilities, &in.Weights, body)
-	setIf(&in.APIName, body.APIName)
-	setIf(&in.SystemPrompt, body.SystemPrompt)
-	setIf(&in.RouteToID, body.RouteToID)
-	setIf(&in.ReasoningStyle, body.ReasoningStyle)
-	setIf(&in.ReasoningTiers, body.ReasoningTiers)
-	setIf(&in.RequestOverride, body.RequestOverride)
-
-	record, err := h.models.Create(r.Context(), in)
-	if err != nil {
-		return model.TranslateError(err)
-	}
-	if body.GroupGrants != nil {
-		if err := h.models.SetModelGroups(r.Context(), record.ID, *body.GroupGrants); err != nil {
-			return httpx.Internal(err)
-		}
-		record.GroupGrants = *body.GroupGrants
-	}
-	return httpx.WriteJSON(w, http.StatusCreated, map[string]any{"model": record})
-}
-
-func (h *Handlers) updateModel(w http.ResponseWriter, r *http.Request) error {
-	modelID, err := pathID(r, "id")
-	if err != nil {
-		return err
-	}
-
-	var body modelRequest
-	if err := httpx.DecodeJSON(w, r, &body, maxProviderBody); err != nil {
-		return err
-	}
-	if err := h.checkRoute(r.Context(), modelID, body); err != nil {
-		return err
-	}
-
-	record, err := h.models.Update(r.Context(), modelID, model.Update{
+// update is the edit a request asks for, field for field: nil keeps what the
+// model has. createInput writes the same fields through it, so the two paths
+// share one list, and TestEveryModelFieldReachesTheStore holds that list to the
+// request's own.
+func (body modelRequest) update() model.Update {
+	return model.Update{
 		ModelID:              body.ModelID,
 		APIName:              body.APIName,
 		SystemPrompt:         body.SystemPrompt,
@@ -354,43 +309,176 @@ func (h *Handlers) updateModel(w http.ResponseWriter, r *http.Request) error {
 		ReasoningStyle:       body.ReasoningStyle,
 		ReasoningTiers:       body.ReasoningTiers,
 		RequestOverride:      body.RequestOverride,
-	})
+		GroupGrants:          body.GroupGrants,
+	}
+}
+
+// createInput is a new model: the defaults one created here takes, with what
+// the request sent written over them.
+func (body modelRequest) createInput() model.CreateInput {
+	in := model.CreateInput{
+		ProviderID: body.ProviderID,
+		Enabled:    true,
+		Capabilities: model.Capabilities{
+			SupportsStreaming:    true,
+			SupportsSystemPrompt: true,
+		},
+		// Neutral by default: one credit per thousand tokens either way, and
+		// nothing charged simply for asking.
+		Weights: model.Weights{InputToken: 1, OutputToken: 1, ReasoningToken: 1},
+	}
+	u := body.update()
+	setIf(&in.ModelID, u.ModelID)
+	setIf(&in.APIName, u.APIName)
+	setIf(&in.SystemPrompt, u.SystemPrompt)
+	setIf(&in.DisplayName, u.DisplayName)
+	setIf(&in.Description, u.Description)
+	setIf(&in.Avatar, u.Avatar)
+	setIf(&in.Enabled, u.Enabled)
+	setIf(&in.Hidden, u.Hidden)
+	setIf(&in.SortOrder, u.SortOrder)
+	setIf(&in.RouteToID, u.RouteToID)
+	setIf(&in.ReasoningStyle, u.ReasoningStyle)
+	setIf(&in.ReasoningTiers, u.ReasoningTiers)
+	setIf(&in.RequestOverride, u.RequestOverride)
+	// Written with the model, so a refused grant leaves no model behind.
+	in.GroupGrants = u.GroupGrants
+
+	setIf(&in.SupportsReasoning, u.SupportsReasoning)
+	setIf(&in.SupportsImages, u.SupportsImages)
+	setIf(&in.SupportsVision, u.SupportsVision)
+	setIf(&in.SupportsStreaming, u.SupportsStreaming)
+	setIf(&in.SupportsSystemPrompt, u.SupportsSystemPrompt)
+	setIf(&in.SupportsTools, u.SupportsTools)
+	setIf(&in.SupportsImageGen, u.SupportsImageGen)
+	setIf(&in.SupportsChatImageGen, u.SupportsChatImageGen)
+	setIf(&in.EmulateTools, u.EmulateTools)
+	setIf(&in.ContextWindow, u.ContextWindow)
+	setIf(&in.MaxOutputTokens, u.MaxOutputTokens)
+
+	setIf(&in.Weights.Request, u.RequestWeight)
+	setIf(&in.Weights.InputToken, u.InputTokenWeight)
+	setIf(&in.Weights.OutputToken, u.OutputTokenWeight)
+	setIf(&in.Weights.ReasoningToken, u.ReasoningTokenWeight)
+	return in
+}
+
+func (h *Handlers) listModels(w http.ResponseWriter, r *http.Request) error {
+	providerID := r.URL.Query().Get("provider_id")
+	if providerID != "" && !id.Valid(providerID) {
+		return httpx.BadRequestCode("malformed_provider_id", "Malformed provider id.")
+	}
+
+	records, err := h.models.ListAll(r.Context(), providerID)
+	if err != nil {
+		return httpx.Internal(err)
+	}
+
+	allGrants, err := h.models.AllModelGrants(r.Context())
+	if err != nil {
+		return httpx.Internal(err)
+	}
+	for i := range records {
+		records[i].GroupGrants = allGrants[records[i].ID]
+	}
+
+	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"models": records})
+}
+
+func (h *Handlers) createModel(w http.ResponseWriter, r *http.Request) error {
+	var body modelRequest
+	if err := httpx.DecodeJSON(w, r, &body, maxProviderBody); err != nil {
+		return err
+	}
+	if !id.Valid(body.ProviderID) {
+		return httpx.BadRequestCode("provider_required", "A provider is required.")
+	}
+	if _, err := h.providers.ByID(r.Context(), body.ProviderID); err != nil {
+		return translateProviderError(err)
+	}
+	if err := h.checkRoute(r.Context(), "", body); err != nil {
+		return err
+	}
+	if err := checkModelGroupAccess(body.GroupGrants); err != nil {
+		return err
+	}
+
+	record, err := h.models.Create(r.Context(), body.createInput())
 	if err != nil {
 		return model.TranslateError(err)
 	}
-	if body.GroupGrants != nil {
-		if err := h.models.SetModelGroups(r.Context(), modelID, *body.GroupGrants); err != nil {
-			return httpx.Internal(err)
-		}
-		record.GroupGrants = *body.GroupGrants
+	return httpx.WriteJSON(w, http.StatusCreated, map[string]any{"model": record})
+}
+
+func (h *Handlers) updateModel(w http.ResponseWriter, r *http.Request) error {
+	modelID, err := pathID(r, "id")
+	if err != nil {
+		return err
+	}
+
+	var body modelRequest
+	if err := httpx.DecodeJSON(w, r, &body, maxProviderBody); err != nil {
+		return err
+	}
+	if err := h.checkRoute(r.Context(), modelID, body); err != nil {
+		return err
+	}
+	if err := checkModelGroupAccess(body.GroupGrants); err != nil {
+		return err
+	}
+
+	record, err := h.models.Update(r.Context(), modelID, body.update())
+	if err != nil {
+		return model.TranslateError(err)
 	}
 	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"model": record})
 }
 
-// checkRoute rejects the two routes that cannot work: one pointing at
-// the model itself, and one pointing at a model that is itself routed.
-// Resolution is a single hop by design, so a chain would silently do
+// checkModelGroupAccess answers a bad access word with its 400 before any write
+// begins. The grants share the model's transaction, so a refusal there would
+// roll the whole save back, and this check is what keeps it a 400 rather than
+// the 500 the write would give.
+func checkModelGroupAccess(grants *[]model.ModelGroupGrant) error {
+	if grants == nil {
+		return nil
+	}
+	for _, grant := range *grants {
+		if err := model.CheckAccess(grant.Access); err != nil {
+			return model.TranslateError(err)
+		}
+	}
+	return nil
+}
+
+// checkRoute answers the routes that cannot work before anything is written,
+// with a sentence for the editor. It reads outside any lock, so it is not the
+// guard: model.Store repeats these checks, and the incoming ones this cannot
+// see, under the rows' own locks, which is what holds against a concurrent
+// write. Resolution is a single hop by design, so a chain would silently do
 // something other than what the second link says.
 func (h *Handlers) checkRoute(ctx context.Context, modelID string, body modelRequest) error {
 	if body.RouteToID == nil || *body.RouteToID == "" {
 		return nil
 	}
 	targetID := *body.RouteToID
-	if !isValidID(targetID) {
-		return httpx.BadRequest("Malformed model id.")
+	if !id.Valid(targetID) {
+		return httpx.BadRequestCode("malformed_model_id", "Malformed model id.")
 	}
 	if targetID == modelID {
-		return httpx.BadRequest("A model cannot route to itself.")
+		return httpx.BadRequestCode("route_to_self", "A model cannot route to itself.")
 	}
 	target, err := h.models.ByID(ctx, targetID)
+	// The pre-check reads the target before the store does, so it has to say
+	// the same thing the store would: a missing target is not an unavailable
+	// model being saved.
+	if errors.Is(err, model.ErrNotFound) {
+		return model.TranslateError(model.ErrRouteTargetMissing)
+	}
 	if err != nil {
 		return model.TranslateError(err)
 	}
 	if target.RouteToID != "" {
-		return httpx.BadRequest("That model is itself routed elsewhere; routes are a single hop.")
-	}
-	if body.ReasoningStyle != nil && !body.ReasoningStyle.Valid() && *body.ReasoningStyle != "" {
-		return httpx.BadRequest("Unknown reasoning style.")
+		return httpx.BadRequestCode("route_chained", "That model is itself routed elsewhere; routes are a single hop.")
 	}
 	return nil
 }
@@ -409,11 +497,11 @@ func (h *Handlers) reorderModels(w http.ResponseWriter, r *http.Request) error {
 	}
 	seen := make(map[string]bool, len(body.IDs))
 	for _, modelID := range body.IDs {
-		if !isValidID(modelID) {
-			return httpx.BadRequest("Malformed model id.")
+		if !id.Valid(modelID) {
+			return httpx.BadRequestCode("malformed_model_id", "Malformed model id.")
 		}
 		if seen[modelID] {
-			return httpx.BadRequest("The same model appears twice in the order.")
+			return httpx.BadRequestCode("order_duplicate_model", "The same model appears twice in the order.")
 		}
 		seen[modelID] = true
 	}
@@ -430,40 +518,9 @@ func (h *Handlers) deleteModel(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	if err := h.models.Delete(r.Context(), modelID); err != nil {
-		return httpx.Internal(err)
+		return model.TranslateError(err)
 	}
 	return httpx.NoContent(w)
-}
-
-func applyModelFields(
-	modelID, displayName, description, avatar *string,
-	enabled *bool, sortOrder *int,
-	capabilities *model.Capabilities, weights *model.Weights,
-	body modelRequest,
-) {
-	setIf(modelID, body.ModelID)
-	setIf(displayName, body.DisplayName)
-	setIf(description, body.Description)
-	setIf(avatar, body.Avatar)
-	setIf(enabled, body.Enabled)
-	setIf(sortOrder, body.SortOrder)
-
-	setIf(&capabilities.SupportsReasoning, body.SupportsReasoning)
-	setIf(&capabilities.SupportsImages, body.SupportsImages)
-	setIf(&capabilities.SupportsVision, body.SupportsVision)
-	setIf(&capabilities.SupportsStreaming, body.SupportsStreaming)
-	setIf(&capabilities.SupportsSystemPrompt, body.SupportsSystemPrompt)
-	setIf(&capabilities.SupportsTools, body.SupportsTools)
-	setIf(&capabilities.SupportsImageGen, body.SupportsImageGen)
-	setIf(&capabilities.SupportsChatImageGen, body.SupportsChatImageGen)
-	setIf(&capabilities.EmulateTools, body.EmulateTools)
-	setIf(&capabilities.ContextWindow, body.ContextWindow)
-	setIf(&capabilities.MaxOutputTokens, body.MaxOutputTokens)
-
-	setIf(&weights.Request, body.RequestWeight)
-	setIf(&weights.InputToken, body.InputTokenWeight)
-	setIf(&weights.OutputToken, body.OutputTokenWeight)
-	setIf(&weights.ReasoningToken, body.ReasoningTokenWeight)
 }
 
 func setIf[T any](target *T, value *T) {
@@ -472,31 +529,27 @@ func setIf[T any](target *T, value *T) {
 	}
 }
 
-func isValidID(value string) bool {
-	return value != "" && len(value) == 26
-}
-
 // translateAdapterError turns an upstream failure into a response. The
 // classification the adapter already made is what decides the status, so no
 // handler parses a provider's error text.
 func translateAdapterError(err error) error {
 	var upstream *adapter.Error
-	if !asAdapter(err, &upstream) {
+	if !errors.As(err, &upstream) {
 		return httpx.Internal(err)
 	}
 
 	switch upstream.Kind {
 	case adapter.ErrorAuth:
-		return httpx.BadRequest("%s", upstream.Message)
+		return httpx.BadRequest("%s", upstream.PublicMessage())
 	case adapter.ErrorRateLimit:
-		return httpx.TooManyRequests("provider_rate_limited", upstream.Message)
+		return httpx.TooManyRequests("provider_rate_limited", upstream.PublicMessage())
 	case adapter.ErrorNetwork:
-		return httpx.Unavailable(upstream.Message).WithCause(err)
+		return httpx.Unavailable(upstream.PublicMessage()).WithCause(err)
 	case adapter.ErrorUpstream:
-		return httpx.Unavailable(upstream.Message).WithCause(err)
+		return httpx.Unavailable(upstream.PublicMessage()).WithCause(err)
 	case adapter.ErrorCancelled:
-		return httpx.Unavailable("The request was cancelled.")
+		return httpx.UnavailableCode("request_cancelled", "The request was cancelled.")
 	default:
-		return httpx.BadRequest("%s", upstream.Message)
+		return httpx.BadRequest("%s", upstream.PublicMessage())
 	}
 }

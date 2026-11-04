@@ -19,19 +19,20 @@ import type { Column, SortState } from '@/components/table-types';
 import type { Stat } from '@/components/stat';
 import { t } from '@/composables/useI18n';
 import { isMasked, maskUser } from '@/admin/safeMode';
-import { formatBytes } from '@/lib/format';
+import { formatBytes, localeTag } from '@/lib/format';
 import AdminFailure from './AdminFailure.vue';
 import { useAdminView } from './adminView';
+import { failureText } from './shared';
 
 const REFRESH_MS = 5000;
 
 const view = useAdminView();
-view.setTitle(t('navResources'), t('controlResourceHint'));
+view.setTitle(() => t('navResources'), () => t('controlResourceHint'));
 
 const snapshot = ref<Resources | null>(null);
 const error = ref('');
 const refreshing = ref(false);
-const updatedAt = computed(() => snapshot.value ? new Date(snapshot.value.sampled_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '');
+const updatedAt = computed(() => snapshot.value ? new Date(snapshot.value.sampled_at).toLocaleTimeString(localeTag(), { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '');
 const sort = ref<SortState | null>(null);
 
 const memoryStats = computed<Stat[]>(() => {
@@ -86,9 +87,13 @@ const columns = computed<Array<Column<UserStorage>>>(() => [
 
 /** Seconds of CPU as hours, minutes and seconds — it is a total, not a clock. */
 function duration(seconds: number): string {
-  if (seconds < 60) return `${seconds.toFixed(1)}s`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ${Math.round(seconds % 60)}s`;
+  // Judged at the precision it is printed to: 59.96 would read "60.0s".
+  if (Math.round(seconds * 10) / 10 < 60) return `${seconds.toFixed(1)}s`;
+  // Rounded once, then split. Rounding the seconds part on its own printed
+  // 119.6 as "1m 60s".
+  const total = Math.round(seconds);
+  const minutes = Math.floor(total / 60);
+  if (minutes < 60) return `${minutes}m ${total % 60}s`;
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
@@ -99,7 +104,7 @@ async function load(): Promise<void> {
   try {
     snapshot.value = await adminApi.resources();
   } catch (failure) {
-    error.value = failure instanceof Error ? failure.message : String(failure);
+    error.value = failureText(failure);
   } finally {
     refreshing.value = false;
   }

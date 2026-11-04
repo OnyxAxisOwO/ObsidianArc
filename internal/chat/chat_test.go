@@ -59,10 +59,6 @@ type stubUpstream struct {
 	// decoded map.
 	calls []upstreamCall
 	hold  chan struct{}
-	// One script per request, consumed in order, for the work surface: a
-	// loop that calls the model twice needs the second answer to differ
-	// from the first or it never ends.
-	rounds [][]string
 }
 
 type upstreamCall struct {
@@ -87,10 +83,6 @@ func newStubUpstream(t *testing.T) *stubUpstream {
 			body:        raw,
 		})
 		frames := append([]string(nil), stub.frames...)
-		if len(stub.rounds) > 0 {
-			frames = stub.rounds[0]
-			stub.rounds = stub.rounds[1:]
-		}
 		status := stub.status
 		body := stub.body
 		hold := stub.hold
@@ -268,7 +260,7 @@ func newFixture(t *testing.T) *fixture {
 		BaseURL: upstream.server.URL + "/v1",
 		APIKey:  "sk-test",
 		Enabled: true,
-	})
+	}, true)
 	if err != nil {
 		t.Fatalf("create provider (base %s): %v", upstream.server.URL, err)
 	}
@@ -641,7 +633,8 @@ func TestListOnlyShowsYourOwnConversations(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	theirs, err := f.conversations.List(context.Background(), f.other.ID, 0)
+	archived := false
+	theirs, err := f.conversations.ListWithFilter(context.Background(), f.other.ID, conversation.ListFilter{Limit: 0, Archived: &archived})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -912,7 +905,8 @@ func TestRejectedTurnWritesNothing(t *testing.T) {
 		t.Fatalf("want the hook's error, got %v", err)
 	}
 
-	list, err := f.conversations.List(context.Background(), f.account.ID, 0)
+	archived := false
+	list, err := f.conversations.ListWithFilter(context.Background(), f.account.ID, conversation.ListFilter{Limit: 0, Archived: &archived})
 	if err != nil {
 		t.Fatal(err)
 	}

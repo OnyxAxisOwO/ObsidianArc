@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, shallowRef, type App, type Component } from 'vue';
+import { createApp, h, shallowRef, type App, type Component } from 'vue';
 import * as authApi from '../src/api/auth';
-import type { Account } from '../src/api/auth';
 import * as consentApi from '../src/api/consent';
 import * as oauthApi from '../src/api/oauth';
+import * as powLib from '../src/lib/pow';
 import { signInURL } from '../src/api/oauth';
 import * as backupApi from '../src/api/backup';
 import { ApiError } from '../src/api/client';
@@ -12,6 +12,7 @@ import { changeLanguage, t } from '../src/composables/useI18n';
 import { safeNext } from '../src/lib/next';
 import { adopt, forget, site, siteInfo } from '../src/stores/session';
 import AuthView from '../src/views/AuthView.vue';
+import BindOIDCView from '../src/views/BindOIDCView.vue';
 import CompleteSignupView from '../src/views/CompleteSignupView.vue';
 import ConsentView from '../src/views/ConsentView.vue';
 import TwoFactorEnrolView from '../src/views/TwoFactorEnrolView.vue';
@@ -19,15 +20,22 @@ import VerifyView from '../src/views/VerifyView.vue';
 import AccountSection from '../src/views/settings/AccountSection.vue';
 import { installPlugins } from '../src/plugins/registry';
 import example, { type ExampleCheck } from './fixtures/example.plugin';
+import { mountComponent, settle, stubLocation, button } from './helpers';
+import { makeAccount } from './fixtures/account';
 
 // A plugin's account field, as the forms label and refuse it.
 const refField = example.fields!['ref']!;
 
 // Signing in with an account from elsewhere, and letting somebody else's site
-// sign people in with an account here. Two features pointing opposite ways,
-// tested together because the screens they touch are the same three.
+// sign people in with an account here. Those point opposite ways, so they are
+// tested together, against the same three screens. The describes after them
+// share this file's stub server and mount setup, which is why they live here;
+// each names the feature it covers. The proof of work and the OIDC binding also
+// have files of their own (pow.test.ts, bind-oidc.test.ts) for what those drive.
 
-const route = { path: '/login', query: {} as Record<string, string> };
+// A route as the router resolves one: `meta` is always there, as the settings
+// screen's connect link reads it.
+const route = { path: '/login', query: {} as Record<string, string>, meta: {} as Record<string, unknown> };
 const replace = vi.fn();
 vi.mock('vue-router', () => ({
   useRouter: () => ({ push: vi.fn(), replace }),
@@ -35,6 +43,7 @@ vi.mock('vue-router', () => ({
 }));
 
 let app: App | undefined;
+let unmount: (() => void) | undefined;
 let host: HTMLElement;
 let panels: HTMLElement;
 
@@ -49,26 +58,15 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  unmount?.();
+  unmount = undefined;
   app?.unmount();
   app = undefined;
-  document.body.textContent = '';
   vi.restoreAllMocks();
   site.value = null;
   installPlugins([]);
   forget();
 });
-
-async function settle(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await nextTick();
-}
-
-function button(root: ParentNode, label: string): HTMLButtonElement {
-  const found = [...root.querySelectorAll<HTMLButtonElement>('button')]
-    .find((node) => node.textContent?.trim() === label);
-  if (!found) throw new Error(`Button not found: ${label}`);
-  return found;
-}
 
 function type(node: HTMLInputElement, value: string): void {
   node.value = value;
@@ -76,14 +74,7 @@ function type(node: HTMLInputElement, value: string): void {
 }
 
 async function mount(component: Component, props: Record<string, unknown> = {}): Promise<void> {
-  app = createApp({
-    setup() {
-      providePanelHost(shallowRef(panels));
-      return () => h(component, props);
-    },
-  });
-  app.mount(host);
-  await settle();
+  unmount = await mountComponent(component, props, { host, panels });
 }
 
 function offer(providers: { id: string; name: string }[]): void {
@@ -97,13 +88,50 @@ function fieldInput(label: string): HTMLInputElement {
   return field.querySelector('input')!;
 }
 
-const NEW_ACCOUNT: Account = {
-  id: 'u2', username: 'newperson', email: '', nickname: '', avatar: '', bio: '',
-  role: 'user', group_id: '', group_expires_at: 0, group_name: '',
-  status: 'active', created_at: 0, updated_at: 0, last_login_at: 0,
-  email_verified: true, allow_stats: true, allow_delete_conversations: true,
-  api_restricted: false, api_restricted_until: 0, api_restriction_source: '',
-};
+const NEW_ACCOUNT = makeAccount({
+  id: 'u2', username: 'newperson', email: '', nickname: '', group_id: '', group_name: '', created_at: 0,
+  updated_at: 0,
+});
+
+
+// The address the stubbed start answers with, so a test can see the page left
+// for it by its own navigation.
+const PROVIDER_AUTHORIZE = 'https://github.com/login/oauth/authorize?state=s';
+
+// A provider sign-in that carries a token or a proof is a JSON post the page
+// answers by navigating itself — never a form, whose redirect to the provider
+// Chrome blocks under the shell's form-action 'self'. The post is caught at
+// fetch, what it sent is kept for the test to read, and no form is ever
+// submitted.
+function stubFormPost(): {
+  posts: { method: string; action: string; fields: Record<string, unknown> }[];
+  restore: () => void;
+} {
+  const posts: { method: string; action: string; fields: Record<string, unknown> }[] = [];
+  const submit = vi.spyOn(HTMLFormElement.prototype, 'submit').mockImplementation(() => {
+    throw new Error('a provider sign-in must not be a form submission');
+  });
+  const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const path = String(input);
+    if (!path.startsWith('/api/auth/oauth/start/')) throw new Error(`unexpected request to ${path}`);
+    posts.push({
+      method: (init?.method ?? 'GET').toLowerCase(),
+      action: path,
+      fields: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>,
+    });
+    return new Response(JSON.stringify({ redirect: PROVIDER_AUTHORIZE }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  });
+  return {
+    posts,
+    restore: () => {
+      submit.mockRestore();
+      fetchSpy.mockRestore();
+    },
+  };
+}
 
 describe('password sign-in errors', () => {
   it('shows a localized message for an incorrect password', async () => {
@@ -177,6 +205,16 @@ describe('signing in with an account from elsewhere', () => {
     expect(replace).toHaveBeenCalledWith({ path: '/login', query: {} });
   });
 
+  // A refused sign-in that was headed somewhere keeps that destination in the
+  // address bar, so the next try can carry the visitor on to it.
+  it('keeps the page a refused sign-in was for when it clears the refusal', async () => {
+    offer([{ id: 'github', name: 'GitHub' }]);
+    route.query = { oauth_error: 'denied', next: '/oauth/consent?request=abc' };
+    await mount(AuthView, { mode: 'login' });
+
+    expect(replace).toHaveBeenCalledWith({ path: '/login', query: { next: '/oauth/consent?request=abc' } });
+  });
+
   it('explains when third-party signup was refused because oidc is required', async () => {
     offer([{ id: 'github', name: 'GitHub' }, { id: 'oidc', name: 'OpenID Connect' }]);
     route.query = { oauth_error: 'oidc_only' };
@@ -196,7 +234,7 @@ describe('signing in with an account from elsewhere', () => {
     route.path = '/register';
     await mount(AuthView, { mode: 'register' });
 
-    expect(host.querySelector('.oa-auth-sub')!.textContent).toBe(t('oidcOnlySignupNotice'));
+    expect(host.querySelector('.oa-auth-sub')!.textContent).toBe(t('oauthThirdPartyOnlyNotice'));
     expect(host.querySelector('input[type="password"]')).toBeNull();
     const oidcButton = host.querySelector<HTMLAnchorElement>('.oa-auth-provider')!;
     expect(oidcButton).not.toBeNull();
@@ -237,16 +275,16 @@ describe('signing in with an account from elsewhere', () => {
     route.path = '/login';
     await mount(AuthView, { mode: 'login' });
 
-    const assign = vi.fn();
-    Object.defineProperty(window, 'location', {
-      configurable: true, writable: true, value: { assign, href: '' },
-    });
+    const { assign } = stubLocation();
+    const { posts, restore } = stubFormPost();
 
     const link = host.querySelector<HTMLAnchorElement>('.oa-auth-provider')!;
     link.click();
     await settle();
+    restore();
 
     expect(assign).not.toHaveBeenCalled();
+    expect(posts).toHaveLength(0);
     expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('challengeRequired'));
   });
 
@@ -254,6 +292,46 @@ describe('signing in with an account from elsewhere', () => {
     route.query = { oauth_error: 'something-new' };
     await mount(AuthView, { mode: 'login' });
     expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('oauthFailed'));
+  });
+
+  // The code is whatever the query string carried, and every object inherits
+  // some names: an inherited name is not a refusal this page knows.
+  it.each(['constructor', '__proto__', 'toString'])(
+    'does not take the inherited name %s for a refusal it knows',
+    async (code) => {
+      route.query = { oauth_error: code };
+      await mount(AuthView, { mode: 'login' });
+      expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('oauthFailed'));
+    },
+  );
+
+  // A plugin's table is read the same way, and its field lookup too: the
+  // plugin's own error for a missing field is only for a field it declares.
+  it.each(['constructor', '__proto__', 'constructor_required'])(
+    'does not take the inherited name %s for a plugin refusal either',
+    async (code) => {
+      installPlugins([example]);
+      route.query = { oauth_error: code };
+      await mount(AuthView, { mode: 'login' });
+      expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('oauthFailed'));
+    },
+  );
+
+  it('asks for the sign-up check when a provider sign-up skipped it', async () => {
+    offer([{ id: 'github', name: 'GitHub' }]);
+    route.query = { oauth_error: 'signup_challenge_required' };
+    await mount(AuthView, { mode: 'login' });
+
+    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('oauthSignupChallengeRequired'));
+    expect(replace).toHaveBeenCalledWith({ path: '/login', query: {} });
+  });
+
+  it('says a provider sign-up was refused without naming the check that refused it', async () => {
+    offer([{ id: 'github', name: 'GitHub' }]);
+    route.query = { oauth_error: 'signup_refused' };
+    await mount(AuthView, { mode: 'login' });
+
+    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('signupRefused'));
   });
 
   // Somebody sent to sign in from the consent screen has to come back to it,
@@ -273,7 +351,21 @@ describe('signing in with an account from elsewhere', () => {
     for (const safe of ['/', '/settings', '/oauth/consent?request=abc']) {
       expect(safeNext(safe)).toBe(safe);
     }
-    for (const unsafe of ['//evil.example', 'https://evil.example', '/\\evil.example', '', 7, null]) {
+    for (const unsafe of [
+      '//evil.example',
+      'https://evil.example',
+      '/\\evil.example',
+      '',
+      7,
+      null,
+      // A URL parser deletes TAB, CR and LF before reading, so these become
+      // "//evil.example" once they are followed.
+      '/\t/evil.example',
+      '/\r/evil.example',
+      '/\n/evil.example',
+      '/\u0000/evil.example',
+      '/ok\\evil.example',
+    ]) {
       expect(safeNext(unsafe)).toBe('');
     }
   });
@@ -281,7 +373,15 @@ describe('signing in with an account from elsewhere', () => {
   it('builds the start URL without empty parameters in it', () => {
     expect(signInURL('github')).toBe('/api/auth/oauth/start/github');
     expect(signInURL('github', { next: '' })).toBe('/api/auth/oauth/start/github');
-    expect(signInURL('github', { link: true })).toBe('/api/auth/oauth/start/github?link=1');
+  });
+
+  it('carries a proof of work on the start URL only when there is one', () => {
+    const proof = { challenge: 'c', salt: 's', maxNumber: 10, expires: 1, signature: 'sig', nonce: 3 };
+    const withProof = new URL(signInURL('github', { register: true, pow: proof }), 'http://localhost');
+    expect(withProof.searchParams.get('register')).toBe('1');
+    expect(JSON.parse(withProof.searchParams.get('pow')!)).toEqual(proof);
+
+    expect(new URL(signInURL('github'), 'http://localhost').searchParams.has('pow')).toBe(false);
   });
 });
 
@@ -491,13 +591,9 @@ describe('finishing a sign-up with an invite code', () => {
 });
 
 describe('the connections an account holds', () => {
-  const account = {
-    id: 'u1', username: 'reader', email: '', nickname: '', avatar: '', bio: '',
-    role: 'user' as const, group_id: '', group_expires_at: 0, group_name: '',
-    status: 'active' as const, created_at: 0, updated_at: 0, last_login_at: 0,
-    email_verified: true, allow_stats: true, allow_delete_conversations: true,
-    api_restricted: false, api_restricted_until: 0, api_restriction_source: '',
-  };
+  const account = makeAccount({
+    id: 'u1', username: 'reader', email: '', nickname: '', group_id: '', group_name: '', created_at: 0, updated_at: 0,
+  });
 
   beforeEach(() => {
     adopt(account);
@@ -506,7 +602,7 @@ describe('the connections an account holds', () => {
     vi.spyOn(backupApi, 'exportAccount').mockResolvedValue({} as never);
   });
 
-  it('offers a connect link for a provider and a way out of one it holds', async () => {
+  it('offers a connect button for a provider and a way out of one it holds', async () => {
     vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({
       connections: [{
         provider: 'github', login: 'octocat', email: 'cat@example.com',
@@ -518,15 +614,35 @@ describe('the connections an account holds', () => {
       ],
       has_password: true,
     });
-    await mount(AccountSection);
+    await mount(AccountSection, { active: true });
 
     const rows = [...host.querySelectorAll('.oa-connection')];
     expect(rows).toHaveLength(2);
     expect(rows[0]!.textContent).toContain('octocat');
-    // The one that is connected has no link to connect it again.
-    expect(rows[0]!.querySelector('a')).toBeNull();
-    expect(rows[1]!.querySelector('a')!.getAttribute('href'))
-      .toBe('/api/auth/oauth/start/google?link=1&next=%2Fsettings');
+    const labels = (row: Element) => [...row.querySelectorAll('button')].map((button) => button.textContent?.trim());
+    // The one that is connected has no button to connect it again, only the way out.
+    expect(labels(rows[0]!)).not.toContain(t('connect'));
+    expect(labels(rows[1]!)).toEqual([t('connect')]);
+  });
+
+  // A connection is started by a request that carries the account's proof, and the
+  // browser leaves for the provider only with the address that answers. An account
+  // with a password is asked for it first, and the field opens to ask.
+  it('asks an account with a password for it before starting a connection', async () => {
+    vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({
+      connections: [], providers: [{ id: 'google', name: 'Google', enabled: true }], has_password: true,
+    });
+    const { ApiError } = await import('../src/api/client');
+    const connect = vi.spyOn(oauthApi, 'connectProvider').mockRejectedValue(
+      new ApiError(400, 'password_required', 'Enter your current password to do this.', {}),
+    );
+    await mount(AccountSection, { active: true });
+
+    host.querySelector<HTMLButtonElement>('.oa-connection button')!.click();
+    await settle();
+
+    expect(connect).toHaveBeenCalledWith('google', { password: '', next: '/settings' });
+    expect(host.textContent).toContain(t('connectPasswordHint', { provider: 'Google' }));
   });
 
   // A provider the operator has since switched off is still a way into this
@@ -543,11 +659,23 @@ describe('the connections an account holds', () => {
       ],
       has_password: true,
     });
-    await mount(AccountSection);
+    await mount(AccountSection, { active: true });
 
     const rows = [...host.querySelectorAll('.oa-connection')];
     expect(rows).toHaveLength(1);
     expect(rows[0]!.textContent).toContain('GitHub');
+  });
+
+  // The connect flow comes back with its outcome in the query, so the code is
+  // as untrusted here as on the sign-in page.
+  it('says a connection attempt failed when its code is a name every object inherits', async () => {
+    route.query = { oauth_error: 'constructor' };
+    vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({
+      connections: [], providers: [], has_password: true,
+    });
+    await mount(AccountSection, { active: true });
+
+    expect(host.querySelector('.oa-group-flash')!.textContent).toBe(t('oauthFailed'));
   });
 
   it('says a connection cannot be the last way in', async () => {
@@ -562,7 +690,7 @@ describe('the connections an account holds', () => {
     vi.spyOn(oauthApi, 'disconnectProvider').mockRejectedValue(
       new ApiError(409, 'last_way_in', 'nope', {}),
     );
-    await mount(AccountSection);
+    await mount(AccountSection, { active: true });
 
     const remove = host.querySelector<HTMLButtonElement>('.oa-connection button')!;
     remove.click();
@@ -579,7 +707,7 @@ describe('the connections an account holds', () => {
     vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({
       connections: [], providers: [], has_password: false,
     });
-    await mount(AccountSection);
+    await mount(AccountSection, { active: true });
 
     expect(host.textContent).toContain(t('setPassword'));
     expect(host.textContent).not.toContain(t('currentPassword'));
@@ -589,10 +717,49 @@ describe('the connections an account holds', () => {
     vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({
       connections: [], providers: [], has_password: true,
     });
-    await mount(AccountSection);
+    await mount(AccountSection, { active: true });
 
     expect(host.textContent).toContain(t('currentPassword'));
     expect(host.textContent).not.toContain(t('setPasswordHint'));
+  });
+
+  // The address is where a reset link goes, so moving it takes the password —
+  // but a nickname edit sends the unchanged address too and must not.
+  it('asks for the password only while the email is being changed', async () => {
+    vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({
+      connections: [], providers: [], has_password: true,
+    });
+    const save = vi.spyOn(authApi, 'updateProfile')
+      .mockResolvedValue({ user: { ...account, email: 'new@example.com' } });
+    await mount(AccountSection, { active: true });
+    expect(host.textContent).not.toContain(t('emailChangePasswordHint'));
+
+    type(fieldInput(t('email')), 'new@example.com');
+    await settle();
+    expect(host.textContent).toContain(t('emailChangePasswordHint'));
+
+    button(host, t('save')).click();
+    await settle();
+    expect(save).not.toHaveBeenCalled();
+
+    type(fieldInput(t('currentPassword')), 'a-good-password');
+    await settle();
+    button(host, t('save')).click();
+    await settle();
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({
+      email: 'new@example.com', current_password: 'a-good-password',
+    }));
+  });
+
+  it('does not ask an account with no password for one to change its email', async () => {
+    vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({
+      connections: [], providers: [], has_password: false,
+    });
+    await mount(AccountSection, { active: true });
+
+    type(fieldInput(t('email')), 'new@example.com');
+    await settle();
+    expect(host.textContent).not.toContain(t('emailChangePasswordHint'));
   });
 
   it('lists the sites this account has signed into, and removes one', async () => {
@@ -606,7 +773,7 @@ describe('the connections an account holds', () => {
       }],
     });
     const withdraw = vi.spyOn(consentApi, 'withdrawAuthorization').mockResolvedValue();
-    await mount(AccountSection);
+    await mount(AccountSection, { active: true });
 
     expect(host.textContent).toContain('The Wiki');
     const button = [...host.querySelectorAll<HTMLButtonElement>('button')]
@@ -624,9 +791,7 @@ describe('letting another site sign somebody in', () => {
     route.path = '/oauth/consent';
     // jsdom refuses a real navigation, and the whole answer of this screen is
     // where it sends the browser.
-    Object.defineProperty(window, 'location', {
-      configurable: true, writable: true, value: { href: '' },
-    });
+    stubLocation();
   });
 
   const request = {
@@ -706,6 +871,36 @@ describe('letting another site sign somebody in', () => {
     expect(host.querySelector('.oa-consent-scopes')).toBeNull();
   });
 
+  // A stale request and a server that is down are different problems. Telling
+  // the reader that a request which is fine is "not valid any more" sends them
+  // to start again for no reason.
+  it('says the server is unavailable, not that the request is stale, when the server fails', async () => {
+    route.query = { request: 'a-signed-ticket' };
+    vi.spyOn(consentApi, 'fetchConsent').mockRejectedValue(new ApiError(503, 'unavailable', 'database is down'));
+    await mount(ConsentView);
+
+    expect(host.textContent).toContain(t('consentUnavailable'));
+    expect(host.textContent).not.toContain(t('consentFailed'));
+  });
+
+  it('says the request is no longer valid when the server says it is stale', async () => {
+    route.query = { request: 'a-signed-ticket' };
+    vi.spyOn(consentApi, 'fetchConsent').mockRejectedValue(new ApiError(400, 'request_stale', 'The request is stale.'));
+    await mount(ConsentView);
+
+    expect(host.textContent).toContain(t('consentFailed'));
+    expect(host.textContent).not.toContain(t('consentUnavailable'));
+  });
+
+  it('says the request failed when the refusal is a name every object inherits', async () => {
+    route.query = { error: 'constructor' };
+    await mount(ConsentView);
+
+    expect(host.textContent).toContain(t('consentProblemTitle'));
+    expect(host.textContent).toContain(t('consentFailed'));
+    expect(host.textContent).not.toContain('native code');
+  });
+
   it('refuses to draw anything without a ticket', async () => {
     route.query = {};
     await mount(ConsentView);
@@ -732,9 +927,7 @@ describe('finishing a sign-up the provider could not', () => {
   beforeEach(() => {
     installPlugins([example]);
     route.path = '/oauth/complete';
-    Object.defineProperty(window, 'location', {
-      configurable: true, writable: true, value: { href: '' },
-    });
+    stubLocation();
   });
 
   it('asks only for what is missing, and says whose sign-in it is', async () => {
@@ -813,6 +1006,20 @@ describe('finishing a sign-up the provider could not', () => {
     expect(host.querySelector('.oa-auth-error')!.textContent).toBe(refField.taken());
     // Still on the form, with what was typed still in it.
     expect(fieldInput(refField.label()).value).toBe('87654321');
+  });
+
+  it('says the server wants the sign-up check before it opens the account', async () => {
+    const { ApiError } = await import('../src/api/client');
+    vi.spyOn(oauthApi, 'fetchPendingSignup').mockResolvedValue(pending);
+    vi.spyOn(oauthApi, 'completeSignup')
+      .mockRejectedValue(new ApiError(403, 'signup_challenge_required', 'This server asks for a human check.', {}));
+    await mount(CompleteSignupView);
+
+    type(fieldInput(refField.label()), '87654321');
+    button(host, t('signupCompleteSubmit')).click();
+    await settle();
+
+    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('oauthSignupChallengeRequired'));
   });
 
   it('allows customizing username and validates username format', async () => {
@@ -922,6 +1129,55 @@ describe('finishing a sign-up the provider could not', () => {
     expect(host.textContent).toContain(t('signupCompleteGoneTitle'));
     expect(host.querySelector('input')).toBeNull();
   });
+
+  it('offers to try again rather than calling the sign-in over when the server cannot be reached', async () => {
+    const { ApiError } = await import('../src/api/client');
+    const fetchPending = vi.spyOn(oauthApi, 'fetchPendingSignup')
+      .mockRejectedValueOnce(new ApiError(0, 'network', 'Could not reach the server: Failed to fetch'))
+      .mockResolvedValueOnce(pending);
+    await mount(CompleteSignupView);
+
+    expect(host.textContent).not.toContain(t('signupCompleteGoneTitle'));
+    expect(host.querySelector('.oa-auth-error')?.textContent).toBe(t('connectionFailed'));
+
+    button(host, t('retry')).click();
+    await settle();
+
+    expect(fetchPending).toHaveBeenCalledTimes(2);
+    expect(host.textContent).toContain(t('signupCompleteTitle'));
+  });
+});
+
+describe('signing up with a rule the form can check', () => {
+  beforeEach(() => {
+    route.path = '/register';
+  });
+
+  it('names a password that is too short, without asking the server', async () => {
+    const regSpy = vi.spyOn(authApi, 'register');
+    await mount(AuthView, { mode: 'register' });
+
+    type(fieldInput(t('username')), 'alice');
+    type(fieldInput(t('password')), 'short');
+    button(host, t('createAccount')).click();
+    await settle();
+
+    expect(regSpy).not.toHaveBeenCalled();
+    expect(host.querySelector('.oa-auth-error')?.textContent).toBe(t('passwordTooShort'));
+  });
+
+  it('names a username the server would refuse, without asking the server', async () => {
+    const regSpy = vi.spyOn(authApi, 'register');
+    await mount(AuthView, { mode: 'register' });
+
+    type(fieldInput(t('username')), 'no spaces allowed');
+    type(fieldInput(t('password')), 'super-secret-password');
+    button(host, t('createAccount')).click();
+    await settle();
+
+    expect(regSpy).not.toHaveBeenCalled();
+    expect(host.querySelector('.oa-auth-error')?.textContent).toBe(t('usernameInvalid'));
+  });
 });
 
 describe('auth card layout position', () => {
@@ -930,6 +1186,8 @@ describe('auth card layout position', () => {
     { position: 'center', expectedClass: 'position-center' },
     { position: 'left', expectedClass: 'position-left' },
     { position: 'right', expectedClass: 'position-right' },
+    { position: 'left-panel', expectedClass: 'position-left-panel' },
+    { position: 'right-panel', expectedClass: 'position-right-panel' },
   ] as const)('applies $expectedClass to AuthView (login) when auth_card_position is $position', async ({ position, expectedClass }) => {
     site.value = { ...siteInfo.value };
     if (position === undefined) delete site.value.auth_card_position;
@@ -943,6 +1201,8 @@ describe('auth card layout position', () => {
     { position: 'left', expectedClass: 'position-left' },
     { position: 'right', expectedClass: 'position-right' },
     { position: 'center', expectedClass: 'position-center' },
+    { position: 'left-panel', expectedClass: 'position-left-panel' },
+    { position: 'right-panel', expectedClass: 'position-right-panel' },
   ] as const)('applies $expectedClass to AuthView (register) when auth_card_position is $position', async ({ position, expectedClass }) => {
     site.value = { ...siteInfo.value, auth_card_position: position };
     await mount(AuthView, { mode: 'register' });
@@ -998,7 +1258,7 @@ describe('registering with proof-of-work (PoW)', () => {
     });
 
     const regSpy = vi.spyOn(authApi, 'register').mockResolvedValue({
-      user: { id: 'u1', username: 'alice', role: 'user', status: 'active', email_verified: true, allow_stats: true, allow_delete_conversations: true, api_restricted: false, api_restricted_until: 0, api_restriction_source: '', created_at: 0, updated_at: 0, last_login_at: 0, group_id: '', group_name: '', group_expires_at: 0, email: '', nickname: '', avatar: '', bio: '' },
+      user: makeAccount({ id: 'u1', username: 'alice', created_at: 0, updated_at: 0, group_id: '', group_name: '', email: '', nickname: '' }),
     });
 
     await mount(AuthView, { mode: 'register' });
@@ -1030,7 +1290,7 @@ describe('registering with proof-of-work (PoW)', () => {
 
     const fetchSpy = vi.spyOn(authApi, 'fetchPoWChallenge');
     const regSpy = vi.spyOn(authApi, 'register').mockResolvedValue({
-      user: { id: 'u1', username: 'bob', role: 'user', status: 'active', email_verified: true, allow_stats: true, allow_delete_conversations: true, api_restricted: false, api_restricted_until: 0, api_restriction_source: '', created_at: 0, updated_at: 0, last_login_at: 0, group_id: '', group_name: '', group_expires_at: 0, email: '', nickname: '', avatar: '', bio: '' },
+      user: makeAccount({ id: 'u1', username: 'bob', created_at: 0, updated_at: 0, group_id: '', group_name: '', email: '', nickname: '' }),
     });
 
     await mount(AuthView, { mode: 'register' });
@@ -1047,5 +1307,248 @@ describe('registering with proof-of-work (PoW)', () => {
         pow: expect.anything(),
       }),
     );
+  });
+
+  // A challenge whose answer is known, so a test can check what was sent.
+  async function challengeWithAnswer(expires: number, signature: string) {
+    const salt = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';
+    const challenge = (await import('node:crypto')).createHash('sha256').update(salt + 3).digest('hex');
+    return { challenge, salt, maxNumber: 10, expires, signature };
+  }
+
+  // The page's navigation is replaced for one test, so the test can see where
+  // the sign-in was sent and put the page back afterwards.
+  function providerLink(): HTMLAnchorElement {
+    return host.querySelector<HTMLAnchorElement>('.oa-auth-provider')!;
+  }
+
+  it('sends the proof it has solved with a provider sign-up from the register page', async () => {
+    site.value = { ...siteInfo.value, pow_on_signup: true, oauth: [{ id: 'github', name: 'GitHub' }] };
+    vi.spyOn(authApi, 'fetchPoWChallenge')
+      .mockResolvedValue(await challengeWithAnswer(Math.floor(Date.now() / 1000) + 300, 'test-sig'));
+    route.path = '/register';
+    await mount(AuthView, { mode: 'register' });
+
+    const { assign, restore: restoreLocation } = stubLocation();
+    const { posts, restore } = stubFormPost();
+    try {
+      providerLink().click();
+      await settle();
+
+      // A post, so the proof travels in the body and not the address; the
+      // page then leaves for the provider by its own navigation.
+      expect(posts).toHaveLength(1);
+      expect(posts[0]!.method).toBe('post');
+      expect(posts[0]!.action).toBe('/api/auth/oauth/start/github');
+      expect(posts[0]!.fields['register']).toBe(true);
+      expect(posts[0]!.fields['pow']).toMatchObject({ nonce: 3, signature: 'test-sig' });
+      expect(assign).toHaveBeenCalledExactlyOnceWith(PROVIDER_AUTHORIZE);
+    } finally {
+      restore();
+      restoreLocation();
+    }
+  });
+
+  it('solves a proof again rather than sending one that has run out', async () => {
+    site.value = { ...siteInfo.value, pow_on_signup: true, oauth: [{ id: 'github', name: 'GitHub' }] };
+    const now = Math.floor(Date.now() / 1000);
+    const fetchSpy = vi.spyOn(authApi, 'fetchPoWChallenge')
+      .mockResolvedValueOnce(await challengeWithAnswer(now - 10, 'stale-sig'))
+      .mockResolvedValueOnce(await challengeWithAnswer(now + 300, 'fresh-sig'));
+    route.path = '/register';
+    await mount(AuthView, { mode: 'register' });
+
+    const { restore: restoreLocation } = stubLocation();
+    const { posts, restore } = stubFormPost();
+    try {
+      providerLink().click();
+      await settle();
+
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      expect(posts[0]!.fields['pow']).toMatchObject({ signature: 'fresh-sig' });
+    } finally {
+      restore();
+      restoreLocation();
+    }
+  });
+
+  it('solves a proof again on submit when the one it holds has run out', async () => {
+    site.value = { ...siteInfo.value, pow_on_signup: true };
+    const now = Math.floor(Date.now() / 1000);
+    const fetchSpy = vi.spyOn(authApi, 'fetchPoWChallenge')
+      .mockResolvedValueOnce(await challengeWithAnswer(now - 10, 'stale-sig'))
+      .mockResolvedValueOnce(await challengeWithAnswer(now + 300, 'fresh-sig'));
+    const regSpy = vi.spyOn(authApi, 'register').mockResolvedValue({ user: NEW_ACCOUNT });
+    await mount(AuthView, { mode: 'register' });
+    await settle();
+
+    type(fieldInput(t('username')), 'alice');
+    type(fieldInput(t('password')), 'super-secret-password');
+    button(host, t('createAccount')).click();
+    await settle();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(regSpy).toHaveBeenCalledWith(expect.objectContaining({
+      pow: expect.objectContaining({ signature: 'fresh-sig' }),
+    }));
+  });
+
+  it('takes one click at a time, so one proof is never sent twice', async () => {
+    site.value = { ...siteInfo.value, pow_on_signup: true, oauth: [{ id: 'github', name: 'GitHub' }] };
+    vi.spyOn(authApi, 'fetchPoWChallenge')
+      .mockResolvedValue(await challengeWithAnswer(Math.floor(Date.now() / 1000) + 300, 'test-sig'));
+    route.path = '/register';
+    await mount(AuthView, { mode: 'register' });
+
+    const { restore: restoreLocation } = stubLocation();
+    const { posts, restore } = stubFormPost();
+    try {
+      providerLink().click();
+      providerLink().click();
+      await settle();
+
+      expect(posts).toHaveLength(1);
+    } finally {
+      restore();
+      restoreLocation();
+    }
+  });
+
+  // A start the server cannot read is said on the page, which has not left.
+  it('shows the refusal when the start itself is refused', async () => {
+    site.value = { ...siteInfo.value, pow_on_signup: true, oauth: [{ id: 'github', name: 'GitHub' }] };
+    vi.spyOn(authApi, 'fetchPoWChallenge')
+      .mockResolvedValue(await challengeWithAnswer(Math.floor(Date.now() / 1000) + 300, 'test-sig'));
+    vi.spyOn(oauthApi, 'startSignIn').mockRejectedValue(new ApiError(0, 'network', t('connectionFailed')));
+    route.path = '/register';
+    await mount(AuthView, { mode: 'register' });
+
+    const { assign, restore: restoreLocation } = stubLocation();
+    try {
+      providerLink().click();
+      await settle();
+
+      expect(assign).not.toHaveBeenCalled();
+      expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('connectionFailed'));
+    } finally {
+      restoreLocation();
+    }
+  });
+});
+
+// An account the OpenID Connect policy holds has to link that identity before it
+// can go on. The link is asked for the way the settings screen asks for it: with
+// the account's proof, and a password where it has one.
+describe('binding the OpenID Connect identity an account must hold', () => {
+  const SSO = { id: 'oidc', name: 'Campus SSO' };
+
+  beforeEach(() => {
+    route.path = '/bind-oidc';
+    route.query = {};
+    site.value = { ...siteInfo.value, oauth: [SSO] };
+  });
+
+  it('asks for the password before it leaves for the provider', async () => {
+    const connect = vi.spyOn(oauthApi, 'connectProvider')
+      .mockRejectedValueOnce(new ApiError(400, 'password_required', 'Enter your current password to do this.', {}))
+      .mockResolvedValueOnce({ redirect: 'https://sso.example/authorize?state=abc' });
+    const { assign, restore } = stubLocation();
+    try {
+      await mount(BindOIDCView);
+      button(host, t('oidcBindingButton', { provider: SSO.name })).click();
+      await settle();
+
+      expect(connect).toHaveBeenLastCalledWith('oidc', { password: '', next: '/bind-oidc?next=%2F' });
+      expect(assign).not.toHaveBeenCalled();
+      expect(host.textContent).toContain(t('connectPasswordHint', { provider: SSO.name }));
+
+      type(fieldInput(t('currentPassword')), 'a-good-password');
+      button(host, t('oidcBindingButton', { provider: SSO.name })).click();
+      await settle();
+
+      expect(connect).toHaveBeenLastCalledWith('oidc', { password: 'a-good-password', next: '/bind-oidc?next=%2F' });
+      expect(assign).toHaveBeenCalledWith('https://sso.example/authorize?state=abc');
+    } finally {
+      restore();
+    }
+  });
+
+  it('says a password is wrong and keeps the field open for another try', async () => {
+    vi.spyOn(oauthApi, 'connectProvider').mockRejectedValue(
+      new ApiError(400, 'current_password_wrong', 'That password is not correct.', {}),
+    );
+    await mount(BindOIDCView);
+    button(host, t('oidcBindingButton', { provider: SSO.name })).click();
+    await settle();
+
+    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('currentPasswordWrong'));
+    expect(fieldInput(t('currentPassword'))).not.toBeNull();
+  });
+});
+
+// A sign-up that is left for a sign-in while its proof of work is still being
+// solved. The reader has changed form, so nothing started for the old one may
+// go on, and the form must not be left busy on the solving label.
+describe('leaving a sign-up while its proof of work is being solved', () => {
+  // The solve is stubbed, so the challenge only has to be one the page can ask for.
+  const CHALLENGE = { challenge: 'c', salt: 's', maxNumber: 10, expires: Math.floor(Date.now() / 1000) + 300, signature: 'g' };
+
+  beforeEach(() => {
+    route.path = '/register';
+    site.value = { ...siteInfo.value, pow_on_signup: true };
+  });
+
+  // The sign-in link is a route change, which the router stub does not make, so
+  // the mode is switched the way a route does it: by the prop the page is given.
+  async function mountSwitchable(): Promise<(next: 'login' | 'register') => Promise<void>> {
+    const mode = shallowRef<'login' | 'register'>('register');
+    app = createApp({
+      setup() {
+        providePanelHost(shallowRef(panels));
+        return () => h(AuthView, { mode: mode.value });
+      },
+    });
+    app.mount(host);
+    await settle();
+    return async (next) => {
+      mode.value = next;
+      await settle();
+    };
+  }
+
+  it('does not start solving a challenge that arrives after the form has moved on', async () => {
+    let arrive!: (value: typeof CHALLENGE) => void;
+    vi.spyOn(authApi, 'fetchPoWChallenge').mockReturnValue(new Promise((resolve) => { arrive = resolve; }));
+    const solve = vi.spyOn(powLib, 'solvePoW');
+    const setMode = await mountSwitchable();
+
+    await setMode('login');
+    arrive(CHALLENGE);
+    await settle();
+
+    expect(solve).not.toHaveBeenCalled();
+  });
+
+  it('lets a submit go when the proof it waits on is abandoned, without sending the sign-up', async () => {
+    vi.spyOn(authApi, 'fetchPoWChallenge').mockResolvedValue(CHALLENGE);
+    // A solve that never finishes, as a worker terminated by cancel() never does.
+    const cancel = vi.fn();
+    vi.spyOn(powLib, 'solvePoW').mockReturnValue({ promise: new Promise(() => {}), cancel });
+    const register = vi.spyOn(authApi, 'register');
+    const setMode = await mountSwitchable();
+
+    type(fieldInput(t('username')), 'alice');
+    type(fieldInput(t('password')), 'super-secret-password');
+    button(host, t('createAccount')).click();
+    await settle();
+    expect(host.textContent).toContain(t('powSolving'));
+
+    await setMode('login');
+
+    expect(cancel).toHaveBeenCalled();
+    expect(register).not.toHaveBeenCalled();
+    expect(host.textContent).not.toContain(t('powSolving'));
+    const primary = host.querySelector<HTMLButtonElement>('button.oa-btn.primary.oa-btn-block:not(.oa-auth-provider)');
+    expect(primary?.disabled).toBe(false);
   });
 });

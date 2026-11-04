@@ -19,12 +19,14 @@ import (
 	"log/slog"
 	mathrand "math/rand/v2"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/card"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/notify"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
@@ -137,7 +139,7 @@ var (
 	ErrNamedBatch       = errors.New("invite: a batch is generated, so it cannot be given a code of its own")
 	ErrInvalidCount     = errors.New("invite: count must be between 1 and 500")
 	ErrInvalidMaxUses   = errors.New("invite: max uses must be between 0 and 100000")
-	ErrInvalidGroupDays = errors.New("invite: group days must be between 0 and 3650, and group_days_max must be 0 or at least group_days")
+	ErrInvalidGroupDays = errors.New("invite: group days must be between 0 and 3650, group_days_max must be 0 or at least group_days, and a range must start at 1 or more")
 	ErrGroupRequired    = errors.New("invite: group_days_max requires a group")
 	// A partner code's own four required fields — see Create. One error for
 	// all of them, the same reasoning ErrInvalid collapses a guessed code's
@@ -145,6 +147,10 @@ var (
 	// something the form has to guess at either, since it is the one that
 	// sent the request.
 	ErrPartnerFields = errors.New("invite: a partner code requires a count of 1, a custom code, a name and a group")
+	// A kind other than batch or partner. Reported on its own, so the answer
+	// does not describe the partner fields to someone who sent a different
+	// kind.
+	ErrInvalidKind = errors.New("invite: kind must be batch or partner")
 
 	// Claim's own failures, distinct from Consume's ErrInvalid so the HTTP
 	// layer can tell "this code will never work for you" (ErrInvalid) apart
@@ -154,6 +160,10 @@ var (
 	// on purpose.
 	ErrClaimed       = errors.New("invite: this code has already been claimed")
 	ErrGroupConflict = errors.New("invite: claiming this code would replace an existing group membership")
+	// The creator of a code cannot claim it onto their own account. That is
+	// a fact about the code, not a guess at it, so the refusal does not
+	// charge the throttle, the same as a repeat claim.
+	ErrOwnCode = errors.New("invite: you created this code, so it cannot be claimed on your own account")
 )
 
 const (
@@ -279,13 +289,23 @@ func NewStore(db *database.DB, users *user.Store, cards *card.Store, groups *gro
 	return &Store{db: db, users: users, cards: cards, groups: groups, settings: set}
 }
 
-// Settings reads back the invite settings a caller building a response needs
-// without reaching past this package into internal/settings' key names
-// itself — the profile handler is the one call site, and this keeps the
-// key constants from having to be exported knowledge outside this package
-// and internal/admin.
-func (s *Store) Settings() (userEnabled bool, limit, rewardCards, rewardCardDays, rewardEvery int) {
-	rewardEvery = s.settings.Int(settings.InvitesRewardEvery, 1)
+// Policy is the invite scheme as the operator has set it, read in one go. The
+// callers each want some of these values and not others, so a positional
+// return made every one of them name and discard the rest.
+type Policy struct {
+	UserEnabled    bool
+	Limit          int
+	RewardCards    int
+	RewardCardDays int
+	RewardEvery    int
+}
+
+// Settings reads back the invite settings a caller needs without reaching past
+// this package into internal/settings' key names itself. The profile handler
+// and the claim path are the call sites, and this keeps the key constants from
+// having to be exported knowledge outside this package and internal/admin.
+func (s *Store) Settings() Policy {
+	rewardEvery := s.settings.Int(settings.InvitesRewardEvery, settingDefault(settings.InvitesRewardEvery))
 	if rewardEvery < 1 {
 		// A cadence of zero or less would either divide by zero or reward
 		// every invite forever regardless of what an operator typed; 1
@@ -293,11 +313,22 @@ func (s *Store) Settings() (userEnabled bool, limit, rewardCards, rewardCardDays
 		// column's own default.
 		rewardEvery = 1
 	}
-	return s.settings.Bool(settings.InvitesUserEnabled),
-		s.settings.Int(settings.InvitesUserLimit, 10),
-		s.settings.Int(settings.InvitesRewardCards, 0),
-		s.settings.Int(settings.InvitesRewardCardDays, 30),
-		rewardEvery
+	return Policy{
+		UserEnabled:    s.settings.Bool(settings.InvitesUserEnabled),
+		Limit:          s.settings.Int(settings.InvitesUserLimit, settingDefault(settings.InvitesUserLimit)),
+		RewardCards:    s.settings.Int(settings.InvitesRewardCards, settingDefault(settings.InvitesRewardCards)),
+		RewardCardDays: s.settings.Int(settings.InvitesRewardCardDays, settingDefault(settings.InvitesRewardCardDays)),
+		RewardEvery:    rewardEvery,
+	}
+}
+
+// settingDefault is the value a fresh instance has for key. It is the fallback
+// for a stored value that will not parse, so it reads the same table the
+// defaults come from: a second literal here would drift the first time the
+// default moved.
+func settingDefault(key string) int {
+	n, _ := strconv.Atoi(settings.Defaults[key])
+	return n
 }
 
 // nextRewardIn is how many more qualifying invites the inviter needs before
@@ -367,7 +398,7 @@ func (s *Store) Consume(ctx context.Context, q database.Queryer, rawCode string,
 	if ownerID != "" {
 		// Personal codes stop working when the operator switches personal
 		// invites off, not only stop being handed out.
-		userEnabled, _, _, _, _ := s.Settings()
+		userEnabled := s.Settings().UserEnabled
 		if !userEnabled {
 			return nil, ErrInvalid
 		}
@@ -449,10 +480,15 @@ func (s *Store) Consume(ctx context.Context, q database.Queryer, rawCode string,
 // cannot drift into disagreeing about what "days" means.
 func randomGroupDays(groupDays, groupDaysMax int) int64 {
 	if groupDaysMax > groupDays {
+		// A range never draws zero. Zero is permanent membership everywhere
+		// downstream, so a draw of it from "0 to N" would hand out a membership
+		// that never ends. Create refuses a range that starts at zero, so this
+		// floor only matters for codes that were stored before that check.
+		low := max(groupDays, 1)
 		// math/rand/v2, not crypto/rand: a trial length is not a secret,
 		// and this only has to spread registrations across a range, not
 		// resist being guessed.
-		return int64(groupDays + mathrand.IntN(groupDaysMax-groupDays+1))
+		return int64(low + mathrand.IntN(groupDaysMax-low+1))
 	}
 	return int64(groupDays)
 }
@@ -526,6 +562,7 @@ const (
 	claimOutcomeInvalid       claimOutcome = "invalid"
 	claimOutcomeClaimed       claimOutcome = "claimed"
 	claimOutcomeGroupConflict claimOutcome = "group_conflict"
+	claimOutcomeOwnCode       claimOutcome = "own_code"
 	claimOutcomeThrottled     claimOutcome = "throttled"
 )
 
@@ -605,6 +642,7 @@ func (s *Store) Claim(ctx context.Context, userID, rawCode string) (*ClaimResult
 		var record struct {
 			id                      string
 			kind                    string
+			createdBy               string
 			allowExisting           bool
 			groupID                 string
 			groupDays, groupDaysMax int
@@ -612,9 +650,9 @@ func (s *Store) Claim(ctx context.Context, userID, rawCode string) (*ClaimResult
 			expiresAt, revokedAt    int64
 		}
 		err = tx.QueryRow(ctx,
-			`SELECT id, kind, allow_existing, group_id, group_days, group_days_max, max_uses, uses, expires_at, revoked_at
+			`SELECT id, kind, created_by, allow_existing, group_id, group_days, group_days_max, max_uses, uses, expires_at, revoked_at
 			 FROM invite_codes WHERE code = ?`, code).
-			Scan(&record.id, &record.kind, &record.allowExisting, &record.groupID,
+			Scan(&record.id, &record.kind, &record.createdBy, &record.allowExisting, &record.groupID,
 				&record.groupDays, &record.groupDaysMax, &record.maxUses, &record.uses,
 				&record.expiresAt, &record.revokedAt)
 		if database.IsNotFound(err) {
@@ -639,30 +677,18 @@ func (s *Store) Claim(ctx context.Context, userID, rawCode string) (*ClaimResult
 			return fail(claimOutcomeInvalid)
 		}
 
-		var alreadyClaimed int
-		err = tx.QueryRow(ctx, `SELECT 1 FROM invite_claims WHERE code_id = ? AND user_id = ?`,
-			record.id, userID).Scan(&alreadyClaimed)
-		if err == nil {
-			return refuse(claimOutcomeClaimed)
-		}
-		if !database.IsNotFound(err) {
-			return fmt.Errorf("invite: read claim: %w", err)
+		// After the code's own validity, so a code that could never be
+		// claimed still gets the one answer every other claimant gets.
+		if record.createdBy != "" && record.createdBy == userID {
+			return refuse(claimOutcomeOwnCode)
 		}
 
-		// "One claim per account per code" is a promise about the code, not
-		// about the invite_claims table specifically — an account that
-		// registered through this exact code already spent its one grant
-		// from it, the same as one that already claimed it, so Claim must
-		// refuse here too rather than letting invite_uses and invite_claims
-		// each think the account has never touched this code.
-		var alreadyRegistered int
-		err = tx.QueryRow(ctx, `SELECT 1 FROM invite_uses WHERE code_id = ? AND user_id = ?`,
-			record.id, userID).Scan(&alreadyRegistered)
-		if err == nil {
-			return refuse(claimOutcomeClaimed)
+		had, err := spentBy(ctx, tx, record.id, userID)
+		if err != nil {
+			return err
 		}
-		if !database.IsNotFound(err) {
-			return fmt.Errorf("invite: read use: %w", err)
+		if had {
+			return refuse(claimOutcomeClaimed)
 		}
 
 		if record.groupID != "" {
@@ -704,18 +730,16 @@ func (s *Store) Claim(ctx context.Context, userID, rawCode string) (*ClaimResult
 		var newGroupID string
 		var newExpiresAt int64
 		if applyGroup {
+			// The same-group cases come before the default-group case. The
+			// default group is where permanent accounts usually sit, so a
+			// claim for the default group would otherwise match the fresh-start
+			// branch and turn permanent membership into a timed one.
 			switch {
-			case account.GroupID == defaultGroupID || account.GroupID == "":
-				// Starting fresh from the group everybody without a code
-				// lands in: the code's group, for exactly what it grants.
-				// days <= 0 denotes permanent membership, matching the
-				// registration path (auth.Service.applyInvite) where
-				// group_expires_at is left 0.
-				newGroupID = record.groupID
-				if days > 0 {
-					newExpiresAt = nowMS + days*86400000
-				}
-			case account.GroupID == record.groupID && account.GroupExpiresAt != 0:
+			case account.GroupID == record.groupID && account.GroupExpiresAt == 0:
+				// Permanently in the code's own group: never given a
+				// temporary expiry by a claim.
+				return refuse(claimOutcomeGroupConflict)
+			case account.GroupID == record.groupID:
 				// Already sitting in this very group on a trial: topped up,
 				// or upgraded to permanent membership if days <= 0.
 				newGroupID = record.groupID
@@ -724,11 +748,20 @@ func (s *Store) Claim(ctx context.Context, userID, rawCode string) (*ClaimResult
 					if nowMS > base {
 						base = nowMS
 					}
-					newExpiresAt = base + days*86400000
+					newExpiresAt = base + days*dayMS
+				}
+			case account.GroupID == defaultGroupID || account.GroupID == "":
+				// Starting fresh from the group everybody without a code
+				// lands in: the code's group, for exactly what it grants.
+				// days <= 0 denotes permanent membership, matching the
+				// registration path (auth.Service.applyInvite) where
+				// group_expires_at is left 0.
+				newGroupID = record.groupID
+				if days > 0 {
+					newExpiresAt = nowMS + days*dayMS
 				}
 			default:
-				// Permanently in the code's own group, or a member of any
-				// other one: never downgraded or replaced by a claim.
+				// A member of some other group: never replaced by a claim.
 				return refuse(claimOutcomeGroupConflict)
 			}
 		}
@@ -750,22 +783,21 @@ func (s *Store) Claim(ctx context.Context, userID, rawCode string) (*ClaimResult
 			return fail(claimOutcomeInvalid)
 		}
 
-		if _, err := tx.Exec(ctx,
-			`INSERT INTO invite_claims (code_id, user_id, group_days, created_at) VALUES (?, ?, ?, ?)`,
-			record.id, userID, days, nowMS); err != nil {
-			if isUnique(err) {
-				// Defence in depth: the account's own row lock above already
-				// serialises every concurrent Claim for this account, so two
-				// transactions racing to insert the same (code_id, user_id)
-				// should never both reach here. If one somehow does, the use
-				// just spent is handed back rather than left paid for a
-				// claim this call is about to refuse.
-				if _, err := tx.Exec(ctx, `UPDATE invite_codes SET uses = uses - 1 WHERE id = ?`, record.id); err != nil {
-					return fmt.Errorf("invite: refund claim: %w", err)
-				}
-				return refuse(claimOutcomeClaimed)
+		inserted, err := insertClaim(ctx, tx, record.id, userID, days, nowMS)
+		if err != nil {
+			return err
+		}
+		if !inserted {
+			// Defence in depth: the account's own row lock above already
+			// serialises every concurrent Claim for this account, so two
+			// transactions racing to insert the same (code_id, user_id)
+			// should never both reach here. If one somehow does, the use
+			// just spent is handed back rather than left paid for a claim
+			// this call is about to refuse.
+			if _, err := tx.Exec(ctx, `UPDATE invite_codes SET uses = uses - 1 WHERE id = ?`, record.id); err != nil {
+				return fmt.Errorf("invite: refund claim: %w", err)
 			}
-			return fmt.Errorf("invite: record claim: %w", err)
+			return refuse(claimOutcomeClaimed)
 		}
 
 		if applyGroup {
@@ -799,9 +831,58 @@ func (s *Store) Claim(ctx context.Context, userID, rawCode string) (*ClaimResult
 		return nil, ErrClaimed
 	case claimOutcomeGroupConflict:
 		return nil, ErrGroupConflict
+	case claimOutcomeOwnCode:
+		return nil, ErrOwnCode
 	default:
 		return &result, nil
 	}
+}
+
+// insertClaim records one account's claim on a code and reports whether the row
+// was new. The conflict is resolved by the statement rather than by catching
+// the error: PostgreSQL aborts the whole transaction on a failed INSERT, so
+// the refund that follows a caught unique violation would itself fail.
+// dayMS is a day of group membership in the epoch milliseconds the columns
+// hold.
+const dayMS = int64(24 * time.Hour / time.Millisecond)
+
+// spentBy reports whether userID already had its one grant from the code.
+// "One claim per account per code" is a promise about the code, not about the
+// invite_claims table specifically — an account that registered through this
+// exact code already spent its one grant from it, the same as one that
+// already claimed it, so both tables are asked rather than letting
+// invite_uses and invite_claims each think the account has never touched
+// this code.
+func spentBy(ctx context.Context, q database.Queryer, codeID, userID string) (bool, error) {
+	for _, check := range []struct{ query, what string }{
+		{`SELECT 1 FROM invite_claims WHERE code_id = ? AND user_id = ?`, "claim"},
+		{`SELECT 1 FROM invite_uses WHERE code_id = ? AND user_id = ?`, "use"},
+	} {
+		var one int
+		err := q.QueryRow(ctx, check.query, codeID, userID).Scan(&one)
+		if err == nil {
+			return true, nil
+		}
+		if !database.IsNotFound(err) {
+			return false, fmt.Errorf("invite: read %s: %w", check.what, err)
+		}
+	}
+	return false, nil
+}
+
+func insertClaim(ctx context.Context, q database.Queryer, codeID, userID string, days, nowMS int64) (bool, error) {
+	res, err := q.Exec(ctx,
+		`INSERT INTO invite_claims (code_id, user_id, group_days, created_at) VALUES (?, ?, ?, ?)
+		 ON CONFLICT (code_id, user_id) DO NOTHING`,
+		codeID, userID, days, nowMS)
+	if err != nil {
+		return false, fmt.Errorf("invite: record claim: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("invite: record claim: %w", err)
+	}
+	return affected == 1, nil
 }
 
 // registrationGroupID mirrors auth.Service's own unexported registrationGroup:
@@ -961,11 +1042,12 @@ func (s *Store) Reward(ctx context.Context, userID string, verificationRequired 
 		if err != nil {
 			return fmt.Errorf("invite: lock inviter: %w", err)
 		}
-		var days int
-		reason, cards, days, counted, every, err = s.evaluateReward(ctx, tx, invitee, inviterID, present == 1)
+		decision, err := s.evaluateReward(ctx, tx, invitee, inviterID, present == 1)
 		if err != nil {
 			return err
 		}
+		reason, cards, counted, every = decision.reason, decision.cards, decision.counted, decision.every
+		days := decision.days
 
 		// The claim: a second caller for the same invitee — registration
 		// and an eager click on the verification link, say — affects no
@@ -1010,7 +1092,7 @@ func (s *Store) Reward(ctx context.Context, userID string, verificationRequired 
 	}
 
 	if s.Notify != nil {
-		_, _, instanceRewardCards, _, _ := s.Settings()
+		instanceRewardCards := s.Settings().RewardCards
 		notifyCtx := context.WithoutCancel(ctx)
 		if err := s.Notify.Push(notifyCtx, nil, notify.Notification{
 			Audience: notify.AudienceUser, UserID: inviterID,
@@ -1024,48 +1106,100 @@ func (s *Store) Reward(ctx context.Context, userID string, verificationRequired 
 			},
 			Link: "/settings?tab=invites",
 		}); err != nil {
-			return fmt.Errorf("invite: notify inviter: %w", err)
+			// The reward has committed, and a retry would find it already claimed,
+			// so a failed notice is logged rather than reported as a failed reward.
+			slog.ErrorContext(notifyCtx, "invite: notify inviter failed",
+				"inviter", inviterID, "error", err)
 		}
 	}
 	return nil
+}
+
+// pendingRewardPage is how many pending uses one query reads. A page is read
+// and closed before any of its rows is rewarded: Reward takes the inviter's
+// row lock, and a read still open would hold its connection through that wait.
+const pendingRewardPage = 200
+
+// pendingUse is a position in the pending walk: the (created_at, user_id) of
+// the last row a page handed out.
+type pendingUse struct {
+	userID    string
+	createdAt int64
 }
 
 // RewardPending asks again for every recent use still waiting on a reward.
 // Registration and verification are the two moments Reward is otherwise
 // called, and an invitee can come to qualify at neither: a restriction the
 // AI review placed at sign-up that later runs out, or that an operator
-// lifts. Bounded to the last month and a page at a time, so a backlog is
-// worked through over a few passes instead of all at once.
+// lifts. Bounded to the last month.
+//
+// The whole window is walked in this one pass. A use that does not qualify
+// yet stays unrewarded, so a page that began at the oldest row would hand out
+// the same stuck rows on every pass, and an invitee who had come to qualify
+// behind a backlog of 200 or more would never be reached before the window
+// dropped them.
 func (s *Store) RewardPending(ctx context.Context, verificationRequired bool) error {
-	rows, err := s.db.Query(ctx,
-		`SELECT user_id FROM invite_uses
-		 WHERE rewarded_at = 0 AND inviter_id <> '' AND created_at > ?
-		 ORDER BY created_at LIMIT 200`,
-		time.Now().Add(-30*24*time.Hour).UnixMilli())
-	if err != nil {
-		return fmt.Errorf("invite: read pending rewards: %w", err)
-	}
-	var pending []string
-	for rows.Next() {
-		var userID string
-		if err := rows.Scan(&userID); err != nil {
-			rows.Close()
-			return fmt.Errorf("invite: read pending rewards: %w", err)
-		}
-		pending = append(pending, userID)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("invite: read pending rewards: %w", err)
-	}
+	cutoff := time.Now().Add(-30 * 24 * time.Hour).UnixMilli()
+	after := pendingUse{createdAt: cutoff}
 	var lastErr error
-	for _, userID := range pending {
-		if err := s.Reward(ctx, userID, verificationRequired); err != nil {
-			slog.ErrorContext(ctx, "invite: resolve pending reward failed", "user_id", userID, "error", err)
-			lastErr = err
+	for {
+		page, err := s.pendingRewards(ctx, cutoff, after)
+		if err != nil {
+			return err
 		}
+		for _, use := range page {
+			if err := s.Reward(ctx, use.userID, verificationRequired); err != nil {
+				slog.ErrorContext(ctx, "invite: resolve pending reward failed", "user_id", use.userID, "error", err)
+				lastErr = err
+			}
+		}
+		if len(page) < pendingRewardPage {
+			return lastErr
+		}
+		after = page[len(page)-1]
 	}
-	return lastErr
+}
+
+// pendingRewards reads the next page of pending uses after the given
+// position. The keyset is (created_at, user_id) because created_at alone is
+// not unique, and a page boundary inside a tie would otherwise skip a row.
+func (s *Store) pendingRewards(ctx context.Context, cutoff int64, after pendingUse) ([]pendingUse, error) {
+	rows, err := s.db.Query(ctx,
+		`SELECT user_id, created_at FROM invite_uses
+		 WHERE rewarded_at = 0 AND inviter_id <> '' AND created_at > ?
+		   AND (created_at > ? OR (created_at = ? AND user_id > ?))
+		 ORDER BY created_at, user_id LIMIT ?`,
+		cutoff, after.createdAt, after.createdAt, after.userID, pendingRewardPage)
+	if err != nil {
+		return nil, fmt.Errorf("invite: read pending rewards: %w", err)
+	}
+	defer rows.Close()
+	var page []pendingUse
+	for rows.Next() {
+		var use pendingUse
+		if err := rows.Scan(&use.userID, &use.createdAt); err != nil {
+			return nil, fmt.Errorf("invite: read pending rewards: %w", err)
+		}
+		page = append(page, use)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("invite: read pending rewards: %w", err)
+	}
+	return page, nil
+}
+
+// rewardDecision is what evaluateReward resolved for one invite. reason is
+// empty when the invite qualifies, and otherwise names why it was skipped; a
+// skipped invite does not read the other fields. counted is the inviter's
+// running total once this invite is included, cards what this invite pays
+// (zero off the milestone), days how long those cards last, and every the
+// milestone spacing.
+type rewardDecision struct {
+	reason  string
+	cards   int
+	days    int
+	counted int
+	every   int
 }
 
 // evaluateReward decides whether the inviter is actually paid, and how much,
@@ -1073,64 +1207,65 @@ func (s *Store) RewardPending(ctx context.Context, verificationRequired bool) er
 // which already holds the inviter's row: every read here goes through it,
 // since on SQLite a second connection would wait behind that very lock.
 //
-// counted is the inviter's total of qualifying invites once this one is
-// included — every invite that reaches reason == "" is one, whether or not
-// it happened to land on this cadence's milestone — and cards is what this
-// particular invite pays: rewardCards exactly when counted is a multiple of
-// every, zero otherwise. A reason for skipping never counts at all, the same
-// as before this feature: same_ip, limit, disabled and a gone or disabled
-// inviter all leave the running total untouched.
+// cards is rewardCards exactly when counted is a multiple of every, zero
+// otherwise. A reason for skipping never counts at all, the same as before
+// this feature: same_ip, limit, disabled and a gone or disabled inviter all
+// leave the running total untouched.
 func (s *Store) evaluateReward(
 	ctx context.Context, q database.Queryer, invitee user.User, inviterID string, present bool,
-) (reason string, cards, days, counted, every int, err error) {
-	userEnabled, limit, rewardCards, rewardCardDays, rewardEvery := s.Settings()
-	every = rewardEvery
+) (rewardDecision, error) {
+	policy := s.Settings()
+	every := policy.RewardEvery
 
 	// An inviter deleted since the invite has nobody to pay, and one
 	// disabled since has been judged by an operator; either way the use is
 	// resolved rather than left for the cards to fail against forever.
 	if !present {
-		return "inviter_gone", 0, 0, 0, every, nil
+		return rewardDecision{reason: "inviter_gone", every: every}, nil
 	}
 	inviter, err := s.users.ByID(ctx, q, inviterID)
 	if err != nil {
-		return "", 0, 0, 0, every, fmt.Errorf("invite: read inviter: %w", err)
+		return rewardDecision{every: every}, fmt.Errorf("invite: read inviter: %w", err)
 	}
 	if !inviter.IsActive() {
-		return "inviter_disabled", 0, 0, 0, every, nil
+		return rewardDecision{reason: "inviter_disabled", every: every}, nil
 	}
 	// Switching personal invites off stops the payouts too, not only new
 	// codes: the operator turning it off is usually doing so because of how
 	// it was being used.
-	if !userEnabled || rewardCards <= 0 {
-		return "disabled", 0, 0, 0, every, nil
+	if !policy.UserEnabled || policy.RewardCards <= 0 {
+		return rewardDecision{reason: "disabled", every: every}, nil
 	}
 	if sameIP(ctx, q, invitee, inviter) {
-		return "same_ip", 0, 0, 0, every, nil
+		return rewardDecision{reason: "same_ip", every: every}, nil
 	}
 	already, err := countedInvites(ctx, q, inviterID)
 	if err != nil {
-		return "", 0, 0, 0, every, err
+		return rewardDecision{every: every}, err
 	}
-	if limit > 0 && already >= limit {
-		return "limit", 0, 0, already, every, nil
+	if policy.Limit > 0 && already >= policy.Limit {
+		return rewardDecision{reason: "limit", counted: already, every: every}, nil
 	}
 
-	counted = already + 1
-	if counted%every == 0 {
-		cards = rewardCards
+	decision := rewardDecision{counted: already + 1, days: policy.RewardCardDays, every: every}
+	if decision.counted%every == 0 {
+		decision.cards = policy.RewardCards
 	}
-	return "", cards, rewardCardDays, counted, every, nil
+	return decision, nil
 }
 
 // sameIP catches an inviter rewarding themselves: a second account signed up
 // from the address the first registered from, or from an address the first
 // is still signed in on.
+//
+// Two sign-up addresses are the same party when they share an IPv6 /64, the
+// unit the sign-up limit counts by. A session is matched on its exact address
+// because that is what a session records; the /64 is not stored on it.
 func sameIP(ctx context.Context, q database.Queryer, invitee, inviter user.User) bool {
 	if invitee.SignupIP == "" {
 		return false
 	}
-	if inviter.SignupIP != "" && inviter.SignupIP == invitee.SignupIP {
+	if inviter.SignupIP != "" && httpx.RateKey(inviter.SignupIP) == httpx.RateKey(invitee.SignupIP) {
 		return true
 	}
 	var exists int
@@ -1284,12 +1419,6 @@ func (s *Store) createPersonal(ctx context.Context, q database.Queryer, userID s
 	return Code{}, fmt.Errorf("invite: create personal code: collision retry exhausted")
 }
 
-func isUnique(err error) bool {
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "unique") || strings.Contains(message, "duplicate") ||
-		strings.Contains(message, "constraint")
-}
-
 // Uses lists every registration and every claim through one code, newest
 // first — an account's own list when the code is its personal one, or an
 // administrator's view of one it issued. The two sources are unioned rather
@@ -1343,6 +1472,19 @@ func (s *Store) Uses(ctx context.Context, codeID string) ([]Use, error) {
 		return nil, fmt.Errorf("invite: list uses: %w", err)
 	}
 	return out, nil
+}
+
+// UsesTotal counts every use of a code, including the ones Uses leaves out
+// past maxUsesListed, so a listing that stopped short can say so.
+func (s *Store) UsesTotal(ctx context.Context, codeID string) (int, error) {
+	var total int
+	if err := s.db.QueryRow(ctx, `
+		SELECT (SELECT COUNT(*) FROM invite_uses iu JOIN users u ON u.id = iu.user_id WHERE iu.code_id = ?)
+		     + (SELECT COUNT(*) FROM invite_claims ic JOIN users u ON u.id = ic.user_id WHERE ic.code_id = ?)`,
+		codeID, codeID).Scan(&total); err != nil {
+		return 0, fmt.Errorf("invite: count uses: %w", err)
+	}
+	return total, nil
 }
 
 // UsesByInviter returns up to maxUsesListed registrations made through any of

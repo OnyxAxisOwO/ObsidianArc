@@ -25,7 +25,8 @@
 import { h, render, type FunctionalComponent } from 'vue';
 import {
   Archive as LucideArchive, Check as LucideCheck, ChevronDown as LucideChevronDown,
-  Download as LucideDownload, Github as LucideGithub, MessageSquare as LucideMessageSquare,
+  Download as LucideDownload, Folder as LucideFolder, FolderOutput as LucideFolderOutput,
+  FolderPlus as LucideFolderPlus, Github as LucideGithub, MessageSquare as LucideMessageSquare,
   MoreVertical as LucideMoreVertical, Pencil as LucidePencil, Puzzle as LucidePuzzle,
   RefreshCw as LucideRefreshCw,
   Terminal as LucideTerminal, Trophy as LucideTrophy, createLucideIcon,
@@ -87,6 +88,8 @@ export const IconGift = draw('Gift', [
 ]);
 export const IconPlus = draw('Plus', ['M12 5v14', 'M5 12h14']);
 export const IconClose = draw('X', ['M18 6L6 18', 'M6 6l12 12']);
+// Taking back a removal that has not been saved yet: lucide's undo arrow.
+export const IconUndo = draw('Undo2', ['M9 14 4 9l5-5', 'M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11']);
 export const IconBell = draw('Bell', [
   'M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9',
   'M13.7 21a2 2 0 0 1-3.4 0',
@@ -125,6 +128,11 @@ export const IconTrophy = wrap(LucideTrophy as unknown as AnyComponent);
 // So is the plugins screen, and a puzzle piece is what an extension is drawn
 // as everywhere else.
 export const IconPuzzle = wrap(LucidePuzzle as unknown as AnyComponent);
+// Folders are new as well: a project in the rail is drawn as one, and lucide's
+// folder, its folder with a plus and its folder with an arrow out are the set.
+export const IconFolder = wrap(LucideFolder as unknown as AnyComponent);
+export const IconFolderPlus = wrap(LucideFolderPlus as unknown as AnyComponent);
+export const IconFolderOutput = wrap(LucideFolderOutput as unknown as AnyComponent);
 // The two sign-in marks. GitHub's is lucide's own; Google has none, so its G
 // is drawn here as a single path in one colour rather than the four-colour
 // asset, which would be the only hardcoded hue in the interface.

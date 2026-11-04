@@ -4,22 +4,24 @@
 
 import type { StringKey } from '@/composables/useI18n';
 
-export interface PermissionSpec {
+interface PermissionSpec {
   id: string;
   label: StringKey;
   /** Reaches everything the server has, or acts as the person granting it. */
   risky: boolean;
 }
 
-export const PERMISSIONS: PermissionSpec[] = [
+const PERMISSIONS: PermissionSpec[] = [
   { id: 'db', label: 'pluginPermDb', risky: true },
   { id: 'network', label: 'pluginPermNetwork', risky: true },
   { id: 'users', label: 'pluginPermUsers', risky: true },
   { id: 'console', label: 'pluginPermConsole', risky: true },
   { id: 'cards', label: 'pluginPermCards', risky: false },
+  { id: 'rewards', label: 'pluginPermRewards', risky: false },
   { id: 'sessions', label: 'pluginPermSessions', risky: false },
   { id: 'notify', label: 'pluginPermNotify', risky: false },
   { id: 'security_log', label: 'pluginPermSecurityLog', risky: false },
+  { id: 'challenge', label: 'pluginPermChallenge', risky: false },
 ];
 
 /** The specs for the ids a package holds, in display order; an id this build does not know is left out. */

@@ -28,7 +28,7 @@ async function solved(): Promise<void> {
 </script>
 
 <template>
-  <OaOverlay v-slot="{ close }" overlay-class="oa-modal-overlay" @close="cancelChatChallenge">
+  <OaOverlay v-slot="{ close }" overlay-class="oa-modal-overlay" :label="t('chatChallengeTitle')" @close="cancelChatChallenge">
     <div class="oa-auth-card oa-modal-card">
       <OaIconButton class="oa-icon-btn oa-modal-close" :label="t('close')" @click="close">
         <IconClose :size="16" />

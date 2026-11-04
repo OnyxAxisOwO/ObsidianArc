@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createApp, h, nextTick, ref, type App as VueApp } from 'vue';
-import { createMemoryHistory, createRouter } from 'vue-router';
+import { createMemoryHistory, createRouter, RouterView, useRoute } from 'vue-router';
 import App from '../src/App.vue';
 import OaPanel from '../src/components/OaPanel.vue';
 import {
@@ -88,6 +88,68 @@ describe('App.vue transition wrapper', () => {
     app?.unmount();
     app = null;
     host.remove();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('keeps the outgoing route and nested panel intact until the body slide finishes', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => setTimeout(() => callback(0), 16));
+    const root = {
+      setup() {
+        const route = useRoute();
+        return () => h('div', { class: 'test-root' }, [route.path, h(RouterView)]);
+      },
+    };
+    const admin = {
+      setup() {
+        const route = useRoute();
+        return () => h('div', { class: 'test-admin' }, route.path);
+      },
+    };
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: '/', component: root, children: [
+          { path: 'settings', component: { render: () => h('span', { class: 'test-panel' }, 'Settings') } },
+        ] },
+        { path: '/admin/:section?', component: admin },
+      ],
+    });
+    await router.push('/settings');
+    app = createApp(App);
+    app.use(router);
+    await router.isReady();
+    app.mount(host);
+
+    const outgoing = host.querySelector('.oa-app-page');
+    await router.push('/admin/users');
+    await nextTick();
+    await vi.advanceTimersByTimeAsync(50);
+    expect(outgoing?.isConnected).toBe(true);
+    expect(outgoing?.querySelector('.test-root')?.textContent).toBe('/settingsSettings');
+    expect(outgoing?.classList.contains('page-slide-left-leave-active')).toBe(true);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(outgoing?.isConnected).toBe(true);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(outgoing?.isConnected).toBe(false);
+    expect(host.querySelectorAll('.oa-app-page')).toHaveLength(1);
+
+    // A section change updates the mounted page, but leaving the realm must
+    // not reset that page to the dashboard during its reverse slide.
+    const adminPage = host.querySelector('.oa-app-page');
+    await router.push('/admin/models');
+    await nextTick();
+    expect(host.querySelector('.oa-app-page')).toBe(adminPage);
+    expect(adminPage?.textContent).toBe('/admin/models');
+    await router.push('/');
+    await nextTick();
+    await vi.advanceTimersByTimeAsync(50);
+    expect(adminPage?.textContent).toBe('/admin/models');
+    expect(adminPage?.classList.contains('page-slide-right-leave-active')).toBe(true);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(adminPage?.isConnected).toBe(false);
+    expect(host.querySelectorAll('.oa-app-page')).toHaveLength(1);
   });
 
   it('renders .oa-app-viewport and .oa-app-page containers', async () => {
@@ -111,6 +173,37 @@ describe('App.vue transition wrapper', () => {
     const page = host.querySelector('.oa-app-page');
     expect(page).not.toBeNull();
     expect(page?.textContent).toContain('Chat');
+  });
+
+  it.each([false, true])('settles a rapid reversal without leftover pages (reduced motion: %s)', async (reduced) => {
+    vi.useFakeTimers();
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => setTimeout(() => callback(0), 16));
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: reduced && query === '(prefers-reduced-motion: reduce)', media: query,
+      addEventListener() {}, removeEventListener() {},
+    }));
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: '/', component: { render: () => h('div', 'Chat') } },
+        { path: '/admin', component: { render: () => h('div', 'Admin') } },
+      ],
+    });
+    app = createApp(App);
+    app.use(router);
+    await router.isReady();
+    app.mount(host);
+    await nextTick();
+    expect(host.querySelector<HTMLElement>('.oa-app-viewport')?.style.getPropertyValue('--oa-page-duration'))
+      .toBe(reduced ? '80ms' : '380ms');
+
+    await router.push('/admin');
+    await vi.advanceTimersByTimeAsync(50);
+    await router.push('/');
+    await vi.advanceTimersByTimeAsync(reduced ? 120 : 420);
+    expect(host.querySelectorAll('.oa-app-page')).toHaveLength(1);
+    expect(host.querySelector('.oa-app-page')?.textContent).toBe('Chat');
+    expect(host.querySelector('.page-slide-left-enter-active, .page-slide-right-leave-active')).toBeNull();
   });
 
   it('transitions page container when navigating from / to /admin and back', async () => {
@@ -181,6 +274,40 @@ describe('App.vue transition wrapper', () => {
     await nextTick();
     expect(host.textContent).toContain('Chat');
   });
+
+  it('takes its navigation guard back when the page unmounts', async () => {
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: '/', component: { render: () => h('div', { class: 'test-chat' }, 'Chat') } },
+        { path: '/admin', component: { render: () => h('div', { class: 'test-admin' }, 'Admin') } },
+      ],
+    });
+    // The router is shared across mounts, so what App adds and what it takes
+    // back are counted against it directly.
+    const addGuard = router.beforeEach.bind(router);
+    let registered = 0;
+    let removed = 0;
+    vi.spyOn(router, 'beforeEach').mockImplementation((guard) => {
+      registered += 1;
+      const stop = addGuard(guard);
+      return () => {
+        removed += 1;
+        stop();
+      };
+    });
+
+    app = createApp(App);
+    app.use(router);
+    await router.isReady();
+    app.mount(host);
+    await nextTick();
+    expect(registered - removed).toBe(1);
+
+    app.unmount();
+    app = null;
+    expect(registered - removed).toBe(0);
+  });
 });
 
 describe('OaPanel and TerminalPanel immediateClose', () => {
@@ -231,20 +358,23 @@ describe('page slide stylesheet specifications', () => {
     const appScssPath = path.resolve(__dirname, '../src/styles/_app.scss');
     const appScss = fs.readFileSync(appScssPath, 'utf8');
 
-    // Smooth non-linear cubic-bezier easing
-    expect(appScss).toContain('cubic-bezier(0.16, 1, 0.3, 1)');
+    // Smooth non-linear cubic-bezier easing, through the shared token so the
+    // slide moves on the same curve as every other arrival.
+    expect(appScss).toContain('transition: transform $oa-slide-duration var(--ai-ease-out)');
+    const chatScss = fs.readFileSync(path.resolve(__dirname, '../src/styles/_chat.scss'), 'utf8');
+    expect(chatScss).toContain('--ai-ease-out: cubic-bezier(0.16, 1, 0.3, 1);');
 
     // Hardware accelerated 3D transforms
     expect(appScss).toContain('translate3d(100%, 0, 0)');
     expect(appScss).toContain('translate3d(-26%, 0, 0)');
-    expect(appScss).toContain('transform-style: preserve-3d');
+    expect(appScss).not.toContain('transform-style: preserve-3d');
     expect(appScss).toContain('backface-visibility: hidden');
 
     // Pseudo-element shadow overlay to avoid costly per-frame box-shadow rasterization
     expect(appScss).toContain('.page-slide-left-enter-active::before');
     expect(appScss).toContain('.page-slide-right-leave-active::before');
 
-    // Conflicting vertical sectionEnter animation suppressed during full-page horizontal slide
+    // Conflicting vertical oaRise animation suppressed during full-page horizontal slide
     expect(appScss).toContain('.oa-admin-main.enter-rise');
     expect(appScss).toContain('animation: none !important');
 
@@ -252,6 +382,18 @@ describe('page slide stylesheet specifications', () => {
     expect(appScss).toContain('@media (prefers-reduced-motion: reduce)');
     expect(appScss).toContain('position: absolute');
     expect(appScss).toContain('transform: none !important');
+  });
+
+  it('does not clip the depth shadow that sits outside a sliding layer', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const appScss = fs.readFileSync(path.resolve(__dirname, '../src/styles/_app.scss'), 'utf8');
+
+    // An overflow clip on the layer would cut off the ::before shadow at left: -28px.
+    const layer = /\.page-slide-left-enter-active,\s*\.page-slide-left-leave-active,\s*\.page-slide-right-enter-active,\s*\.page-slide-right-leave-active \{([^}]*)\}/
+      .exec(appScss)?.[1] ?? '';
+    expect(layer).toMatch(/will-change:\s*transform, opacity/);
+    expect(layer).not.toMatch(/overflow\s*:\s*hidden/);
   });
 
   it('constrains horizontal slide transition to inner workspace container (.oa-chat-root) while pinning .oa-header', async () => {
@@ -265,15 +407,14 @@ describe('page slide stylesheet specifications', () => {
     expect(surfacesScss).toContain('transform: none !important');
     expect(surfacesScss).toContain('animation: none !important');
     expect(surfacesScss).toContain('.page-slide-left-enter-active .oa-header');
-    expect(surfacesScss).toContain('transition: opacity 0.24s ease !important');
+    expect(surfacesScss).toContain('transition: opacity app.$oa-slide-duration var(--ai-ease-out) !important');
     expect(surfacesScss).toContain('.page-slide-left-leave-active .oa-header');
-    expect(surfacesScss).toContain('transition: opacity 0.18s ease !important');
 
     // Inner workspace content container slides with hardware acceleration
     expect(surfacesScss).toContain('.oa-workspace > .oa-chat-root');
     expect(surfacesScss).toContain('translate3d(100%, 0, 0)');
     expect(surfacesScss).toContain('translate3d(-26%, 0, 0)');
-    expect(surfacesScss).toContain('transform-style: preserve-3d');
+    expect(surfacesScss).not.toContain('transform-style: preserve-3d');
     expect(surfacesScss).toContain('backface-visibility: hidden');
 
     // Pseudo-element shadow attached to inner container
@@ -283,10 +424,10 @@ describe('page slide stylesheet specifications', () => {
     // Reduced motion support for inner container
     expect(surfacesScss).toContain('@media (prefers-reduced-motion: reduce)');
 
-    // Vertical twitch (sectionEnter jump) suppressed on workspace elements
+    // Vertical twitch (oaRise jump) suppressed on workspace elements
     expect(surfacesScss).not.toContain('.oa-workspace > .oa-header,\n.oa-workspace > .oa-chat-root');
-    expect(surfacesScss).not.toMatch(/\.oa-workspace\s*>\s*\.oa-header[^{]*sectionEnter/);
-    expect(surfacesScss).not.toMatch(/\.oa-admin-rail[^{]*sectionEnter/);
+    expect(surfacesScss).not.toMatch(/\.oa-workspace\s*>\s*\.oa-header[^{]*oaRise/);
+    expect(surfacesScss).not.toMatch(/\.oa-admin-rail[^{]*oaRise/);
   });
 
   it('hides left chat history rail when opening terminal', async () => {

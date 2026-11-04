@@ -57,11 +57,11 @@ func TestIssuedTokenResolvesBackToItsKey(t *testing.T) {
 	ctx := context.Background()
 	store, owner, _ := newStore(t)
 
-	created, token, err := store.Issue(ctx, owner, "laptop", "", 0)
+	created, token, err := store.IssueModels(ctx, owner, "laptop", nil, 0)
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}
-	if !strings.HasPrefix(token, tokenPrefix) {
+	if !strings.HasPrefix(token, TokenPrefix) {
 		t.Errorf("token %q does not carry the instance prefix", token)
 	}
 
@@ -103,7 +103,7 @@ func TestTokenIsNotStoredAnywhere(t *testing.T) {
 	ctx := context.Background()
 	store, owner, _ := newStore(t)
 
-	_, token, err := store.Issue(ctx, owner, "laptop", "", 0)
+	_, token, err := store.IssueModels(ctx, owner, "laptop", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,7 @@ func TestTokenIsNotStoredAnywhere(t *testing.T) {
 func TestUnknownTokenDoesNotResolve(t *testing.T) {
 	ctx := context.Background()
 	store, owner, _ := newStore(t)
-	if _, _, err := store.Issue(ctx, owner, "laptop", "", 0); err != nil {
+	if _, _, err := store.IssueModels(ctx, owner, "laptop", nil, 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -151,7 +151,7 @@ func TestExpiredKeyIsRefused(t *testing.T) {
 
 	// Issued live, then expired: Issue refuses a past expiry outright, and
 	// what matters here is a key that aged out while it existed.
-	created, token, err := store.Issue(ctx, owner, "temporary", "", time.Now().Add(time.Hour).UnixMilli())
+	created, token, err := store.IssueModels(ctx, owner, "temporary", nil, time.Now().Add(time.Hour).UnixMilli())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestIssueRefusesAnExpiryAlreadyPast(t *testing.T) {
 	store, owner, _ := newStore(t)
 
 	past := time.Now().Add(-time.Hour).UnixMilli()
-	if _, _, err := store.Issue(ctx, owner, "doomed", "", past); err == nil {
+	if _, _, err := store.IssueModels(ctx, owner, "doomed", nil, past); err == nil {
 		t.Fatal("a key that was already expired was issued")
 	}
 }
@@ -183,7 +183,7 @@ func TestNameIsRequiredAndBounded(t *testing.T) {
 	store, owner, _ := newStore(t)
 
 	for _, bad := range []string{"", "   ", strings.Repeat("x", MaxNameChars+1)} {
-		if _, _, err := store.Issue(ctx, owner, bad, "", 0); err == nil {
+		if _, _, err := store.IssueModels(ctx, owner, bad, nil, 0); err == nil {
 			t.Errorf("issue with name %q succeeded", bad)
 		}
 	}
@@ -195,7 +195,7 @@ func TestOneAccountCannotTouchAnothersKey(t *testing.T) {
 	ctx := context.Background()
 	store, owner, stranger := newStore(t)
 
-	created, token, err := store.Issue(ctx, owner, "laptop", "", 0)
+	created, token, err := store.IssueModels(ctx, owner, "laptop", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +222,7 @@ func TestDeleteRevokesTheToken(t *testing.T) {
 	ctx := context.Background()
 	store, owner, _ := newStore(t)
 
-	created, token, err := store.Issue(ctx, owner, "laptop", "", 0)
+	created, token, err := store.IssueModels(ctx, owner, "laptop", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,16 +242,16 @@ func TestKeysArePerAccountAndCapped(t *testing.T) {
 	store, owner, stranger := newStore(t)
 
 	for i := 0; i < MaxPerUser; i++ {
-		if _, _, err := store.Issue(ctx, owner, "key", "", 0); err != nil {
+		if _, _, err := store.IssueModels(ctx, owner, "key", nil, 0); err != nil {
 			t.Fatalf("issue %d: %v", i+1, err)
 		}
 	}
-	if _, _, err := store.Issue(ctx, owner, "one too many", "", 0); err == nil {
+	if _, _, err := store.IssueModels(ctx, owner, "one too many", nil, 0); err == nil {
 		t.Fatal("issued past the per-account cap")
 	}
 
 	// One account filling its allowance must not spend another's.
-	if _, _, err := store.Issue(ctx, stranger, "mine", "", 0); err != nil {
+	if _, _, err := store.IssueModels(ctx, stranger, "mine", nil, 0); err != nil {
 		t.Fatalf("a second account was blocked by the first: %v", err)
 	}
 
@@ -275,7 +275,7 @@ func TestConcurrentIssuesCannotExceedPerAccountCap(t *testing.T) {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
-			if _, _, err := store.Issue(ctx, owner, "parallel key", "", 0); err == nil {
+			if _, _, err := store.IssueModels(ctx, owner, "parallel key", nil, 0); err == nil {
 				issued.Add(1)
 			} else if !errors.Is(err, ErrTooMany) {
 				select {
@@ -308,7 +308,7 @@ func TestPauseAndResumeKey(t *testing.T) {
 	ctx := context.Background()
 	store, owner, _ := newStore(t)
 
-	created, token, err := store.Issue(ctx, owner, "laptop", "", 0)
+	created, token, err := store.IssueModels(ctx, owner, "laptop", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -358,7 +358,7 @@ func TestKeyModelRestriction(t *testing.T) {
 	ctx := context.Background()
 	store, owner, _ := newStore(t)
 
-	created, _, err := store.Issue(ctx, owner, "restricted", "claude-3-5-sonnet", 0)
+	created, _, err := store.IssueModels(ctx, owner, "restricted", []string{"claude-3-5-sonnet"}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -406,5 +406,81 @@ func TestKeyCanRestrictSeveralModelsAndClearTheRestriction(t *testing.T) {
 	}
 	if len(updated.ModelIDs) != 0 || updated.ModelID != "" {
 		t.Errorf("cleared restriction = %+v, want no models", updated)
+	}
+}
+
+// A key that is both paused and past its end is absent, as an expired key is.
+// Resuming it could never make it work, so it must not be reported as paused.
+func TestPausedAndExpiredKeyIsReportedAbsent(t *testing.T) {
+	ctx := context.Background()
+	store, owner, _ := newStore(t)
+
+	created, token, err := store.IssueModels(ctx, owner, "paused then expired", nil, time.Now().Add(time.Hour).UnixMilli())
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabled := true
+	if _, err := store.Update(ctx, owner, created.ID, Update{Disabled: &disabled}); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-time.Minute).UnixMilli()
+	if _, err := store.Update(ctx, owner, created.ID, Update{ExpiresAt: &past}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.Resolve(ctx, token); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("paused and expired key resolved as %v, want ErrNotFound", err)
+	}
+}
+
+// List reads every restriction in one query now. Each key must still get its
+// own models, the unrestricted key none, a legacy row its single model, and
+// another account's key must not appear at all.
+func TestListCarriesEachKeysOwnRestrictions(t *testing.T) {
+	ctx := context.Background()
+	store, owner, stranger := newStore(t)
+
+	restricted, _, err := store.IssueModels(ctx, owner, "restricted", []string{"model-b", "model-a"}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	open, _, err := store.IssueModels(ctx, owner, "open", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, _, err := store.IssueModels(ctx, owner, "legacy", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(ctx, `UPDATE api_keys SET model_id = ? WHERE id = ?`, "model-legacy", legacy.ID); err != nil {
+		t.Fatal(err)
+	}
+	theirs, _, err := store.IssueModels(ctx, stranger, "theirs", []string{"model-other"}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	listed, err := store.List(ctx, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]Key{}
+	for _, key := range listed {
+		byID[key.ID] = key
+	}
+	if len(listed) != 3 {
+		t.Fatalf("listed %d keys, want the owner's three", len(listed))
+	}
+	if got := strings.Join(byID[restricted.ID].ModelIDs, ","); got != "model-a,model-b" {
+		t.Errorf("restricted key models = %q, want model-a,model-b", got)
+	}
+	if got := byID[open.ID].ModelIDs; got == nil || len(got) != 0 {
+		t.Errorf("unrestricted key models = %#v, want an empty list", got)
+	}
+	if got := strings.Join(byID[legacy.ID].ModelIDs, ","); got != "model-legacy" {
+		t.Errorf("legacy key models = %q, want model-legacy", got)
+	}
+	if _, leaked := byID[theirs.ID]; leaked {
+		t.Error("another account's key appeared in the owner's list")
 	}
 }

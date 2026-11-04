@@ -1,8 +1,10 @@
+// Two kinds of test live here: the store's own rules, and each screen's masking
+// of what the store hides. They share the fixtures and the mounted screens, so
+// they stay in one file rather than each repeating the setup.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, shallowRef, type App } from 'vue';
+import { createApp, h, type Component, nextTick, shallowRef, type App } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
 import { adminApi, emptyPolicy, type AdminModel, type Provider } from '../src/admin/api';
-import type { Account } from '../src/api/auth';
 import { provideAdminView } from '../src/views/admin/adminView';
 import { providePanelHost } from '../src/composables/usePanelHost';
 import { t } from '../src/composables/useI18n';
@@ -42,6 +44,8 @@ import AdminSafeMode from '../src/views/admin/AdminSafeMode.vue';
 import { installPlugins } from '../src/plugins/registry';
 import example from './fixtures/example.plugin';
 import { site, siteInfo } from '../src/stores/session';
+import { until } from './helpers';
+import { makeAccount } from './fixtures/account';
 
 describe('Admin Safe Mode store & utilities', () => {
   beforeEach(() => {
@@ -139,6 +143,51 @@ describe('Admin Safe Mode store & utilities', () => {
   });
 });
 
+// The store reads the saved state once, when its module loads, so each case
+// loads it again behind a storage that is broken in one way, rather than
+// reusing the copy this file imported at the top.
+describe('safe mode when local storage is broken', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.resetModules();
+  });
+
+  async function loadStore(storage: Partial<Storage>) {
+    vi.stubGlobal('localStorage', storage);
+    vi.resetModules();
+    return import('../src/admin/safeMode');
+  }
+
+  it('starts with safe mode off when reading the saved state throws', async () => {
+    const store = await loadStore({
+      getItem: () => { throw new DOMException('blocked', 'SecurityError'); },
+      setItem: () => {},
+    });
+
+    expect(store.safeModeEnabled.value).toBe(false);
+    expect(store.safeModeCategories.value.users).toBe(true);
+  });
+
+  it('falls back to the defaults when the saved state is not JSON', async () => {
+    const store = await loadStore({ getItem: () => '{"enabled": tru', setItem: () => {} });
+
+    expect(store.safeModeEnabled.value).toBe(false);
+    expect(store.safeModeCategories.value.logs).toBe(true);
+  });
+
+  it('keeps the toggle working on this page when saving throws', async () => {
+    const store = await loadStore({
+      getItem: () => null,
+      setItem: () => { throw new DOMException('full', 'QuotaExceededError'); },
+    });
+
+    store.toggleSafeMode(true);
+    await nextTick();
+
+    expect(store.isMasked('users')).toBe(true);
+  });
+});
+
 describe('AdminSafeMode component', () => {
   let app: App | undefined;
   let host: HTMLElement;
@@ -167,16 +216,13 @@ describe('AdminSafeMode component', () => {
     expect(triggerBtn).not.toBeNull();
     expect(triggerBtn.classList.contains('is-active')).toBe(false);
 
-    // Open dropdown menu
     triggerBtn.click();
     await nextTick();
 
-    // Menu content is present
     const menu = host.querySelector('.oa-menu-safe-mode')!;
     expect(menu).not.toBeNull();
     expect(menu.textContent).toContain('******');
 
-    // Toggle master switch
     const masterSwitch = menu.querySelector<HTMLInputElement>('.oa-safe-switch input')!;
     expect(masterSwitch.checked).toBe(false);
     masterSwitch.click();
@@ -185,16 +231,13 @@ describe('AdminSafeMode component', () => {
     expect(safeModeEnabled.value).toBe(true);
     expect(triggerBtn.classList.contains('is-active')).toBe(true);
 
-    // Category rows can be toggled
     const categoryRows = menu.querySelectorAll<HTMLButtonElement>('.oa-safe-mode-row');
     expect(categoryRows.length).toBe(SAFE_CATEGORIES.length);
 
-    // Click the first category row (users)
     categoryRows[0]!.click();
     await nextTick();
     expect(safeModeCategories.value.users).toBe(false);
 
-    // Click select all
     const selectAllBtn = menu.querySelector<HTMLButtonElement>('.oa-safe-mode-action-btn')!;
     selectAllBtn.click();
     await nextTick();
@@ -275,8 +318,7 @@ describe('Admin Safe Mode live component integration', () => {
     });
     app.use(router);
     app.mount(host);
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    await nextTick();
+    await until(() => !!host.querySelector('#secBusiestModels button'), 'the dashboard to draw its ranking');
 
     // In ranking table, switch to users
     const rankingSection = host.querySelector('#secBusiestModels')!;
@@ -352,7 +394,9 @@ describe('UsageBoard safe mode masking', () => {
     ];
     app = createApp({
       render() {
-        return h(UsageBoard as any, { rows: dummyRows, kind: 'user', metric: 'tokens', emptyText: 'none' });
+        // A defaulted optional prop puts this component outside h()'s overloads under
+        // exactOptionalPropertyTypes, so the component is passed as a plain Component.
+        return h(UsageBoard as Component, { rows: dummyRows, kind: 'user', metric: 'tokens', emptyText: 'none' });
       },
     });
     app.mount(host);
@@ -405,7 +449,7 @@ describe('UsageMatrix safe mode masking', () => {
     const models = [{ ...emptyTotals, key: 'model-1', label: 'GPT-5', detail: 'OpenAI', total_tokens: 5000, last_at: 0 }];
     app = createApp({
       render() {
-        return h(UsageMatrix as any, {
+        return h(UsageMatrix, {
           matrix, users, models, metric: 'total_tokens',
           format: (value: number) => String(value),
         });
@@ -458,14 +502,14 @@ describe('OaUsageWindow safe mode masking', () => {
       limit_requests: 100, limit_tokens: null, limit_credits: null,
       resets_at: Date.now() + 3_600_000,
     };
-    app = createApp({ render() { return h(OaUsageWindow as any, { window: window_, masked: false }); } });
+    app = createApp({ render() { return h(OaUsageWindow as Component, { window: window_, masked: false }); } });
     app.mount(host);
     await nextTick();
     expect(host.textContent).toContain('40 / 100');
     expect(host.querySelector('.oa-meter')).not.toBeNull();
     app.unmount();
 
-    app = createApp({ render() { return h(OaUsageWindow as any, { window: window_, masked: true }); } });
+    app = createApp({ render() { return h(OaUsageWindow as Component, { window: window_, masked: true }); } });
     app.mount(host);
     await nextTick();
     expect(host.textContent).not.toContain('40 / 100');
@@ -499,7 +543,7 @@ describe('AdminDashboardTrend safe mode masking', () => {
     const series = [{ ...emptyTotals, at, requests: 500, total_tokens: 987654 }];
     const totals = { ...emptyTotals, requests: 500, total_tokens: 987654 };
     app = createApp({
-      render() { return h(AdminDashboardTrend as any, { series, totals, bucketMs: 21_600_000 }); },
+      render() { return h(AdminDashboardTrend, { series, totals, bucketMs: 21_600_000 }); },
     });
     app.mount(host);
     await nextTick();
@@ -650,17 +694,14 @@ describe('editable fields blur under safe mode instead of being replaced', () =>
   let host: HTMLElement;
   let panels: HTMLElement;
 
-  const member: Account = {
-    id: 'member', username: 'member', nickname: 'Member', email: 'member@example.com', fields: { ref: '10001' }, bio: '', avatar: '',
-    role: 'user', status: 'active', group_id: '', group_expires_at: 0, admin_permissions: [],
-    created_at: Date.now(), updated_at: Date.now(), last_login_at: 0, group_name: '',
-    email_verified: true, allow_stats: true, allow_delete_conversations: true,
-    api_restricted: false, api_restricted_until: 0, api_restriction_source: '',
-  };
+  const member = makeAccount({
+    id: 'member', username: 'member', nickname: 'Member', email: 'member@example.com', fields: { ref: '10001' },
+    group_id: '', admin_permissions: [], created_at: Date.now(), updated_at: Date.now(), group_name: '',
+  });
 
   const provider: Provider = {
     id: 'prov-1', name: 'OpenRouter', kind: 'openai', base_url: 'https://openrouter.ai/api/v1',
-    allow_insecure: false, api_key_hint: '****abcd', headers: {}, anthropic_version: '',
+    allow_insecure: false, api_key_hint: '****abcd', api_key_hints: ['****abcd'], key_rotation: 'sequential', headers: {}, anthropic_version: '',
     reasoning_style: 'auto', timeout_seconds: 120, enabled: true, sort_order: 0, model_count: 0,
     created_at: Date.now(), updated_at: Date.now(),
   };
@@ -819,9 +860,9 @@ describe('UptimePanel safe mode masking', () => {
               history: [],
             },
           ],
-        } as any;
+        };
       }
-      return null as any;
+      throw new Error(`unexpected GET ${path}`);
     });
 
     const router = createRouter({
@@ -932,6 +973,26 @@ describe('AdminAvailability safe mode masking', () => {
     toggleCategory('providers', false);
     await nextTick();
     expect(host.textContent).toContain('OpenAI Upstream');
+  });
+});
+
+describe('Admin Safe Mode categories', () => {
+  it('offers a switch for every category the stored state carries', () => {
+    expect(SAFE_CATEGORIES.map((c) => c.key).sort()).toEqual(Object.keys(safeModeCategories.value).sort());
+  });
+
+  it('masks a category another tab saved without mentioning it', () => {
+    window.dispatchEvent(new StorageEvent('storage', {
+      key: STORAGE_KEY,
+      newValue: JSON.stringify({ enabled: true, categories: { users: false } }),
+    }));
+    expect(safeModeEnabled.value).toBe(true);
+    expect(safeModeCategories.value.users).toBe(false);
+    for (const cat of SAFE_CATEGORIES.filter((c) => c.key !== 'users')) {
+      expect(safeModeCategories.value[cat.key]).toBe(true);
+    }
+    safeModeEnabled.value = false;
+    setAllCategories(true);
   });
 });
 

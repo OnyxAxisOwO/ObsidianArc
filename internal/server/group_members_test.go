@@ -140,3 +140,28 @@ func TestGroupMembersAssignmentAndExpiry(t *testing.T) {
 		t.Fatalf("bearer did not retire expired membership: %v, %v", got, err)
 	}
 }
+
+func TestGroupMembersBatchCannotMoveAnAdministratorItCannotManage(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	operator := in.register("operator", "a-good-password")
+	member := in.register("member", "a-good-password")
+	response := in.do(http.MethodPatch, "/api/admin/users/"+operator.userID,
+		map[string]any{"role": "admin", "admin_permissions": []string{"groups"}}, founder)
+	if response.Code != http.StatusOK {
+		t.Fatal(response.Body.String())
+	}
+	response = in.do(http.MethodPost, "/api/admin/groups", map[string]any{"name": "Premium"}, founder)
+	if response.Code != http.StatusCreated {
+		t.Fatal(response.Body.String())
+	}
+	path := "/api/admin/groups/" + decode[struct{ Group group.Group }](t, response).Group.ID + "/members"
+	response = in.do(http.MethodPost, path, map[string]any{"user_ids": []string{member.userID, founder.userID}}, operator)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("groups grant moved a super admin: %d %s", response.Code, response.Body.String())
+	}
+	response = in.do(http.MethodPost, path, map[string]any{"user_ids": []string{member.userID}}, operator)
+	if response.Code != http.StatusOK {
+		t.Fatalf("ordinary member: %d %s", response.Code, response.Body.String())
+	}
+}

@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createApp, h, ref, type App } from 'vue';
 import OaSelect from '../src/components/OaSelect.vue';
 import OaSelectField from '../src/components/OaSelectField.vue';
 import { placeList } from '../src/lib/select-placement';
+import { PAST_SELECT_CLOSE_MS, wait } from './helpers';
 
 // jsdom has no layout, so neither of these exists. The control calls both
 // while opening; what is under test is everything around them.
@@ -19,10 +20,10 @@ beforeEach(() => {
 afterEach(() => {
   app?.unmount();
   app = null;
+  vi.restoreAllMocks();
   // The open list is module state, so a test that left one open would be read
   // by the next one as a list it opened itself.
   document.dispatchEvent(new PointerEvent('pointerdown'));
-  document.body.textContent = '';
 });
 
 const COLOURS = [
@@ -37,6 +38,7 @@ interface Mounted {
   changes: string[];
 }
 
+// Not mountComponent: a test changes a prop after mounting, and mountComponent's props are fixed.
 function mount(choices = COLOURS, initial = 'red', searchable = false): Mounted {
   const value = ref(initial);
   const changes: string[] = [];
@@ -72,6 +74,18 @@ async function settle(): Promise<void> {
 }
 
 describe('the option list', () => {
+  it('does not start a frame loop when unmounted while opening', async () => {
+    const control = mount();
+    const frames = vi.spyOn(window, 'requestAnimationFrame');
+    control.trigger.click();
+    app!.unmount();
+    app = null;
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(frames).not.toHaveBeenCalled();
+    expect(list()).toBeNull();
+  });
+
   it('includes a search box by default in both standalone and field selectors', async () => {
     app = createApp({ render: () => h('div', [
       h(OaSelect, { choices: COLOURS, modelValue: 'red' }),
@@ -86,7 +100,7 @@ describe('the option list', () => {
       await settle();
       expect(list()!.querySelectorAll('[role="option"]')).toHaveLength(1);
       input!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-      await new Promise((resolve) => setTimeout(resolve, 180));
+      await wait(PAST_SELECT_CLOSE_MS);
     }
   });
   it('keeps its placement when filtering does not move the trigger', async () => {
@@ -362,5 +376,65 @@ describe('placeList', () => {
     const narrow = { width: 320, height: 800 };
     const spot = placeList({ top: 100, bottom: 130, left: 4, width: 60 }, 100, 400, narrow);
     expect(spot.left).toBe(8);
+  });
+});
+
+describe('a list whose parent re-renders while it is open', () => {
+  it('keeps the highlighted row when the options are rebuilt with the same rows', async () => {
+    // A fresh array on every render, the way a form writes its options inline.
+    const bump = ref(0);
+    const root = document.createElement('div');
+    host.appendChild(root);
+    app = createApp({
+      render: () => {
+        void bump.value;
+        return h(OaSelect, {
+          choices: COLOURS.map((choice) => ({ ...choice })),
+          searchable: true,
+          modelValue: 'red',
+          'onUpdate:modelValue': () => {},
+        });
+      },
+    });
+    app.mount(root);
+
+    root.querySelector<HTMLButtonElement>('.oa-select')!.click();
+    await settle();
+    const input = document.querySelector<HTMLInputElement>('.oa-select-search input')!;
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    await settle();
+    const highlighted = (): string | undefined => list()!.querySelector('.oa-menu-item.active')?.textContent;
+    expect(highlighted()).toBe('Blue');
+
+    bump.value += 1;
+    await settle();
+    expect(highlighted()).toBe('Blue');
+  });
+
+  it('still moves the highlight back to the chosen row when the rows really change', async () => {
+    const choices = ref(COLOURS);
+    const root = document.createElement('div');
+    host.appendChild(root);
+    app = createApp({
+      render: () => h(OaSelect, {
+        choices: choices.value,
+        searchable: true,
+        modelValue: 'red',
+        'onUpdate:modelValue': () => {},
+      }),
+    });
+    app.mount(root);
+
+    root.querySelector<HTMLButtonElement>('.oa-select')!.click();
+    await settle();
+    const input = document.querySelector<HTMLInputElement>('.oa-select-search input')!;
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    await settle();
+    expect(list()!.querySelector('.oa-menu-item.active')?.textContent).toBe('Green');
+
+    choices.value = [...COLOURS, { value: 'pink', label: 'Pink' }];
+    await settle();
+    expect(list()!.querySelector('.oa-menu-item.active')?.textContent).toBe('Red');
   });
 });

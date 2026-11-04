@@ -3,6 +3,7 @@ package httpx
 import (
 	"compress/gzip"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -47,8 +48,22 @@ func Compress() Middleware {
 
 // Reused across requests: a gzip.Writer carries its window and hash tables,
 // which is a few hundred kilobytes to allocate and throw away per response.
+//
+// The level is BestCompression, not the default. Go's default (level 6) runs
+// its fast matcher and sends about 4% more than zlib's default on the
+// frontend bundle, and these are the bytes a visitor waits for. Levels 7-9
+// run the lazy matcher zlib uses. The cost is CPU per uncached response.
+//
+// Compressed bytes are not cached per path. The fingerprinted assets carry an
+// immutable lifetime, so a browser asks for each one once per release, and
+// the rest is dynamic output that cannot be cached this way. A cache would
+// hold a second copy of the bundle in memory to save work nobody repeats.
+// The level is a constant, so NewWriterLevel cannot return its error here.
 var gzipPool = sync.Pool{
-	New: func() any { return gzip.NewWriter(io.Discard) },
+	New: func() any {
+		w, _ := gzip.NewWriterLevel(io.Discard, gzip.BestCompression)
+		return w
+	},
 }
 
 // The types worth compressing, and the only ones that will be. Everything
@@ -92,6 +107,10 @@ func (w *gzipWriter) decide(status int) {
 		return
 	}
 	header := w.Header()
+	// Already encoded — the embedded frontend sends copies compressed when it
+	// was built. Compressing those again would wrap one coding in another
+	// under a single label, and the browser would decode it once and render
+	// the rest as garbage.
 	if header.Get("Content-Encoding") != "" {
 		return
 	}
@@ -128,6 +147,12 @@ func (w *gzipWriter) Write(b []byte) (int, error) {
 // Accept-Encoding, whatever type comes back, so this is the flush the chat
 // and the API both depend on.
 func (w *gzipWriter) Flush() {
+	// A flush before any status sends the headers, so the compression decision
+	// has to be made first: once they are on the wire, Content-Encoding can no
+	// longer be added and a gzip body would reach the client unlabelled.
+	if !w.decided {
+		w.WriteHeader(http.StatusOK)
+	}
 	if w.on {
 		_ = w.gz.Flush()
 	}
@@ -154,7 +179,12 @@ func (w *gzipWriter) close() {
 	if !w.on {
 		return
 	}
-	_ = w.gz.Close()
+	// A failed close means the trailer did not reach the client, which is what a
+	// client that went away looks like from here. It is not an incident, but
+	// it is the only record there is of the response ending short.
+	if err := w.gz.Close(); err != nil {
+		slog.Debug("gzip response did not close cleanly", "error", err)
+	}
 	gzipPool.Put(w.gz)
 	w.gz = nil
 	w.on = false
@@ -169,9 +199,16 @@ func mediaType(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
 
-// acceptsGzip reads the header the way HTTP defines it: the entry naming gzip
-// outranks a wildcard wherever each appears, and only a quality of exactly
-// zero refuses gzip.
+// acceptsGzip is the compressor's own question, kept as a name because the
+// rule below was wrong twice and the tests that pin it ask it this way.
+func acceptsGzip(header string) bool { return AcceptsEncoding(header, "gzip") }
+
+// AcceptsEncoding reads Accept-Encoding the way HTTP defines it: the entry
+// naming the coding outranks a wildcard wherever each appears, and only a
+// quality of exactly zero refuses it. Exported because the embedded frontend
+// sends copies compressed at build time and has to ask the same question for
+// br as this middleware asks for gzip; two readings of one header would
+// disagree on exactly the edge cases below.
 //
 // Both halves of that were wrong before, in opposite directions. Returning on
 // the first entry that matched either name meant "*;q=0, gzip" was refused —
@@ -179,16 +216,16 @@ func mediaType(value string) string {
 // the wildcard. And the quality was matched as a string prefix, so
 // "gzip;q=0.001" read as a refusal: it is the faintest possible acceptance,
 // not a rejection.
-func acceptsGzip(header string) bool {
+func AcceptsEncoding(header, coding string) bool {
 	wildcard, seen := 0.0, false
 	for _, part := range strings.Split(header, ",") {
 		fields := strings.Split(part, ";")
 		switch strings.ToLower(strings.TrimSpace(fields[0])) {
-		case "gzip":
+		case coding:
 			return qualityOf(fields[1:]) > 0
 		case "*":
-			// Remembered rather than returned: a later gzip entry is more
-			// specific and decides on its own.
+			// Remembered rather than returned: a later entry naming the
+			// coding is more specific and decides on its own.
 			if !seen {
 				wildcard, seen = qualityOf(fields[1:]), true
 			}

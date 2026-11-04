@@ -31,13 +31,13 @@ func (h *Handlers) listFeedback(w http.ResponseWriter, r *http.Request) error {
 	// feedback", which is the one answer this screen must never give by
 	// accident.
 	if filter.Kind != "" && !filter.Kind.Valid() {
-		return httpx.BadRequest("Unknown feedback kind.")
+		return httpx.BadRequestCode("feedback_kind_unknown", "Unknown feedback kind.")
 	}
 	if filter.Priority != "" && !filter.Priority.Valid() {
-		return httpx.BadRequest("Unknown priority.")
+		return httpx.BadRequestCode("feedback_priority_unknown", "Unknown priority.")
 	}
 	if filter.Status != "" && !filter.Status.Valid() {
-		return httpx.BadRequest("Unknown status.")
+		return httpx.BadRequestCode("feedback_status_unknown", "Unknown status.")
 	}
 
 	records, total, err := h.feedback.List(r.Context(), nil, filter)
@@ -65,15 +65,12 @@ func (h *Handlers) showFeedback(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	thread, err := h.feedback.Thread(r.Context(), nil, feedbackID, "")
+	// The read and the clear are one step, for the same reason the author's
+	// thread read is: an author reply landing between them would otherwise drop
+	// out of the awaiting count without the operator having seen it.
+	thread, err := h.feedback.OpenThread(context.WithoutCancel(r.Context()), feedbackID, "", true)
 	if err != nil {
 		return feedback.TranslateError(err)
-	}
-	if thread.Feedback.OperatorUnread {
-		if err := h.feedback.MarkSeen(context.WithoutCancel(r.Context()), thread.Feedback.ID, true); err != nil {
-			return httpx.Internal(err)
-		}
-		thread.Feedback.OperatorUnread = false
 	}
 	return httpx.WriteJSON(w, http.StatusOK, thread)
 }

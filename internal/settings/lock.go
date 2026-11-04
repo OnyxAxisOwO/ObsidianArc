@@ -34,6 +34,15 @@ const LockKey = RegistrationEnabled
 //
 // It must be called inside a transaction. On its own it locks the row and then
 // immediately lets it go, which is the same as not locking at all.
+//
+// Nothing called from inside that transaction may take writeMu. Set, SetMany,
+// Remember and Forget take it, and a checked save holds it while it waits for
+// this row: a Set issued from here waits for the save, the save waits for the
+// row this transaction holds, and neither moves. Write through
+// WriteMany(ctx, tx, ...) instead and call Remember once the transaction has
+// committed, as the plugin install does. The check passed to SetManyChecked
+// runs inside this lock too, so it reads state through its Queryer and makes
+// no settings calls.
 func Lock(ctx context.Context, tx *database.Tx) error {
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)

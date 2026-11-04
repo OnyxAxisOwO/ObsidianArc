@@ -1,7 +1,11 @@
-// The terminal: CONTRACT.md #5. Imported last from index.scss, after
-// surfaces — nothing else in the app depends on load order here, but this is
-// where a rule that turns out to need overriding one of surfaces' own goes
-// without a specificity fight.
+@use 'mixins' as *;
+
+// The terminal. Imported by views/TerminalPanel.vue, so it loads with the
+// terminal's chunk, after the whole of index.scss — nothing else in the app
+// depends on load order here, but this is where a rule that turns out to
+// need overriding one of surfaces' own goes without a specificity fight.
+// Nothing outside the terminal may need a rule here: a reader who never
+// opens it never loads this file.
 //
 // No rule in this file sets its own opacity or backdrop-filter. The card the
 // terminal is drawn inside — the panel beside the chat — already carries the
@@ -24,26 +28,37 @@
   margin-right: 0 !important;
   transform: none !important;
   transition: none !important;
-  will-change: transform;
-  backface-visibility: hidden;
-  -webkit-backface-visibility: hidden;
+  // Nothing on this panel animates, so the base panel's will-change would
+  // hold a page-sized compositing layer for the whole session for nothing.
+  will-change: auto;
 }
 
 // When opened in the chat layout, the terminal replaces the chat main window
 // across the available width rather than being a constrained 720px side drawer.
 .ai-chat-wide .oa-panel.oa-terminal-panel {
   flex: 1 1 0%;
-  width: auto;
   min-width: 0;
   margin-right: 0;
   opacity: 1;
+}
+
+// Only the three-column row lets the panel take the width that is left. Below
+// that breakpoint it is a fixed overlay, and width: auto would shrink it to
+// fit its content instead of the overlay's own width (_surfaces.scss).
+@media (min-width: 1101px) {
+  .ai-chat-wide .oa-panel.oa-terminal-panel {
+    width: auto;
+  }
 }
 
 .ai-chat-wide .oa-panel.oa-terminal-panel > .oa-resizer {
   display: none;
 }
 
-// In terminal mode, ensure chat sidebar stays completely hidden
+// In terminal mode, ensure chat sidebar stays completely hidden. Safe here
+// rather than in the entry although ChatLayout sets is-terminal: it reads the
+// committed route, and the router commits /terminal only once this chunk —
+// and so this stylesheet — has loaded.
 .oa-chat-root.is-terminal .ai-chat-sidebar {
   display: none !important;
 }
@@ -64,7 +79,7 @@
 }
 
 /* --- tab strip -------------------------------------------------------------
-   CONTRACT.md #5.2: never wider than the card, whatever the tab count. The
+   Never wider than the card, whatever the tab count. The
    strip is a flex row of two flex-shrink:0 ends (the scroller, the settings
    button) around nothing that can itself grow past the card — the scroller
    is the only thing here allowed to overflow, and it turns that overflow into
@@ -92,33 +107,50 @@
   min-width: 0;
   gap: 4px;
   height: 100%;
+  /* Room for the 3px focus ring: a scroller clips on both axes, so the first
+     tab's ring lost its left edge at the strip's edge. The padding makes the
+     room and the equal negative margin gives it back, so the tabs and the
+     button beside the strip stay exactly where they were. */
+  padding: 0 3px;
+  margin: 0 -3px;
   overflow-x: auto;
   overflow-y: hidden;
   /* The global thin, invisible-until-hover scrollbar (_base.scss) applies to
      this automatically; nothing to restate here. */
 }
 
-.oa-terminal-tab {
+/* The pill. The fill, the hover and the active state live on the group rather
+   than on the tab, because role=tab may hold nothing but its label, and the ×
+   button sits in the same pill. The layout rules that shrink a tab stay here
+   for the same reason: this is the flex item the strip actually lays out. */
+.oa-terminal-tab-group {
   display: flex;
   align-items: center;
   flex: 0 1 150px;
   min-width: 64px;
   gap: 5px;
   height: 26px;
-  padding: 0 4px 0 11px;
+  padding: 0 4px 0 0;
   border-radius: 999px;
   background: var(--ai-surface-container-low);
   color: var(--ai-text-secondary);
   font-size: 12px;
-  cursor: pointer;
   transition: background-color 0.12s ease, color 0.12s ease;
 }
 
-.oa-terminal-tab:hover {
+.oa-terminal-tab-group:hover {
   background: var(--ai-state-hover);
 }
 
-.oa-terminal-tab.active {
+/* The ring marks the tab's own keyboard focus, drawn on the pill because the
+   tab is only the label inside it. :has() rather than :focus-within: a mouse
+   click focuses a tab too, and focus-within would leave the ring on whichever
+   tab was clicked, which the old focus-visible rule never did. */
+.oa-terminal-tab-group:has(.oa-terminal-tab:focus-visible) {
+  @include focus-ring;
+}
+
+.oa-terminal-tab-group.active {
   /* The fill the rail marks its current section with, rather than the ring
      this used to wear: every tab is already a filled pill, so a ring was the
      one outlined control on the page, and the rail had already settled how
@@ -129,26 +161,48 @@
   font-weight: 600;
 }
 
+/* The label is the whole tab: the click, the keys and the focus. The pill's
+   left inset belongs to it, so the pill stays clickable up to the × button. */
+.oa-terminal-tab {
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+  flex: 1;
+  min-width: 0;
+  gap: 5px;
+  padding-left: 11px;
+  cursor: pointer;
+}
+
+/* Focus is drawn by the pill (see .oa-terminal-tab-group:has above), so the
+   tab's own UA outline is the one thing to take away. */
+.oa-terminal-tab:focus-visible {
+  outline: none;
+}
+
 .oa-terminal-tab-dot {
+  --dot-rest: 0.35;
+  --dot-peak: 1;
   width: 6px;
   height: 6px;
   flex-shrink: 0;
   border-radius: 999px;
   background: var(--ai-primary);
-  animation: oa-terminal-pulse 1.1s ease-in-out infinite;
+  animation: oaDotPulse 1.1s ease-in-out infinite;
 }
 
 .oa-terminal-tab-label {
   flex: 1;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  @include ellipsis;
 }
 
+/* Takes the label's place in the pill, so it carries the same left inset the
+   tab does. */
 .oa-terminal-tab-rename {
   flex: 1;
   min-width: 0;
+  padding-left: 11px;
 }
 
 .oa-terminal-tab-rename input {
@@ -196,10 +250,7 @@
   flex-shrink: 0;
 }
 
-@keyframes oa-terminal-pulse {
-  0%, 100% { opacity: 0.35; }
-  50% { opacity: 1; }
-}
+@include dot-pulse-keyframes;
 
 /* --- the appearance column -------------------------------------------------
    The body of an OaPanel, so the card, its heading, its scrolling and its
@@ -244,12 +295,7 @@
 }
 
 .oa-terminal-scroll-wrap {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
+  @include scroll-area-shell;
 }
 
 .oa-terminal-scroll-wrap .oa-overlay-track {
@@ -275,10 +321,8 @@
   font-variant-ligatures: var(--oa-term-ligatures);
 }
 
-.oa-terminal-scroll::-webkit-scrollbar {
-  display: none;
-  width: 0;
-  height: 0;
+.oa-terminal-scroll {
+  @include hidden-scrollbar;
 }
 
 .oa-terminal-blocks {
@@ -422,19 +466,17 @@
   font-variant-ligatures: var(--oa-term-ligatures);
   overflow-y: auto;
   scrollbar-width: none;
-  /* caret-shape has no "underline" keyword (CSS calls it "underscore"), so
-     that one cursor style silently keeps the platform's default bar caret —
-     a real gap, noted rather than papered over with a hand-drawn cursor
-     this file has no room for. Blink cannot be touched from CSS at all: a
-     native caret's blink is the platform's, not an animatable property. */
+  /* The underline choice arrives here as caret-shape's "underscore" keyword:
+     terminalCSSVariables() in terminal/prefs.ts does the mapping, because
+     caret-shape has no "underline". Engines without caret-shape keep the
+     platform caret. Blink cannot be touched from CSS at all: a native
+     caret's blink is the platform's, not an animatable property. */
   caret-color: var(--ai-primary);
   caret-shape: var(--oa-term-cursor-style);
 }
 
-.oa-terminal-input::-webkit-scrollbar {
-  display: none;
-  width: 0;
-  height: 0;
+.oa-terminal-input {
+  @include hidden-scrollbar;
 }
 
 .oa-terminal-spinner {
@@ -442,10 +484,11 @@
   height: 13px;
   flex-shrink: 0;
   margin-bottom: 8px;
-  border-radius: 999px;
-  border: 2px solid var(--ai-outline-variant);
-  border-top-color: var(--ai-primary);
-  animation: oa-terminal-spin 0.7s linear infinite;
+  /* The chat's ring. Its 50% corner draws the same circle the 999px this
+     used to carry did, on a square box. */
+  @include spinner-ring;
+  /* The chat's own turn, not a second copy of it. */
+  animation: ai-chat-spin 0.7s linear infinite;
 }
 
 .oa-terminal-cancel {
@@ -454,14 +497,9 @@
   flex-shrink: 0;
 }
 
-@keyframes oa-terminal-spin {
-  to { transform: rotate(360deg); }
-}
-
 @media (prefers-reduced-motion: reduce) {
   .oa-terminal-tab-dot {
     animation: none;
-    opacity: 1;
   }
 
   .oa-terminal-spinner {

@@ -16,6 +16,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -57,6 +58,12 @@ func build(args []string) error {
 	if err != nil {
 		return err
 	}
+	// The packer needs a manifest, and the compile below is the slow part of a
+	// build. Without this check a directory missing one is compiled in full
+	// before the packer says so.
+	if _, err := os.Lstat(filepath.Join(dir, "manifest.json")); err != nil {
+		return fmt.Errorf("a plugin directory needs a manifest.json: %w", err)
+	}
 	work, err := os.MkdirTemp("", "arcpack")
 	if err != nil {
 		return err
@@ -71,7 +78,13 @@ func build(args []string) error {
 	// -trimpath keeps the directory the build ran in out of the binary, so the
 	// same source gives the same package from any checkout — which is what lets
 	// a deploy tell "the bundled package changed" from "it was built elsewhere".
-	cmd := exec.Command("go", "build", "-trimpath", "-buildmode=c-shared", "-ldflags=-s -w", "-o", filepath.Join(stage, "plugin.wasm"), ".")
+	//
+	// -buildvcs=false for the same reason: Go stamps the enclosing repository's
+	// commit into the binary, and a plugin built inside an instance's own
+	// repository would then change with every commit made there — whether or
+	// not the plugin did. Each such change is a reinstall at the next boot, a
+	// few seconds of compiling per package before the server will listen.
+	cmd := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-buildmode=c-shared", "-ldflags=-s -w", "-o", filepath.Join(stage, "plugin.wasm"), ".")
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GOOS=wasip1", "GOARCH=wasm")
 	cmd.Stderr = os.Stderr
@@ -81,15 +94,26 @@ func build(args []string) error {
 	return writePackage(stage, dir, out)
 }
 
+// copyTree copies a source entry into the stage. It looks at the entry itself
+// rather than what a link names: the source tree may be one someone else
+// controls, and a link in it could name any file the build is able to read,
+// which would then go into the package. A link is refused, and so is anything
+// that is neither a file nor a directory, which a read would wait on forever.
 func copyTree(from, to string) error {
-	info, err := os.Stat(from)
+	info, err := os.Lstat(from)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
+	if info.Mode()&fs.ModeSymlink != 0 {
+		return fmt.Errorf("%s is a symbolic link, and arcpack does not follow links", from)
+	}
 	if !info.IsDir() {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("%s is neither a regular file nor a directory", from)
+		}
 		data, err := os.ReadFile(from)
 		if err != nil {
 			return err
@@ -104,6 +128,8 @@ func copyTree(from, to string) error {
 		return err
 	}
 	for _, e := range entries {
+		// Dot-entries are left out of the package by arcx.Pack as well, so the
+		// stage holds what the package will.
 		if strings.HasPrefix(e.Name(), ".") {
 			continue
 		}

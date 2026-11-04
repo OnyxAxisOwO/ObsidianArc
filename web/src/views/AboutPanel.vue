@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { SOURCE_URL } from '@/lib/source';
 // The About panel.
 //
 // An instance can be renamed and can describe itself in Markdown however its
@@ -6,16 +7,16 @@
 // the software a rebranded server is actually running and where it came from.
 
 import { computed, onMounted, ref } from 'vue';
-import { useRouter } from 'vue-router';
 import { health } from '@/api/client';
+import OaBadge from '@/components/OaBadge.vue';
 import OaMarkdown from '@/components/OaMarkdown.vue';
 import OaPanel from '@/components/OaPanel.vue';
 import { t } from '@/composables/useI18n';
+import { usePanelExit } from '@/composables/usePanelExit';
 import { formatUptime } from '@/lib/format';
 import { siteInfo, isAdmin } from '@/stores/session';
 
 const PRODUCT = 'Obsidian Arc';
-const SOURCE_URL = 'https://github.com/OnyxAxisOwO/ObsidianArc';
 
 // Everyone whose work is in the binary, most commits first.
 //
@@ -40,7 +41,7 @@ const CONTRIBUTORS = [
   'TXBk0032-1',
 ];
 
-const router = useRouter();
+const panels = usePanelExit();
 
 const version = ref('—');
 const uptime = ref('—');
@@ -73,7 +74,7 @@ onMounted(() => {
     :title="t('about')"
     :footer="false"
     :width="460"
-    @close="router.replace('/')"
+    @close="panels.close('replace')"
   >
     <div class="oa-about">
       <!-- Both fall back rather than render empty: an operator who has never
@@ -96,13 +97,13 @@ onMounted(() => {
           <span class="oa-about-fact-label">{{ t('aboutVersionOf', { product: PRODUCT }) }}</span>
           <span class="oa-about-fact-value">
             {{ version }}
-            <span
+            <OaBadge
               v-if="isAdmin && siteInfo.about?.show_software_info === false"
-              class="oa-badge oa-badge-muted"
+              tone="muted"
               style="margin-left: 6px; font-size: 11px;"
             >
               {{ t('aboutAdminOnlyBadge') }}
-            </span>
+            </OaBadge>
           </span>
         </div>
 
@@ -123,13 +124,13 @@ onMounted(() => {
           <span class="oa-about-fact-label">{{ t('aboutRuntime') }}</span>
           <span class="oa-about-fact-value">
             {{ uptime }}
-            <span
+            <OaBadge
               v-if="isAdmin && siteInfo.about?.show_software_info === false"
-              class="oa-badge oa-badge-muted"
+              tone="muted"
               style="margin-left: 6px; font-size: 11px;"
             >
               {{ t('aboutAdminOnlyBadge') }}
-            </span>
+            </OaBadge>
           </span>
         </div>
         <div class="oa-about-fact">
@@ -141,13 +142,13 @@ onMounted(() => {
       <section v-if="showSoftwareInfo" class="oa-about-details">
         <h3 class="oa-drawer-subhead">
           {{ t('aboutContributors') }}
-          <span
+          <OaBadge
             v-if="isAdmin && siteInfo.about?.show_software_info === false"
-            class="oa-badge oa-badge-muted"
+            tone="muted"
             style="margin-left: 6px; font-size: 11px;"
           >
             {{ t('aboutAdminOnlyBadge') }}
-          </span>
+          </OaBadge>
         </h3>
         <p class="oa-about-lede">{{ t('aboutContributorsThanks') }}</p>
         <ul class="oa-about-people">

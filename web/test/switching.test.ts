@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { TurnHandlers } from '../src/api/chat';
 import { getConversation } from '../src/api/chat';
+import { t } from '../src/composables/useI18n';
 
 // Waiting for an answer used to mean waiting to read anything else: both
 // `openConversation` and `startNewConversation` returned early while a turn
@@ -23,7 +24,8 @@ vi.mock('@/api/chat', () => ({
     messages: [{ id: `${id}-row`, seq: 1, role: 'assistant', content: id, created_at: 0 }],
   })),
   renameConversation: vi.fn(),
-  deleteConversation: vi.fn(),
+  archiveConversation: vi.fn(async () => {}),
+  deleteConversation: vi.fn(async () => {}),
   deleteAllConversations: vi.fn(),
   uploadAttachment: vi.fn(),
   sendTurn: vi.fn((_request: unknown, handlers: TurnHandlers) => {
@@ -32,8 +34,9 @@ vi.mock('@/api/chat', () => ({
   }),
 }));
 
-const { activeID, busy, flushDeltas, justSentID, messages, openConversation, pending, pendingID,
-  recentReasoningID, resetChat, runTurn, showPending } =
+const { activeID, archiveConversation, busy, conversations, flash, flushDeltas, justSentID, messages,
+  openConversation, pending, pendingID, recentReasoningID, removeConversation, resetChat, runTurn, showPending,
+  stoppable } =
   await import('../src/chat/useChat');
 const { models, selectedID } = await import('../src/chat/useModels');
 
@@ -152,47 +155,81 @@ describe('switching conversations while a turn runs', () => {
     expect(justSentID.value).toBe('');
   });
 
-  // A tool call is announced mid-turn and answered later in the same turn,
-  // as its own row in messages.value rather than on `pending` — unlike the
-  // streamed answer, it has to survive a round trip through another
-  // conversation and back (see the reattachment test above) still attached
-  // to the right transcript, and messages.value already is that transcript.
-  it('shows a tool call live and drops it once the transcript reloads', async () => {
+  // The send button is in stop mode only while there is something to stop. The
+  // answer is in by the time the saved row is being read, so the button must
+  // not offer to stop a generation that has finished.
+  it('leaves stop mode once the answer is in, while the saved row is still being read', async () => {
+    let finishReload: ((value: Awaited<ReturnType<typeof getConversation>>) => void) | undefined;
+    vi.mocked(getConversation).mockImplementationOnce(() => new Promise((resolve) => { finishReload = resolve; }));
+
     const running = runTurn({ content: 'hi' });
     start();
+    expect(stoppable.value).toBe(true);
 
-    const beforeCall = messages.value;
-    turn.handlers?.onToolCall?.({ id: 'call-1', name: 'users.search', arguments: '{"q":"a"}' });
-    // Reassigned, not patched in place: a mutation on a streamed block that
-    // replaces an array in place rather than reassigning it has truncated
-    // streams here before (c434c2a).
-    expect(messages.value).not.toBe(beforeCall);
-    const row = messages.value.find((message) => message.toolCall?.id === 'call-1');
-    expect(row?.toolCall).toEqual({ id: 'call-1', name: 'users.search', arguments: '{"q":"a"}', done: false });
-
-    turn.handlers?.onToolResult?.({ id: 'call-1', name: 'users.search', output: 'ok', failed: false });
-    const answered = messages.value.find((message) => message.toolCall?.id === 'call-1');
-    expect(answered?.toolCall).toEqual({
-      id: 'call-1', name: 'users.search', arguments: '{"q":"a"}', output: 'ok', failed: false, done: true,
-    });
-
+    turn.handlers?.onDone?.({ message_id: 'saved', stopped: false, streamed: true });
     turn.finish?.();
+    await vi.waitFor(() => expect(finishReload).toBeTypeOf('function'));
+
+    expect(busy.value).toBe(true);
+    expect(stoppable.value).toBe(false);
+
+    finishReload!({
+      conversation: { id: 'A', title: 'A', model_id: 'm', pinned: false, message_count: 2, created_at: 0, updated_at: 0 },
+      messages: [{ id: 'saved', seq: 2, role: 'assistant', content: 'answer', created_at: 0 }],
+    });
     await running;
-    // The server does not persist tool calls on the message row, so the
-    // authoritative reload after the turn is what makes the row disappear —
-    // same as the optimistic user row it sits beside.
-    expect(messages.value.some((message) => message.toolCall)).toBe(false);
+    expect(busy.value).toBe(false);
+    expect(stoppable.value).toBe(false);
   });
 
-  it('does not splice a call into the conversation the reader moved to', async () => {
-    const running = runTurn({ content: 'hi' });
-    start();
+  it('does not blank or reload the conversation that is already open when it is selected again', async () => {
+    await openConversation('B');
+    expect(messages.value[0]?.id).toBe('B-row');
+    vi.mocked(getConversation).mockClear();
+
+    // A double-click on a row selects it twice.
+    await openConversation('B');
     await openConversation('B');
 
-    turn.handlers?.onToolCall?.({ id: 'call-2', name: 'x', arguments: '{}' });
-    expect(messages.value.every((message) => !message.toolCall)).toBe(true);
-
-    turn.finish?.();
-    await running;
+    expect(messages.value[0]?.id).toBe('B-row');
+    expect(getConversation).not.toHaveBeenCalled();
   });
+
+  it('says so when the open conversation cannot be read, rather than showing it as empty', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(getConversation).mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    flash.value = '';
+
+    await openConversation('B');
+
+    expect(messages.value).toEqual([]);
+    expect(activeID.value).toBe('B');
+    expect(flash.value).toBe(t('failed'));
+    warn.mockRestore();
+  });
+
+  // Archiving or deleting the open conversation used to clear only its id and
+  // rows, so the block still streaming into it kept drawing on the blank
+  // screen left behind until the turn ended.
+  for (const [name, drop] of [['archiving', archiveConversation], ['deleting', removeConversation]] as const) {
+    it(`stops drawing the streamed block after ${name} the conversation it streams into`, async () => {
+      const running = runTurn({ content: 'hi' });
+      start();
+      expect(showPending.value).toBe(true);
+
+      const entry = conversations.value.find((conversation) => conversation.id === 'A')!;
+      expect(await drop(entry)).toBe(true);
+
+      expect(activeID.value).toBe('');
+      expect(messages.value).toEqual([]);
+      expect(showPending.value).toBe(false);
+      // The turn itself is not cut off: the server still saves it.
+      expect(busy.value).toBe(true);
+
+      turn.finish?.();
+      await running;
+      expect(busy.value).toBe(false);
+      expect(messages.value).toEqual([]);
+    });
+  }
 });
