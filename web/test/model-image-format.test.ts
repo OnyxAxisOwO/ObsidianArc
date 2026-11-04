@@ -12,7 +12,7 @@ describe('the model form image response format', () => {
   it('merges the chosen format into the override the payload sends', () => {
     const form = { ...blankModelForm(), imageResponseFormat: 'url', requestOverride: '{"reasoning_effort":"low"}' };
     const payload = modelPayload(form, form.requestOverride);
-    expect(JSON.parse(payload.request_override)).toEqual({
+    expect(JSON.parse(payload.request_override!)).toEqual({
       reasoning_effort: 'low',
       image_response_format: 'url',
     });
@@ -21,7 +21,7 @@ describe('the model form image response format', () => {
   it('writes the format on its own when the typed override is empty', () => {
     const form = { ...blankModelForm(), imageResponseFormat: 'url' };
     const payload = modelPayload(form, '');
-    expect(JSON.parse(payload.request_override)).toEqual({ image_response_format: 'url' });
+    expect(JSON.parse(payload.request_override!)).toEqual({ image_response_format: 'url' });
   });
 
   it('removes the key when the selection is cleared, rather than writing ""', () => {
