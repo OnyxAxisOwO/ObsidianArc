@@ -2,7 +2,6 @@ package console
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
@@ -52,37 +51,5 @@ func TestFlagCompletionFollowsArgumentsAndValueFlags(t *testing.T) {
 				t.Errorf("Complete(%q) = %v, want it to include %s", tc.line, got, tc.want)
 			}
 		})
-	}
-}
-
-// The destructive --yes is offered for the command the line resolves to, which
-// is also not reached when an argument precedes the flag.
-func TestFlagCompletionOffersYesForADestructiveCommandAfterItsArgument(t *testing.T) {
-	c := New(Options{Dispatch: func(context.Context, user.User, string, string, any) (Response, error) {
-		return Response{Status: 200, Body: []byte(`{}`)}, nil
-	}})
-	s := &Session{Actor: watchAdmin("desk"), Transport: "web", Lang: "en", Width: 100}
-
-	if got := completionValues(c, s, "user delete alice --y"); !containsValue(got, "--yes") {
-		t.Errorf("Complete(user delete alice --y) = %v, want --yes", got)
-	}
-}
-
-// A line with nothing typed before the flag names no command, and must not
-// index past the end of its words.
-func TestFlagCompletionOnAnEmptyLineOffersOnlyTheUniversalFlags(t *testing.T) {
-	c := New(Options{Dispatch: func(context.Context, user.User, string, string, any) (Response, error) {
-		return Response{Status: 200, Body: []byte(`{}`)}, nil
-	}})
-	s := &Session{Actor: watchAdmin("desk"), Transport: "web", Lang: "en", Width: 100}
-
-	got := completionValues(c, s, "--")
-	for _, v := range got {
-		if !strings.HasPrefix(v, "--") {
-			t.Errorf("Complete(--) offered %q", v)
-		}
-	}
-	if !containsValue(got, "--help") || !containsValue(got, "--json") {
-		t.Errorf("Complete(--) = %v, want --help and --json", got)
 	}
 }

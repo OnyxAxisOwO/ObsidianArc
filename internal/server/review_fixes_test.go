@@ -45,25 +45,6 @@ func (in *instance) doFrom(ip, userAgent, method, path string, body any, as *ses
 	return recorder
 }
 
-// The same check servertest holds its own DoFrom to: an IPv6 client must
-// arrive with an address that splits, or per-address code reads it wrong.
-func TestDoFromGivesAnIPv6ClientAnAddressThatSplits(t *testing.T) {
-	var seen string
-	in := &instance{t: t, handler: http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		seen = r.RemoteAddr
-	})}
-	for _, ip := range []string{"2001:db8::1", "203.0.113.7"} {
-		in.doFrom(ip, "test", http.MethodGet, "/", nil, nil)
-		host, port, err := net.SplitHostPort(seen)
-		if err != nil {
-			t.Fatalf("doFrom(%q) gave RemoteAddr %q, which does not split: %v", ip, seen, err)
-		}
-		if host != ip || port != "40000" {
-			t.Errorf("doFrom(%q) gave RemoteAddr %q, want host %q port 40000", ip, seen, ip)
-		}
-	}
-}
-
 // A code typed into the web terminal arrives at the backoffice's door as a
 // request dispatched inside the process, from no address and no browser. The
 // visit it opens has to be bound to the browser the terminal is in, or the

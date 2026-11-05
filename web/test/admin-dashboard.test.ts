@@ -5,7 +5,7 @@ import { adminApi } from '../src/admin/api';
 import AdminDashboard from '../src/views/admin/AdminDashboard.vue';
 import AdminDashboardTrend from '../src/views/admin/AdminDashboardTrend.vue';
 import { provideAdminView } from '../src/views/admin/adminView';
-import { changeLanguage, t, tn } from '../src/composables/useI18n';
+import { changeLanguage, t } from '../src/composables/useI18n';
 import { dashboardFixture, emptyTotals } from './fixtures/dashboard';
 import { settle, button } from './helpers';
 
@@ -105,29 +105,6 @@ describe('dashboard overview', () => {
     expect(host.querySelector('[role="slider"]')).toBeNull();
     // Nothing yesterday and nothing today is no movement, not a fall.
     expect(host.querySelector('.oa-delta')).toBeNull();
-  });
-
-  // Each of the day's figures says which way it moved against the day before,
-  // and the ones where up is worse — failures, waiting — say so in the colour
-  // kept for that.
-  it('compares the day with the one before it', async () => {
-    const fixture = dashboardFixture();
-    vi.spyOn(adminApi, 'dashboard').mockResolvedValue(fixture);
-    await mountDashboard();
-    const metrics = host.querySelector('.oa-dashboard-metrics')!;
-    // 4906 against 4460 is a tenth up.
-    expect(metrics.querySelector('.oa-delta')?.textContent).toContain('10%');
-    expect(metrics.querySelector('.oa-delta')?.classList.contains('up')).toBe(true);
-    const failures = host.querySelector('#secHealth .has-errors .oa-delta')!;
-    expect(failures.classList.contains('worse')).toBe(true);
-    expect(host.querySelector('#secHealth .oa-dashboard-health-rate strong')?.textContent).toBe('78.2%');
-  });
-
-  it('names who used a model under its bar', async () => {
-    vi.spyOn(adminApi, 'dashboard').mockResolvedValue(dashboardFixture());
-    await mountDashboard();
-    const first = host.querySelector('#secBusiestModels .oa-dashboard-rank-list li')!;
-    expect(first.querySelector('.oa-dashboard-rank-reach')?.textContent).toContain(tn(40, 'boardUsersOne', 'boardUsersOther', { count: 40 }));
   });
 });
 

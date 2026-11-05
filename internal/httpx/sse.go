@@ -2,10 +2,12 @@ package httpx
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -17,8 +19,10 @@ import (
 // connection — which cancels the request context, which cancels the upstream
 // provider call.
 type SSE struct {
-	w  http.ResponseWriter
-	rc *http.ResponseController
+	w       http.ResponseWriter
+	rc      *http.ResponseController
+	mu      sync.Mutex
+	failure error
 }
 
 // writeDeadline caps how long one frame may take to reach the client — not how
@@ -138,17 +142,61 @@ func (s *SSE) armed(write func() error) error {
 }
 
 func (s *SSE) send(frame []byte) error {
-	return s.armed(func() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.failure != nil {
+		return s.failure
+	}
+	err := s.armed(func() error {
 		if _, err := s.w.Write(frame); err != nil {
 			return err
 		}
 		return s.flush()
 	})
+	if err != nil {
+		s.failure = err
+	}
+	return err
 }
+
+func (s *SSE) Err() error { s.mu.Lock(); defer s.mu.Unlock(); return s.failure }
 
 func (s *SSE) flush() error {
 	if err := s.rc.Flush(); err != nil {
 		return fmt.Errorf("sse: flush: %w", err)
 	}
 	return nil
+}
+
+// KeepAlive keeps proxy idle timers from expiring while the provider thinks.
+// A failed heartbeat cancels the upstream just as a failed content write does.
+// The returned stop function joins the writer and reports a heartbeat failure.
+func (s *SSE) KeepAlive(ctx context.Context) (context.Context, func() error) {
+	return s.keepAlive(ctx, 15*time.Second)
+}
+func (s *SSE) keepAlive(ctx context.Context, interval time.Duration) (context.Context, func() error) {
+	live, cancel := context.WithCancel(ctx)
+	stop, done := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	var failure error
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-live.Done():
+				return
+			case <-stop:
+				return
+			case <-ticker.C:
+				if err := s.Comment("keepalive"); err != nil {
+					failure = err
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	return live, func() error { once.Do(func() { close(stop) }); <-done; cancel(); return failure }
 }

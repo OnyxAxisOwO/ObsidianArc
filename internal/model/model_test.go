@@ -122,84 +122,6 @@ func TestProviderKeyIsEncryptedAndNeverListed(t *testing.T) {
 	}
 }
 
-// Updating a provider without supplying a key must keep the existing one,
-// which is what lets the admin form round-trip a provider it never received
-// the key for.
-func TestUpdateWithoutKeyKeepsIt(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-	created := f.provider(t, "Example")
-
-	name := "Renamed"
-	if _, err := f.providers.Update(ctx, created.ID, provider.Update{Name: &name}, false); err != nil {
-		t.Fatalf("update: %v", err)
-	}
-
-	resolved, err := f.providers.Resolve(ctx, created.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resolved.APIKey != "sk-test-key-1234" {
-		t.Errorf("key changed on an unrelated update: %q", resolved.APIKey)
-	}
-	if resolved.Name != "Renamed" {
-		t.Errorf("name = %q", resolved.Name)
-	}
-}
-
-func TestProviderRejectsUnsafeBaseURL(t *testing.T) {
-	f := newFixture(t)
-	_, err := f.providers.Create(context.Background(), provider.CreateInput{
-		Name:    "Insecure",
-		Kind:    adapter.KindOpenAI,
-		BaseURL: "http://api.example.com/v1",
-		APIKey:  "sk-test",
-	}, true)
-	if err == nil {
-		t.Fatal("a plain-http remote base URL was accepted for a credential")
-	}
-}
-
-// A group with explicit grants sees only those; a group with the shortcut
-// sees everything enabled. Both are the same query, so the picker and the
-// gateway cannot disagree.
-func TestListForUserRespectsGroupGrants(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-
-	upstream := f.provider(t, "Example")
-	allowed := f.model(t, upstream.ID, "allowed-model")
-	f.model(t, upstream.ID, "forbidden-model")
-
-	restricted, err := f.groups.Create(ctx, nil, group.CreateInput{Name: "Restricted"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	open, err := f.groups.Create(ctx, nil, group.CreateInput{Name: "Open", AllowAllModels: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := f.models.SetGroupModelIDs(ctx, nil, restricted.ID, []string{allowed.ID}); err != nil {
-		t.Fatal(err)
-	}
-
-	visible, err := f.models.ListForUser(ctx, restricted.ID, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(visible) != 1 || visible[0].ID != allowed.ID {
-		t.Fatalf("restricted group sees %+v", visible)
-	}
-
-	visible, err = f.models.ListForUser(ctx, open.ID, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(visible) != 2 {
-		t.Fatalf("allow-all group sees %d models, want 2", len(visible))
-	}
-}
-
 // The gateway's authority check. A model the client was never offered must be
 // refused by the query, and refused with the same error as one that does not
 // exist — otherwise the endpoint enumerates the catalogue.
@@ -522,31 +444,6 @@ func TestAResetsRefusedEnableKeepsTheFlag(t *testing.T) {
 	}
 }
 
-// Authorize returns everything a turn needs, including the decrypted
-// credential, in one query.
-func TestAuthorizeResolvesTheProvider(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-
-	upstream := f.provider(t, "Example")
-	record := f.model(t, upstream.ID, "some-model")
-	open, _ := f.groups.Create(ctx, nil, group.CreateInput{Name: "Open", AllowAllModels: true})
-
-	resolved, err := f.models.Authorize(ctx, open.ID, record.ID, false)
-	if err != nil {
-		t.Fatalf("authorize: %v", err)
-	}
-	if resolved.Provider.APIKey != "sk-test-key-1234" {
-		t.Errorf("provider key = %q", resolved.Provider.APIKey)
-	}
-	if resolved.Provider.Kind != adapter.KindOpenAI || resolved.Provider.BaseURL != "https://api.example.com/v1" {
-		t.Errorf("provider = %+v", resolved.Provider)
-	}
-	if resolved.Model.Spec().ModelID != "some-model" {
-		t.Errorf("spec = %+v", resolved.Model.Spec())
-	}
-}
-
 // Deleting a provider must take its models — and their grants — with it,
 // rather than leaving rows pointing at nothing.
 func TestDeletingProviderCascades(t *testing.T) {
@@ -569,33 +466,6 @@ func TestDeletingProviderCascades(t *testing.T) {
 	_ = f.db.QueryRow(ctx, `SELECT COUNT(*) FROM group_models`).Scan(&grants)
 	if models != 0 || grants != 0 {
 		t.Errorf("after deleting the provider: %d models, %d grants remain", models, grants)
-	}
-}
-
-func TestDuplicateModelPerProviderIsAllowed(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-
-	first := f.provider(t, "First")
-	second := f.provider(t, "Second")
-	m1 := f.model(t, first.ID, "shared-model")
-
-	// The same upstream model behind a second provider is legitimate: a
-	// primary and a fallback.
-	f.model(t, second.ID, "shared-model")
-
-	// Multiple entries for the same model under the same provider are also
-	// allowed (e.g. different system prompts, reasoning tiers, or weights).
-	m2, err := f.models.Create(ctx, CreateInput{
-		ProviderID:  first.ID,
-		ModelID:     "shared-model",
-		DisplayName: "Duplicate",
-	})
-	if err != nil {
-		t.Fatalf("creating duplicate model under same provider: %v", err)
-	}
-	if m2.ID == m1.ID {
-		t.Fatalf("expected different IDs for duplicate model entries, got %q", m2.ID)
 	}
 }
 

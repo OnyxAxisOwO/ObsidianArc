@@ -7,7 +7,7 @@
 // wins the ties it won before, provided none of those three styles the same
 // element at the same specificity. `_admin-controls` is the exception: it
 // used to come before `_surfaces` as well, and says why moving it is safe.
-// web/test/styles.test.ts holds the split.
+// web/test/bundle.test.ts holds the split.
 //
 // A rule belongs here only if every selector in it needs a class that only
 // the backoffice renders. One a screen outside it can draw stays in index.scss;

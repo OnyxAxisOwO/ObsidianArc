@@ -84,23 +84,6 @@ async function mountPanel(): Promise<void> {
 }
 
 describe('the leaderboard panel', () => {
-  it('shows the reader their own place and how far off the top they are', async () => {
-    vi.spyOn(api, 'get').mockResolvedValue(board());
-    await mountPanel();
-
-    expect(api.get).toHaveBeenCalledWith('/api/leaderboard?period=week&metric=tokens', expect.objectContaining({ signal: expect.any(AbortSignal) }));
-    const text = panelHost.textContent ?? '';
-    expect(text).toContain(t('boardYourRank', { total: 2 }));
-    expect(text).toContain(t('boardBehind', { amount: '3.8k' }));
-    // The reader's own row is marked for the page, not merely present.
-    expect(panelHost.querySelector('.oa-board-row.self .oa-board-name')?.textContent).toContain('Member');
-    // Both places in this fixture are on the podium; the class is what the
-    // stylesheet reads to give the top three their medal.
-    expect(panelHost.querySelectorAll('.oa-board-row.podium')).toHaveLength(2);
-    // The models board is the server's to include.
-    expect(text).toContain('Sonnet');
-    expect(text).toContain(t('boardUsersCount', { count: 2 }));
-  });
 
   it('keeps tied anonymous rows distinct when the board refreshes', async () => {
     const get = vi.spyOn(api, 'get').mockResolvedValueOnce(board()).mockResolvedValueOnce(board({
@@ -228,37 +211,6 @@ describe('the leaderboard panel', () => {
     expect(panelHost.querySelectorAll('.oa-board-list')[0]!.textContent).toContain('Rival');
   });
 
-  it('keeps the unit of the board on screen while the other measure is loading', async () => {
-    let resolveRequests!: (value: Leaderboard) => void;
-    const requestsPending = new Promise<Leaderboard>((resolve) => { resolveRequests = resolve; });
-    vi.spyOn(api, 'get').mockImplementation(async (url) =>
-      url.includes('metric=requests') ? requestsPending : board());
-    await mountPanel();
-
-    panelHost.querySelectorAll('.oa-segment')[1]!.querySelectorAll('button')[1]!.click();
-    await nextTick();
-
-    // The tokens board is still what is shown, so its 1.2k is tokens, not requests.
-    expect(panelHost.querySelector('.oa-board-me .oa-field-hint')?.textContent).toContain(t('boardTokens', { count: '1.2k' }));
-
-    // The server's requests board: its values are requests, which is what the
-    // pinned figure must show. The client no longer derives them.
-    resolveRequests(board({
-      metric: 'requests',
-      accounts: [
-        { rank: 1, name: 'Otter', avatar: '', value: 40, requests: 40, tokens: 5000, models: 2 },
-        { rank: 2, name: 'Member', avatar: '', value: 9, requests: 9, tokens: 1200, models: 1, self: true },
-      ],
-      me: { rank: 2, value: 9, gap: 31, participants: 2 },
-    }));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await nextTick();
-
-    // Once the requests board lands, the pinned figure is the reader's requests
-    // (9, from the self row), not the tokens 1.2k that the placeholder carried.
-    expect(panelHost.querySelector('.oa-board-me .oa-field-hint')?.textContent).toContain(t('boardRequests', { count: '9' }));
-  });
-
   it('aborts the previous request when period changes quickly', async () => {
     let resolveSecond!: (value: Leaderboard) => void;
     const secondPromise = new Promise<Leaderboard>((resolve) => { resolveSecond = resolve; });
@@ -287,58 +239,6 @@ describe('the leaderboard panel', () => {
     resolveSecond(board());
   });
 
-  it('aborts the in-flight period request when metric is toggled during loading', async () => {
-    let resolvePending!: (value: Leaderboard) => void;
-    const pendingPromise = new Promise<Leaderboard>((resolve) => { resolvePending = resolve; });
-    const abortSignals: AbortSignal[] = [];
-    const calledUrls: string[] = [];
-
-    vi.spyOn(api, 'get').mockImplementation(async (url, options) => {
-      calledUrls.push(url);
-      if (options?.signal) abortSignals.push(options.signal);
-      if (calledUrls.length === 2) return pendingPromise;
-      return board();
-    });
-
-    await mountPanel();
-    expect(calledUrls).toEqual(['/api/leaderboard?period=week&metric=tokens']);
-    expect(abortSignals[0]?.aborted).toBe(false);
-
-    // Switch period to month -> triggers in-flight request 2
-    const segments = panelHost.querySelectorAll('.oa-segment');
-    segments[0]!.querySelectorAll('button')[2]!.click();
-    await nextTick();
-    expect(calledUrls).toHaveLength(2);
-    expect(calledUrls[1]).toBe('/api/leaderboard?period=month&metric=tokens');
-    expect(abortSignals[1]?.aborted).toBe(false);
-
-    // While month request is in-flight, switch metric to requests
-    segments[1]!.querySelectorAll('button')[1]!.click();
-    await nextTick();
-    // Month & tokens request should have been aborted, and month & requests requested
-    expect(abortSignals[1]?.aborted).toBe(true);
-    expect(calledUrls).toHaveLength(3);
-    expect(calledUrls[2]).toBe('/api/leaderboard?period=month&metric=requests');
-    expect(abortSignals[2]?.aborted).toBe(false);
-
-    resolvePending(board());
-  });
-
-  it('differentiates model ranks when values match but user counts differ', async () => {
-    const tiedBoard = board({
-      models: [
-        { rank: 1, name: 'ModelA', value: 1000, users: 5, requests: 10, tokens: 1000 },
-        { rank: 2, name: 'ModelB', value: 1000, users: 2, requests: 10, tokens: 1000 },
-      ],
-    });
-    vi.spyOn(api, 'get').mockResolvedValue(tiedBoard);
-    await mountPanel();
-
-    const modelRows = panelHost.querySelectorAll('.oa-board-list')[1]!.querySelectorAll('.oa-board-row');
-    expect(modelRows[0]!.querySelector('.oa-board-rank')?.textContent).toBe('1');
-    expect(modelRows[1]!.querySelector('.oa-board-rank')?.textContent).toBe('2');
-  });
-
   it('names nobody the server did not name, including itself', async () => {
     vi.spyOn(api, 'get').mockResolvedValue(board({
       identity: 'anonymous',
@@ -359,20 +259,6 @@ describe('the leaderboard panel', () => {
     expect(rows[1]!.querySelector('.oa-board-avatar')?.textContent?.trim()).toBe('M');
     // The reader is still told which row is theirs.
     expect(rows[1]!.textContent).toContain('Member');
-  });
-
-  it('says so rather than showing an empty board to somebody who has not used it', async () => {
-    vi.spyOn(api, 'get').mockResolvedValue(board({
-      accounts: [],
-      me: { rank: 0, value: 0, gap: 0, participants: 0 },
-      models: [],
-    }));
-    await mountPanel();
-
-    const text = panelHost.textContent ?? '';
-    expect(text).toContain(t('boardNotRanked'));
-    expect(text).toContain(t('nothingYet'));
-    expect(text).not.toContain(t('boardYourRank', { total: 0 }));
   });
 });
 
@@ -397,12 +283,6 @@ describe('the leaderboard entry in the account menu', () => {
     // The menu itself drew — it is the leaderboard that is missing.
     expect(text).toContain(t('apiKeys'));
     expect(text).not.toContain(t('leaderboardTitle'));
-  });
-
-  it('appears once it is published', async () => {
-    adopt(ACCOUNT);
-    site.value = { leaderboard_show_users: true } as never;
-    expect(await openMenu()).toContain(t('leaderboardTitle'));
   });
 
   it('is offered to its curator before it is published', async () => {

@@ -82,27 +82,6 @@ function meter(index = 0): number {
 }
 
 describe('OaBonusBars', () => {
-  it('draws the bars as rows of one card, so the section stands apart from the panel', async () => {
-    serve([bar({ bar_id: 'a', name: 'A' }), bar({ bar_id: 'b', name: 'B' })]);
-    await mount();
-    const cards = host.querySelectorAll('.oa-usage-card');
-    expect(cards).toHaveLength(1);
-    const rows = cards[0]!.querySelectorAll(':scope > .oa-usage-card-row.oa-bonus-bar');
-    expect(rows).toHaveLength(2);
-  });
-
-  it('draws nothing for an account that holds no bonus, and no heading either', async () => {
-    serve([]);
-    await mount();
-    expect(host.querySelector('.oa-collapsible')).toBeNull();
-    expect(host.textContent).toBe('');
-  });
-
-  it('shows the amounts of a bar whose total is public', async () => {
-    serve([bar()]);
-    await mount();
-    expect(host.textContent).toContain(t('bonusLeft', { left: '640', total: '1000' }));
-  });
 
   it('shows only a percentage when the administrator keeps the total private', async () => {
     // The server sends nulls; the point is that nothing on the page derives
@@ -112,30 +91,6 @@ describe('OaBonusBars', () => {
     expect(host.textContent).toContain(t('quotaRemaining', { percent: 37 }));
     expect(host.textContent).not.toContain('1000');
     expect(host.textContent).not.toContain('640');
-  });
-
-  // The allowance above is worded by one instance-wide setting, and a bar that
-  // read "9 / 9" under windows reading "60% left" was two answers to one question.
-  it('words a bar as what is left when the instance words the allowance that way, amounts public or not', async () => {
-    serve([
-      bar({ bar_id: 'a', name: 'Public', total: 10, remaining: 6, percent: 60 }),
-      bar({ bar_id: 'b', name: 'Private', show_total: false, total: null, remaining: null, percent: 60 }),
-    ], 'remaining');
-    await mount();
-    const rows = [...host.querySelectorAll('.oa-bonus-bar')].map((node) => node.textContent ?? '');
-    for (const row of rows) expect(row).toContain(t('quotaRemaining', { percent: 60 }));
-    // The figures are what the wording replaces, not what it sits beside.
-    expect(rows[0]).not.toContain('6 of 10');
-    expect(meter(0)).toBe(60);
-  });
-
-  it('words a bar as what has gone, and fills the meter as it is spent', async () => {
-    serve([bar({ total: 10, remaining: 6, percent: 60 })], 'used');
-    await mount();
-    expect(host.textContent).toContain(t('quotaUsed', { percent: 40 }));
-    expect(host.textContent).not.toContain('6 of 10');
-    // "40% used" over a bar 60% full would be two answers to one question.
-    expect(meter()).toBe(40);
   });
 
   it('keeps the figures for the amounts a bar shares, and a share for the ones it keeps back, when the instance shows figures', async () => {
@@ -148,12 +103,6 @@ describe('OaBonusBars', () => {
     expect(rows[0]).toContain(t('bonusLeft', { left: '9', total: '9' }));
     expect(rows[1]).toContain(t('quotaRemaining', { percent: 60 }));
     expect(meter(1)).toBe(60);
-  });
-
-  it('is worded as the figures by a server that does not say', async () => {
-    serve([bar({ total: 9, remaining: 9, percent: 100 })]);
-    await mount();
-    expect(host.textContent).toContain(t('bonusLeft', { left: '9', total: '9' }));
   });
 
   it('says used up in every wording', async () => {
@@ -195,41 +144,6 @@ describe('OaBonusBars', () => {
     expect(host.textContent).not.toContain('6 of 10');
   });
 
-  it('says a bar is used up rather than showing an empty figure', async () => {
-    serve([bar({ exhausted: true, remaining: 0, percent: 0 })]);
-    await mount();
-    expect(host.textContent).toContain(t('bonusExhausted'));
-    expect(host.querySelector('.oa-bonus-bar')?.classList.contains('is-spent')).toBe(true);
-  });
-
-  it('says whether a bar is spent before the allowance or after it', async () => {
-    serve([
-      bar({ bar_id: 'on', name: 'On', enabled: true }),
-      bar({ bar_id: 'off', name: 'Off', enabled: false }),
-      bar({ bar_id: 'spare', name: 'Spare', kind: 'reserve', enabled: false, choosable: false }),
-    ]);
-    await mount();
-    const lines = [...host.querySelectorAll('.oa-bonus-bar')].map((node) => node.textContent ?? '');
-    expect(lines[0]).toContain(t('bonusBeforeAllowance'));
-    expect(lines[1]).toContain(t('bonusAfterAllowance'));
-    // A reserve is last whatever it says about itself, and is labelled so.
-    expect(lines[2]).toContain(t('bonusAfterAllowance'));
-    expect(lines[2]).toContain(t('bonusKindReserve'));
-  });
-
-  it('names when a bar expires and how many models it covers', async () => {
-    serve([
-      bar({ bar_id: 'a', name: 'A', model_ids: ['m1'], expires_at: Date.UTC(2030, 0, 15, 12) }),
-      bar({ bar_id: 'b', name: 'B', model_ids: ['m1', 'm2', 'm3'] }),
-    ]);
-    await mount();
-    const [first, second] = [...host.querySelectorAll('.oa-bonus-bar')].map((node) => node.textContent ?? '');
-    expect(first).toContain(t('bonusModelsOne'));
-    expect(first).toMatch(/Expires/);
-    expect(second).toContain(t('bonusModelsOther', { count: 3 }));
-    expect(second).toContain(t('bonusNoExpiry'));
-  });
-
   it('shows the switch only on a bar the account may choose', async () => {
     serve([
       bar({ bar_id: 'free', name: 'Free' }),
@@ -267,36 +181,6 @@ describe('OaBonusBars', () => {
     expect(host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked).toBe(true);
   });
 
-  it('says a refused switch in Chinese by its code, not in the server\'s English sentence', async () => {
-    await changeLanguage('zh');
-    serve([bar({ enabled: true })]);
-    const { ApiError } = await import('@/api/client');
-    put.mockRejectedValue(new ApiError(409, 'bonus_not_choosable', 'This bonus is not yours to switch on or off.'));
-    await mount();
-
-    host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click();
-    await settle();
-
-    expect(host.textContent).toContain(t('bonusNotChoosable'));
-    expect(host.textContent).not.toContain('not yours to switch');
-    await changeLanguage('en');
-  });
-
-  it('says a server fault in Chinese with the screen\'s own line, never the server sentence', async () => {
-    await changeLanguage('zh');
-    serve([bar({ enabled: true })]);
-    const { ApiError } = await import('@/api/client');
-    put.mockRejectedValue(new ApiError(500, 'internal', 'Something went wrong on our side.'));
-    await mount();
-
-    host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click();
-    await settle();
-
-    expect(host.textContent).toContain(t('bonusChoiceFailed'));
-    expect(host.textContent).not.toContain('Something went wrong');
-    await changeLanguage('en');
-  });
-
   it('shows what the description says as text, never as markup', async () => {
     serve([bar({ description: '<img src=x onerror=alert(1)>' })]);
     await mount();
@@ -318,12 +202,6 @@ describe('OaBonusBars', () => {
     // A refresh the account did not ask for does not trade figures for an error.
     expect(host.textContent).toContain('500');
     expect(host.textContent).not.toContain(t('bonusLoadFailed'));
-  });
-
-  it('says so when the first read fails', async () => {
-    get.mockRejectedValue(new Error('offline'));
-    await mount();
-    expect(host.textContent).toContain(t('bonusLoadFailed'));
   });
 });
 

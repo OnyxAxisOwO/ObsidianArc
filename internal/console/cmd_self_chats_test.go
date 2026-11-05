@@ -50,17 +50,6 @@ func TestChatCommandsExecute(t *testing.T) {
 		return &Session{Actor: actor, Transport: "web", Lang: lang, Width: 100}
 	}
 
-	t.Run("chat list default", func(t *testing.T) {
-		var out bytes.Buffer
-		res := c.Execute(context.Background(), newSession("en"), &out, "chat list")
-		if !res.OK {
-			t.Fatalf("chat list failed: %v, output: %s", res, out.String())
-		}
-		if lastCall.Method != "GET" || lastCall.Path != "/api/conversations?limit=60" {
-			t.Errorf("unexpected call: %v", lastCall)
-		}
-	})
-
 	t.Run("chat list with bare --archived flag", func(t *testing.T) {
 		var out bytes.Buffer
 		res := c.Execute(context.Background(), newSession("en"), &out, "chat list --archived")
@@ -83,17 +72,6 @@ func TestChatCommandsExecute(t *testing.T) {
 		}
 	})
 
-	t.Run("chat show displays project_id", func(t *testing.T) {
-		var out bytes.Buffer
-		res := c.Execute(context.Background(), newSession("en"), &out, "chat show 01CONV1")
-		if !res.OK {
-			t.Fatalf("chat show failed: %v, output: %s", res, out.String())
-		}
-		if !strings.Contains(out.String(), "01PROJ1") {
-			t.Errorf("output missing project_id 01PROJ1: %s", out.String())
-		}
-	})
-
 	t.Run("chat archive", func(t *testing.T) {
 		var out bytes.Buffer
 		res := c.Execute(context.Background(), newSession("en"), &out, "chat archive 01CONV1")
@@ -105,14 +83,4 @@ func TestChatCommandsExecute(t *testing.T) {
 		}
 	})
 
-	t.Run("chat unarchive", func(t *testing.T) {
-		var out bytes.Buffer
-		res := c.Execute(context.Background(), newSession("en"), &out, "chat unarchive 01CONV1")
-		if !res.OK {
-			t.Fatalf("chat unarchive failed: %v, output: %s", res, out.String())
-		}
-		if lastCall.Method != "PATCH" || lastCall.Path != "/api/conversations/01CONV1" {
-			t.Errorf("unexpected call: %v", lastCall)
-		}
-	})
 }

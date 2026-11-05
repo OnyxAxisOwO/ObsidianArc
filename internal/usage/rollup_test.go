@@ -211,8 +211,9 @@ func TestRollupQueryRouting(t *testing.T) {
 	ctx := context.Background()
 
 	now := time.Now().UnixMilli()
-	// Turn A: 3 hours ago
-	tA := now - 3*3600_000
+	// Put the first record on an hourly boundary so a mid-hour filter
+	// includes it only when the rollup rounds the lower bound down.
+	tA := time.UnixMilli(now).Add(-3 * time.Hour).Truncate(time.Hour).UnixMilli()
 	// Turn B: 2 hours ago
 	tB := now - 2*3600_000
 	// Turn C: 10 minutes ago
@@ -240,8 +241,7 @@ func TestRollupQueryRouting(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 1. Long range query (Since = 4 hours ago -> span >= 1h): uses usage_rollup_hourly
-	longFilter := Filter{Since: now - 4*3600_000}
+	longFilter := Filter{Since: tA + 1234, Until: now, UserID: usr.ID}
 	if !longFilter.usesRollup() {
 		t.Fatal("longFilter should use rollup")
 	}

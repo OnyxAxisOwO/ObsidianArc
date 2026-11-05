@@ -1470,7 +1470,7 @@ async function streamProbeAllModels(
       | { error?: { code?: string; message?: string } }
       | null;
     noteBackofficeRefusal(body?.error?.code);
-    noteSessionEnded(body?.error?.code);
+    noteSessionEnded(body?.error?.code, response);
     throw new ApiError(
       response.status,
       body?.error?.code ?? 'probe',

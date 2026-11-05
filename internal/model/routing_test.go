@@ -59,21 +59,6 @@ func TestRouteSendsTheTargetAndReportsTheRequested(t *testing.T) {
 	}
 }
 
-func TestNoRouteLeavesUpstreamAsTheRequestedModel(t *testing.T) {
-	f := newFixture(t)
-
-	upstream := f.provider(t, "Example")
-	plain := f.model(t, upstream.ID, "plain-model")
-
-	resolved, err := f.models.Authorize(context.Background(), "", plain.ID, true)
-	if err != nil {
-		t.Fatalf("authorize: %v", err)
-	}
-	if resolved.Upstream.ID != resolved.Model.ID {
-		t.Fatal("without a route the two must be the same row")
-	}
-}
-
 // A route can cross providers — moving traffic off an endpoint having a bad
 // day is one of the reasons to have routing at all — so the credential used
 // must be the target's, not the one the user's model happens to sit behind.

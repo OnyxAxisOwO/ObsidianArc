@@ -80,6 +80,6 @@ export async function streamRefusal(response: Response): Promise<ApiError> {
   // was open must sign this tab out too, not only the JSON calls, and a
   // backoffice visit that ran out must offer the code here as well.
   noteBackofficeRefusal(code);
-  noteSessionEnded(code);
+  noteSessionEnded(code, response);
   return new ApiError(response.status, code, body.message ?? t('failed'), body.details);
 }

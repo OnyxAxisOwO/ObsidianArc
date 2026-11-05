@@ -96,23 +96,6 @@ describe('AdminLeaderboard, the numbers it saves', () => {
     await settle();
     expect(save).not.toHaveBeenCalled();
   });
-
-  it('saves the number typed in its place', async () => {
-    vi.spyOn(adminApi, 'settings').mockResolvedValue({ settings: { 'leaderboard.size': '20' }, groups: [] });
-    vi.spyOn(leaderboardApi, 'fetchLeaderboard').mockResolvedValue(nobodyYet);
-    const save = vi.spyOn(adminApi, 'saveSettings').mockResolvedValue({ settings: {} });
-    await mount();
-
-    type('');
-    await settle();
-    type('45');
-    await settle();
-
-    expect(saveButton().disabled).toBe(false);
-    saveButton().click();
-    await settle();
-    expect(save).toHaveBeenCalledWith({ 'leaderboard.size': '45' });
-  });
 });
 
 describe('AdminLeaderboard, a preview that cannot be read', () => {

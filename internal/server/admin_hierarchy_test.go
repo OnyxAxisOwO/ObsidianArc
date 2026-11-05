@@ -20,6 +20,7 @@ func TestADelegatedUsersGrantCannotReachASuperAdministrator(t *testing.T) {
 	}
 
 	for _, path := range []string{
+		"/api/admin/users/" + founder.userID,
 		"/api/admin/users/" + founder.userID + "/keys",
 		"/api/admin/users/" + founder.userID + "/conversations",
 		"/api/admin/users/" + founder.userID + "/conversations/01ARZ3NDEKTSV4RRFFQ69G5FAV",
@@ -34,12 +35,17 @@ func TestADelegatedUsersGrantCannotReachASuperAdministrator(t *testing.T) {
 	}
 
 	for _, path := range []string{
+		"/api/admin/users/" + member.userID,
 		"/api/admin/users/" + member.userID + "/keys",
 		"/api/admin/users/" + member.userID + "/conversations",
 	} {
 		if response := in.do(http.MethodGet, path, nil, operator); response.Code != http.StatusOK {
 			t.Errorf("GET %s for an ordinary account = %d %s", path, response.Code, response.Body.String())
 		}
+	}
+
+	if res := in.do(http.MethodGet, "/api/admin/users/"+founder.userID, nil, founder); res.Code != http.StatusOK {
+		t.Fatalf("the super administrator's own panel: %d %s", res.Code, res.Body.String())
 	}
 
 	// Nor does anybody reset their own password from here, where only the

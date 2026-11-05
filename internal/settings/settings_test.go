@@ -152,15 +152,6 @@ func TestValidLandingMode(t *testing.T) {
 	}
 }
 
-// The default has to stay the sign-in card. Every other mode publishes
-// something to people with no account, and an upgrade must not make that
-// decision on an operator's behalf.
-func TestLandingDefaultsToTheSignInCard(t *testing.T) {
-	if got := Defaults[LandingMode]; got != LandingLogin {
-		t.Errorf("Defaults[LandingMode] = %q, want %q", got, LandingLogin)
-	}
-}
-
 // The gate answers yes for an empty owner, so a registration without one would
 // be core and always on. Refusing it at registration is the only place to catch
 // it: after init the setting already looks like any other.

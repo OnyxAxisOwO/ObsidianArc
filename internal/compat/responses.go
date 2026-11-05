@@ -41,6 +41,13 @@ type responsesRequest struct {
 	MaxOutputTokens *int     `json:"max_output_tokens"`
 	Temperature     *float64 `json:"temperature"`
 
+	CacheControl         *adapter.CacheControl `json:"cache_control"`
+	PromptCacheKey       string                `json:"prompt_cache_key"`
+	PromptCacheRetention string                `json:"prompt_cache_retention"`
+	ParallelToolCalls    *bool                 `json:"parallel_tool_calls"`
+	Text                 *struct {
+		Format json.RawMessage `json:"format"`
+	} `json:"text"`
 	Tools      []responsesTool `json:"tools"`
 	ToolChoice json.RawMessage `json:"tool_choice"`
 
@@ -60,10 +67,12 @@ type responsesRequest struct {
 // responsesTool is flat, unlike the chat/completions shape that nests the
 // same fields under `function`. Same tool, different spelling.
 type responsesTool struct {
-	Type        string          `json:"type"`
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	Parameters  json.RawMessage `json:"parameters"`
+	Type         string                `json:"type"`
+	Name         string                `json:"name"`
+	Description  string                `json:"description"`
+	Parameters   json.RawMessage       `json:"parameters"`
+	Strict       *bool                 `json:"strict"`
+	CacheControl *adapter.CacheControl `json:"cache_control"`
 	// A namespace is a group rather than a tool: the functions inside it are
 	// what the model can call. Codex sends one for its sub-agent tools.
 	Tools []responsesTool `json:"tools"`
@@ -100,9 +109,11 @@ type responsesItem struct {
 }
 
 type responsesPart struct {
-	Type     string `json:"type"`
-	Text     string `json:"text"`
-	ImageURL string `json:"image_url"`
+	Type         string                `json:"type"`
+	Text         string                `json:"text"`
+	ImageURL     string                `json:"image_url"`
+	Refusal      string                `json:"refusal"`
+	CacheControl *adapter.CacheControl `json:"cache_control"`
 }
 
 func (h *Handlers) responses(w http.ResponseWriter, r *http.Request, who caller) error {
@@ -145,6 +156,10 @@ func (h *Handlers) responses(w http.ResponseWriter, r *http.Request, who caller)
 		return err
 	}
 
+	if err := validateProtocolControls(resolved.Provider, request); err != nil {
+		return err
+	}
+
 	release, err := h.reserve(r.Context(), who, resolved, 1)
 	if err != nil {
 		return err
@@ -173,8 +188,10 @@ func (h *Handlers) buildResponsesRequest(body responsesRequest, resolved model.R
 		return adapter.ChatRequest{}, nil, badRequest("input", "At least one input item is required.")
 	}
 	var system strings.Builder
+	var systemParts []adapter.Part
 	if body.Instructions != "" {
 		system.WriteString(body.Instructions)
+		systemParts = append(systemParts, adapter.Part{Kind: adapter.PartText, Text: body.Instructions})
 	}
 
 	// Tools arrive in two places. Codex declares some at the top level and
@@ -256,6 +273,11 @@ func (h *Handlers) buildResponsesRequest(body responsesRequest, resolved model.R
 			case "system", "developer":
 				// Hoisted, as on the other surfaces: the adapters take the
 				// system prompt as its own field.
+				for _, part := range parts {
+					if part.Kind == adapter.PartText {
+						systemParts = append(systemParts, part)
+					}
+				}
 				if text := joinText(parts); text != "" {
 					if system.Len() > 0 {
 						system.WriteString("\n\n")
@@ -308,7 +330,24 @@ func (h *Handlers) buildResponsesRequest(body responsesRequest, resolved model.R
 		stream = *body.Stream
 	}
 
+	// Each function_call is an item on this surface, but parallel calls are
+	// one assistant message upstream, followed by all their tool results.
+	messages = joinResponseCalls(messages)
+	var format adapter.OutputFormat
+	if body.Text != nil {
+		var err error
+		format, err = readOutputFormat(body.Text.Format)
+		if err != nil {
+			return adapter.ChatRequest{}, nil, err
+		}
+	}
+	if !partsHaveCache(systemParts) {
+		systemParts = nil
+	}
 	return adapter.ChatRequest{
+		SystemParts:  systemParts,
+		CacheControl: body.CacheControl, PromptCacheKey: body.PromptCacheKey, PromptCacheRetention: body.PromptCacheRetention,
+		OutputFormat: format, ParallelToolCalls: body.ParallelToolCalls,
 		Model:       resolved.Upstream.Spec(),
 		System:      prompt,
 		Messages:    messages,
@@ -411,7 +450,7 @@ func readResponsesContent(raw json.RawMessage, pictureLimit int64) ([]adapter.Pa
 		// the rest are what a caller sends.
 		case "input_text", "output_text", "text", "":
 			if strings.TrimSpace(part.Text) != "" {
-				out = append(out, adapter.Part{Kind: adapter.PartText, Text: part.Text})
+				out = append(out, adapter.Part{Kind: adapter.PartText, Text: part.Text, CacheControl: part.CacheControl})
 			}
 		case "input_image", "image_url":
 			if part.ImageURL == "" {
@@ -421,10 +460,12 @@ func readResponsesContent(raw json.RawMessage, pictureLimit int64) ([]adapter.Pa
 			if err != nil {
 				return nil, err
 			}
+			image.CacheControl = part.CacheControl
 			out = append(out, image)
 		case "refusal":
-			// The model declining, replayed. It is text on this side and has
-			// nowhere to go on the other.
+			if part.Refusal != "" {
+				out = append(out, adapter.Part{Kind: adapter.PartText, Text: part.Refusal})
+			}
 		default:
 			return nil, badRequest("input", "Unsupported content part: "+part.Type+".")
 		}
@@ -503,9 +544,9 @@ func readResponsesTools(declared []responsesTool) ([]adapter.Tool, map[string]bo
 	custom := map[string]bool{}
 	// A tool can be declared at the top level and again in additional_tools.
 	// Offering it twice is a request most providers reject outright.
-	seen := map[string]bool{}
-	var walk func(tools []responsesTool, depth int) error
-	walk = func(tools []responsesTool, depth int) error {
+	seen := map[string]string{}
+	var walk func(tools []responsesTool, depth int, namespace string) error
+	walk = func(tools []responsesTool, depth int, namespace string) error {
 		for _, tool := range tools {
 			switch tool.Type {
 			case "function", "":
@@ -513,12 +554,17 @@ func readResponsesTools(declared []responsesTool) ([]adapter.Tool, map[string]bo
 				if name == "" {
 					return badRequest("tools", "Every tool needs a name.")
 				}
-				if seen[name] {
+				identity, _ := json.Marshal(tool)
+				signature := namespace + ":" + string(identity)
+				if previous, exists := seen[name]; exists {
+					if previous != signature {
+						return badRequest("tools", "Tool names must be unique across namespaces and tool types: "+name+".")
+					}
 					continue
 				}
-				seen[name] = true
+				seen[name] = signature
 				out = append(out, adapter.Tool{
-					Name: name, Description: tool.Description, Parameters: tool.Parameters,
+					Name: name, Description: tool.Description, Parameters: tool.Parameters, Strict: tool.Strict, CacheControl: tool.CacheControl,
 				})
 			case "custom":
 				// Run by the client like a function, so it is offered rather
@@ -529,16 +575,21 @@ func readResponsesTools(declared []responsesTool) ([]adapter.Tool, map[string]bo
 				if name == "" {
 					return badRequest("tools", "Every tool needs a name.")
 				}
-				if seen[name] {
+				identity, _ := json.Marshal(tool)
+				signature := namespace + ":" + string(identity)
+				if previous, exists := seen[name]; exists {
+					if previous != signature {
+						return badRequest("tools", "Tool names must be unique across namespaces and tool types: "+name+".")
+					}
 					continue
 				}
-				seen[name] = true
+				seen[name] = signature
 				custom[name] = true
 				description := strings.TrimSpace(tool.Description +
 					"\n\nThis tool takes one free-form text input: put the raw text in the `input` field.")
 				out = append(out, adapter.Tool{
 					Name: name, Description: description,
-					Parameters: json.RawMessage(customToolParameters),
+					Parameters: json.RawMessage(customToolParameters), CacheControl: tool.CacheControl,
 				})
 			case "namespace":
 				// Flattened to the functions inside, which carry their own
@@ -548,7 +599,7 @@ func readResponsesTools(declared []responsesTool) ([]adapter.Tool, map[string]bo
 				if depth >= 4 {
 					return badRequest("tools", "Tool namespaces are nested too deeply.")
 				}
-				if err := walk(tool.Tools, depth+1); err != nil {
+				if err := walk(tool.Tools, depth+1, namespace+"/"+tool.Name); err != nil {
 					return err
 				}
 			default:
@@ -563,7 +614,7 @@ func readResponsesTools(declared []responsesTool) ([]adapter.Tool, map[string]bo
 		return nil
 	}
 
-	if err := walk(declared, 0); err != nil {
+	if err := walk(declared, 0, ""); err != nil {
 		return nil, nil, err
 	}
 	if len(out) > maxTools {
@@ -581,6 +632,7 @@ func (h *Handlers) responsesBuffered(
 	startedAt := time.Now()
 	requestID := id.New()
 
+	var refusal strings.Builder
 	var thinking strings.Builder
 	var answer strings.Builder
 	usage := adapter.Usage{}
@@ -589,7 +641,11 @@ func (h *Handlers) responsesBuffered(
 	sink := func(event adapter.Event) error {
 		switch event.Type {
 		case adapter.EventDelta:
-			answer.WriteString(event.Text)
+			if event.Refusal {
+				refusal.WriteString(event.Text)
+			} else {
+				answer.WriteString(event.Text)
+			}
 		case adapter.EventReasoning:
 			thinking.WriteString(event.Text)
 		case adapter.EventToolCall:
@@ -604,26 +660,35 @@ func (h *Handlers) responsesBuffered(
 	// gives: a long answer without a stream outlasts the header timeout.
 	request.Stream = true
 	result, chatErr := h.registry.Chat(r.Context(), resolved.Provider, request, sink)
+	chatErr = representableStop(result, chatErr)
 	usage = usage.Merge(result.Usage)
-	if result.Text != "" && answer.Len() == 0 {
-		answer.WriteString(result.Text)
-		thinking.Reset()
+	if refusal.Len() == 0 {
+		refusal.WriteString(result.Refusal)
+	}
+	if text := answerOf(result); text != "" && answer.Len() == 0 {
+		answer.WriteString(text)
+	}
+	if result.Reasoning != "" && thinking.Len() == 0 {
 		thinking.WriteString(result.Reasoning)
 	}
 	if len(calls) == 0 {
 		calls = result.ToolCalls
 	}
 
-	if chatErr != nil {
+	if chatErr != nil && !deliveredRefusal(result, chatErr) {
 		h.record(r.Context(), who, resolved, requestID, usage, startedAt, chatErr)
 		return translateUpstream(chatErr)
 	}
-	h.record(r.Context(), who, resolved, requestID, usage, startedAt, nil)
+	h.record(r.Context(), who, resolved, requestID, usage, startedAt, chatErr)
 
+	output := responsesOutput(requestID, thinking.String(), answer.String(), calls, custom)
+	if refusal.Len() > 0 {
+		output = append(output, refusalItem("msg_"+requestID+"_refusal", refusal.String()))
+	}
 	status, incomplete := responsesStatus(result.FinishReason)
 	return writeJSON(w, http.StatusOK, responseObject(
 		requestID, label, startedAt, status, incomplete,
-		responsesOutput(requestID, thinking.String(), answer.String(), calls, custom), usage,
+		output, usage, request,
 	))
 }
 
@@ -648,8 +713,11 @@ func (h *Handlers) responsesStreamed(
 		return internalError(err)
 	}
 
+	streamCtx, stopHeartbeat := sse.KeepAlive(r.Context())
+	defer stopHeartbeat()
 	usage := adapter.Usage{}
 	var calls []adapter.ToolCall
+	var refusal strings.Builder
 	var answer strings.Builder
 	var thinking strings.Builder
 
@@ -669,6 +737,7 @@ func (h *Handlers) responsesStreamed(
 	// the text before it.
 	index := 0
 	textOpen := false
+	refusalPart := false
 	textItems := 0
 	textItemID := ""
 	var segmentText strings.Builder
@@ -681,12 +750,16 @@ func (h *Handlers) responsesStreamed(
 	var finished []map[string]any
 	var closeText func() error
 
-	_ = emit("response.created", map[string]any{
-		"response": responseObject(requestID, label, startedAt, "in_progress", nil, nil, adapter.Usage{}),
-	})
-	_ = emit("response.in_progress", map[string]any{
-		"response": responseObject(requestID, label, startedAt, "in_progress", nil, nil, adapter.Usage{}),
-	})
+	if err := emit("response.created", map[string]any{
+		"response": responseObject(requestID, label, startedAt, "in_progress", nil, nil, adapter.Usage{}, request),
+	}); err != nil {
+		return nil
+	}
+	if err := emit("response.in_progress", map[string]any{
+		"response": responseObject(requestID, label, startedAt, "in_progress", nil, nil, adapter.Usage{}, request),
+	}); err != nil {
+		return nil
+	}
 
 	// The model's thinking. It is an output item like any other, and it closes
 	// before whatever follows it.
@@ -747,10 +820,14 @@ func (h *Handlers) responsesStreamed(
 		return nil
 	}
 
-	openText := func() error {
-		if textOpen {
+	openText := func(refusing bool) error {
+		if textOpen && refusalPart == refusing {
 			return nil
 		}
+		if err := closeText(); err != nil {
+			return err
+		}
+		refusalPart = refusing
 		// The thinking that led here is its own item and closes before the
 		// answer opens, so the two arrive in the order they happened.
 		if err := closeReasoning(); err != nil {
@@ -769,9 +846,13 @@ func (h *Handlers) responsesStreamed(
 		}); err != nil {
 			return err
 		}
+		part := map[string]any{"type": "output_text", "text": "", "annotations": []any{}}
+		if refusalPart {
+			part = map[string]any{"type": "refusal", "refusal": ""}
+		}
 		return emit("response.content_part.added", map[string]any{
 			"item_id": textItemID, "output_index": index, "content_index": 0,
-			"part": map[string]any{"type": "output_text", "text": "", "annotations": []any{}},
+			"part": part,
 		})
 	}
 
@@ -781,21 +862,21 @@ func (h *Handlers) responsesStreamed(
 		}
 		textOpen = false
 		segment := segmentText.String()
-		if err := emit("response.output_text.done", map[string]any{
-			"item_id": textItemID, "output_index": index, "content_index": 0,
-			"text": segment,
-		}); err != nil {
-			return err
-		}
-		if err := emit("response.content_part.done", map[string]any{
-			"item_id": textItemID, "output_index": index, "content_index": 0,
-			"part": map[string]any{
-				"type": "output_text", "text": segment, "annotations": []any{},
-			},
-		}); err != nil {
-			return err
-		}
+		event, field := "response.output_text.done", "text"
+		part := map[string]any{"type": "output_text", "text": segment, "annotations": []any{}}
 		done := textItem(textItemID, segment)
+		if refusalPart {
+			event, field = "response.refusal.done", "refusal"
+			part = map[string]any{"type": "refusal", "refusal": segment}
+			done = refusalItem(textItemID, segment)
+		}
+		if err := emit(event, map[string]any{"item_id": textItemID, "output_index": index, "content_index": 0, field: segment}); err != nil {
+			return err
+		}
+		if err := emit("response.content_part.done", map[string]any{"item_id": textItemID, "output_index": index, "content_index": 0, "part": part}); err != nil {
+			return err
+		}
+
 		if err := emit("response.output_item.done", map[string]any{
 			"output_index": index,
 			"item":         done,
@@ -862,15 +943,18 @@ func (h *Handlers) responsesStreamed(
 	sink := func(event adapter.Event) error {
 		switch event.Type {
 		case adapter.EventDelta:
-			if err := openText(); err != nil {
+			if err := openText(event.Refusal); err != nil {
 				return err
 			}
-			answer.WriteString(event.Text)
+			name := "response.output_text.delta"
+			if event.Refusal {
+				refusal.WriteString(event.Text)
+				name = "response.refusal.delta"
+			} else {
+				answer.WriteString(event.Text)
+			}
 			segmentText.WriteString(event.Text)
-			return emit("response.output_text.delta", map[string]any{
-				"item_id": textItemID, "output_index": index, "content_index": 0,
-				"delta": event.Text,
-			})
+			return emit(name, map[string]any{"item_id": textItemID, "output_index": index, "content_index": 0, "delta": event.Text})
 		case adapter.EventReasoning:
 			if err := openReasoning(); err != nil {
 				return err
@@ -891,7 +975,12 @@ func (h *Handlers) responsesStreamed(
 	}
 
 	clientGone := false
-	result, chatErr := h.registry.Chat(r.Context(), resolved.Provider, request, watchWrites(sink, &clientGone))
+	result, chatErr := h.registry.Chat(streamCtx, resolved.Provider, request, watchWrites(sink, &clientGone))
+	if heartbeatErr := stopHeartbeat(); heartbeatErr != nil {
+		chatErr = heartbeatErr
+		clientGone = true
+	}
+	chatErr = representableStop(result, chatErr)
 	usage = usage.Merge(result.Usage)
 
 	// A provider that could not stream answered all at once, and the answer
@@ -906,15 +995,22 @@ func (h *Handlers) responsesStreamed(
 			"delta": result.Reasoning,
 		})
 	}
-	if result.Text != "" && answer.Len() == 0 {
-		_ = openText()
-		answer.WriteString(result.Text)
-		segmentText.WriteString(result.Text)
+	if text := answerOf(result); text != "" && answer.Len() == 0 {
+		_ = openText(false)
+		answer.WriteString(text)
+		segmentText.WriteString(text)
 		_ = emit("response.output_text.delta", map[string]any{
 			"item_id": textItemID, "output_index": index, "content_index": 0,
-			"delta": result.Text,
+			"delta": text,
 		})
 	}
+	if result.Refusal != "" && refusal.Len() == 0 {
+		_ = openText(true)
+		refusal.WriteString(result.Refusal)
+		segmentText.WriteString(result.Refusal)
+		_ = emit("response.refusal.delta", map[string]any{"item_id": textItemID, "output_index": index, "content_index": 0, "delta": result.Refusal})
+	}
+
 	if len(calls) == 0 {
 		for position, call := range result.ToolCalls {
 			calls = append(calls, call)
@@ -924,9 +1020,19 @@ func (h *Handlers) responsesStreamed(
 	_ = closeReasoning()
 	_ = closeText()
 
-	gone := h.settleStream(r, who, resolved, requestID, usage, startedAt, chatErr, clientGone)
+	defer func() {
+		failure := chatErr
+		if writeErr := sse.Err(); writeErr != nil {
+			clientGone = true
+			if failure == nil {
+				failure = writeErr
+			}
+		}
+		h.settleStream(r, who, resolved, requestID, usage, startedAt, failure, clientGone)
+	}()
+	gone := abandoned(clientGone, r, chatErr)
 
-	if chatErr != nil {
+	if chatErr != nil && !deliveredRefusal(result, chatErr) {
 		if gone {
 			return nil
 		}
@@ -950,7 +1056,7 @@ func (h *Handlers) responsesStreamed(
 		closing = "response." + status
 	}
 	_ = emit(closing, map[string]any{
-		"response": responseObject(requestID, label, startedAt, status, incomplete, finished, usage),
+		"response": responseObject(requestID, label, startedAt, status, incomplete, finished, usage, request),
 	})
 	return nil
 }
@@ -961,7 +1067,7 @@ func (h *Handlers) responsesStreamed(
 // several events rather than sending once.
 func responseObject(
 	requestID, label string, startedAt time.Time,
-	status string, incomplete map[string]any, output []map[string]any, usage adapter.Usage,
+	status string, incomplete map[string]any, output []map[string]any, usage adapter.Usage, requests ...adapter.ChatRequest,
 ) map[string]any {
 	if output == nil {
 		output = []map[string]any{}
@@ -982,11 +1088,17 @@ func responseObject(
 		"tool_choice":         "auto",
 		"tools":               []any{},
 	}
-	if usage.Total() > 0 {
+	if len(requests) > 0 && requests[0].ParallelToolCalls != nil {
+		object["parallel_tool_calls"] = *requests[0].ParallelToolCalls
+	}
+
+	if usage.HasUsage() {
 		object["usage"] = map[string]any{
-			"input_tokens":  usage.InputTokens,
-			"output_tokens": usage.OutputTokens,
-			"total_tokens":  usage.Total(),
+			"input_tokens":          usage.InputTokens,
+			"output_tokens":         usage.OutputTokens + usage.ReasoningTokens,
+			"total_tokens":          usage.Total(),
+			"input_tokens_details":  map[string]any{"cached_tokens": usage.CacheReadTokens, "cache_write_tokens": usage.CacheCreationTokens},
+			"output_tokens_details": map[string]any{"reasoning_tokens": usage.ReasoningTokens},
 		}
 	}
 	return object
@@ -1031,7 +1143,7 @@ func responsesOutput(requestID, thinking, text string, calls []adapter.ToolCall,
 // truncated answer with nothing in it to detect the truncation by.
 func responsesStatus(upstream string) (string, map[string]any) {
 	switch strings.ToLower(strings.TrimSpace(upstream)) {
-	case "length", "max_tokens", "model_length":
+	case "length", "max_tokens", "model_length", "model_context_window_exceeded":
 		return "incomplete", map[string]any{"reason": "max_output_tokens"}
 	case "content_filter", "refusal":
 		return "incomplete", map[string]any{"reason": "content_filter"}
@@ -1094,3 +1206,7 @@ func callItem(requestID string, call adapter.ToolCall, position int, custom map[
 }
 
 func responseID(requestID string) string { return "resp_" + requestID }
+
+func refusalItem(itemID, text string) map[string]any {
+	return map[string]any{"type": "message", "id": itemID, "status": "completed", "role": "assistant", "content": []map[string]any{{"type": "refusal", "refusal": text}}}
+}

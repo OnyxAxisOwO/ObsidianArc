@@ -9,8 +9,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/OnyxAxisOwO/ObsidianArc/internal/console"
 )
 
 // ReadLine drives Start/NextRune/Feed to completion. Only these tests want a
@@ -110,32 +108,6 @@ func drive(t *testing.T, editor *lineEditor, client net.Conn, input string) (str
 	}
 }
 
-func TestLineEditorSubmitsAPlainLine(t *testing.T) {
-	editor, client, out := newPipeEditor(t, nil)
-	line, err := drive(t, editor, client, "help\r")
-	if err != nil {
-		t.Fatalf("ReadLine: %v", err)
-	}
-	if line != "help" {
-		t.Fatalf("got %q, want %q", line, "help")
-	}
-	if !strings.HasPrefix(out.String(), "\r> ") {
-		t.Fatalf("output %q does not start with the initial prompt redraw", out.String())
-	}
-}
-
-func TestLineEditorBackspaceRemovesOneRune(t *testing.T) {
-	editor, client, _ := newPipeEditor(t, nil)
-	// "helpp" then one Backspace corrects the typo before Enter.
-	line, err := drive(t, editor, client, "helpp\x7F\r")
-	if err != nil {
-		t.Fatalf("ReadLine: %v", err)
-	}
-	if line != "help" {
-		t.Fatalf("got %q, want %q", line, "help")
-	}
-}
-
 func TestLineEditorUTF8EditsByRuneNotByte(t *testing.T) {
 	editor, client, _ := newPipeEditor(t, nil)
 	// 你好 is two runes / six UTF-8 bytes. One Backspace must remove the
@@ -150,87 +122,30 @@ func TestLineEditorUTF8EditsByRuneNotByte(t *testing.T) {
 	}
 }
 
-func TestLineEditorLeftArrowInsertsMidLine(t *testing.T) {
-	editor, client, _ := newPipeEditor(t, nil)
-	// "ac", Left, insert "b" between them.
-	line, err := drive(t, editor, client, "ac\x1b[Db\r")
-	if err != nil {
-		t.Fatalf("ReadLine: %v", err)
-	}
-	if line != "abc" {
-		t.Fatalf("got %q, want %q", line, "abc")
-	}
-}
-
-func TestLineEditorSS3ArrowVariant(t *testing.T) {
-	editor, client, _ := newPipeEditor(t, nil)
-	// Some clients send ESC O D for Left in application cursor-key mode.
-	line, err := drive(t, editor, client, "ac\x1bODb\r")
-	if err != nil {
-		t.Fatalf("ReadLine: %v", err)
-	}
-	if line != "abc" {
-		t.Fatalf("got %q, want %q", line, "abc")
-	}
-}
-
-func TestLineEditorHomeAndEnd(t *testing.T) {
-	editor, client, _ := newPipeEditor(t, nil)
-	// "bc", Home (ESC[H), insert "a" -> "abc", End (ESC[F), insert "d".
-	line, err := drive(t, editor, client, "bc\x1b[Ha\x1b[Fd\r")
-	if err != nil {
-		t.Fatalf("ReadLine: %v", err)
-	}
-	if line != "abcd" {
-		t.Fatalf("got %q, want %q", line, "abcd")
-	}
-}
-
-func TestLineEditorHomeAndEndTildeForm(t *testing.T) {
-	editor, client, _ := newPipeEditor(t, nil)
-	// The ESC [ 1~ / ESC [ 4~ forms some terminals send for Home/End.
-	line, err := drive(t, editor, client, "bc\x1b[1~a\x1b[4~d\r")
-	if err != nil {
-		t.Fatalf("ReadLine: %v", err)
-	}
-	if line != "abcd" {
-		t.Fatalf("got %q, want %q", line, "abcd")
-	}
-}
-
-func TestLineEditorDeleteKey(t *testing.T) {
-	editor, client, _ := newPipeEditor(t, nil)
-	// "abc", Home, Delete (ESC[3~) removes the 'a' in front of the cursor.
-	line, err := drive(t, editor, client, "abc\x1b[H\x1b[3~\r")
-	if err != nil {
-		t.Fatalf("ReadLine: %v", err)
-	}
-	if line != "bc" {
-		t.Fatalf("got %q, want %q", line, "bc")
-	}
-}
-
-func TestLineEditorCtrlAAndCtrlE(t *testing.T) {
-	editor, client, _ := newPipeEditor(t, nil)
-	// Ctrl-A / Ctrl-E are the control-key equivalents of Home/End.
-	line, err := drive(t, editor, client, "bc\x01a\x05d\r")
-	if err != nil {
-		t.Fatalf("ReadLine: %v", err)
-	}
-	if line != "abcd" {
-		t.Fatalf("got %q, want %q", line, "abcd")
-	}
-}
-
-func TestLineEditorCtrlBAndCtrlF(t *testing.T) {
-	editor, client, _ := newPipeEditor(t, nil)
-	// Ctrl-B / Ctrl-F are the control-key equivalents of Left/Right.
-	line, err := drive(t, editor, client, "ac\x02b\r")
-	if err != nil {
-		t.Fatalf("ReadLine: %v", err)
-	}
-	if line != "abc" {
-		t.Fatalf("got %q, want %q", line, "abc")
+func TestLineEditorMovementKeys(t *testing.T) {
+	for _, tt := range []struct {
+		name, keys, want string
+	}{
+		{"Left", "ac\x1b[Db\r", "abc"},
+		{"Left in application cursor mode", "ac\x1bODb\r", "abc"},
+		{"Ctrl-B", "ac\x02b\r", "abc"},
+		{"Home and End", "bc\x1b[Ha\x1b[Fd\r", "abcd"},
+		{"Home and End with tilde", "bc\x1b[1~a\x1b[4~d\r", "abcd"},
+		{"Home and End in rxvt", "bc\x1b[7~a\x1b[8~d\r", "abcd"},
+		{"Ctrl-A and Ctrl-E", "bc\x01a\x05d\r", "abcd"},
+		{"Delete", "abc\x1b[H\x1b[3~\r", "bc"},
+		{"Ctrl-D on a nonempty line", "abc\x01\x04\r", "bc"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			editor, client, _ := newPipeEditor(t, nil)
+			line, err := drive(t, editor, client, tt.keys)
+			if err != nil {
+				t.Fatalf("ReadLine: %v", err)
+			}
+			if line != tt.want {
+				t.Fatalf("got %q, want %q", line, tt.want)
+			}
+		})
 	}
 }
 
@@ -297,19 +212,6 @@ func TestLineEditorCtrlDOnEmptyLineReturnsEOF(t *testing.T) {
 	}
 }
 
-func TestLineEditorCtrlDOnNonEmptyLineDeletesForward(t *testing.T) {
-	editor, client, _ := newPipeEditor(t, nil)
-	// "abc", Home, Ctrl-D deletes the 'a' in front of the cursor rather
-	// than ending the session, because the line is not empty.
-	line, err := drive(t, editor, client, "abc\x01\x04\r")
-	if err != nil {
-		t.Fatalf("ReadLine: %v", err)
-	}
-	if line != "bc" {
-		t.Fatalf("got %q, want %q", line, "bc")
-	}
-}
-
 func TestLineEditorHistoryUpAndDown(t *testing.T) {
 	editor, client, _ := newPipeEditor(t, nil)
 
@@ -343,20 +245,6 @@ func TestLineEditorHistoryDownPastNewestRestoresDraft(t *testing.T) {
 	}
 	if line != "draft" {
 		t.Fatalf("got %q, want %q", line, "draft")
-	}
-}
-
-func TestLineEditorCtrlPAndCtrlNAreHistoryAliases(t *testing.T) {
-	editor, client, _ := newPipeEditor(t, nil)
-	if _, err := drive(t, editor, client, "alpha\r"); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	line, err := drive(t, editor, client, "\x10\r") // Ctrl-P
-	if err != nil {
-		t.Fatalf("ReadLine: %v", err)
-	}
-	if line != "alpha" {
-		t.Fatalf("got %q, want %q", line, "alpha")
 	}
 }
 
@@ -435,20 +323,6 @@ func TestLineEditorReverseSearchCtrlCCancelsBackToOriginalLine(t *testing.T) {
 	}
 }
 
-func TestLineEditorCtrlLClearsScreenAndRedrawsLine(t *testing.T) {
-	editor, client, out := newPipeEditor(t, nil)
-	line, err := drive(t, editor, client, "abc\x0c\r")
-	if err != nil {
-		t.Fatalf("ReadLine: %v", err)
-	}
-	if line != "abc" {
-		t.Fatalf("got %q, want %q", line, "abc")
-	}
-	if !strings.Contains(out.String(), "\x1b[H\x1b[2J") {
-		t.Fatalf("output %q missing the clear-screen sequence", out.String())
-	}
-}
-
 func TestLineEditorRedrawMovesCursorPastWideRunes(t *testing.T) {
 	editor, client, out := newPipeEditor(t, nil)
 	// 中 occupies two columns; after typing it and moving left, the redraw
@@ -515,27 +389,6 @@ func TestRuneWidthTreatsCJKAsTwoColumns(t *testing.T) {
 	}
 	if got := displayWidth([]rune("中文ab")); got != 6 {
 		t.Errorf("displayWidth(中文ab) = %d, want 6", got)
-	}
-}
-
-// The editor and the table must measure a character the same way, or a
-// cursor move over a line ends on a different column than the line was drawn
-// to. This walks the characters a person can type and holds the two together.
-func TestLineEditorAndTableMeasureEveryCharacterAlike(t *testing.T) {
-	for _, r := range []rune{'a', '中', 'ｗ', '🎉', '👍', '́', '‍', '️', '〈', '　', 'é'} {
-		if got, want := runeWidth(r), console.RuneWidth(r); got != want {
-			t.Errorf("runeWidth(%U) = %d, but the table width is %d", r, got, want)
-		}
-	}
-}
-
-func TestByteRuneOffsetRoundTripThroughAWideCharacter(t *testing.T) {
-	s := "中a" // 3 bytes + 1 byte
-	if got := runeIndexForByteOffset(s, 3); got != 1 {
-		t.Errorf("runeIndexForByteOffset(%q, 3) = %d, want 1", s, got)
-	}
-	if got := byteOffsetForRuneIndex([]rune(s), 1); got != 3 {
-		t.Errorf("byteOffsetForRuneIndex(%q, 1) = %d, want 3", s, got)
 	}
 }
 

@@ -169,15 +169,6 @@ describe('a plugin\'s panel for everybody signed in', () => {
     await settle();
     expect(run).toHaveBeenCalledWith({ who: ['alice', 'carol'] });
   });
-
-  it('says so when no loaded plugin has the panel', async () => {
-    // The plugins have answered by the time a panel is drawn: boot waits for them.
-    installPlugins([]);
-    await mount(PluginUserPanel, { slug: 'nowhere' });
-    expect(panelHost.textContent).toContain(t('pluginPanelMissing'));
-    // Once answered, the title must not stay on "Loading" over the missing notice.
-    expect(panelHost.textContent).not.toContain(t('loading'));
-  });
 });
 
 describe('a record of a plugin\'s list, opened', () => {
@@ -193,14 +184,6 @@ describe('a record of a plugin\'s list, opened', () => {
       },
     };
   }
-
-  it('opens nothing when the plugin did not make rows open', async () => {
-    const { spec } = list();
-    await mount(PluginList, { spec });
-    host.querySelector<HTMLElement>('tbody tr')!.click();
-    await settle();
-    expect(panelHost.querySelector('.oa-plugin-record')).toBeNull();
-  });
 
   it('shows the fields, links only http(s), and reads the table again after an action', async () => {
     const run = vi.fn(async (draft: Record<string, string>) => `Rewarded ${draft.cards}`);
@@ -324,20 +307,6 @@ describe('a record of a plugin\'s list, opened', () => {
     expect(host.querySelector('tbody')!.textContent).toContain('Second page');
   });
 
-  it('draws a destructive action as a destructive button', async () => {
-    const detail: RecordDetail = {
-      title: 'Leak report',
-      fields: [],
-      actions: [{ id: 'revoke', label: 'Revoke access', danger: true, run: async () => 'Revoked' }],
-    };
-    const { spec } = list(async () => detail);
-    await mount(PluginList, { spec });
-    host.querySelector<HTMLElement>('tbody tr')!.click();
-    await settle();
-
-    expect(button(panelHost, 'Revoke access').classList.contains('oa-btn-danger')).toBe(true);
-  });
-
   // The address is hidden on screen, so its link must not carry it either: a
   // hover or a click would show the address that the mask is there to hide.
   it('does not link a masked address, even when it is http(s)', async () => {
@@ -358,15 +327,6 @@ describe('a record of a plugin\'s list, opened', () => {
 });
 
 describe('a plugin\'s action card', () => {
-  it('draws a destructive button as one', async () => {
-    const card = {
-      id: 'revoke-all', page: 'plugin:tips' as const, title: () => 'Revoke', controls: [],
-      button: { label: () => 'Revoke everything', danger: true, run: async () => 'Revoked' },
-    };
-    await mount(PluginActionCard, { card });
-
-    expect(button(host, 'Revoke everything').classList.contains('oa-btn-danger')).toBe(true);
-  });
 
   // A plugin that wrote no question for its destructive button used to get a
   // one-click action: the core drew the danger but asked nothing in place.

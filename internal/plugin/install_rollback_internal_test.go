@@ -195,27 +195,10 @@ func TestAnUnreadableInstalledPackageCanStillBeSwitchedOffAndRemoved(t *testing.
 	}
 }
 
-// plugin() stands in for an installed package only when its archive could not be
-// read at boot, which is the boot-time set and nothing else. A row in any other
-// state is not that: a plugin this build does not carry has a row and nothing
-// behind it, and has no stand-in to switch off.
-func TestARowForAPluginThisBuildDoesNotCarryHasNoStandIn(t *testing.T) {
-	r := newRig(t)
-	if _, err := r.db.Exec(context.Background(),
-		`INSERT INTO plugin_installs (name, state, version, installed_at, installed_by, updated_at, updated_by)
-		 VALUES (?, ?, '', 1, '', 1, '')`, "ghost", string(StateDisabled)); err != nil {
-		t.Fatal(err)
-	}
-	next := reload(t, r.db)
-	if _, ok := next.manager.plugin("ghost"); ok {
-		t.Fatal("a row for a plugin this build does not carry was given a stand-in")
-	}
-}
-
 // Settings saves start describe refreshes in the background. Requests that
 // arrive while one runs fold into a single further run, which starts after it,
 // so the last change is read and nothing runs twice at once.
-func TestSettingsSavesDuringARefreshFoldIntoOneMoreRun(t *testing.T) {
+func TestConcurrentSettingsSavesDuringARefreshFoldIntoOneMoreRun(t *testing.T) {
 	var q describeQueue
 	var runs, inside atomic.Int32
 	var overlap atomic.Bool
@@ -293,7 +276,7 @@ func TestAFailedRollbackLeavesTheGuardsRefusing(t *testing.T) {
 // when the refresh already running has: the save returns with the description
 // the new settings produced. Each refresh here waits for the test to let it end,
 // so the order of the two closes is what is checked.
-func TestASaveWaitsForTheRefreshThatReadsItNotTheOneAlreadyRunning(t *testing.T) {
+func TestConcurrentASaveWaitsForTheRefreshThatReadsItNotTheOneAlreadyRunning(t *testing.T) {
 	var q describeQueue
 	var runs atomic.Int32
 	gates := make(chan struct{})
@@ -347,7 +330,7 @@ func TestASaveWaitsForTheRefreshThatReadsItNotTheOneAlreadyRunning(t *testing.T)
 // putting the old one on: a sign-up that arrives then would go through with
 // nothing to judge it. A reader watches the guards on another goroutine for as
 // long as the rollbacks run.
-func TestARollbackKeepsTheDoorGuardedWhileTheOldVersionGoesBackOn(t *testing.T) {
+func TestConcurrentARollbackKeepsTheDoorGuardedWhileTheOldVersionGoesBackOn(t *testing.T) {
 	r := newRig(t)
 	m := r.manager
 	h := rigHost()

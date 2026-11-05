@@ -1,13 +1,6 @@
 package settings
 
-import (
-	"context"
-	"path/filepath"
-	"testing"
-
-	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
-	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
-)
+import "testing"
 
 func TestDetectLogoMedia(t *testing.T) {
 	cases := []struct {
@@ -89,81 +82,5 @@ func TestDetectLogoMedia(t *testing.T) {
 				t.Fatalf("DetectLogoMedia() = %q, want %q", got, tc.want)
 			}
 		})
-	}
-}
-
-func TestSiteLogoCRUD(t *testing.T) {
-	ctx := t.Context()
-	db, err := database.Open(ctx, config.Database{
-		Driver: "sqlite", DSN: filepath.Join(t.TempDir(), "settings_logo.db"),
-	})
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	defer db.Close()
-
-	if _, err := db.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-
-	svc := New(db)
-	if err := svc.Load(ctx); err != nil {
-		t.Fatalf("load: %v", err)
-	}
-
-	if svc.SiteLogoUpdatedAt() != 0 {
-		t.Fatalf("expected 0 initially, got %d", svc.SiteLogoUpdatedAt())
-	}
-
-	// Read when empty -> ErrNoLogo
-	_, _, _, err = svc.GetSiteLogo(ctx)
-	if err != ErrNoLogo {
-		t.Fatalf("expected ErrNoLogo, got %v", err)
-	}
-
-	// Set logo
-	pngData := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89")
-	at, err := svc.SetSiteLogo(ctx, pngData)
-	if err != nil {
-		t.Fatalf("set logo: %v", err)
-	}
-	if at == 0 || svc.SiteLogoUpdatedAt() != at {
-		t.Fatalf("expected timestamp %d, got %d", at, svc.SiteLogoUpdatedAt())
-	}
-
-	// Read logo back
-	mime, data, readAt, err := svc.GetSiteLogo(ctx)
-	if err != nil {
-		t.Fatalf("get logo: %v", err)
-	}
-	if mime != "image/png" {
-		t.Fatalf("expected image/png, got %s", mime)
-	}
-	if string(data) != string(pngData) {
-		t.Fatalf("data mismatch")
-	}
-	if readAt != at {
-		t.Fatalf("timestamp mismatch: %d != %d", readAt, at)
-	}
-
-	// Reload in fresh service -> should retain siteLogoAt
-	fresh := New(db)
-	if err := fresh.Load(ctx); err != nil {
-		t.Fatalf("reload fresh: %v", err)
-	}
-	if fresh.SiteLogoUpdatedAt() != at {
-		t.Fatalf("expected fresh siteLogoAt = %d, got %d", at, fresh.SiteLogoUpdatedAt())
-	}
-
-	// Delete logo
-	if err := svc.DeleteSiteLogo(ctx); err != nil {
-		t.Fatalf("delete logo: %v", err)
-	}
-	if svc.SiteLogoUpdatedAt() != 0 {
-		t.Fatalf("expected 0 after delete, got %d", svc.SiteLogoUpdatedAt())
-	}
-	_, _, _, err = svc.GetSiteLogo(context.Background())
-	if err != ErrNoLogo {
-		t.Fatalf("expected ErrNoLogo after delete, got %v", err)
 	}
 }

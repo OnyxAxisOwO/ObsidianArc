@@ -313,3 +313,18 @@ describe('registration user agent visibility', () => {
     expect(host.textContent).toContain('Browser/1.0');
   });
 });
+
+it('does not adopt a profile saved by the previous account', async () => {
+  vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({ connections: [], providers: [], has_password: true });
+  let finish!: (value: Awaited<ReturnType<typeof authApi.updateProfile>>) => void;
+  vi.spyOn(authApi, 'updateProfile').mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+  await mount(AccountSection);
+  button(host, t('save')).click();
+  await settle();
+  forget();
+  const other = { ...ACCOUNT, id: 'other', username: 'other' };
+  adopt(other);
+  finish({ user: { ...ACCOUNT, nickname: 'late' } });
+  await settle();
+  expect((await import('../src/stores/session')).currentUser.value?.id).toBe('other');
+});

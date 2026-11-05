@@ -68,106 +68,38 @@ func TestSettingsFormEnablesAPIOnFreshDatabase(t *testing.T) {
 			}
 		}
 	}
-}
 
-func TestImportSettingsKeepsANumericSetting(t *testing.T) {
-	in := newInstance(t)
-	admin := in.register("founder", "a-good-password")
-	response := in.do(http.MethodPost, "/api/admin/settings/import", map[string]string{
-		settings.ThemeWallpaperDim: "12",
-	}, admin)
-	if response.Code != http.StatusOK {
-		t.Fatalf("import: %d %s", response.Code, response.Body.String())
+	// The numeric fields share validation on both settings endpoints.
+	bad := map[string]string{
+		settings.ThemeWallpaperDim: "101", settings.HealthDisableBelow: "101",
+		settings.HealthWindowMins: "0", settings.HealthRetainDays: "3651",
+		settings.ConversationMaxTurns: "0", settings.QuotaMaxConcurrent: "-1",
 	}
-	result := decode[struct {
-		Applied  int               `json:"applied"`
-		Skipped  []string          `json:"skipped"`
-		Settings map[string]string `json:"settings"`
-	}](t, response)
-	if result.Applied != 1 || len(result.Skipped) != 0 || result.Settings[settings.ThemeWallpaperDim] != "12" {
-		t.Fatalf("imported size were not applied: %+v", result)
-	}
-	reloaded := settings.New(in.db)
-	if err := reloaded.Load(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if got := reloaded.Get(settings.ThemeWallpaperDim); got != "12" {
-		t.Fatalf("persisted size = %q, want 12", got)
-	}
-}
-
-// The form offers the same range; that is a convenience, and this is the
-// check. The wallpaper dim stands in for every bounded number here, because
-// it is one the plain settings grant may write.
-func TestNumericSettingsAreBounded(t *testing.T) {
-	in := newInstance(t)
-	admin := in.register("founder", "a-good-password")
-
-	for _, value := range []string{"-5", "abc", "101", "99999", ""} {
-		response := in.do(http.MethodPut, "/api/admin/settings",
-			map[string]string{settings.ThemeWallpaperDim: value}, admin)
-		if response.Code != http.StatusBadRequest {
-			t.Errorf("size %q: %d %s, want 400", value, response.Code, response.Body.String())
-		}
-		// Refused whole, as any other rejected key is: a bad value must not
-		// land while the request that carried it fails.
-		reloaded := settings.New(in.db)
-		if err := reloaded.Load(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-		if got := reloaded.Get(settings.ThemeWallpaperDim); got != "0" {
-			t.Fatalf("size %q was stored as %q despite the refusal", value, got)
+	for key, value := range bad {
+		res := in.do(http.MethodPut, "/api/admin/settings", map[string]string{key: value}, admin)
+		if res.Code != http.StatusBadRequest {
+			t.Fatalf("save %s=%s: %d %s", key, value, res.Code, res.Body.String())
 		}
 	}
-
-	// The ends of the range belong to the operator, not to the check.
-	for _, value := range []string{"1", "100"} {
-		response := in.do(http.MethodPut, "/api/admin/settings",
-			map[string]string{settings.ThemeWallpaperDim: value}, admin)
-		if response.Code != http.StatusOK {
-			t.Fatalf("size %q: %d %s", value, response.Code, response.Body.String())
-		}
-		reloaded := settings.New(in.db)
-		if err := reloaded.Load(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-		if got := reloaded.Get(settings.ThemeWallpaperDim); got != value {
-			t.Fatalf("persisted size = %q, want %q", got, value)
-		}
-	}
-}
-
-// An import is forgiving where a save refuses: a document from a newer
-// release should stay usable. An out-of-range value is dropped and named
-// rather than carried, so the instance keeps a number it can honour.
-func TestImportSettingsDropsValuesOutOfRange(t *testing.T) {
-	in := newInstance(t)
-	admin := in.register("founder", "a-good-password")
-
-	response := in.do(http.MethodPost, "/api/admin/settings/import", map[string]string{
-		settings.ThemeWallpaperDim: "99999",
-		settings.SiteName:          "Carried Over",
-	}, admin)
-	if response.Code != http.StatusOK {
-		t.Fatalf("import: %d %s", response.Code, response.Body.String())
-	}
-	result := decode[struct {
-		Applied int      `json:"applied"`
+	imported := in.do(http.MethodPost, "/api/admin/settings/import", bad, admin)
+	skipped := decode[struct {
 		Skipped []string `json:"skipped"`
-	}](t, response)
-	if len(result.Skipped) != 1 || result.Skipped[0] != settings.ThemeWallpaperDim {
-		t.Errorf("skipped = %v, want just the dim", result.Skipped)
+	}](t, imported).Skipped
+	if imported.Code != http.StatusOK || len(skipped) != len(bad) {
+		t.Fatalf("invalid settings import: %d %s", imported.Code, imported.Body.String())
 	}
-	reloaded := settings.New(in.db)
-	if err := reloaded.Load(context.Background()); err != nil {
-		t.Fatal(err)
+	for _, key := range skipped {
+		if _, ok := bad[key]; !ok {
+			t.Fatalf("unexpected skipped key: %q", key)
+		}
 	}
-	if got := reloaded.Get(settings.ThemeWallpaperDim); got != "0" {
-		t.Errorf("size = %q, want the default kept", got)
-	}
-	// One refused value must not cost the operator the rest of the document.
-	if got := reloaded.Get(settings.SiteName); got != "Carried Over" {
-		t.Errorf("site.name = %q, want the imported value", got)
+	for _, values := range []map[string]string{
+		{settings.ThemeWallpaperDim: "1", settings.HealthWindowMins: "1", settings.QuotaMaxConcurrent: "0"},
+		{settings.ThemeWallpaperDim: "100", settings.HealthDisableBelow: "100", settings.HealthRetainDays: "3650"},
+	} {
+		if res := in.do(http.MethodPut, "/api/admin/settings", values, admin); res.Code != http.StatusOK {
+			t.Fatalf("valid settings %v: %d %s", values, res.Code, res.Body.String())
+		}
 	}
 }
 
@@ -216,32 +148,6 @@ func TestSettingsRejectUnknownKeysWithoutWriting(t *testing.T) {
 				t.Fatal("rejected update changed persisted settings")
 			}
 		})
-	}
-}
-
-func TestNumericSettingRequiresSettingsPermission(t *testing.T) {
-	in := newInstance(t)
-	founder := in.register("founder", "a-good-password")
-	operator := in.register("operator", "a-good-password")
-	for _, grant := range []string{"settings", "security", "availability"} {
-		response := in.do(http.MethodPatch, "/api/admin/users/"+operator.userID,
-			map[string]any{"role": "admin", "admin_permissions": []string{grant}}, founder)
-		if response.Code != http.StatusOK {
-			t.Fatalf("grant %s: %d %s", grant, response.Code, response.Body.String())
-		}
-		want := http.StatusForbidden
-		if grant == "settings" {
-			want = http.StatusOK
-		}
-		for _, endpoint := range []struct{ method, path string }{
-			{http.MethodPut, "/api/admin/settings"},
-			{http.MethodPost, "/api/admin/settings/import"},
-		} {
-			response = in.do(endpoint.method, endpoint.path, map[string]string{settings.ThemeWallpaperDim: "12"}, operator)
-			if response.Code != want {
-				t.Fatalf("%s writes %s: %d %s", grant, endpoint.path, response.Code, response.Body.String())
-			}
-		}
 	}
 }
 

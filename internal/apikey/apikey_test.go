@@ -145,29 +145,6 @@ func TestUnknownTokenDoesNotResolve(t *testing.T) {
 	}
 }
 
-func TestExpiredKeyIsRefused(t *testing.T) {
-	ctx := context.Background()
-	store, owner, _ := newStore(t)
-
-	// Issued live, then expired: Issue refuses a past expiry outright, and
-	// what matters here is a key that aged out while it existed.
-	created, token, err := store.IssueModels(ctx, owner, "temporary", nil, time.Now().Add(time.Hour).UnixMilli())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.Resolve(ctx, token); err != nil {
-		t.Fatalf("a live key was refused: %v", err)
-	}
-
-	past := time.Now().Add(-time.Minute).UnixMilli()
-	if _, err := store.Update(ctx, owner, created.ID, Update{ExpiresAt: &past}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.Resolve(ctx, token); err == nil {
-		t.Fatal("an expired key still resolved")
-	}
-}
-
 func TestIssueRefusesAnExpiryAlreadyPast(t *testing.T) {
 	ctx := context.Background()
 	store, owner, _ := newStore(t)
@@ -351,6 +328,13 @@ func TestPauseAndResumeKey(t *testing.T) {
 	}
 	if resolved.ID != created.ID {
 		t.Errorf("resolved id = %q, want %q", resolved.ID, created.ID)
+	}
+	past := time.Now().Add(-time.Minute).UnixMilli()
+	if _, err := store.Update(ctx, owner, created.ID, Update{ExpiresAt: &past}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Resolve(ctx, token); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("an expired key resolved as %v, want ErrNotFound", err)
 	}
 }
 

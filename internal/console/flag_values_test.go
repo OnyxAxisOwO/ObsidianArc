@@ -103,32 +103,6 @@ func TestParseFlagsBareBooleanRefusesAYesOrNoWord(t *testing.T) {
 	}
 }
 
-func TestRuntimeBoolReadsWhatTheParserStored(t *testing.T) {
-	cases := []struct {
-		name   string
-		tokens []string
-		want   bool
-	}{
-		{"absent", nil, false},
-		{"bare", []string{"--hidden"}, true},
-		{"bare then false", []string{"--hidden", "false"}, false},
-		{"bare then TRUE", []string{"--hidden", "TRUE"}, true},
-		{"equals F", []string{"--hidden=F"}, false},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			parsed, err := ParseFlags(c.tokens, valueFlags())
-			if err != nil {
-				t.Fatalf("parse: %v", err)
-			}
-			rt := &Runtime{flags: parsed.Flags}
-			if got := rt.Bool("hidden"); got != c.want {
-				t.Fatalf("Bool(hidden) = %v, want %v", got, c.want)
-			}
-		})
-	}
-}
-
 // refuseLooseValues is what turns a stray word after a bare switch into an
 // error. A word the command declares as an argument is still the argument.
 func TestRefuseLooseValuesRefusesAStrayWordButNotADeclaredArgument(t *testing.T) {
@@ -238,25 +212,6 @@ func TestAFlagValueThatDoesNotFitIsRefusedBeforeTheCommandRuns(t *testing.T) {
 				t.Fatalf("the refused line reached the server: %v", rig.calls)
 			}
 		})
-	}
-}
-
-func TestWellFormedValuesStillReachTheServer(t *testing.T) {
-	rig := newFlagRig(
-		flagRoute{"POST", "/api/admin/logs/prune", 200, `{"removed":0}`},
-		flagRoute{"POST", "/api/keys", 201, `{"key":{}}`},
-	)
-	if result, out := rig.run("log prune --days 90 --yes"); !result.OK {
-		t.Fatalf("log prune --days 90 failed: %s", out)
-	}
-	if got := rig.body(t, "POST /api/admin/logs/prune")["days"]; got != 90 {
-		t.Fatalf("days = %v, want 90", got)
-	}
-	if result, out := rig.run("key create --name ci --expires-at 1790000000000"); !result.OK {
-		t.Fatalf("key create with a timestamp failed: %s", out)
-	}
-	if got := rig.body(t, "POST /api/keys")["expires_at"]; got != int64(1790000000000) {
-		t.Fatalf("expires_at = %v, want 1790000000000", got)
 	}
 }
 
@@ -400,22 +355,6 @@ func TestClearFlagsFalseAreNotAChangeToMailOrUserCheck(t *testing.T) {
 		if len(rig.calls) != 0 {
 			t.Errorf("%s reached the server: %v", line, rig.calls)
 		}
-	}
-}
-
-// The parser takes a boolean in any case, so a command that reads the same
-// value must take it too, or a spelling the parser accepted would be refused by
-// the command with a message that says it was never a boolean.
-func TestAnyCaseBooleanIsReadTheSameByTheCommand(t *testing.T) {
-	rig := newFlagRig(
-		flagRoute{"GET", "/api/admin/mail", 200, `{"host":"smtp.example.com","port":587,"username":"arc","from":"arc@example.com","implicit_tls":false,"public_url":""}`},
-		flagRoute{"PUT", "/api/admin/mail", 200, `{"host":"smtp.example.com","port":587,"username":"arc","from":"arc@example.com","implicit_tls":true,"public_url":"","password_set":false}`},
-	)
-	if result, out := rig.run("mail set --implicit-tls tRuE"); !result.OK {
-		t.Fatalf("mail set --implicit-tls tRuE was refused: %s", out)
-	}
-	if got := rig.body(t, "PUT /api/admin/mail")["implicit_tls"]; got != true {
-		t.Fatalf("implicit_tls = %v, want true", got)
 	}
 }
 

@@ -183,53 +183,6 @@ func TestASecurityAdministratorCannotSendAgreedSignInsToANewCallback(t *testing.
 	}
 }
 
-// The address mailed links are built from decides where a person who clicks
-// one ends up, so the security grant may not move it. It may still save the
-// rest of the mail form, and may save the address as it already stands.
-func TestOnlyASuperAdministratorMovesThePublicURL(t *testing.T) {
-	in := newInstance(t)
-	founder := in.register("founder", "a-good-password")
-	operator := in.register("operator", "a-good-password")
-	delegate(t, in, founder, operator, "security")
-
-	saved := in.do(http.MethodPut, "/api/admin/mail", map[string]any{
-		"host": "127.0.0.1", "port": 1, "from": "arc@example.com",
-		"public_url": "https://arc.example.com", "password": "mail-secret",
-	}, founder)
-	if saved.Code != http.StatusOK {
-		t.Fatalf("super administrator saving mail: %d %s", saved.Code, saved.Body.String())
-	}
-
-	moved := in.do(http.MethodPut, "/api/admin/mail", map[string]any{
-		"host": "127.0.0.1", "port": 1, "from": "arc@example.com", "public_url": "https://phish.example.net",
-	}, operator)
-	if moved.Code != http.StatusForbidden || errCode(t, moved) != "super_admin_required" {
-		t.Fatalf("a security administrator moved the public URL: %d %s", moved.Code, moved.Body.String())
-	}
-
-	rest := in.do(http.MethodPut, "/api/admin/mail", map[string]any{
-		"host": "127.0.0.1", "port": 1, "from": "ops@example.com", "public_url": "https://arc.example.com",
-	}, operator)
-	if rest.Code != http.StatusOK {
-		t.Fatalf("a security administrator saving the rest of the mail form: %d %s", rest.Code, rest.Body.String())
-	}
-
-	if response := in.do(http.MethodPut, "/api/admin/mail", map[string]any{
-		"host": "127.0.0.1", "port": 1, "from": "ops@example.com", "public_url": "https://arc2.example.com",
-	}, founder); response.Code != http.StatusOK {
-		t.Fatalf("super administrator moving the public URL: %d %s", response.Code, response.Body.String())
-	}
-	shown := in.do(http.MethodGet, "/api/admin/mail", nil, founder)
-	if shown.Code != http.StatusOK {
-		t.Fatalf("read mail: %d %s", shown.Code, shown.Body.String())
-	}
-	if got := decode[struct {
-		PublicURL string `json:"public_url"`
-	}](t, shown).PublicURL; got != "https://arc2.example.com" {
-		t.Fatalf("public_url = %q after the super administrator's move", got)
-	}
-}
-
 // The relay that receives every verification link and code is chosen by the
 // super administrator too, under the same rule as the public URL. The security
 // grant keeps the sender address and the rest of the mail form, and may save
@@ -249,6 +202,8 @@ func TestOnlyASuperAdministratorChoosesTheSMTPServer(t *testing.T) {
 	}
 
 	for label, body := range map[string]map[string]any{
+		"public URL": {"host": "127.0.0.1", "port": 1, "username": "mailer",
+			"from": "arc@example.com", "public_url": "https://phish.example.net"},
 		"host": {"host": "collector.example.net", "port": 1, "username": "mailer",
 			"from": "arc@example.com", "public_url": "https://arc.example.com"},
 		"port": {"host": "127.0.0.1", "port": 2525, "username": "mailer",
@@ -264,11 +219,12 @@ func TestOnlyASuperAdministratorChoosesTheSMTPServer(t *testing.T) {
 		}
 	}
 	shown := decode[struct {
-		Host     string `json:"host"`
-		Port     int    `json:"port"`
-		Username string `json:"username"`
+		Host      string `json:"host"`
+		Port      int    `json:"port"`
+		Username  string `json:"username"`
+		PublicURL string `json:"public_url"`
 	}](t, in.do(http.MethodGet, "/api/admin/mail", nil, founder))
-	if shown.Host != "127.0.0.1" || shown.Port != 1 || shown.Username != "mailer" {
+	if shown.Host != "127.0.0.1" || shown.Port != 1 || shown.Username != "mailer" || shown.PublicURL != "https://arc.example.com" {
 		t.Fatalf("refused saves changed the SMTP server: %+v", shown)
 	}
 
@@ -280,7 +236,7 @@ func TestOnlyASuperAdministratorChoosesTheSMTPServer(t *testing.T) {
 	}
 	if response := in.do(http.MethodPut, "/api/admin/mail", map[string]any{
 		"host": "collector.example.net", "port": 1, "username": "mailer", "from": "ops@example.com",
-		"public_url": "https://arc.example.com", "password": "mail-secret",
+		"public_url": "https://arc2.example.com", "password": "mail-secret",
 	}, founder); response.Code != http.StatusOK {
 		t.Fatalf("super administrator choosing the SMTP server: %d %s", response.Code, response.Body.String())
 	}
@@ -345,8 +301,9 @@ func TestOnlyASuperAdministratorMovesAProvidersBaseURL(t *testing.T) {
 	operator := in.register("operator", "a-good-password")
 	delegate(t, in, founder, operator, "providers")
 
+	const apiKey = "sk-the-real-secret-6789"
 	created := in.do(http.MethodPost, "/api/admin/providers", map[string]any{
-		"name": "Primary", "kind": "openai", "base_url": "https://api.example.com/v1", "api_key": "sk-the-real-secret-value",
+		"name": "Primary", "kind": "openai", "base_url": "https://api.example.com/v1", "api_key": apiKey,
 	}, founder)
 	if created.Code != http.StatusCreated {
 		t.Fatalf("super administrator creating a provider: %d %s", created.Code, created.Body.String())
@@ -354,6 +311,18 @@ func TestOnlyASuperAdministratorMovesAProvidersBaseURL(t *testing.T) {
 	providerID := providerIDOf(t, created)
 	providerPath := "/api/admin/providers/" + providerID
 	before := providerRowOf(t, in, founder, providerID)
+	if !strings.Contains(before.APIKeyHint, "6789") {
+		t.Fatalf("provider key hint = %q", before.APIKeyHint)
+	}
+	for _, res := range []*httptest.ResponseRecorder{
+		created,
+		in.do(http.MethodGet, "/api/admin/providers", nil, founder),
+		in.do(http.MethodGet, "/api/admin/dashboard", nil, founder),
+	} {
+		if strings.Contains(res.Body.String(), apiKey) {
+			t.Fatalf("a provider key appeared in a response: %s", res.Body.String())
+		}
+	}
 
 	refused := in.do(http.MethodPatch, providerPath, map[string]any{
 		"name": "Primary", "kind": "openai", "base_url": "https://collector.example.net/v1", "api_key": "sk-operator-own-0002",

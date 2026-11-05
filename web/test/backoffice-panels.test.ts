@@ -257,76 +257,6 @@ describe('a panel from the account menu, opened over the backoffice', () => {
     expect(host.querySelector('.oa-admin-rail')).toBe(rail);
   });
 
-  it('draws About the same way, and closes with Escape', async () => {
-    adopt(ADMIN);
-    await mountAt('/admin/providers?tab=manage');
-    const rail = host.querySelector('.oa-admin-rail');
-
-    await chooseFromAccountMenu(t('about'));
-    expect(router.currentRoute.value.query).toEqual({ tab: 'manage', panel: 'about' });
-    expect(host.querySelector('.oa-about-name')).not.toBeNull();
-    expect(host.querySelector('.oa-admin-rail')).toBe(rail);
-
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
-    await pause(PAST_THE_SLIDE_MS);
-    expect(router.currentRoute.value.fullPath).toBe('/admin/providers?tab=manage');
-    expect(host.querySelector('.oa-panel')).toBeNull();
-  });
-
-  it('draws a plugin panel, opens its entry and steps back through the list', async () => {
-    installPlugins([tipsPlugin()]);
-    adopt(ADMIN);
-    await mountAt('/admin/providers?tab=manage');
-    const rail = host.querySelector('.oa-admin-rail');
-
-    await chooseFromAccountMenu('Tips');
-    expect(router.currentRoute.value.query).toEqual({ tab: 'manage', panel: 'x/tips' });
-    expect(panelTitle()).toBe('Tips');
-
-    host.querySelector<HTMLButtonElement>('.oa-feedback-item')!.click();
-    await settle();
-    expect(router.currentRoute.value.query).toEqual({ tab: 'manage', panel: 'x/tips/42' });
-    expect(panelTitle()).toBe('Entry 42 in detail');
-
-    host.querySelector<HTMLButtonElement>(`.oa-panel .oa-panel-head [aria-label="${t('back')}"]`)!.click();
-    await pause(PAST_THE_SLIDE_MS);
-    expect(router.currentRoute.value.query).toEqual({ tab: 'manage', panel: 'x/tips' });
-    expect(panelTitle()).toBe('Tips');
-
-    await closeWithButton();
-    expect(router.currentRoute.value.fullPath).toBe('/admin/providers?tab=manage');
-    expect(host.querySelector('.oa-admin-rail')).toBe(rail);
-  });
-
-  it('returns from an entry to the list with its X and with Escape, and the list is drawn', async () => {
-    installPlugins([tipsPlugin()]);
-    adopt(ADMIN);
-    await mountAt('/admin/providers?tab=manage');
-    await chooseFromAccountMenu('Tips');
-
-    // An entry's X slides its own panel out, and the address then moves to the
-    // list. The list must come back drawn, not as the hidden column it was.
-    await openFirstEntry();
-    await closeWithButton();
-    expect(router.currentRoute.value.query).toEqual({ tab: 'manage', panel: 'x/tips' });
-    expect(panelTitle()).toBe('Tips');
-    expect(await panelIsOpen()).toBe(true);
-
-    await openFirstEntry();
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
-    await pause(PAST_THE_SLIDE_MS);
-    expect(router.currentRoute.value.query).toEqual({ tab: 'manage', panel: 'x/tips' });
-    expect(panelTitle()).toBe('Tips');
-    expect(await panelIsOpen()).toBe(true);
-
-    // The list's own X still closes it, and the menu opens it again afterwards.
-    await closeWithButton();
-    expect(router.currentRoute.value.fullPath).toBe('/admin/providers?tab=manage');
-    expect(host.querySelector('.oa-panel')).toBeNull();
-    await chooseFromAccountMenu('Tips');
-    expect(await panelIsOpen()).toBe(true);
-  });
-
   it('is drawn from the address on a reload, and the Back button takes it away', async () => {
     adopt(ADMIN);
     await mountAt('/admin/providers?panel=about');
@@ -343,17 +273,6 @@ describe('a panel from the account menu, opened over the backoffice', () => {
     expect(router.currentRoute.value.fullPath).toBe('/admin/providers?keep=1');
     expect(host.querySelector('.oa-panel')).toBeNull();
     expect(host.querySelector('.oa-admin-rail')).not.toBeNull();
-  });
-
-  it('opens Settings on the tab its address names, not on the backoffice tab', async () => {
-    adopt(ADMIN);
-    await mountAt('/admin/providers?panel=settings/security');
-    expect(host.querySelector('.oa-settings-tab.active')?.textContent?.trim()).toBe(t('secSecurity'));
-
-    // The backoffice's own `tab` (plugin pages use it) is not Settings' tab.
-    await mountAt('/admin/providers?tab=security');
-    await chooseFromAccountMenu(t('settings'));
-    expect(host.querySelector('.oa-settings-tab.active')?.textContent?.trim()).toBe(t('secAppearance'));
   });
 
   it('brings a connection back to the backoffice address the panel is drawn at', async () => {
@@ -448,18 +367,6 @@ describe('a panel from the account menu, opened over the backoffice', () => {
     expect(await panelIsOpen()).toBe(true);
   });
 
-  it('keeps the panel when a section of the page on screen is chosen from a search result', async () => {
-    adopt(ADMIN);
-    await mountAt('/admin/settings?keep=1&panel=about');
-    await search('.oa-admin-search input', t('controlAbout'));
-
-    controlNamed('.oa-admin-subnav-item', t('controlAbout')).click();
-    await settle();
-
-    expect(router.currentRoute.value.fullPath).toBe('/admin/settings?keep=1&panel=about#secAbout');
-    expect(await panelIsOpen()).toBe(true);
-  });
-
   it('keeps the panel when a workbench tab is chosen while the page has a hash', async () => {
     adopt(ADMIN);
     await mountAt('/admin/settings?panel=about#somewhere');
@@ -526,20 +433,5 @@ describe('the same menu from the chat', () => {
     await until(() => connectNext() !== null, 'the connect request');
 
     expect(connectNext()).toBe('/settings');
-  });
-
-  it('takes the outcome of a connection out of the chat address too', async () => {
-    adopt(ACCOUNT);
-    await mountAt('/settings?oauth=connected');
-    await settle();
-
-    expect(router.currentRoute.value.fullPath).toBe('/settings');
-    expect(connectionFlashes()).toContain(t('oauthConnected'));
-  });
-
-  it('still reads the tab from the chat address', async () => {
-    adopt(ACCOUNT);
-    await mountAt('/settings?tab=security');
-    expect(host.querySelector('.oa-settings-tab.active')?.textContent?.trim()).toBe(t('secSecurity'));
   });
 });

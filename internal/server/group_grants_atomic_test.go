@@ -13,12 +13,17 @@ import (
 func TestAGroupWithABadGrantIsNotLeftBehind(t *testing.T) {
 	in := newInstance(t)
 	founder := in.register("founder", "a-good-password")
-	create := map[string]any{
-		"name":         "Trial",
-		"model_grants": []map[string]string{{"model_id": id.New(), "access": "use"}},
-	}
-	if res := in.do(http.MethodPost, "/api/admin/groups", create, founder); res.Code != http.StatusBadRequest || errCode(t, res) != "model_missing" {
-		t.Fatalf("a grant for a model that does not exist: %d %s, want 400 model_missing", res.Code, res.Body.String())
+	for _, grant := range []struct{ access, code string }{
+		{"sometimes", ""},
+		{"use", "model_missing"},
+	} {
+		res := in.do(http.MethodPost, "/api/admin/groups", map[string]any{
+			"name":         "Trial",
+			"model_grants": []map[string]string{{"model_id": id.New(), "access": grant.access}},
+		}, founder)
+		if res.Code != http.StatusBadRequest || (grant.code != "" && errCode(t, res) != grant.code) {
+			t.Fatalf("create with access %q: %d %s", grant.access, res.Code, res.Body.String())
+		}
 	}
 	if names := groupNames(t, in, founder); names["Trial"] {
 		t.Fatal("the failed create left its group behind")

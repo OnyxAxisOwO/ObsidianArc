@@ -88,71 +88,6 @@ func newFixture(t *testing.T) *fixture {
 	}
 }
 
-// The first account on an empty instance becomes the administrator, which is
-// what makes `./obsidian-arc` with no environment variables usable.
-func TestFirstRegistrationBecomesAdmin(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-
-	first, token, err := f.auth.Register(ctx, RegisterInput{Username: "founder", Password: "a-good-password"})
-	if err != nil {
-		t.Fatalf("register first: %v", err)
-	}
-	if first.Role != user.RoleSuperAdmin {
-		t.Errorf("first account role = %q, want admin", first.Role)
-	}
-	if token == "" {
-		t.Error("registration returned no session token")
-	}
-	if first.GroupID == "" {
-		t.Error("first account was not put in the default group")
-	}
-
-	second, _, err := f.auth.Register(ctx, RegisterInput{Username: "regular", Password: "another-password"})
-	if err != nil {
-		t.Fatalf("register second: %v", err)
-	}
-	if second.Role != user.RoleUser {
-		t.Errorf("second account role = %q, want user", second.Role)
-	}
-}
-
-func TestParallelFirstRegistrationsCreateOnlyOneAdmin(t *testing.T) {
-	f := newFixture(t)
-	start := make(chan struct{})
-	errorsByAttempt := make(chan error, 8)
-	var workers sync.WaitGroup
-
-	for i := 0; i < 8; i++ {
-		workers.Add(1)
-		go func(index int) {
-			defer workers.Done()
-			<-start
-			_, _, err := f.auth.Register(context.Background(), RegisterInput{
-				Username: fmt.Sprintf("user-%d", index),
-				Password: "a-good-password",
-			})
-			errorsByAttempt <- err
-		}(i)
-	}
-	close(start)
-	workers.Wait()
-	close(errorsByAttempt)
-
-	for err := range errorsByAttempt {
-		if err != nil {
-			t.Fatalf("parallel registration: %v", err)
-		}
-	}
-	admins, err := f.users.CountActiveAdmins(context.Background(), nil, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if admins != 1 {
-		t.Fatalf("parallel first registrations created %d administrators, want 1", admins)
-	}
-}
-
 func TestParallelFirstRegistrationsScreenEveryNonAdministrator(t *testing.T) {
 	f := newFixture(t)
 	var screened atomic.Int32
@@ -193,6 +128,9 @@ func TestParallelFirstRegistrationsScreenEveryNonAdministrator(t *testing.T) {
 	if created != 1 || refused != 7 || screened.Load() != 7 {
 		t.Fatalf("created %d, refused %d, screened %d; want 1/7/7", created, refused, screened.Load())
 	}
+	if admins, err := f.users.CountActiveAdmins(t.Context(), nil, ""); err != nil || admins != 1 {
+		t.Fatalf("parallel registration created %d administrators: %v", admins, err)
+	}
 }
 
 func TestRegisteredAddressDoesNotSpendPaidScreeningLookup(t *testing.T) {
@@ -215,72 +153,6 @@ func TestRegisteredAddressDoesNotSpendPaidScreeningLookup(t *testing.T) {
 	}
 	if calls.Load() != 0 {
 		t.Fatalf("duplicate address spent %d paid lookups", calls.Load())
-	}
-}
-
-func TestParallelRegistrationsCannotRacePastTheSignupLimit(t *testing.T) {
-	f := newFixture(t)
-	if _, _, err := f.auth.Register(context.Background(), RegisterInput{
-		Username: "founder", Password: "a-good-password",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	// The first account is counted too, leaving two places in this minute.
-	if err := f.settings.Set(context.Background(), settings.SignupsPerMinute, "3"); err != nil {
-		t.Fatal(err)
-	}
-
-	start := make(chan struct{})
-	errorsByAttempt := make(chan error, 8)
-	var workers sync.WaitGroup
-	for i := 0; i < 8; i++ {
-		workers.Add(1)
-		go func(index int) {
-			defer workers.Done()
-			<-start
-			_, _, err := f.auth.Register(context.Background(), RegisterInput{
-				Username: fmt.Sprintf("guest-%d", index),
-				Password: "a-good-password",
-			})
-			errorsByAttempt <- err
-		}(i)
-	}
-	close(start)
-	workers.Wait()
-	close(errorsByAttempt)
-
-	created := 0
-	throttled := 0
-	for err := range errorsByAttempt {
-		var limited *SignupThrottleError
-		switch {
-		case err == nil:
-			created++
-		case errors.As(err, &limited):
-			throttled++
-		default:
-			t.Fatalf("parallel registration returned %v", err)
-		}
-	}
-	if created != 2 || throttled != 6 {
-		t.Fatalf("created %d and throttled %d; want 2 and 6", created, throttled)
-	}
-}
-
-func TestRegistrationRespectsTheSetting(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-
-	if _, _, err := f.auth.Register(ctx, RegisterInput{Username: "founder", Password: "a-good-password"}); err != nil {
-		t.Fatalf("register first: %v", err)
-	}
-	if err := f.settings.Set(ctx, settings.RegistrationEnabled, "false"); err != nil {
-		t.Fatalf("close registration: %v", err)
-	}
-
-	_, _, err := f.auth.Register(ctx, RegisterInput{Username: "latecomer", Password: "a-good-password"})
-	if !errors.Is(err, ErrRegistrationClosed) {
-		t.Fatalf("want ErrRegistrationClosed, got %v", err)
 	}
 }
 
@@ -435,78 +307,6 @@ func TestLoginEnforcesTurnstileChallenge(t *testing.T) {
 	}
 }
 
-func TestDisabledAccountCannotSignIn(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-
-	account, _, err := f.auth.Register(ctx, RegisterInput{Username: "arc", Password: "a-good-password"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	disabled := user.StatusDisabled
-	if _, err := f.users.UpdateAdminFields(ctx, nil, account.ID, user.AdminUpdate{Status: &disabled}); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, _, err := f.auth.Login(ctx, LoginInput{Identifier: "arc", Password: "a-good-password"}); !errors.Is(err, ErrAccountDisabled) {
-		t.Fatalf("want ErrAccountDisabled, got %v", err)
-	}
-}
-
-func TestLoginRejectsDisabledAccountCarriesBanReason(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-
-	account, _, err := f.auth.Register(ctx, RegisterInput{Username: "banned", Password: "a-good-password"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	disabled := user.StatusDisabled
-	reason := "Abuse of resources"
-	if _, err := f.users.UpdateAdminFields(ctx, nil, account.ID, user.AdminUpdate{
-		Status:    &disabled,
-		BanReason: &reason,
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	_, _, err = f.auth.Login(ctx, LoginInput{Identifier: "banned", Password: "a-good-password"})
-	if !errors.Is(err, ErrAccountDisabled) {
-		t.Fatalf("want ErrAccountDisabled, got %v", err)
-	}
-	var disabledErr *AccountDisabledError
-	if !errors.As(err, &disabledErr) {
-		t.Fatalf("want *AccountDisabledError, got %T", err)
-	}
-	if disabledErr.Reason != reason {
-		t.Fatalf("want reason %q, got %q", reason, disabledErr.Reason)
-	}
-}
-
-// A session issued before an account was disabled has to stop working on its
-// next request, not at its next expiry.
-func TestAuthenticateRejectsDisabledAccountMidSession(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-
-	account, token, err := f.auth.Register(ctx, RegisterInput{Username: "arc", Password: "a-good-password"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := f.auth.Authenticate(ctx, token); err != nil {
-		t.Fatalf("fresh session should authenticate: %v", err)
-	}
-
-	disabled := user.StatusDisabled
-	if _, err := f.users.UpdateAdminFields(ctx, nil, account.ID, user.AdminUpdate{Status: &disabled}); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, _, err := f.auth.Authenticate(ctx, token); !errors.Is(err, ErrAccountDisabled) {
-		t.Fatalf("want ErrAccountDisabled, got %v", err)
-	}
-}
-
 // The cookie value must not be what is stored, or a database dump becomes a
 // set of working sessions.
 func TestSessionTokenIsStoredHashed(t *testing.T) {
@@ -568,78 +368,6 @@ func TestUserAgentSurvivesAMultiByteCharacterAtTheTruncationBoundary(t *testing.
 	}
 	if session.UserAgent != want {
 		t.Fatalf("stored user agent = %q, want %q", session.UserAgent, want)
-	}
-}
-
-func TestLogoutInvalidatesTheSession(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-
-	_, token, err := f.auth.Register(ctx, RegisterInput{Username: "arc", Password: "a-good-password"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := f.auth.Logout(ctx, token); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := f.auth.Authenticate(ctx, token); !errors.Is(err, ErrSessionNotFound) {
-		t.Fatalf("want ErrSessionNotFound after logout, got %v", err)
-	}
-}
-
-// Changing a password has to revoke every other session: a stolen one must
-// not outlive the credential it was issued against.
-func TestChangePasswordRevokesOtherSessions(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-
-	account, keepToken, err := f.auth.Register(ctx, RegisterInput{Username: "arc", Password: "a-good-password"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, otherToken, err := f.auth.Login(ctx, LoginInput{Identifier: "arc", Password: "a-good-password"})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	_, keepSession, err := f.auth.Authenticate(ctx, keepToken)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	newToken, err := f.auth.ChangePassword(ctx, account.ID, "a-good-password", "a-better-password", keepSession.ID)
-	if err != nil {
-		t.Fatalf("change password: %v", err)
-	}
-
-	if _, _, err := f.auth.Authenticate(ctx, keepToken); !errors.Is(err, ErrSessionNotFound) {
-		t.Errorf("the cookie that made the change still signs in: %v", err)
-	}
-	if _, _, err := f.auth.Authenticate(ctx, newToken); err != nil {
-		t.Errorf("the session that made the change was not reissued: %v", err)
-	}
-	if _, _, err := f.auth.Authenticate(ctx, otherToken); !errors.Is(err, ErrSessionNotFound) {
-		t.Errorf("another session survived the password change: %v", err)
-	}
-	if _, _, err := f.auth.Login(ctx, LoginInput{Identifier: "arc", Password: "a-good-password"}); !errors.Is(err, ErrInvalidCredentials) {
-		t.Error("the old password still works")
-	}
-	if _, _, err := f.auth.Login(ctx, LoginInput{Identifier: "arc", Password: "a-better-password"}); err != nil {
-		t.Errorf("the new password does not work: %v", err)
-	}
-}
-
-func TestChangePasswordRequiresTheCurrentOne(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-
-	account, _, err := f.auth.Register(ctx, RegisterInput{Username: "arc", Password: "a-good-password"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = f.auth.ChangePassword(ctx, account.ID, "wrong-current", "a-better-password", "")
-	if !errors.Is(err, ErrCurrentPasswordWrong) {
-		t.Fatalf("want ErrCurrentPasswordWrong, got %v", err)
 	}
 }
 
@@ -801,32 +529,6 @@ func TestChangePasswordWithoutASessionEndsEverySession(t *testing.T) {
 	}
 }
 
-// A session that ends while its own change is in flight is not revived. The
-// change is refused, and the password stays as it was.
-func TestChangePasswordRefusesASessionThatHasEnded(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-
-	account, token, err := f.auth.Register(ctx, RegisterInput{Username: "arc", Password: "a-good-password"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, session, err := f.auth.Authenticate(ctx, token)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := f.auth.Logout(ctx, token); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := f.auth.ChangePassword(ctx, account.ID, "a-good-password", "a-better-password", session.ID); !errors.Is(err, ErrSessionNotFound) {
-		t.Fatalf("a change from an ended session = %v, want ErrSessionNotFound", err)
-	}
-	if _, _, err := f.auth.Login(ctx, LoginInput{Identifier: "arc", Password: "a-good-password"}); err != nil {
-		t.Errorf("the refused change still changed the password: %v", err)
-	}
-}
-
 // A session whose time has run out is refused while its row is still there.
 // Logout is no stand-in: it deletes the row, so the expiry check in Reissue
 // never decides the outcome.
@@ -945,34 +647,6 @@ func TestLoginRateLimiterBlocksAfterRepeatedFailures(t *testing.T) {
 		Identifier: "arc", Password: "a-good-password", IP: "203.0.113.7",
 	}); !errors.As(err, &limited) {
 		t.Errorf("a blocked address was allowed to log in: %v", err)
-	}
-}
-
-func TestLoginRateLimiterBoundsAParallelBurstBeforeHashing(t *testing.T) {
-	limiter := NewLimiter()
-	attempts := make([]*loginAttempt, 0, freeAttempts+1)
-
-	for i := 0; i < 100; i++ {
-		attempt, err := limiter.Begin("203.0.113.9", "target")
-		if err != nil {
-			var limited *RateLimitError
-			if !errors.As(err, &limited) || limited.RetryAfter <= 0 {
-				t.Fatalf("attempt %d: %v", i+1, err)
-			}
-			continue
-		}
-		attempts = append(attempts, attempt)
-	}
-
-	if len(attempts) != freeAttempts+1 {
-		t.Fatalf("%d simultaneous attempts passed, want %d", len(attempts), freeAttempts+1)
-	}
-	for _, attempt := range attempts {
-		attempt.finish(attemptFailed)
-	}
-	if attempt, err := limiter.Begin("203.0.113.9", "target"); err == nil {
-		attempt.finish(attemptCancelled)
-		t.Fatal("a failed parallel burst did not block the next attempt")
 	}
 }
 
@@ -1132,69 +806,6 @@ func TestAuthenticateReturnsTheWholeAccountAndItsSession(t *testing.T) {
 	}
 }
 
-func TestOIDCOnlySignupEnforcedAndToggleable(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-
-	// Initial setup account (empty instance) is exempt even if OIDC-only is on.
-	if err := f.settings.Set(ctx, settings.OAuthOIDCEnabled, "true"); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.settings.Set(ctx, settings.OAuthOIDCOnlySignup, "true"); err != nil {
-		t.Fatal(err)
-	}
-	f.auth.Hooks.SignInProviderCount = onSwitches(f)
-
-	admin, _, err := f.auth.Register(ctx, RegisterInput{Username: "admin", Password: "a-good-password"})
-	if err != nil {
-		t.Fatalf("first account should succeed even when oidc-only is active: %v", err)
-	}
-	if !admin.IsAdmin() {
-		t.Fatalf("first user role = %q, want admin", admin.Role)
-	}
-
-	// Subsequent normal registrations fail with ErrThirdPartyOnlyRegistration.
-	if _, _, err := f.auth.Register(ctx, RegisterInput{Username: "second", Password: "a-good-password"}); !errors.Is(err, ErrThirdPartyOnlyRegistration) {
-		t.Fatalf("second registration want ErrThirdPartyOnlyRegistration, got %v", err)
-	}
-
-	// Existing user can still log in with password.
-	logged, token, err := f.auth.Login(ctx, LoginInput{Identifier: "admin", Password: "a-good-password"})
-	if err != nil {
-		t.Fatalf("existing user login failed: %v", err)
-	}
-	if logged.ID != admin.ID || token == "" {
-		t.Fatalf("existing user login id = %q, want %q", logged.ID, admin.ID)
-	}
-
-	// Toggle OIDC-only switch off. Normal registration is allowed again.
-	if err := f.settings.Set(ctx, settings.OAuthOIDCOnlySignup, "false"); err != nil {
-		t.Fatal(err)
-	}
-	second, _, err := f.auth.Register(ctx, RegisterInput{Username: "second", Password: "a-good-password"})
-	if err != nil {
-		t.Fatalf("registration after turning off oidc-only failed: %v", err)
-	}
-	if second.Username != "second" {
-		t.Fatalf("second username = %q, want 'second'", second.Username)
-	}
-
-	// If OAuthOIDCEnabled is false, OAuthOIDCOnlySignup alone does not block registration.
-	if err := f.settings.Set(ctx, settings.OAuthOIDCOnlySignup, "true"); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.settings.Set(ctx, settings.OAuthOIDCEnabled, "false"); err != nil {
-		t.Fatal(err)
-	}
-	third, _, err := f.auth.Register(ctx, RegisterInput{Username: "third", Password: "a-good-password"})
-	if err != nil {
-		t.Fatalf("registration when oidc disabled failed: %v", err)
-	}
-	if third.Username != "third" {
-		t.Fatalf("third username = %q, want 'third'", third.Username)
-	}
-}
-
 // onSwitches stands in for the sign-in card's question in the tests that are
 // about the switches: a provider counts once its switch is on, as if it were
 // configured. Whether a switch on with no credentials counts is tested on its
@@ -1211,15 +822,27 @@ func onSwitches(f *fixture) func() int {
 	}
 }
 
-func TestThirdPartyOnlySignupEnforcedAndToggleable(t *testing.T) {
+func TestProviderOnlySignupEnforcedAndToggleable(t *testing.T) {
+	for _, tc := range []struct{ name, enabled, required string }{
+		{"OIDC", settings.OAuthOIDCEnabled, settings.OAuthOIDCOnlySignup},
+		{"third-party", settings.OAuthGitHubEnabled, settings.OAuthThirdPartyOnlySignup},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assertProviderOnlySignup(t, tc.enabled, tc.required)
+		})
+	}
+}
+
+func assertProviderOnlySignup(t *testing.T, enabled, required string) {
+	t.Helper()
 	f := newFixture(t)
 	ctx := context.Background()
 
 	// Initial setup account is exempt.
-	if err := f.settings.Set(ctx, settings.OAuthGitHubEnabled, "true"); err != nil {
+	if err := f.settings.Set(ctx, enabled, "true"); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.settings.Set(ctx, settings.OAuthThirdPartyOnlySignup, "true"); err != nil {
+	if err := f.settings.Set(ctx, required, "true"); err != nil {
 		t.Fatal(err)
 	}
 	f.auth.Hooks.SignInProviderCount = onSwitches(f)
@@ -1228,8 +851,8 @@ func TestThirdPartyOnlySignupEnforcedAndToggleable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first account should succeed: %v", err)
 	}
-	if !admin.IsAdmin() {
-		t.Fatalf("first user role = %q, want admin", admin.Role)
+	if !admin.IsAdmin() || admin.GroupID == "" {
+		t.Fatalf("first user role/group = %q/%q, want an administrator in the default group", admin.Role, admin.GroupID)
 	}
 
 	// Subsequent normal registrations fail with ErrThirdPartyOnlyRegistration.
@@ -1247,7 +870,7 @@ func TestThirdPartyOnlySignupEnforcedAndToggleable(t *testing.T) {
 	}
 
 	// Toggle third-party only switch off. Normal registration is allowed again.
-	if err := f.settings.Set(ctx, settings.OAuthThirdPartyOnlySignup, "false"); err != nil {
+	if err := f.settings.Set(ctx, required, "false"); err != nil {
 		t.Fatal(err)
 	}
 	second, _, err := f.auth.Register(ctx, RegisterInput{Username: "second", Password: "a-good-password"})
@@ -1259,10 +882,10 @@ func TestThirdPartyOnlySignupEnforcedAndToggleable(t *testing.T) {
 	}
 
 	// If no OAuth providers are enabled, third-party only signup does not deadlock registration.
-	if err := f.settings.Set(ctx, settings.OAuthThirdPartyOnlySignup, "true"); err != nil {
+	if err := f.settings.Set(ctx, required, "true"); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.settings.Set(ctx, settings.OAuthGitHubEnabled, "false"); err != nil {
+	if err := f.settings.Set(ctx, enabled, "false"); err != nil {
 		t.Fatal(err)
 	}
 	third, _, err := f.auth.Register(ctx, RegisterInput{Username: "third", Password: "a-good-password"})

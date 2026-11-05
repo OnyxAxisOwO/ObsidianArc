@@ -9,11 +9,8 @@
 // Adapter, so a third protocol touches those branches as well as its own file
 // and its registry row. Nothing above this package changes.
 //
-// The shapes below are deliberately smaller than what either provider can
-// express: text, images and tool calls in, text, reasoning and tool calls
-// out. Structured output and the rest are absent because nothing above this
-// layer has anywhere to put them yet, and a field with no consumer is a field
-// that drifts.
+// The neutral shapes carry the controls that the browser and compatibility
+// APIs consume. Provider-specific spellings stay inside the adapters.
 //
 // Tool calls are here because the /v1 API has a consumer for them — an agent
 // on the other end that cannot work without them — and because they are the
@@ -78,15 +75,16 @@ func (s ReasoningStyle) Valid() bool {
 // decrypted. It exists only in memory, only for the duration of a request,
 // and is never serialised anywhere.
 type Provider struct {
-	ID               string
-	Name             string
-	Kind             Kind
-	BaseURL          string
-	APIKey           string
-	Headers          map[string]string
-	AnthropicVersion string
-	ReasoningStyle   ReasoningStyle
-	Timeout          time.Duration
+	ID                string
+	Name              string
+	Kind              Kind
+	BaseURL           string
+	APIKey            string
+	Headers           map[string]string
+	AnthropicVersion  string
+	ReasoningStyle    ReasoningStyle
+	Timeout           time.Duration
+	StreamIdleTimeout time.Duration
 }
 
 // ModelSpec is what the adapter needs to know about the model being called.
@@ -150,9 +148,11 @@ type Part struct {
 	// schema is the caller's, this layer has no opinion about it, and a
 	// decode-and-re-encode is only ever a chance to change what the model
 	// wrote.
-	ToolCallID string
-	ToolName   string
-	ToolArgs   string
+	ToolCallID   string
+	ToolName     string
+	ToolArgs     string
+	ToolIsError  bool
+	CacheControl *CacheControl
 }
 
 // Tool is one function the caller has offered the model.
@@ -163,7 +163,9 @@ type Tool struct {
 	// Providers disagree about which keywords they accept, and rewriting a
 	// schema to suit one of them is how a client's tool quietly stops
 	// matching the function it actually implements.
-	Parameters json.RawMessage
+	Parameters   json.RawMessage
+	Strict       *bool
+	CacheControl *CacheControl
 }
 
 // ToolChoiceMode is how hard the caller wants the model pushed towards a tool.
@@ -226,14 +228,35 @@ type Reasoning struct {
 	Budget int
 }
 
+// CacheControl marks an upstream prompt prefix; it never stores responses in Arc.
+type CacheControl struct {
+	Type string `json:"type"`
+	TTL  string `json:"ttl,omitempty"`
+}
+
+type OutputFormat struct {
+	Type   string
+	Name   string
+	Schema json.RawMessage
+	Strict *bool
+}
+
 type ChatRequest struct {
-	Model       ModelSpec
-	System      string
-	Messages    []Message
-	Temperature *float64
-	MaxTokens   int
-	Reasoning   Reasoning
-	Stream      bool
+	Model                ModelSpec
+	System               string
+	SystemParts          []Part
+	CacheControl         *CacheControl
+	PromptCacheKey       string
+	PromptCacheRetention string
+	OutputFormat         OutputFormat
+	Stop                 []string
+	ParallelToolCalls    *bool
+	IncludeUsage         bool
+	Messages             []Message
+	Temperature          *float64
+	MaxTokens            int
+	Reasoning            Reasoning
+	Stream               bool
 	// What the caller offered the model, and how hard to push it.
 	//
 	// Not gated on a model capability flag. `supports_tools` exists on the
@@ -274,12 +297,23 @@ type Event struct {
 	Text     string
 	Usage    Usage
 	ToolCall ToolCall
+	Refusal  bool
 }
 
 type Usage struct {
-	InputTokens     int
-	OutputTokens    int
+	InputTokens  int
+	OutputTokens int
+	// Output and reasoning are disjoint in Arc's ledger. OpenAI's completion
+	// count includes reasoning, so its adapter subtracts that subset on input.
 	ReasoningTokens int
+	// Cache counts are subsets of InputTokens, never additions to Total.
+	CacheReadTokens       int
+	CacheCreationTokens   int
+	CacheCreation5mTokens int
+	CacheCreation1hTokens int
+	inputReported         bool
+	outputReported        bool
+	complete              bool
 	// Set when the provider reported nothing and these figures were worked
 	// out from the text instead. Carried all the way to the ledger, so an
 	// estimate is never passed off as a count.
@@ -287,20 +321,33 @@ type Usage struct {
 }
 
 func (u Usage) Total() int { return u.InputTokens + u.OutputTokens + u.ReasoningTokens }
+func (u Usage) HasUsage() bool {
+	return u.Total() > 0 || u.inputReported || u.outputReported || u.Estimated
+}
+func (u Usage) HasInputCount() bool { return u.InputTokens > 0 || u.inputReported }
 
 // Merge folds a later usage report into an earlier one. Anthropic reports
 // input tokens at the start of a stream and output tokens at the end, so a
 // naive overwrite would lose half the numbers.
 func (u Usage) Merge(next Usage) Usage {
-	if next.InputTokens > 0 {
+	if next.InputTokens > 0 || next.inputReported {
 		u.InputTokens = next.InputTokens
 	}
-	if next.OutputTokens > 0 {
+	if next.OutputTokens > 0 || next.outputReported {
 		u.OutputTokens = next.OutputTokens
 	}
-	if next.ReasoningTokens > 0 {
+	if next.ReasoningTokens > 0 || next.outputReported {
 		u.ReasoningTokens = next.ReasoningTokens
 	}
+	if next.inputReported || next.CacheReadTokens > 0 || next.CacheCreationTokens > 0 {
+		u.CacheReadTokens = next.CacheReadTokens
+		u.CacheCreationTokens = next.CacheCreationTokens
+		u.CacheCreation5mTokens = next.CacheCreation5mTokens
+		u.CacheCreation1hTokens = next.CacheCreation1hTokens
+	}
+	u.inputReported = u.inputReported || next.inputReported
+	u.outputReported = u.outputReported || next.outputReported
+	u.complete = u.complete || next.complete
 	// Once any part of a turn is estimated, the whole figure is: a real
 	// count for one round and a guess for the next add up to a guess.
 	u.Estimated = u.Estimated || next.Estimated
@@ -309,6 +356,7 @@ func (u Usage) Merge(next Usage) Usage {
 
 type Result struct {
 	Text      string
+	Refusal   string
 	Reasoning string
 	// Every call the model asked for this turn, in the order it asked. More
 	// than one is ordinary: both protocols let a model open several at once,
@@ -321,6 +369,7 @@ type Result struct {
 	// differently.
 	StreamFallbackReason string
 	FinishReason         string
+	StopSequence         *string
 }
 
 // RemoteModel is one entry from a provider's own model listing.
@@ -379,8 +428,9 @@ type Adapter interface {
 // is most of the latency difference on a busy instance, and because a
 // per-request client leaks idle connections.
 type Registry struct {
-	client   *http.Client
-	adapters map[Kind]Adapter
+	client            *http.Client
+	adapters          map[Kind]Adapter
+	streamIdleTimeout time.Duration
 }
 
 func NewRegistry(cfg config.Upstream) *Registry {
@@ -410,6 +460,7 @@ func NewRegistry(cfg config.Upstream) *Registry {
 	}
 
 	return &Registry{
+		streamIdleTimeout: cfg.StreamIdleTimeout,
 		client: &http.Client{
 			Transport: transport,
 			// A provider request carries a bearer credential. Following a
@@ -449,6 +500,10 @@ func (r *Registry) Chat(ctx context.Context, p Provider, req ChatRequest, sink S
 		return Result{}, &Error{Kind: ErrorInvalidRequest, Message: "Unknown provider type " + string(p.Kind) + "."}
 	}
 
+	if err := ValidateControls(p, req); err != nil {
+		return Result{}, err
+	}
+	p.StreamIdleTimeout = r.streamIdleTimeout
 	// Watched rather than read off the result afterwards: an adapter can
 	// report through events alone, and an estimate written over counts it
 	// already streamed would replace a real number with a guess.
@@ -482,11 +537,9 @@ func (r *Registry) Chat(ctx context.Context, p Provider, req ChatRequest, sink S
 		result, err = adapter.Chat(ctx, r.client, p, req, watched)
 	}
 	if err == nil {
-		if filled := fillUsage(req, result, reported.Merge(result.Usage)); filled.Estimated {
-			result.Usage = filled
-		}
-	} else if filled := fillStopped(req, streamed, reported.Merge(result.Usage)); filled.Estimated {
-		result.Usage = filled
+		result.Usage = fillUsage(req, result, reported.Merge(result.Usage))
+	} else {
+		result.Usage = fillStopped(req, streamed, reported.Merge(result.Usage))
 	}
 	return result, err
 }

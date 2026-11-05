@@ -154,3 +154,23 @@ func (u *unstreamable) Header() http.Header { return u.header }
 func (u *unstreamable) Write(p []byte) (int, error) { return len(p), nil }
 
 func (u *unstreamable) WriteHeader(code int) { u.status = code }
+
+func TestEmitFallbackText(t *testing.T) {
+	for _, tc := range []struct {
+		name, text string
+		streamed   bool
+		want       string
+	}{
+		{"non-streaming answer", "answer", false, "answer"},
+		{"already streamed", "answer", true, ""},
+		{"empty answer", "", false, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ""
+			err := emitFallbackText(tc.text, tc.streamed, func(text string) error { got += text; return nil })
+			if err != nil || got != tc.want {
+				t.Fatalf("got %q, err %v; want %q", got, err, tc.want)
+			}
+		})
+	}
+}

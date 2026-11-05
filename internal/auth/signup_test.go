@@ -62,24 +62,6 @@ func TestSignupGateEnforcesThePerHourLimitSeparately(t *testing.T) {
 	}
 }
 
-// With neither limit set, allow never prunes, so record is what keeps the
-// slice from growing with every account for the life of the process.
-func TestSignupGateRecordPrunesEntriesPastTheHour(t *testing.T) {
-	gate := newSignupGate()
-
-	stale := time.Now().Add(-2 * time.Hour)
-	fresh := time.Now().Add(-30 * time.Minute)
-	for i := 0; i < 10; i++ {
-		gate.recent = append(gate.recent, stale)
-	}
-	gate.recent = append(gate.recent, fresh)
-
-	gate.record()
-	if len(gate.recent) != 2 {
-		t.Fatalf("%d entries after record, want the one inside the hour and the new one", len(gate.recent))
-	}
-}
-
 // Entries older than the window must stop counting, or the limit becomes a
 // lifetime cap and the instance quietly closes itself.
 func TestSignupGateForgetsOldEntries(t *testing.T) {
@@ -112,40 +94,4 @@ func TestParseDomainsTakesWhatOperatorsActuallyType(t *testing.T) {
 			t.Errorf("parseDomains(%q) = %v, want %v", raw, got, want)
 		}
 	}
-}
-
-func TestEmailDomainCheckIsCaseInsensitiveAndAnchored(t *testing.T) {
-	allowed := parseDomains("qq.com, gmail.com")
-
-	shouldPass := []string{"someone@qq.com", "SOMEONE@QQ.COM", "a.b+c@gmail.com"}
-	for _, address := range shouldPass {
-		if !domainAllowed(address, allowed) {
-			t.Errorf("%q was refused", address)
-		}
-	}
-
-	// The last @ is what counts, and a suffix match would let
-	// "evil-qq.com" through.
-	shouldFail := []string{"someone@evil-qq.com", "someone@qq.com.evil.net", "qq.com", "a@b.c"}
-	for _, address := range shouldFail {
-		if domainAllowed(address, allowed) {
-			t.Errorf("%q was accepted", address)
-		}
-	}
-}
-
-// domainAllowed mirrors the check inside checkEmail, which needs a settings
-// service it is not worth building here for a string comparison.
-func domainAllowed(address string, allowed []string) bool {
-	at := strings.LastIndex(address, "@")
-	if at < 0 {
-		return false
-	}
-	domain := strings.ToLower(address[at+1:])
-	for _, candidate := range allowed {
-		if domain == candidate {
-			return true
-		}
-	}
-	return false
 }

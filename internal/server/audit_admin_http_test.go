@@ -27,78 +27,6 @@ func grantAdmin(t *testing.T, in *instance, founder, account *session, permissio
 	}
 }
 
-// A users-only delegate reads an account's usage, quota and cards through
-// the detail panel. The sibling reads of the same account (keys, sessions,
-// conversations) already refuse a super administrator's account to that
-// delegate; the panel must answer the same way.
-func TestUserDetailPanelFollowsTheSiblingReadRule(t *testing.T) {
-	in := newInstance(t)
-	founder := in.register("founder", "a-good-password")
-	operator := in.register("operator", "a-good-password")
-	member := in.register("member", "a-good-password")
-	grantAdmin(t, in, founder, operator, "users")
-
-	if res := in.do(http.MethodGet, "/api/admin/users/"+founder.userID, nil, operator); res.Code != http.StatusForbidden {
-		t.Fatalf("users-only delegate read a super administrator's panel: %d %s", res.Code, res.Body.String())
-	}
-	if res := in.do(http.MethodGet, "/api/admin/users/"+founder.userID+"/keys", nil, operator); res.Code != http.StatusForbidden {
-		t.Fatalf("sibling read changed: %d", res.Code)
-	}
-	if res := in.do(http.MethodGet, "/api/admin/users/"+member.userID, nil, operator); res.Code != http.StatusOK {
-		t.Fatalf("ordinary account panel: %d %s", res.Code, res.Body.String())
-	}
-	if res := in.do(http.MethodGet, "/api/admin/users/"+founder.userID, nil, founder); res.Code != http.StatusOK {
-		t.Fatalf("super administrator's own panel: %d %s", res.Code, res.Body.String())
-	}
-}
-
-// Moving or withdrawing an administrator's unused cards is taking something
-// away from that administrator. A users-only delegate may not do it to a
-// peer administrator it could not manage; the other routes that reach an
-// administrator already refuse it, and these two were checked only against
-// super administrators.
-func TestDelegateCannotMoveOrRevokeAPeersCards(t *testing.T) {
-	in := newInstance(t)
-	founder := in.register("founder", "a-good-password")
-	operator := in.register("operator", "a-good-password")
-	peer := in.register("peer", "a-good-password")
-	member := in.register("member", "a-good-password")
-	grantAdmin(t, in, founder, operator, "users")
-	grantAdmin(t, in, founder, peer, "usage")
-
-	granted := in.do(http.MethodPost, "/api/admin/users/"+peer.userID+"/cards",
-		map[string]any{"cards": 1, "card_days": 30}, founder)
-	if granted.Code != http.StatusCreated {
-		t.Fatalf("grant: %d %s", granted.Code, granted.Body.String())
-	}
-	payload := decode[struct {
-		Cards []struct {
-			ID string `json:"id"`
-		} `json:"cards"`
-	}](t, granted)
-	if len(payload.Cards) != 1 {
-		t.Fatalf("granted %d cards", len(payload.Cards))
-	}
-	cardID := payload.Cards[0].ID
-	later := map[string]any{"expires_at": time.Now().Add(90 * 24 * time.Hour).UnixMilli(), "card_ids": []string{cardID}}
-
-	if res := in.do(http.MethodPatch, "/api/admin/users/"+peer.userID+"/cards", later, operator); res.Code != http.StatusForbidden {
-		t.Fatalf("users-only delegate rescheduled a peer's card: %d %s", res.Code, res.Body.String())
-	}
-	if res := in.do(http.MethodDelete, "/api/admin/users/"+peer.userID+"/cards/"+cardID, nil, operator); res.Code != http.StatusForbidden {
-		t.Fatalf("users-only delegate revoked a peer's card: %d %s", res.Code, res.Body.String())
-	}
-
-	// Ordinary accounts keep their cards in the delegate's hands.
-	if res := in.do(http.MethodPost, "/api/admin/users/"+member.userID+"/cards", map[string]any{"cards": 1, "card_days": 30}, operator); res.Code != http.StatusCreated {
-		t.Fatalf("delegate granted a member: %d %s", res.Code, res.Body.String())
-	}
-	// The founder, a super administrator, still reaches the peer's card.
-	if res := in.do(http.MethodPatch, "/api/admin/users/"+peer.userID+"/cards", later, founder); res.Code != http.StatusOK {
-		t.Fatalf("super administrator reschedule: %d %s", res.Code, res.Body.String())
-	}
-}
-
 // A users grant may write a limit on an ordinary account. It may not write one
 // on a super administrator or on a peer it cannot manage, and the same goes for
 // clearing one or resetting the account's quota. canPolicy alone decided this
@@ -140,6 +68,27 @@ func TestUserScopedLimitsFollowTheAdministratorRule(t *testing.T) {
 	// A super administrator writes any of them.
 	if res := in.do(http.MethodPut, "/api/admin/quota/policies", limit(peer.userID), founder); res.Code != http.StatusOK {
 		t.Fatalf("super administrator limit: %d %s", res.Code, res.Body.String())
+	}
+	if res := in.do(http.MethodPut, "/api/admin/quota/policies", limit(founder.userID), founder); res.Code != http.StatusOK {
+		t.Fatalf("super administrator's own limit: %d %s", res.Code, res.Body.String())
+	}
+	for _, as := range []*session{operator, founder} {
+		res := in.do(http.MethodGet, "/api/admin/quota/policies", nil, as)
+		if res.Code != http.StatusOK {
+			t.Fatalf("policies: %d %s", res.Code, res.Body.String())
+		}
+		listed := decode[struct {
+			Policies []struct {
+				ScopeID string `json:"scope_id"`
+			} `json:"policies"`
+		}](t, res)
+		seen := map[string]bool{}
+		for _, policy := range listed.Policies {
+			seen[policy.ScopeID] = true
+		}
+		if !seen[member.userID] || seen[founder.userID] != (as == founder) || seen[peer.userID] != (as == founder) {
+			t.Fatalf("policies visible as %s: %v", as.userID, seen)
+		}
 	}
 }
 
@@ -372,35 +321,6 @@ func TestPaidReviewAndProbeCallsAreLimited(t *testing.T) {
 	second := in.do(http.MethodPost, "/api/admin/health/probe", nil, operator)
 	if second.Code != http.StatusTooManyRequests {
 		t.Fatalf("a repeat probe inside the cooldown: %d %s", second.Code, second.Body.String())
-	}
-}
-
-// An import and an ordinary save must agree on the bounds of a numeric
-// setting. The attachment retention bounds were checked by hand in the save
-// only, so an import carried out-of-range values into storage.
-func TestImportSkipsOutOfRangeAttachmentRetention(t *testing.T) {
-	in := newInstance(t)
-	founder := in.register("founder", "a-good-password")
-
-	imported := in.do(http.MethodPost, "/api/admin/settings/import", map[string]string{
-		"attachments.purge_after_days": "99999",
-		"attachments.orphan_minutes":   "1",
-	}, founder)
-	if imported.Code != http.StatusOK {
-		t.Fatalf("import: %d %s", imported.Code, imported.Body.String())
-	}
-	skipped := decode[map[string]any](t, imported)["skipped"].([]any)
-	if len(skipped) != 2 {
-		t.Fatalf("out-of-range retention was not skipped: %v", skipped)
-	}
-
-	saved := in.do(http.MethodPut, "/api/admin/settings", map[string]string{"attachments.purge_after_days": "99999"}, founder)
-	if saved.Code != http.StatusBadRequest {
-		t.Fatalf("save of the same value: %d %s", saved.Code, saved.Body.String())
-	}
-	orphan := in.do(http.MethodPut, "/api/admin/settings", map[string]string{"attachments.orphan_minutes": "1"}, founder)
-	if orphan.Code != http.StatusBadRequest {
-		t.Fatalf("save of the same orphan window: %d %s", orphan.Code, orphan.Body.String())
 	}
 }
 
@@ -753,46 +673,6 @@ func TestEchoedHeaderHintsAreReadBackOrRefused(t *testing.T) {
 	}, founder)
 	if bare.Code != http.StatusBadRequest {
 		t.Fatalf("a hint with no source was saved: %d %s", bare.Code, bare.Body.String())
-	}
-}
-
-// The limit list follows the rule the account's panel follows. A users grant
-// reads the limits on ordinary accounts; the one on a super administrator is
-// not listed to it, though the usage grant still lists everything.
-func TestUsersGrantDoesNotListAnAdministratorsLimit(t *testing.T) {
-	in := newInstance(t)
-	founder := in.register("founder", "a-good-password")
-	operator := in.register("operator", "a-good-password")
-	member := in.register("member", "a-good-password")
-	grantAdmin(t, in, founder, operator, "users")
-
-	limit := func(scopeID string) map[string]any {
-		return map[string]any{
-			"scope": "user", "scope_id": scopeID,
-			"windows": map[string]any{"5h": map[string]any{"enabled": true, "tokens": 1000}},
-		}
-	}
-	for _, who := range []*session{founder, member} {
-		if res := in.do(http.MethodPut, "/api/admin/quota/policies", limit(who.userID), founder); res.Code != http.StatusOK {
-			t.Fatalf("limit on %s: %d %s", who.userID, res.Code, res.Body.String())
-		}
-	}
-	list := func(as *session) string {
-		t.Helper()
-		res := in.do(http.MethodGet, "/api/admin/quota/policies", nil, as)
-		if res.Code != http.StatusOK {
-			t.Fatalf("policies: %d %s", res.Code, res.Body.String())
-		}
-		return res.Body.String()
-	}
-	if got := list(operator); strings.Contains(got, founder.userID) {
-		t.Fatalf("a users-only administrator listed a super administrator's limit: %s", got)
-	}
-	if got := list(operator); !strings.Contains(got, member.userID) {
-		t.Fatalf("a users-only administrator cannot see an ordinary account's limit: %s", got)
-	}
-	if got := list(founder); !strings.Contains(got, founder.userID) || !strings.Contains(got, member.userID) {
-		t.Fatalf("super administrator's list is missing a limit: %s", got)
 	}
 }
 

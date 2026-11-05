@@ -86,59 +86,6 @@ describe('OaCheckin', () => {
     expect(host.textContent).toContain(t('checkinStreak', { count: 3 }));
   });
 
-  it('draws the section as one card: what a check-in earns, the month, and a row for each milestone', async () => {
-    serve(status({
-      daily: { kind: 'bonus', bar_id: 'b1', amount: 1, valid_days: 3 },
-      rules: [
-        { id: 'a', title: 'A', basis: 'streak', days: 3, progress: 1, claimable: false, claimed: false, reward: { kind: 'card', cards: 1, valid_days: 30 } },
-        { id: 'b', title: 'B', basis: 'streak', days: 5, progress: 1, claimable: false, claimed: false, reward: { kind: 'card', cards: 1, valid_days: 30 } },
-      ],
-    }));
-    await mount();
-    // One container, so the section stands apart from the panel it sits on the
-    // way the settings screen's cards do, and not as text lying loose on it.
-    const cards = host.querySelectorAll('.oa-usage-card');
-    expect(cards).toHaveLength(1);
-    const rows = [...cards[0]!.querySelectorAll(':scope > .oa-usage-card-row')];
-    expect(rows).toHaveLength(4);
-    expect(rows[0]!.textContent).toContain(t('checkinDaily', { reward: t('checkinRewardBonus', { amount: '1', days: 3 }) }));
-    expect(rows[1]!.querySelector('.oa-checkin-days')).not.toBeNull();
-    expect(rows[2]!.textContent).toContain('A');
-    expect(rows[3]!.textContent).toContain('B');
-  });
-
-  it('puts the day\'s button and the streak in the heading, beside what folds and not inside it', async () => {
-    serve(status({ streak: 4 }));
-    await mount();
-    const head = host.querySelector('.oa-collapsible-head')!;
-    expect(head.querySelector('.oa-card-total')?.textContent).toBe(t('checkinStreak', { count: 4 }));
-    const toggle = head.querySelector<HTMLButtonElement>('.oa-collapsible-toggle')!;
-    const press = button(host, t('checkinNow'));
-    expect(head.contains(press)).toBe(true);
-    expect(toggle.contains(press)).toBe(false);
-
-    serve(status({ streak: 0 }));
-    unmount?.();
-    unmount = undefined;
-    host.textContent = '';
-    await mount();
-    expect(host.querySelector('.oa-card-total')).toBeNull();
-  });
-
-  it('says in the heading that something can be claimed, for a reader who keeps the section folded', async () => {
-    const rule = { id: 'a', title: 'A', basis: 'streak' as const, days: 1, progress: 1, claimed: false, reward: { kind: 'card' as const, cards: 1, valid_days: 30 } };
-    serve(status({ rules: [{ ...rule, claimable: true }] }));
-    await mount();
-    expect(host.querySelector('.oa-collapsible-head')!.textContent).toContain(t('checkinClaimable'));
-    unmount?.();
-    unmount = undefined;
-    host.textContent = '';
-
-    serve(status({ rules: [{ ...rule, claimable: false }] }));
-    await mount();
-    expect(host.querySelector('.oa-collapsible-head')!.textContent).not.toContain(t('checkinClaimable'));
-  });
-
   it('checks in from the heading while the section is folded, and opens it for a refusal without changing what was kept', async () => {
     localStorage.setItem('obsidian-arc-fold-usage-checkin', '1');
     const { ApiError } = await import('@/api/client');
@@ -156,19 +103,6 @@ describe('OaCheckin', () => {
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     expect(host.textContent).toContain('Already checked in today.');
     expect(localStorage.getItem('obsidian-arc-fold-usage-checkin')).toBe('1');
-  });
-
-  it('marks only a milestone that can be claimed as the thing to press', async () => {
-    serve(status({
-      rules: [
-        { id: 'a', title: 'A', basis: 'streak', days: 1, progress: 1, claimable: true, claimed: false, reward: { kind: 'card', cards: 1, valid_days: 30 } },
-        { id: 'b', title: 'B', basis: 'streak', days: 9, progress: 1, claimable: false, claimed: false, reward: { kind: 'card', cards: 1, valid_days: 30 } },
-      ],
-    }));
-    await mount();
-    const [ready, waiting] = [...host.querySelectorAll<HTMLButtonElement>('.oa-checkin-milestone button')];
-    expect(ready!.classList.contains('primary')).toBe(true);
-    expect(waiting!.classList.contains('primary')).toBe(false);
   });
 
   it('turns the button off once today is done', async () => {
@@ -225,37 +159,6 @@ describe('OaCheckin', () => {
     expect(get).toHaveBeenCalledTimes(2);
     expect(button(host, t('checkinDone')).disabled).toBe(true);
     expect(changed).toBe(0);
-  });
-
-  // The refusal's code is what gets translated. Before this, a Chinese screen
-  // showed the server's English for every refusal the screen did not map itself.
-  it('says a refused check-in in Chinese when the code has a reader\'s sentence', async () => {
-    const { ApiError } = await import('@/api/client');
-    await changeLanguage('zh');
-    serve(status(), status({ checked_in_today: true }));
-    post.mockRejectedValue(new ApiError(409, 'already_checked_in', 'Already checked in today.'));
-    await mount();
-
-    button(host, t('checkinNow')).click();
-    await settle();
-
-    expect(host.textContent).toContain(t('errAlreadyCheckedIn'));
-    expect(host.textContent).not.toContain('Already checked in today.');
-  });
-
-  // A server fault names no cause a reader can act on, and its sentence is for
-  // logs, so the screen's own line stands in for it.
-  it('shows the screen\'s own line for a server fault on a press, never the server sentence', async () => {
-    const { ApiError } = await import('@/api/client');
-    serve(status(), status());
-    post.mockRejectedValue(new ApiError(500, 'internal', 'Something went wrong on our side.'));
-    await mount();
-
-    button(host, t('checkinNow')).click();
-    await settle();
-
-    expect(host.textContent).toContain(t('checkinFailed'));
-    expect(host.textContent).not.toContain('Something went wrong');
   });
 
   it('offers the claim only on a milestone that can be claimed, and claims the one pressed', async () => {

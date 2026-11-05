@@ -17,7 +17,7 @@ import { IconImage, IconChevronRight } from '@/icons';
 import { t } from '@/composables/useI18n';
 import { useTheme } from '@/composables/useTheme';
 import { previewWallpaper, setWallpaper, type Wallpaper } from '@/theme/theme';
-import { syncPreferences } from '@/stores/session';
+import { isCurrentSession, sessionStamp, syncPreferences } from '@/stores/session';
 
 const theme = useTheme();
 // The reader's own picture, not whatever is painted: the instance may be
@@ -69,6 +69,7 @@ function persist(): void {
 async function upload(file: File): Promise<void> {
   if (uploading.value) return;
   if (file.size > 10 * 1024 * 1024) { status.value = t('wallpaperTooLarge'); return; }
+  const session = sessionStamp();
   uploading.value = true;
   status.value = t('preparing');
   try {
@@ -76,6 +77,7 @@ async function upload(file: File): Promise<void> {
     // several megabytes of picture nobody will ever look at closely.
     const prepared = await prepareImage(file);
     URL.revokeObjectURL(prepared.previewURL);
+    if (!isCurrentSession(session)) return;
 
     status.value = t('uploading');
     const { url } = await api.put<{ url: string }>('/api/preferences/wallpaper', {
@@ -83,6 +85,7 @@ async function upload(file: File): Promise<void> {
       data: prepared.data,
     });
 
+    if (!isCurrentSession(session)) return;
     const next: Wallpaper = {
       url,
       dim: dim.value,
@@ -96,9 +99,9 @@ async function upload(file: File): Promise<void> {
   } catch (error) {
     // An ImageError is already worded in the reader's language; a request
     // failure is translated by its code like every other screen's.
-    status.value = error instanceof ImageError ? error.message : apiErrorText(error);
+    if (isCurrentSession(session)) status.value = error instanceof ImageError ? error.message : apiErrorText(error);
   } finally {
-    uploading.value = false;
+    if (isCurrentSession(session)) uploading.value = false;
   }
 }
 
@@ -110,11 +113,13 @@ function onPick(): void {
 }
 
 async function clear(): Promise<void> {
+  const session = sessionStamp();
   try {
     await api.delete('/api/preferences/wallpaper');
   } catch {
     // Even if the server call fails, taking it off screen is what was asked.
   }
+  if (!isCurrentSession(session)) return;
   setWallpaper(null);
   syncPreferences({ wallpaper: null });
   status.value = '';

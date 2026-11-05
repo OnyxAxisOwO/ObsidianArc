@@ -42,3 +42,14 @@ it('leaves out a package whose factory never returns', async () => {
   expect(plugins().map((plugin) => plugin.name)).toEqual(['example']);
   expect(warn).toHaveBeenCalledWith('plugin stuck could not be loaded', expect.any(Error));
 });
+
+
+it('does not restore a plugin after a newer load disables it', async () => {
+  let resolveImport!: (module: { default: () => { name: string } }) => void;
+  setModuleImporter(() => new Promise((resolve) => { resolveImport = resolve; }));
+  const older = loadPlugins({ example: { _ui: '/example.js' } });
+  await loadPlugins(undefined);
+  resolveImport({ default: () => ({ name: 'example' }) });
+  await older;
+  expect(plugins()).toEqual([]);
+});

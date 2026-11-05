@@ -114,6 +114,19 @@ func TestSettingsGrantsAreScopedBySection(t *testing.T) {
 				t.Fatalf("%s writes %s: %d %s", grant, key, res.Code, res.Body.String())
 			}
 		}
+		for _, endpoint := range []struct{ method, path string }{
+			{http.MethodPut, "/api/admin/settings"},
+			{http.MethodPost, "/api/admin/settings/import"},
+		} {
+			want := http.StatusForbidden
+			if grant == "settings" {
+				want = http.StatusOK
+			}
+			res = in.do(endpoint.method, endpoint.path, map[string]string{"theme.wallpaper_dim": "12"}, operator)
+			if res.Code != want {
+				t.Fatalf("%s writes wallpaper dim through %s: %d %s", grant, endpoint.path, res.Code, res.Body.String())
+			}
+		}
 		res = in.do(http.MethodGet, "/api/admin/settings", nil, operator)
 		payload := decode[struct {
 			Settings map[string]string `json:"settings"`

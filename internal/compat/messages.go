@@ -36,9 +36,14 @@ type messagesRequest struct {
 	Stream    *bool             `json:"stream"`
 	Tools     []anthropicInTool `json:"tools"`
 	// A string in no version of this protocol, but an object in every one.
-	ToolChoice  json.RawMessage `json:"tool_choice"`
-	Temperature *float64        `json:"temperature"`
-	Thinking    *struct {
+	ToolChoice    json.RawMessage       `json:"tool_choice"`
+	Temperature   *float64              `json:"temperature"`
+	StopSequences []string              `json:"stop_sequences"`
+	CacheControl  *adapter.CacheControl `json:"cache_control"`
+	OutputConfig  *struct {
+		Format json.RawMessage `json:"format"`
+	} `json:"output_config"`
+	Thinking *struct {
 		Type         string `json:"type"`
 		BudgetTokens int    `json:"budget_tokens"`
 	} `json:"thinking"`
@@ -56,7 +61,9 @@ type anthropicInTool struct {
 	InputSchema json.RawMessage `json:"input_schema"`
 	// Set on the tools Anthropic hosts itself — a text editor, a bash
 	// sandbox. Named so they can be refused rather than silently offered.
-	Type string `json:"type"`
+	Type         string                `json:"type"`
+	CacheControl *adapter.CacheControl `json:"cache_control"`
+	Strict       *bool                 `json:"strict"`
 }
 
 // One block of a message, in every shape this endpoint reads. Kept as one
@@ -77,8 +84,10 @@ type anthropicInBlock struct {
 	Input json.RawMessage `json:"input"`
 
 	// tool_result
-	ToolUseID string          `json:"tool_use_id"`
-	Content   json.RawMessage `json:"content"`
+	ToolUseID    string                `json:"tool_use_id"`
+	Content      json.RawMessage       `json:"content"`
+	IsError      bool                  `json:"is_error"`
+	CacheControl *adapter.CacheControl `json:"cache_control"`
 }
 
 func (h *Handlers) messages(w http.ResponseWriter, r *http.Request, who caller) error {
@@ -94,6 +103,10 @@ func (h *Handlers) messages(w http.ResponseWriter, r *http.Request, who caller) 
 
 	request, err := h.buildMessagesRequest(body, resolved)
 	if err != nil {
+		return err
+	}
+
+	if err := validateProtocolControls(resolved.Provider, request); err != nil {
 		return err
 	}
 
@@ -184,7 +197,28 @@ func (h *Handlers) buildMessagesRequest(body messagesRequest, resolved model.Res
 		stream = *body.Stream
 	}
 
+	var systemParts []adapter.Part
+	var blocks []anthropicInBlock
+	if json.Unmarshal(body.System, &blocks) == nil {
+		for _, block := range blocks {
+			if block.Type == "text" || block.Type == "" {
+				systemParts = append(systemParts, adapter.Part{Kind: adapter.PartText, Text: block.Text, CacheControl: block.CacheControl})
+			}
+		}
+	}
+	if !partsHaveCache(systemParts) {
+		systemParts = nil
+	}
+	var format adapter.OutputFormat
+	if body.OutputConfig != nil {
+		var err error
+		format, err = readOutputFormat(body.OutputConfig.Format)
+		if err != nil {
+			return adapter.ChatRequest{}, err
+		}
+	}
 	return adapter.ChatRequest{
+		SystemParts: systemParts, CacheControl: body.CacheControl, OutputFormat: format, Stop: body.StopSequences,
 		Model:       resolved.Upstream.Spec(),
 		System:      prompt,
 		Messages:    messages,
@@ -294,13 +328,16 @@ func readAnthropicContent(raw json.RawMessage, inToolResult bool, pictureLimit i
 
 	out := make([]adapter.Part, 0, len(blocks))
 	for _, block := range blocks {
+		if inToolResult && block.CacheControl != nil {
+			return nil, anthropicBadRequest("Put cache_control on the tool_result block; nested result cache breakpoints are not supported.")
+		}
 		if inToolResult && (block.Type == "tool_result" || block.Type == "tool_use") {
 			return nil, anthropicBadRequest("A tool_result may contain only text blocks.")
 		}
 		switch block.Type {
 		case "text", "":
 			if strings.TrimSpace(block.Text) != "" {
-				out = append(out, adapter.Part{Kind: adapter.PartText, Text: block.Text})
+				out = append(out, adapter.Part{Kind: adapter.PartText, Text: block.Text, CacheControl: block.CacheControl})
 			}
 		case "image":
 			if inToolResult {
@@ -310,16 +347,18 @@ func readAnthropicContent(raw json.RawMessage, inToolResult bool, pictureLimit i
 			if err != nil {
 				return nil, err
 			}
+			part.CacheControl = block.CacheControl
 			out = append(out, part)
 		case "tool_use":
 			if block.Name == "" {
 				continue
 			}
 			out = append(out, adapter.Part{
-				Kind:       adapter.PartToolCall,
-				ToolCallID: block.ID,
-				ToolName:   block.Name,
-				ToolArgs:   strings.TrimSpace(string(block.Input)),
+				Kind:         adapter.PartToolCall,
+				ToolCallID:   block.ID,
+				ToolName:     block.Name,
+				ToolArgs:     strings.TrimSpace(string(block.Input)),
+				CacheControl: block.CacheControl,
 			})
 		case "tool_result":
 			if block.ToolUseID == "" {
@@ -330,9 +369,10 @@ func readAnthropicContent(raw json.RawMessage, inToolResult bool, pictureLimit i
 				return nil, err
 			}
 			out = append(out, adapter.Part{
-				Kind:       adapter.PartToolResult,
-				ToolCallID: block.ToolUseID,
-				Text:       joinText(nested),
+				Kind:        adapter.PartToolResult,
+				ToolCallID:  block.ToolUseID,
+				Text:        joinText(nested),
+				ToolIsError: block.IsError, CacheControl: block.CacheControl,
 			})
 		case "thinking", "redacted_thinking":
 			// A model's own reasoning, replayed. It is dropped rather than
@@ -392,6 +432,7 @@ func readAnthropicTools(declared []anthropicInTool) ([]adapter.Tool, error) {
 		}
 		out = append(out, adapter.Tool{
 			Name: name, Description: tool.Description, Parameters: tool.InputSchema,
+			CacheControl: tool.CacheControl, Strict: tool.Strict,
 		})
 	}
 	return out, nil
@@ -456,6 +497,7 @@ func (h *Handlers) messagesBuffered(
 	// gives: a long answer without a stream outlasts the header timeout.
 	request.Stream = true
 	result, chatErr := h.registry.Chat(r.Context(), resolved.Provider, request, sink)
+	chatErr = messagesResultError(result, chatErr)
 	usage = usage.Merge(result.Usage)
 	if result.Text != "" && answer.Len() == 0 {
 		answer.WriteString(result.Text)
@@ -464,20 +506,24 @@ func (h *Handlers) messagesBuffered(
 		calls = result.ToolCalls
 	}
 
-	if chatErr != nil {
+	if chatErr != nil && !deliveredRefusal(result, chatErr) {
 		h.record(r.Context(), who, resolved, requestID, usage, startedAt, chatErr)
 		return translateUpstream(chatErr)
 	}
-	h.record(r.Context(), who, resolved, requestID, usage, startedAt, nil)
+	h.record(r.Context(), who, resolved, requestID, usage, startedAt, chatErr)
+	if deliveredRefusal(result, chatErr) {
+		result.FinishReason = "refusal"
+	}
 
 	return writeJSON(w, http.StatusOK, anthropicMessage{
-		ID:         messageID(requestID),
-		Type:       "message",
-		Role:       "assistant",
-		Model:      label,
-		Content:    anthropicContent(answer.String(), calls, requestID),
-		StopReason: anthropicStopReason(result.FinishReason, len(calls)),
-		Usage:      anthropicUsage(usage),
+		ID:           messageID(requestID),
+		Type:         "message",
+		Role:         "assistant",
+		Model:        label,
+		Content:      anthropicContent(answer.String(), calls, requestID),
+		StopReason:   anthropicStopReason(result.FinishReason, len(calls)),
+		Usage:        anthropicUsage(usage),
+		StopSequence: result.StopSequence,
 	})
 }
 
@@ -501,6 +547,8 @@ func (h *Handlers) messagesStreamed(
 		return internalError(err)
 	}
 
+	streamCtx, stopHeartbeat := sse.KeepAlive(r.Context())
+	defer stopHeartbeat()
 	usage := adapter.Usage{}
 	var calls []adapter.ToolCall
 
@@ -510,14 +558,20 @@ func (h *Handlers) messagesStreamed(
 	index := 0
 	textOpen := false
 
-	_ = sse.Event("message_start", map[string]any{
-		"type": "message_start",
-		"message": anthropicMessage{
-			ID: messageID(requestID), Type: "message", Role: "assistant",
-			Model: label, Content: []anthropicOutBlock{},
-			Usage: &anthropicUsageBlock{},
-		},
-	})
+	started := false
+	startMessage := func() error {
+		if started {
+			return nil
+		}
+		started = true
+		initial := usage
+		if !initial.HasInputCount() {
+			initial.InputTokens = adapter.EstimatePrompt(request)
+		}
+		return sse.Event("message_start", map[string]any{"type": "message_start", "message": anthropicMessage{
+			ID: messageID(requestID), Type: "message", Role: "assistant", Model: label, Content: []anthropicOutBlock{}, Usage: anthropicUsage(initial),
+		}})
+	}
 
 	closeText := func() {
 		if !textOpen {
@@ -531,6 +585,12 @@ func (h *Handlers) messagesStreamed(
 	}
 
 	sink := func(event adapter.Event) error {
+		if event.Type == adapter.EventUsage {
+			usage = usage.Merge(event.Usage)
+		}
+		if err := startMessage(); err != nil {
+			return err
+		}
 		switch event.Type {
 		case adapter.EventDelta:
 			if !textOpen {
@@ -567,8 +627,16 @@ func (h *Handlers) messagesStreamed(
 	}
 
 	clientGone := false
-	result, chatErr := h.registry.Chat(r.Context(), resolved.Provider, request, watchWrites(sink, &clientGone))
+	result, chatErr := h.registry.Chat(streamCtx, resolved.Provider, request, watchWrites(sink, &clientGone))
+	if heartbeatErr := stopHeartbeat(); heartbeatErr != nil {
+		chatErr = heartbeatErr
+		clientGone = true
+	}
+	chatErr = messagesResultError(result, chatErr)
 	usage = usage.Merge(result.Usage)
+	if !clientGone {
+		_ = startMessage()
+	}
 
 	// A provider that could not stream answered all at once, and the answer
 	// still has to reach the client as blocks.
@@ -592,9 +660,19 @@ func (h *Handlers) messagesStreamed(
 	}
 	closeText()
 
-	gone := h.settleStream(r, who, resolved, requestID, usage, startedAt, chatErr, clientGone)
+	defer func() {
+		failure := chatErr
+		if writeErr := sse.Err(); writeErr != nil {
+			clientGone = true
+			if failure == nil {
+				failure = writeErr
+			}
+		}
+		h.settleStream(r, who, resolved, requestID, usage, startedAt, failure, clientGone)
+	}()
+	gone := abandoned(clientGone, r, chatErr)
 
-	if chatErr != nil {
+	if chatErr != nil && !deliveredRefusal(result, chatErr) {
 		if gone {
 			return nil
 		}
@@ -607,13 +685,17 @@ func (h *Handlers) messagesStreamed(
 		return nil
 	}
 
+	if deliveredRefusal(result, chatErr) {
+		result.FinishReason = "refusal"
+	}
+
 	_ = sse.Event("message_delta", map[string]any{
 		"type": "message_delta",
 		"delta": map[string]any{
 			"stop_reason":   anthropicStopReason(result.FinishReason, len(calls)),
-			"stop_sequence": nil,
+			"stop_sequence": result.StopSequence,
 		},
-		"usage": map[string]any{"output_tokens": usage.OutputTokens},
+		"usage": anthropicUsage(usage),
 	})
 	_ = sse.Event("message_stop", map[string]any{"type": "message_stop"})
 	return nil
@@ -678,12 +760,25 @@ type anthropicOutBlock struct {
 }
 
 type anthropicUsageBlock struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	CacheCreation            *struct {
+		Ephemeral5mInputTokens int `json:"ephemeral_5m_input_tokens"`
+		Ephemeral1hInputTokens int `json:"ephemeral_1h_input_tokens"`
+	} `json:"cache_creation,omitempty"`
 }
 
 func anthropicUsage(u adapter.Usage) *anthropicUsageBlock {
-	return &anthropicUsageBlock{InputTokens: u.InputTokens, OutputTokens: u.OutputTokens}
+	block := &anthropicUsageBlock{InputTokens: max(0, u.InputTokens-u.CacheReadTokens-u.CacheCreationTokens), OutputTokens: u.OutputTokens + u.ReasoningTokens, CacheReadInputTokens: u.CacheReadTokens, CacheCreationInputTokens: u.CacheCreationTokens}
+	if u.CacheCreation5mTokens+u.CacheCreation1hTokens > 0 {
+		block.CacheCreation = &struct {
+			Ephemeral5mInputTokens int `json:"ephemeral_5m_input_tokens"`
+			Ephemeral1hInputTokens int `json:"ephemeral_1h_input_tokens"`
+		}{u.CacheCreation5mTokens, u.CacheCreation1hTokens}
+	}
+	return block
 }
 
 func anthropicContent(text string, calls []adapter.ToolCall, requestID string) []anthropicOutBlock {
@@ -718,9 +813,9 @@ func anthropicStopReason(upstream string, toolCalls int) *string {
 	case "tool_calls", "tool_use", "function_call":
 		reason = "tool_use"
 	case "content_filter", "refusal":
-		// This protocol has no word for a filter, and end_turn is what its
-		// own API answers when a turn simply stopped.
-		reason = "end_turn"
+		reason = "refusal"
+	case "stop_sequence", "pause_turn", "model_context_window_exceeded":
+		reason = strings.ToLower(strings.TrimSpace(upstream))
 	}
 	if toolCalls > 0 && reason == "end_turn" {
 		reason = "tool_use"

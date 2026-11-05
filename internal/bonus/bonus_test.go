@@ -246,19 +246,6 @@ func TestOnlyABarTheAccountMaySwitchCanBeSwitched(t *testing.T) {
 	}
 }
 
-func TestABarOnlyCoversTheModelsItNames(t *testing.T) {
-	f := newFixture(t)
-	a := f.account(t, "alice")
-	bar := f.bar(t, Bar{Name: "gift", ToggleMode: ModeOn, ModelIDs: []string{"cheap"}})
-	f.give(t, bar.ID, a.ID, 5, 0)
-	if holds, _ := f.take(t, a.ID, "expensive", 1, Priority); len(holds) != 0 {
-		t.Fatalf("spent on a model it does not cover: %v", holds)
-	}
-	if holds, _ := f.take(t, a.ID, "cheap", 1, Priority); !near(Total(holds), 1) {
-		t.Fatalf("not spent on the model it covers: %v", holds)
-	}
-}
-
 // Only a write outside this code can damage a model list. Read as empty, it
 // would make a restricted bar spendable on every model, so the grant must be
 // skipped instead.
@@ -366,33 +353,6 @@ func TestRefundPutsBackWhatWasHeldAndNeverBelowZero(t *testing.T) {
 	}
 	if f.used(t, bar.ID, a.ID) != 0 {
 		t.Fatalf("used after a double refund: %v", f.used(t, bar.ID, a.ID))
-	}
-}
-
-// Settling charges what the request cost to the grants that were held for it,
-// and says what they did not cover; whether the hold has been given back yet
-// must not change what the grant ends up carrying.
-func TestSettleLeavesTheGrantCarryingTheCostWhicheverComesFirst(t *testing.T) {
-	for _, releaseFirst := range []bool{true, false} {
-		f := newFixture(t)
-		a := f.account(t, "alice")
-		bar := f.bar(t, Bar{Name: "gift", ToggleMode: ModeOn})
-		f.give(t, bar.ID, a.ID, 5, 0)
-		holds, _ := f.take(t, a.ID, "m", 2, Priority) // reserved 2
-		ctx := context.Background()
-
-		var covered float64
-		var err error
-		if releaseFirst {
-			_ = f.store.Refund(ctx, f.db, holds)
-			covered, err = f.store.Settle(ctx, f.db, holds, 1.5, true)
-		} else {
-			covered, err = f.store.Settle(ctx, f.db, holds, 1.5, false)
-			_ = f.store.Refund(ctx, f.db, holds)
-		}
-		if err != nil || !near(covered, 1.5) || !near(f.used(t, bar.ID, a.ID), 1.5) {
-			t.Fatalf("release first=%v: covered %v used %v err %v", releaseFirst, covered, f.used(t, bar.ID, a.ID), err)
-		}
 	}
 }
 

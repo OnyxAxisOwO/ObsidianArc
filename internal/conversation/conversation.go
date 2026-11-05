@@ -110,6 +110,7 @@ type Attachment struct {
 var (
 	ErrNotFound        = errors.New("conversation: not found")
 	ErrMessageNotFound = errors.New("conversation: no such message")
+	ErrBranchChanged   = errors.New("conversation: branch changed")
 	ErrTitleTooLong    = errors.New("conversation: title must be 120 characters or fewer")
 	// The project a conversation was asked to move into is not one of the
 	// owner's: gone, or somebody else's.
@@ -621,6 +622,8 @@ type AppendInput struct {
 	ProviderID    string
 	Stats         *Stats
 	AttachmentIDs []string
+	// When set, the append is allowed only on the branch captured before generation.
+	ExpectedBranch *int64
 }
 
 func (s *Store) Append(ctx context.Context, q database.Queryer, in AppendInput) (Message, error) {
@@ -681,6 +684,15 @@ func (s *Store) appendIn(ctx context.Context, q database.Queryer, in AppendInput
 		return Message{}, err
 	}
 
+	if in.ExpectedBranch != nil {
+		var revision int64
+		if err := q.QueryRow(ctx, `SELECT branch_revision FROM conversations WHERE id = ? AND user_id = ?`, in.ConversationID, in.UserID).Scan(&revision); err != nil {
+			return Message{}, err
+		}
+		if revision != *in.ExpectedBranch {
+			return Message{}, ErrBranchChanged
+		}
+	}
 	var next int
 	// COALESCE rather than a separate "is this the first message" branch.
 	err := q.QueryRow(ctx,
@@ -780,7 +792,21 @@ func (s *Store) TruncateFrom(ctx context.Context, q database.Queryer, userID, co
 		conversationID, userID, seq); err != nil {
 		return fmt.Errorf("conversation: truncate: %w", err)
 	}
+	if _, err := q.Exec(ctx, `UPDATE conversations SET branch_revision = branch_revision + 1 WHERE id = ? AND user_id = ?`, conversationID, userID); err != nil {
+		return err
+	}
 	return s.touch(ctx, q, conversationID, userID)
+}
+
+// BranchRevision locks the conversation and captures its current branch inside
+// the same transaction that opens a turn.
+func (s *Store) BranchRevision(ctx context.Context, tx *database.Tx, userID, conversationID string) (int64, error) {
+	if err := lockConversation(ctx, tx, userID, conversationID); err != nil {
+		return 0, err
+	}
+	var revision int64
+	err := tx.QueryRow(ctx, `SELECT branch_revision FROM conversations WHERE id = ? AND user_id = ?`, conversationID, userID).Scan(&revision)
+	return revision, err
 }
 
 // Message returns a single message with its attachments.
@@ -826,7 +852,16 @@ func (s *Store) Message(ctx context.Context, q database.Queryer, userID, convers
 // UpdateMessage replaces the content of an existing message.
 func (s *Store) UpdateMessage(ctx context.Context, q database.Queryer, userID, conversationID, messageID, content string) (Message, error) {
 	if q == nil {
-		q = s.db
+		var record Message
+		err := s.db.Tx(ctx, func(tx *database.Tx) error {
+			var err error
+			record, err = s.UpdateMessage(ctx, tx, userID, conversationID, messageID, content)
+			return err
+		})
+		return record, err
+	}
+	if err := lockConversation(ctx, q, userID, conversationID); err != nil {
+		return Message{}, err
 	}
 	trimmed := text.TrimAndTruncate(text.Clean(content), MaxContentChars)
 	result, err := q.Exec(ctx,
@@ -841,6 +876,9 @@ func (s *Store) UpdateMessage(ctx context.Context, q database.Queryer, userID, c
 	}
 	if affected == 0 {
 		return Message{}, ErrMessageNotFound
+	}
+	if _, err := q.Exec(ctx, `UPDATE conversations SET branch_revision = branch_revision + 1 WHERE id = ? AND user_id = ?`, conversationID, userID); err != nil {
+		return Message{}, err
 	}
 	if err := s.touch(ctx, q, conversationID, userID); err != nil {
 		return Message{}, err

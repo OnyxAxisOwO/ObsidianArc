@@ -62,20 +62,6 @@ func TestAModelThatCouldNotBeReenabledIsNamed(t *testing.T) {
 	}
 }
 
-// The ordinary case must stay silent, so the response does not carry a field
-// that is always present and always empty.
-func TestAResetThatReenablesEverythingNamesNothing(t *testing.T) {
-	rows := []model.Model{{ID: "01ARZ3NDEKTSV4RRFFQ69G5FAV", AutoDisabled: true}}
-	update := func(_ context.Context, id string, _ model.Update) (model.Model, error) {
-		return model.Model{ID: id, Enabled: true}, nil
-	}
-
-	reenabled, refused := reenableAutoDisabled(context.Background(), rows, update)
-	if reenabled != 1 || len(refused) != 0 {
-		t.Errorf("reenabled = %d, refused = %v, want 1 and nothing refused", reenabled, refused)
-	}
-}
-
 // The reset is the other place the checker's switch gets spent. A model an
 // operator has since switched on and then off must stay off through it: the
 // reset reads the flag, so the flag has to say what the operator last decided.

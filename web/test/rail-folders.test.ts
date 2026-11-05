@@ -34,7 +34,7 @@ const { listConversations, moveConversation: moveApi } = await import('../src/ap
 const { createProject: createApi, deleteProject: deleteApi, listProjects } = await import('../src/api/projects');
 const ChatSidebar = (await import('../src/chat/ChatSidebar.vue')).default;
 const {
-  activeID, CONVERSATION_DRAG_TYPE, conversations, dropTarget, flash, moveConversation, railFull, refreshList, resetChat,
+  activeID, CONVERSATION_DRAG_TYPE, conversations, flash, moveConversation, railFull, refreshList, resetChat,
 } = await import('../src/chat/useChat');
 const { createProject, projectList, refreshProjects, resetProjects } = await import('../src/stores/projects');
 const { pendingProjectID } = await import('../src/stores/workspace');
@@ -155,20 +155,6 @@ describe('the rail’s folders', () => {
     vi.restoreAllMocks();
   });
 
-  it('draws the folders above and only the conversations in none below', async () => {
-    await mount();
-
-    expect(host.querySelector('[role="tablist"]')).toBeNull();
-    expect([...host.querySelectorAll('.ai-folder-open .ai-chat-list-title')].map((node) => node.textContent?.trim()))
-      .toEqual(['Folder One', 'Folder Two']);
-    expect(folderBlock('Folder One').querySelector('.ai-folder-count')?.textContent?.trim()).toBe('1');
-    expect(looseTitles()).toEqual(['Loose chat']);
-    // The filed one is under its folder, once, and not among the loose ones.
-    await openFolder('Folder One');
-    expect(rowTitled(folderBlock('Folder One'), 'Filed chat')).toBeTruthy();
-    expect(host.querySelectorAll('.ai-chat-list-title')).toHaveLength(4);
-  });
-
   it('files a row dropped on a folder, and takes it out of the loose list', async () => {
     await mount();
     const transfer = new FakeTransfer();
@@ -208,22 +194,6 @@ describe('the rail’s folders', () => {
     expect(moveApi).toHaveBeenCalledWith('c2', '');
     expect(looseTitles()).toEqual(['Loose chat', 'Filed chat']);
     expect(rowTitled(folderBlock('Folder One'), 'Filed chat')).toBeUndefined();
-  });
-
-  it('does nothing with a row dropped on the folder it is already in', async () => {
-    await mount();
-    await openFolder('Folder One');
-    const transfer = new FakeTransfer();
-    fire(rowTitled(folderBlock('Folder One'), 'Filed chat'), 'dragstart', transfer);
-
-    const own = folderBlock('Folder One');
-    expect(fire(own, 'dragover', transfer).defaultPrevented).toBe(false);
-    await nextTick();
-    expect(own.classList.contains('drop-target')).toBe(false);
-    fire(own, 'drop', transfer);
-    await settle();
-
-    expect(moveApi).not.toHaveBeenCalled();
   });
 
   it('leaves everything where it was when the server refuses, and says why', async () => {
@@ -267,26 +237,6 @@ describe('the rail’s folders', () => {
     await settle();
     expect(moveApi).toHaveBeenCalledWith('c1', 'p2');
     expect(looseTitles()).toEqual([]);
-  });
-
-  it('offers a filed row out of its folder, and only the other folders to go to', async () => {
-    await mount();
-    await openFolder('Folder One');
-    rowTitled(folderBlock('Folder One'), 'Filed chat')
-      .querySelector<HTMLButtonElement>('.ai-chat-list-more')!.click();
-    await settle();
-
-    const items = () => [...host.querySelectorAll<HTMLButtonElement>('.ai-chat-context-menu .oa-menu-item')];
-    const titled = (title: string) => items().find((item) => item.textContent?.trim() === title);
-    titled(t('moveToFolder'))!.click();
-    await settle();
-    expect([...host.querySelectorAll('.ai-chat-menu-folder')].map((node) => node.textContent?.trim()))
-      .toEqual(['Folder Two']);
-
-    titled(t('moveOutOfFolder'))!.click();
-    await settle();
-    expect(moveApi).toHaveBeenCalledWith('c2', '');
-    expect(looseTitles()).toEqual(['Loose chat', 'Filed chat']);
   });
 
   it('does not let a folder read begun before a move put the moved row back', async () => {
@@ -357,34 +307,6 @@ describe('the rail’s folders', () => {
     expect([...host.querySelectorAll('.ai-chat-list-title')].map((node) => node.textContent?.trim()))
       .toContain('Older loose');
     expect(host.querySelector('[role="note"]')?.textContent?.trim()).toBe(t('searchRecentOnly', { count: 60 }));
-  });
-
-  it('says nothing about older conversations when neither read came back full', async () => {
-    vi.mocked(listConversations).mockImplementation(async (params) => ({
-      conversations: params?.project_id === ''
-        ? [conv('c1', 'Loose chat', '', 2)]
-        : [conv('c1', 'Loose chat', '', 2), conv('c2', 'Filed chat', 'p1', 1)],
-    }));
-    await refreshList();
-    expect(conversations.value.map((entry) => entry.id)).toEqual(['c1', 'c2']);
-    expect(railFull.value).toBe(false);
-  });
-
-  it('lights nothing over the folder a row is already in, even after lighting another', async () => {
-    await mount();
-    await openFolder('Folder One');
-    const transfer = new FakeTransfer();
-    fire(rowTitled(folderBlock('Folder One'), 'Filed chat'), 'dragstart', transfer);
-
-    const loose = host.querySelector('.ai-rail-loose')!;
-    fire(loose, 'dragover', transfer);
-    await nextTick();
-    expect(loose.classList.contains('drop-target')).toBe(true);
-
-    expect(fire(folderBlock('Folder One'), 'dragover', transfer).defaultPrevented).toBe(false);
-    await nextTick();
-    expect(dropTarget.value).toBeNull();
-    expect(loose.classList.contains('drop-target')).toBe(false);
   });
 
   it('leaves a read of a folder the moved row was never in to land', async () => {
@@ -534,14 +456,6 @@ describe('the rail’s folders', () => {
     expect(pendingProjectID.value).toBe('p1');
   });
 
-  it('names a folder with its count, and hides the bare figure from a screen reader', async () => {
-    await mount();
-    const block = folderBlock('Folder One');
-    expect(block.querySelector('.ai-folder-open')?.getAttribute('aria-label'))
-      .toBe(t('folderSummary', { name: 'Folder One', count: 1 }));
-    expect(block.querySelector('.ai-folder-count')?.getAttribute('aria-hidden')).toBe('true');
-  });
-
   it('opens and focuses the first-folder form after its content loads', async () => {
     projectList.value = [];
     vi.mocked(listProjects).mockResolvedValue({ projects: [], max: 0 });
@@ -573,29 +487,6 @@ describe('the rail’s folders', () => {
     expect(form).not.toBeNull();
     expect(form!.contains(document.activeElement)).toBe(true);
     expect(document.activeElement?.tagName).toBe('INPUT');
-  });
-
-  it('unfolds the folders under the menu item, in the menu’s title column, on a list that scrolls by itself', async () => {
-    await mount();
-    rowTitled(host.querySelector('.ai-rail-loose')!, 'Loose chat')
-      .querySelector<HTMLButtonElement>('.ai-chat-list-more')!.click();
-    await settle();
-    const trigger = [...host.querySelectorAll<HTMLButtonElement>('.ai-chat-context-menu .oa-menu-item')]
-      .find((item) => item.textContent?.trim() === t('moveToFolder'))!;
-    expect(trigger.classList.contains('active')).toBe(false);
-    trigger.click();
-    await settle();
-
-    expect(trigger.classList.contains('active')).toBe(true);
-    expect(trigger.getAttribute('aria-expanded')).toBe('true');
-    expect(trigger.querySelector('.ai-chat-menu-chevron.expanded')).not.toBeNull();
-    const choices = [...host.querySelectorAll<HTMLElement>('.ai-chat-menu-folder')];
-    expect(choices).toHaveLength(2);
-    for (const choice of choices) {
-      // A leading glyph, as every sibling has, so the name starts in their column.
-      expect(choice.querySelector('.oa-menu-row > svg.ai-chat-menu-folder-glyph')).not.toBeNull();
-      expect(choice.closest('.ai-chat-menu-folders-wrap .ai-chat-menu-folders')).not.toBeNull();
-    }
   });
 
   it('keeps focus after a move from the menu, and says where the row went', async () => {

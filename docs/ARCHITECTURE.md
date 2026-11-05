@@ -228,9 +228,11 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
 | Binary (SQLite + embedded SPA) | < 30 MB | 28.15 MB (24.45 MB `-tags nosqlite`, Linux amd64, Go 1.27.3), 0.41 MB of it the frontend's brotli copies and 0.41 MB the embedded zone database; this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 174.18 kB to open the chat with brotli (153.63 JS + 20.54 CSS); 207.41 kB with gzip (183.26 JS + 24.15 CSS), which the budget holds; the brotli is a copy compressed at build time, the gzip is Go's, made as it goes out |
+| Frontend, on the wire | < 135 kB | 174.49 kB to open the chat with brotli (153.94 JS + 20.54 CSS); 207.75 kB with gzip (183.60 JS + 24.15 CSS), which the budget holds; the brotli is a copy compressed at build time, the gzip is Go's, made as it goes out |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-11-05 after the session and notification fixes: first paint is 207.75 kB gzip and 174.49 kB brotli.
 
 Remeasured on 2026-11-04 after registration gained user agreement and privacy
 policy controls. The provider sign-up completion form is now fetched only when

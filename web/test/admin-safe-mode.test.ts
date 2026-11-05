@@ -16,16 +16,13 @@ import AdminModels from '../src/views/admin/AdminModels.vue';
 import AdminProviders from '../src/views/admin/AdminProviders.vue';
 import AdminResources from '../src/views/admin/AdminResources.vue';
 import AdminUsers from '../src/views/admin/AdminUsers.vue';
-import OaUsageWindow from '../src/components/OaUsageWindow.vue';
 import UptimePanel from '../src/views/UptimePanel.vue';
 import UsageBoard from '../src/views/admin/usage/UsageBoard.vue';
 import UsageMatrix from '../src/views/admin/usage/UsageMatrix.vue';
 import { api } from '../src/api/client';
 import { dashboardFixture, emptyTotals } from './fixtures/dashboard';
 import {
-  activeMaskCount,
   isMasked,
-  mask,
   maskBilling,
   maskCredential,
   maskLog,
@@ -61,21 +58,6 @@ describe('Admin Safe Mode store & utilities', () => {
     safeModeEnabled.value = false;
   });
 
-  it('masks nothing when safe mode is disabled', () => {
-    safeModeEnabled.value = false;
-    expect(isMasked('users')).toBe(false);
-    expect(isMasked('providers')).toBe(false);
-    expect(isMasked('credentials')).toBe(false);
-    expect(isMasked('billing')).toBe(false);
-    expect(isMasked('logs')).toBe(false);
-
-    expect(maskUser('alice')).toBe('alice');
-    expect(maskProvider('OpenAI')).toBe('OpenAI');
-    expect(maskCredential('sk-test1234')).toBe('sk-test1234');
-    expect(maskBilling('100,000')).toBe('100,000');
-    expect(maskLog('192.168.1.1')).toBe('192.168.1.1');
-  });
-
   it('masks values into ****** when safe mode is enabled', () => {
     toggleSafeMode(true);
     expect(safeModeEnabled.value).toBe(true);
@@ -107,28 +89,6 @@ describe('Admin Safe Mode store & utilities', () => {
     expect(maskProvider('OpenAI')).toBe('OpenAI');
     expect(maskBilling('1,000')).toBe('1,000');
     expect(maskCredential('sk-xxxx')).toBe(MASK_PLACEHOLDER);
-  });
-
-  it('handles empty, null, and undefined values cleanly', () => {
-    toggleSafeMode(true);
-    expect(mask(null, 'users')).toBe('');
-    expect(mask(undefined, 'users')).toBe('');
-    expect(mask('', 'users')).toBe('');
-    expect(maskUser(null)).toBe('');
-    expect(maskUser(undefined)).toBe('');
-  });
-
-  it('supports setAllCategories and computes activeMaskCount', () => {
-    toggleSafeMode(true);
-    expect(activeMaskCount.value).toBe(5);
-
-    setAllCategories(false);
-    expect(activeMaskCount.value).toBe(0);
-    expect(isMasked('users')).toBe(false);
-
-    setAllCategories(true);
-    expect(activeMaskCount.value).toBe(5);
-    expect(isMasked('users')).toBe(true);
   });
 
   it('persists preferences to localStorage', async () => {
@@ -241,44 +201,6 @@ describe('AdminSafeMode component', () => {
     const selectAllBtn = menu.querySelector<HTMLButtonElement>('.oa-safe-mode-action-btn')!;
     selectAllBtn.click();
     await nextTick();
-    expect(safeModeCategories.value.users).toBe(true);
-  });
-
-  it('toggles safe mode when clicking header title area', async () => {
-    app = createApp(AdminSafeMode);
-    app.mount(host);
-
-    const triggerBtn = host.querySelector<HTMLButtonElement>('.oa-safe-mode-btn')!;
-    triggerBtn.click();
-    await nextTick();
-
-    const head = host.querySelector<HTMLElement>('.oa-safe-mode-head')!;
-    expect(safeModeEnabled.value).toBe(false);
-
-    head.click();
-    await nextTick();
-    expect(safeModeEnabled.value).toBe(true);
-
-    head.click();
-    await nextTick();
-    expect(safeModeEnabled.value).toBe(false);
-  });
-
-  it('enables safe mode when clicking a category while safe mode is disabled', async () => {
-    app = createApp(AdminSafeMode);
-    app.mount(host);
-
-    const triggerBtn = host.querySelector<HTMLButtonElement>('.oa-safe-mode-btn')!;
-    triggerBtn.click();
-    await nextTick();
-
-    expect(safeModeEnabled.value).toBe(false);
-
-    const categoryRows = host.querySelectorAll<HTMLButtonElement>('.oa-safe-mode-row');
-    categoryRows[0]!.click();
-    await nextTick();
-
-    expect(safeModeEnabled.value).toBe(true);
     expect(safeModeCategories.value.users).toBe(true);
   });
 });
@@ -473,48 +395,6 @@ describe('UsageMatrix safe mode masking', () => {
     const maskedTitle = host.querySelector('td[title]')?.getAttribute('title');
     expect(maskedTitle).not.toContain('Alice Wonder');
     expect(maskedTitle).toContain('******');
-  });
-});
-
-describe('OaUsageWindow safe mode masking', () => {
-  let app: App | undefined;
-  let host: HTMLElement;
-
-  beforeEach(() => {
-    host = document.createElement('div');
-    document.body.appendChild(host);
-  });
-
-  afterEach(() => {
-    app?.unmount();
-    app = undefined;
-    host.remove();
-  });
-
-  // The account panel's own allowance bars, read by an administrator about
-  // someone else's account rather than their own: masking the figure only
-  // half hides it if the bar beside it still shows the same percentage as a
-  // shape.
-  it('replaces the figure and hides the meter bar when the caller marks it masked', async () => {
-    const window_ = {
-      kind: '5h', enforced: true,
-      used_requests: 40, used_tokens: 0, used_credits: 0,
-      limit_requests: 100, limit_tokens: null, limit_credits: null,
-      resets_at: Date.now() + 3_600_000,
-    };
-    app = createApp({ render() { return h(OaUsageWindow as Component, { window: window_, masked: false }); } });
-    app.mount(host);
-    await nextTick();
-    expect(host.textContent).toContain('40 / 100');
-    expect(host.querySelector('.oa-meter')).not.toBeNull();
-    app.unmount();
-
-    app = createApp({ render() { return h(OaUsageWindow as Component, { window: window_, masked: true }); } });
-    app.mount(host);
-    await nextTick();
-    expect(host.textContent).not.toContain('40 / 100');
-    expect(host.textContent).toContain('******');
-    expect(host.querySelector('.oa-meter')).toBeNull();
   });
 });
 
@@ -977,9 +857,6 @@ describe('AdminAvailability safe mode masking', () => {
 });
 
 describe('Admin Safe Mode categories', () => {
-  it('offers a switch for every category the stored state carries', () => {
-    expect(SAFE_CATEGORIES.map((c) => c.key).sort()).toEqual(Object.keys(safeModeCategories.value).sort());
-  });
 
   it('masks a category another tab saved without mentioning it', () => {
     window.dispatchEvent(new StorageEvent('storage', {

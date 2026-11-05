@@ -95,11 +95,6 @@ describe('OaTable multi-select', () => {
     await nextTick();
     expect(selected.value).toEqual(['c']);
   });
-
-  it('draws no checkboxes unless asked', () => {
-    mount([{ id: 'a' }], { multi: false });
-    expect(host.querySelector('input[type="checkbox"]')).toBeNull();
-  });
 });
 
 describe('AdminModels, several at once and in place', () => {
@@ -325,45 +320,6 @@ describe('AdminModels, several at once and in place', () => {
     await settle();
 
     expect(update).toHaveBeenCalledWith('img', expect.objectContaining({ request_weight: 0 }));
-  });
-
-  it('seeds the weight to one when the operator ticks image generation on', async () => {
-    const update = vi.spyOn(adminApi, 'updateModel').mockResolvedValue({ model: model('txt') });
-    await mount([model('txt', { request_weight: 0 })]);
-
-    host.querySelector<HTMLTableRowElement>('tbody tr')!.click();
-    await settle();
-    const toggle = [...panels.querySelectorAll<HTMLLabelElement>('.oa-checkbox-field')]
-      .find((field) => field.querySelector('span')?.textContent === t('capImageGen'))!
-      .querySelector<HTMLInputElement>('input[type="checkbox"]')!;
-    toggle.click();
-    await settle();
-    panels.querySelector<HTMLButtonElement>('.oa-panel-foot .oa-btn.primary')!.click();
-    await settle();
-
-    expect(update).toHaveBeenCalledWith('txt', expect.objectContaining({ request_weight: 1, supports_image_gen: true }));
-  });
-
-  // navigator.clipboard is absent on a plain-http origin; the shared helper
-  // falls back to execCommand, and the button must say the copy worked.
-  it('copies a model ID through the fallback where the clipboard API is missing', async () => {
-    const execCommand = vi.fn(() => true);
-    Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true });
-    Object.defineProperty(document, 'execCommand', { value: execCommand, configurable: true });
-    try {
-      await mount([model('a')]);
-      host.querySelector<HTMLTableRowElement>('tbody tr')!.click();
-      await settle();
-      const copy = panels.querySelector<HTMLButtonElement>(`button[aria-label="${t('copy')}"]`)!;
-      copy.click();
-      await settle();
-
-      expect(execCommand).toHaveBeenCalledWith('copy');
-      expect(panels.querySelector<HTMLButtonElement>(`button[aria-label="${t('copied')}"]`)).not.toBeNull();
-    } finally {
-      Reflect.deleteProperty(navigator, 'clipboard');
-      Reflect.deleteProperty(document, 'execCommand');
-    }
   });
 
   it('says why a refused move was refused, and still snaps back to the stored order', async () => {

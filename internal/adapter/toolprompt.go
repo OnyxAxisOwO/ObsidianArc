@@ -129,6 +129,9 @@ func rewriteForEmulation(req ChatRequest) ChatRequest {
 				out.System += "\n\n"
 			}
 			out.System += block
+			if len(out.SystemParts) > 0 {
+				out.SystemParts = append(append([]Part(nil), out.SystemParts...), Part{Kind: PartText, Text: block})
+			}
 			return out
 		}
 		// Both adapters drop a system prompt a model cannot take, so the
@@ -176,8 +179,11 @@ func rewriteToolTranscript(messages []Message) []Message {
 				}
 				// An empty result is a real answer — a tool that returned
 				// nothing still returned — so this is not gated on text.
-				results.WriteString(openResponseTag(names[part.ToolCallID]) + "\n" +
-					neutralizeTags(part.Text) + "\n" + toolResponseClose + "\n")
+				content := part.Text
+				if part.ToolIsError {
+					content = "[tool_error]\n" + content
+				}
+				results.WriteString(openResponseTag(names[part.ToolCallID]) + "\n" + neutralizeTags(content) + "\n" + toolResponseClose + "\n")
 			}
 			continue
 		}
@@ -339,10 +345,11 @@ type toolCallFilter struct {
 	// Text whose meaning is not decided yet: outside a block it is a
 	// trailing fragment that could still grow into an opening tag; inside
 	// one it is the block so far.
-	pending  strings.Builder
-	inside   bool
-	sawDelta bool
-	calls    []ToolCall
+	pending    strings.Builder
+	inside     bool
+	sawDelta   bool
+	sawRefusal bool
+	calls      []ToolCall
 	// Whether the model was taught the format at all. False for a request
 	// that only routed here to have its transcript rewritten.
 	parse bool
@@ -359,6 +366,13 @@ type toolCallFilter struct {
 }
 
 func (f *toolCallFilter) event(event Event) error {
+	if event.Refusal {
+		f.sawRefusal = true
+		if f.sink != nil {
+			return f.sink(event)
+		}
+		return nil
+	}
 	if event.Type == EventDelta {
 		return f.delta(event.Text)
 	}
@@ -537,8 +551,8 @@ func (f *toolCallFilter) emit(text string) error {
 func (f *toolCallFilter) finish(result *Result) error {
 	// A buffered answer never reached the sink; run it through the same
 	// machine so both paths decide prose identically.
-	if !f.sawDelta && result.Text != "" {
-		if err := f.delta(result.Text); err != nil {
+	if text := strings.TrimSuffix(result.Text, result.Refusal); !f.sawDelta && text != "" {
+		if err := f.delta(text); err != nil {
 			return err
 		}
 	}
@@ -603,7 +617,13 @@ func (f *toolCallFilter) finish(result *Result) error {
 	if strings.TrimSpace(text) == "" {
 		text = ""
 	}
-	result.Text = text
+	result.Text = text + result.Refusal
+	if result.Refusal != "" && !f.sawRefusal && f.sink != nil {
+		f.sawRefusal = true
+		if err := f.sink(Event{Type: EventDelta, Text: result.Refusal, Refusal: true}); err != nil {
+			return err
+		}
+	}
 	if len(f.calls) == 0 {
 		return nil
 	}

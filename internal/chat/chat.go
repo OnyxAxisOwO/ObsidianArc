@@ -161,6 +161,7 @@ type DonePayload struct {
 	MessageID string              `json:"message_id"`
 	Stats     *conversation.Stats `json:"stats,omitempty"`
 	Stopped   bool                `json:"stopped"`
+	Refused   bool                `json:"refused,omitempty"`
 	Streamed  bool                `json:"streamed"`
 	// Set when streaming was asked for but the endpoint could not, naming
 	// why, so the interface can say what happened rather than behaving
@@ -346,13 +347,20 @@ func (s *Service) Run(ctx context.Context, req TurnRequest, resolved model.Resol
 		fallback:   result.StreamFallbackReason,
 	}
 
-	if chatErr != nil {
-		return s.finishFailed(saveCtx, ctx, finish, chatErr, emit, clientGone)
-	}
+	// Non-streaming adapters can return either field independently. Fill
+	// before failure handling too, so a delivered refusal is not discarded.
 	if result.Text != "" && answer.Len() == 0 {
-		// A non-streaming adapter path that did not go through the sink.
 		finish.answer = result.Text
+	}
+	if result.Reasoning != "" && reasoning.Len() == 0 {
 		finish.reasoning = result.Reasoning
+	}
+	if chatErr != nil {
+		var upstream *adapter.Error
+		if !clientGone && ctx.Err() == nil && errors.As(chatErr, &upstream) && upstream.Kind == adapter.ErrorRefusal && finish.answer != "" {
+			return s.finishReply(saveCtx, finish, emit, StatusError, "refusal")
+		}
+		return s.finishFailed(saveCtx, ctx, finish, chatErr, emit, clientGone)
 	}
 	return s.finishOK(saveCtx, finish, emit)
 }
@@ -367,6 +375,7 @@ type prepared struct {
 	conversationID string
 	title          string
 	userMessageID  string
+	branchRevision int64
 	isNew          bool
 	projectID      string
 }
@@ -439,6 +448,11 @@ func (s *Service) openTurn(ctx context.Context, req TurnRequest) (prepared, erro
 			return err
 		}
 
+		revision, err := s.conversations.BranchRevision(ctx, tx, req.User.ID, conversationID)
+		if err != nil {
+			return err
+		}
+		out.branchRevision = revision
 		out.conversationID = conversationID
 		out.title = title
 		return nil
@@ -584,14 +598,20 @@ type finished struct {
 }
 
 func (s *Service) finishOK(ctx context.Context, f finished, emit Emit) error {
+	return s.finishReply(ctx, f, emit, StatusOK, "")
+}
+
+func (s *Service) finishReply(ctx context.Context, f finished, emit Emit, status Status, code string) error {
 	stats := buildStats(f)
 
 	message, err := s.conversations.Append(ctx, nil, conversation.AppendInput{
 		ConversationID: f.prepared.conversationID,
+		ExpectedBranch: &f.prepared.branchRevision,
 		UserID:         f.request.User.ID,
 		Role:           conversation.RoleAssistant,
 		Content:        f.answer,
 		Reasoning:      f.reasoning,
+		ErrorCode:      code,
 		ModelID:        f.resolved.Model.ID,
 		ModelName:      f.resolved.Model.DisplayName,
 		ProviderID:     f.resolved.Provider.ID,
@@ -604,14 +624,15 @@ func (s *Service) finishOK(ctx context.Context, f finished, emit Emit) error {
 		// provider answered and billed all the same; returning first left no
 		// ledger row and no settle, and the reservation's refund then made a
 		// whole generation free to anybody who deleted the chat in time.
-		s.record(ctx, f, "", StatusOK, "")
+		s.record(ctx, f, "", status, code)
 		return err
 	}
 
-	s.record(ctx, f, message.ID, StatusOK, "")
+	s.record(ctx, f, message.ID, status, code)
 
 	return emit(EventDone, DonePayload{
 		MessageID:      message.ID,
+		Refused:        code == "refusal",
 		Stats:          stats,
 		Streamed:       f.streamed,
 		StreamFallback: f.fallback,
@@ -642,6 +663,7 @@ func (s *Service) finishFailed(ctx, requestCtx context.Context, f finished, chat
 		stats := buildStats(f)
 		message, err := s.conversations.Append(ctx, nil, conversation.AppendInput{
 			ConversationID: f.prepared.conversationID,
+			ExpectedBranch: &f.prepared.branchRevision,
 			UserID:         f.request.User.ID,
 			Role:           conversation.RoleAssistant,
 			Content:        f.answer,
@@ -675,12 +697,14 @@ func (s *Service) finishFailed(ctx, requestCtx context.Context, f finished, chat
 
 	message, err := s.conversations.Append(ctx, nil, conversation.AppendInput{
 		ConversationID: f.prepared.conversationID,
+		ExpectedBranch: &f.prepared.branchRevision,
 		UserID:         f.request.User.ID,
 		Role:           conversation.RoleAssistant,
-		// No Content or Reasoning: an error row renders instead of the
-		// answer rather than beside it, so a half-written reply stored here
-		// would be text the interface never shows.
-		Error: friendly,
+		// The interface still renders the error. Keep partial output for
+		// transcript/export review; error rows stay out of future model context.
+		Content:   f.answer,
+		Reasoning: f.reasoning,
+		Error:     friendly,
 		// The code lets the reader's screen translate the failure. The sentence
 		// stays as the fallback for rows written before codes were stored.
 		ErrorCode:  code,

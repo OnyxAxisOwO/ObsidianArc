@@ -110,26 +110,14 @@ func (r *rig) tableExists(t *testing.T) bool {
 
 var someone = Actor{ID: "01ARZ3NDEKTSV4RRFFQ69G5FAV", Username: "founder"}
 
-// A fresh instance installs nothing by itself: a plugin compiled in is on
-// offer, not on.
-func TestACompiledInPluginStartsAvailable(t *testing.T) {
-	r := newRig(t, newGadget())
-	if state := r.manager.State("gadget"); state != StateAvailable {
-		t.Fatalf("state = %s", state)
-	}
-	if r.tableExists(t) {
-		t.Fatal("an uninstalled plugin's migration ran at boot")
-	}
-	if r.settings.Known(gadgetKey) {
-		t.Fatal("an uninstalled plugin's setting is known")
-	}
-}
-
 // Installing runs the migrations, writes the first settings and records the
 // state, and the next boot finds it the same way.
 func TestInstallRunsTheMigrationsAndKeepsTheSettings(t *testing.T) {
 	r := newRig(t, newGadget())
 	ctx := context.Background()
+	if r.manager.State("gadget") != StateAvailable || r.tableExists(t) || r.settings.Known(gadgetKey) {
+		t.Fatal("boot made an available plugin active before install")
+	}
 	if err := r.manager.Install(ctx, someone, "gadget", InstallOptions{
 		Enable: true, Settings: map[string]string{gadgetKey: "green"},
 	}); err != nil {
@@ -201,7 +189,7 @@ func TestAFailedMigrationLeavesThePluginAvailable(t *testing.T) {
 
 // Two administrators pressing install at once: one install, one refusal,
 // and the migration run exactly once — the row lock, not luck.
-func TestParallelInstallsInstallOnce(t *testing.T) {
+func TestConcurrentParallelInstallsInstallOnce(t *testing.T) {
 	r := newRig(t, newGadget())
 	ctx := context.Background()
 	const racers = 8
@@ -242,7 +230,7 @@ func TestParallelInstallsInstallOnce(t *testing.T) {
 
 // A second process against the same database: its manager is a separate
 // copy, so only the database lock stands between the two installs.
-func TestInstallsFromTwoProcessesInstallOnce(t *testing.T) {
+func TestConcurrentInstallsFromTwoProcessesInstallOnce(t *testing.T) {
 	r := newRig(t, newGadget())
 	other := reload(t, r.db)
 	ctx := context.Background()
@@ -397,19 +385,7 @@ func TestARowForAMissingPluginIsListed(t *testing.T) {
 	if !next.manager.Enabled("elsewhere") {
 		t.Fatal("the missing plugin's state was not read")
 	}
-}
-
-// The manifest lists what the plugin attached, read off the extension
-// points rather than written out by hand.
-func TestTheManifestListsContributions(t *testing.T) {
-	r := newRig(t, newGadget())
-	info, err := r.manager.Info("gadget")
-	if err != nil {
-		t.Fatal(err)
-	}
-	c := info.Contributions
-	if len(c.Settings) != 2 || c.Settings[0].Key != gadgetKey || !c.Purges ||
-		len(c.Migrations) != 1 || c.Migrations[0] != "gadget_0001_table" {
-		t.Fatalf("contributions = %+v", c)
+	if _, ok := next.manager.plugin("elsewhere"); ok {
+		t.Fatal("a missing plugin was given a stand-in")
 	}
 }

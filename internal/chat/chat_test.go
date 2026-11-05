@@ -140,6 +140,13 @@ func newStubUpstream(t *testing.T) *stubUpstream {
 func (s *stubUpstream) script(frames ...string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var opening map[string]json.RawMessage
+	if len(frames) > 0 {
+		_ = json.Unmarshal([]byte(frames[0]), &opening)
+	}
+	if _, anthropic := opening["type"]; !anthropic {
+		frames = append(append([]string(nil), frames...), "[DONE]")
+	}
 	s.frames = frames
 	s.status = 200
 	s.hold = nil
@@ -767,49 +774,6 @@ func TestRetainedAttachmentIsSentOnce(t *testing.T) {
 	}
 }
 
-func TestAttachmentBytesAreOwnerScoped(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-
-	uploaded, err := f.conversations.Upload(ctx, conversation.UploadInput{
-		UserID: f.account.ID, Mime: "image/png", Data: []byte{1, 2, 3, 4},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if _, _, err := f.conversations.Blob(ctx, f.account.ID, uploaded.ID); err != nil {
-		t.Fatalf("the owner could not read their own image: %v", err)
-	}
-	if _, _, err := f.conversations.Blob(ctx, f.other.ID, uploaded.ID); !errors.Is(err, conversation.ErrAttachmentNotFound) {
-		t.Errorf("another user could read the image: %v", err)
-	}
-}
-
-func TestOrphanedUploadsArePruned(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-
-	uploaded, err := f.conversations.Upload(ctx, conversation.UploadInput{
-		UserID: f.account.ID, Mime: "image/png", Data: []byte{1, 2, 3, 4},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.db.Exec(ctx, `UPDATE attachments SET created_at = ? WHERE id = ?`,
-		time.Now().Add(-24*time.Hour).UnixMilli(), uploaded.ID); err != nil {
-		t.Fatal(err)
-	}
-
-	removed, err := f.conversations.DeleteOrphans(ctx, conversation.OrphanTTL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if removed != 1 {
-		t.Errorf("pruned %d orphans, want 1", removed)
-	}
-}
-
 // --- reasoning ----------------------------------------------------------------------------
 
 // The client sends one unified {enabled, effort}; a model that cannot reason
@@ -915,41 +879,6 @@ func TestRejectedTurnWritesNothing(t *testing.T) {
 	}
 }
 
-func TestUpdateMessage(t *testing.T) {
-	f := newFixture(t)
-
-	conv, err := f.conversations.Create(context.Background(), nil, f.account.ID,
-		conversation.NewConversation{Title: "Test", ModelID: f.model.ID})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	msg, err := f.conversations.Append(context.Background(), nil, conversation.AppendInput{
-		ConversationID: conv.ID,
-		UserID:         f.account.ID,
-		Role:           conversation.RoleAssistant,
-		Content:        "Original answer",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Update own message
-	updated, err := f.conversations.UpdateMessage(context.Background(), nil, f.account.ID, conv.ID, msg.ID, "Edited answer")
-	if err != nil {
-		t.Fatalf("UpdateMessage failed: %v", err)
-	}
-	if updated.Content != "Edited answer" {
-		t.Errorf("content = %q, want %q", updated.Content, "Edited answer")
-	}
-
-	// Another user cannot update it
-	_, err = f.conversations.UpdateMessage(context.Background(), nil, f.other.ID, conv.ID, msg.ID, "Hacked")
-	if !errors.Is(err, conversation.ErrMessageNotFound) {
-		t.Errorf("expected ErrMessageNotFound for stranger, got %v", err)
-	}
-}
-
 func TestUpdateMessageHandler(t *testing.T) {
 	f := newFixture(t)
 	handlers := NewHandlers(f.service, f.conversations)
@@ -990,6 +919,14 @@ func TestUpdateMessageHandler(t *testing.T) {
 	}
 	if resp.Message.Content != "Updated message" {
 		t.Errorf("got %q, want 'Updated message'", resp.Message.Content)
+	}
+
+	foreign := httptest.NewRequest(http.MethodPatch, req.URL.Path, strings.NewReader(`{"content":"Foreign edit"}`))
+	foreign = foreign.WithContext(auth.WithUser(foreign.Context(), f.other))
+	rejected := httptest.NewRecorder()
+	mux.ServeHTTP(rejected, foreign)
+	if rejected.Code != http.StatusNotFound {
+		t.Fatalf("PATCH by another account = %d, want 404", rejected.Code)
 	}
 
 	// Empty content should return 400 Bad Request

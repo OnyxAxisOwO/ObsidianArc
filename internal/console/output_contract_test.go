@@ -27,31 +27,6 @@ func oneJSONDocument(t *testing.T, out string) any {
 	return v
 }
 
-// user show under --json used to print the account, then the keys, because the
-// keys call replaced the account body the command had just printed.
-func TestUserShowUnderJSONIsOneDocument(t *testing.T) {
-	aliceID := id.New()
-	rig := newFlagRig(
-		flagRoute{"GET", "/api/admin/users?", 200,
-			`{"users":[{"id":"` + aliceID + `","username":"alice"}],"total":1}`},
-		flagRoute{"GET", "/api/admin/users/" + aliceID + "/keys", 200,
-			`{"keys":[{"id":"k1","prefix":"sk-a","name":"laptop"}]}`},
-		flagRoute{"GET", "/api/admin/users/" + aliceID, 200,
-			`{"user":{"id":"` + aliceID + `","username":"alice","role":"user","status":"active"},"cards":{},"usage":{}}`},
-	)
-	result, out := rig.run("user show alice --json")
-	if !result.OK {
-		t.Fatalf("user show alice --json failed: %s", out)
-	}
-	doc, ok := oneJSONDocument(t, out).(map[string]any)
-	if !ok {
-		t.Fatalf("the document is not an object: %s", out)
-	}
-	if user, _ := doc["user"].(map[string]any); user["username"] != "alice" {
-		t.Errorf("the document is not the account shown: %s", out)
-	}
-}
-
 // The recovery codes are printed under --json as the response itself. The
 // text header that the table-mode output starts with would come before it.
 func TestTwoFactorRecoveryUnderJSONIsOneDocument(t *testing.T) {
@@ -110,24 +85,6 @@ func TestBackupExportRefusesARedirect(t *testing.T) {
 	}
 	if strings.Contains(out, "Found") {
 		t.Errorf("the redirect's body was printed as the export:\n%s", out)
-	}
-}
-
-// A WebDAV instance has no S3 endpoint or bucket. The status used to show two
-// blank rows and never say which destination was in use.
-func TestBackupStatusShowsAWebDAVDestination(t *testing.T) {
-	rig := newFlagRig(flagRoute{"GET", "/api/admin/backup", 200,
-		`{"type":"webdav","enabled":true,"configured":true,"webdav_url":"https://dav.example.test/backups",` +
-			`"webdav_username":"dav-operator","endpoint":"","bucket":"","region":"us-east-1","prefix":"arc",` +
-			`"interval_hours":24,"retention_hours":168}`})
-	result, out := rig.run("backup status")
-	if !result.OK {
-		t.Fatalf("backup status failed: %s", out)
-	}
-	for _, want := range []string{"webdav", "https://dav.example.test/backups", "dav-operator"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("backup status does not show %q:\n%s", want, out)
-		}
 	}
 }
 

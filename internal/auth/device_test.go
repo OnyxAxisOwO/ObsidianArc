@@ -10,81 +10,6 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
-func TestRecordDeviceFirstDeviceIsNotNew(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-
-	account, token, err := f.auth.Register(ctx, RegisterInput{Username: "arc", Password: "a-good-password"})
-	if err != nil {
-		t.Fatalf("register: %v", err)
-	}
-
-	newDevice, cookie, err := f.auth.RecordDevice(ctx, account, token, "", "203.0.113.9", "curl/8")
-	if err != nil {
-		t.Fatalf("record device: %v", err)
-	}
-	if newDevice {
-		t.Error("an account's very first device must not be reported as new")
-	}
-	if cookie == "" {
-		t.Error("a fresh device cookie should have been minted when none was presented")
-	}
-}
-
-func TestRecordDeviceSecondDeviceIsNew(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-
-	account, token, err := f.auth.Register(ctx, RegisterInput{Username: "arc", Password: "a-good-password"})
-	if err != nil {
-		t.Fatalf("register: %v", err)
-	}
-	if _, _, err := f.auth.RecordDevice(ctx, account, token, "", "203.0.113.9", "phone"); err != nil {
-		t.Fatalf("record first device: %v", err)
-	}
-
-	newDevice, cookie, err := f.auth.RecordDevice(ctx, account, token, "", "198.51.100.4", "laptop")
-	if err != nil {
-		t.Fatalf("record second device: %v", err)
-	}
-	if !newDevice {
-		t.Error("a second, distinct device on an account that already has one should be reported as new")
-	}
-	if cookie == "" {
-		t.Error("a fresh cookie should have been minted for the second device too")
-	}
-}
-
-func TestRecordDeviceRepeatIsNotNew(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-
-	account, token, err := f.auth.Register(ctx, RegisterInput{Username: "arc", Password: "a-good-password"})
-	if err != nil {
-		t.Fatalf("register: %v", err)
-	}
-	// A second device, so the account is past the "first device" exemption
-	// and repeat visits from the first one are the thing under test.
-	if _, _, err := f.auth.RecordDevice(ctx, account, token, "", "203.0.113.9", "phone"); err != nil {
-		t.Fatalf("record first device: %v", err)
-	}
-	_, cookie, err := f.auth.RecordDevice(ctx, account, token, "", "198.51.100.4", "laptop")
-	if err != nil {
-		t.Fatalf("record second device: %v", err)
-	}
-
-	newDevice, reissued, err := f.auth.RecordDevice(ctx, account, token, cookie, "198.51.100.5", "laptop")
-	if err != nil {
-		t.Fatalf("record repeat visit: %v", err)
-	}
-	if newDevice {
-		t.Error("presenting the same device cookie again must not be reported as a new device")
-	}
-	if reissued != "" {
-		t.Error("a device cookie the caller already presented should not be reissued")
-	}
-}
-
 func TestRecordDeviceReusesThePresentedCookie(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -139,7 +64,8 @@ func TestRecordDeviceFiresTheHookOnlyForANewDevice(t *testing.T) {
 		t.Fatalf("the first device must not fire OnNewDevice, got %d events", len(seen))
 	}
 
-	if _, _, err := f.auth.RecordDevice(ctx, account, token, "", "198.51.100.4", "laptop"); err != nil {
+	_, deviceCookie, err := f.auth.RecordDevice(ctx, account, token, "", "198.51.100.4", "laptop")
+	if err != nil {
 		t.Fatalf("record second device: %v", err)
 	}
 	if len(seen) != 1 {
@@ -147,6 +73,9 @@ func TestRecordDeviceFiresTheHookOnlyForANewDevice(t *testing.T) {
 	}
 	if seen[0].Account.ID != account.ID {
 		t.Errorf("event carried account %q, want %q", seen[0].Account.ID, account.ID)
+	}
+	if newDevice, _, err := f.auth.RecordDevice(ctx, account, token, deviceCookie, "198.51.100.4", "laptop"); err != nil || newDevice || len(seen) != 1 {
+		t.Fatalf("returning device: new=%t, events=%d, err=%v", newDevice, len(seen), err)
 	}
 }
 

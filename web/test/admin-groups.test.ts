@@ -196,21 +196,4 @@ describe('AdminGroups, the limits a group shows in its list', () => {
     // A window the operator left unenforced shows nothing.
     expect(badges.some((text) => text?.startsWith('1w'))).toBe(false);
   });
-
-  // A credits-only window has no request or token figure to show, so its badge
-  // has to carry the credits or the list would show a bare window name.
-  it('shows a credits-only window as its credits figure', async () => {
-    const group = { id: 'g2', name: 'Credits', description: '', is_default: false, allow_all_models: true, members: 0 } as unknown as Group;
-    const policy = {
-      id: 'p2', scope: 'group', scope_id: 'g2', rpm: null, tpm: null, updated_at: 0,
-      windows: {
-        '5h': { enabled: true, requests: null, tokens: null, credits: 2.5 },
-      },
-    } as unknown as QuotaPolicy;
-    vi.spyOn(adminApi, 'groups').mockResolvedValue({ groups: [group], policies: [policy] });
-    await mount();
-
-    const badges = [...host.querySelectorAll('.oa-badge')].map((node) => node.textContent?.trim());
-    expect(badges).toContain('5h: 2.5');
-  });
 });

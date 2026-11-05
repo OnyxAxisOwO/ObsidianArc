@@ -35,7 +35,7 @@ import (
 //   - PostgreSQL is where the race is real. Removing settings.Lock and running
 //     this is what fails. CI supplies the DSN; without one it skips, and skips
 //     loudly rather than passing.
-func TestConcurrentBootstrapsCreateOneAdministrator(t *testing.T) {
+func TestConcurrentBootstrapsCreateOneDefaultGroupAndAdministrator(t *testing.T) {
 	t.Run("sqlite proves only that nothing broke", func(t *testing.T) {
 		dir := t.TempDir()
 		raceBootstrap(t, dir, config.Database{
@@ -103,13 +103,6 @@ func raceBootstrap(t *testing.T, dir string, dbCfg config.Database) {
 	fx := newBootstrapFixture(t, dir, dbCfg)
 	cfg := fx.cfg
 
-	// The default group first, so the racing half is only the administrator.
-	seed := cfg
-	seed.Bootstrap = config.Bootstrap{}
-	if err := Bootstrap(ctx, fx.db, fx.groups, fx.users, fx.authService, seed); err != nil {
-		t.Fatalf("seed the default group: %v", err)
-	}
-
 	start := make(chan struct{})
 	errs := make(chan error, 4)
 	var workers sync.WaitGroup
@@ -131,6 +124,10 @@ func raceBootstrap(t *testing.T, dir string, dbCfg config.Database) {
 		}
 	}
 
+	groups, err := fx.groups.Count(ctx, nil)
+	if err != nil || groups != 1 {
+		t.Fatalf("four simultaneous bootstraps created %d groups, want 1: %v", groups, err)
+	}
 	total, err := fx.users.Count(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -145,61 +142,6 @@ func raceBootstrap(t *testing.T, dir string, dbCfg config.Database) {
 	if admins != 1 {
 		t.Fatalf("created %d administrators, want 1", admins)
 	}
-}
-
-// Two instances starting on an empty database both count zero groups under
-// Postgres' default isolation and both would insert "Default". The unique
-// name refuses the second, so that instance would fail to boot. As with the
-// administrator, the instance lock is what serialises the check and the insert.
-func TestConcurrentBootstrapsCreateOneDefaultGroup(t *testing.T) {
-	run := func(t *testing.T, dir string, dbCfg config.Database) {
-		t.Helper()
-		ctx := context.Background()
-		fx := newBootstrapFixture(t, dir, dbCfg)
-		// Without an administrator in the config, only the group step runs.
-		cfg := fx.cfg
-		cfg.Bootstrap = config.Bootstrap{}
-
-		start := make(chan struct{})
-		errs := make(chan error, 4)
-		var workers sync.WaitGroup
-		for range 4 {
-			workers.Add(1)
-			go func() {
-				defer workers.Done()
-				<-start
-				errs <- Bootstrap(ctx, fx.db, fx.groups, fx.users, fx.authService, cfg)
-			}()
-		}
-		close(start)
-		workers.Wait()
-		close(errs)
-
-		for err := range errs {
-			if err != nil {
-				t.Fatalf("concurrent bootstrap: %v", err)
-			}
-		}
-		count, err := fx.groups.Count(ctx, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if count != 1 {
-			t.Fatalf("four simultaneous bootstraps created %d groups, want 1", count)
-		}
-	}
-
-	t.Run("sqlite proves only that nothing broke", func(t *testing.T) {
-		dir := t.TempDir()
-		run(t, dir, config.Database{
-			Driver: "sqlite", DSN: filepath.Join(dir, "groups.db"),
-			MaxOpenConns: 4, MaxIdleConns: 4,
-		})
-	})
-
-	t.Run("postgres is where the race is", func(t *testing.T) {
-		run(t, t.TempDir(), dbtest.Postgres(t, "the SQLite run above cannot fail this"))
-	})
 }
 
 // A new instance's default group must hold the same capabilities an upgraded

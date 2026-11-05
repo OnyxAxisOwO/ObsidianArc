@@ -114,6 +114,7 @@ func (s *Service) reserveFromBonus(
 	ctx context.Context, account user.User, modelID string, estimate Estimate, policy Policy, now time.Time, phase bonus.Phase,
 ) (Reservation, error) {
 	var holds []bonus.Hold
+	var generations map[Window]string
 	err := s.db.Tx(ctx, func(tx *database.Tx) error {
 		// The rows come before the minute, as in the lock order in service.go. A refund
 		// of one of these holds takes the row and then the minute, so taking the
@@ -132,12 +133,14 @@ func (s *Service) reserveFromBonus(
 			return takeErr
 		}
 		holds = claimed
-		return nil
+		var err error
+		generations, err = captureGenerations(ctx, tx, scopeKey(account.ID), now, 0, policy.tokenRateOn(), false)
+		return err
 	})
 	if err != nil {
 		return Reservation{}, err
 	}
-	res := Reservation{at: now, funding: &funding{holds: holds}, guard: &releaseGuard{}}
+	res := Reservation{at: now, funding: &funding{holds: holds}, guard: &releaseGuard{}, generations: generations}
 	if policy.tokenRateOn() {
 		res.covered = estimate.Tokens
 	}
@@ -150,75 +153,83 @@ func (s *Service) reserveOnce(
 	key := scopeKey(account.ID)
 
 	var (
-		anchor  int64
-		holds   []bonus.Hold
-		charged = estimate
-		whole   bool
+		anchor      int64
+		holds       []bonus.Hold
+		charged     = estimate
+		whole       bool
+		generations map[Window]string
 	)
 	err := s.db.Tx(ctx, func(tx *database.Tx) error {
-		holds, charged, whole = nil, estimate, false
-		var err error
-		anchor, err = lockedAllowanceAnchor(ctx, tx, account.CreatedAt)
-		if err != nil {
-			return err
-		}
-		if reset != nil {
-			if _, err := tx.Exec(ctx,
-				`UPDATE users SET updated_at = updated_at WHERE id = ?`, account.ID); err != nil {
-				return fmt.Errorf("quota: lock account for automatic reset: %w", err)
-			}
-		}
-
-		// The bars that are switched on pay first, and what they pay does not
-		// count against the allowance windows. What they cannot cover is the
-		// windows'. The burst limits count the whole request whoever pays.
-		if s.bonus != nil && estimate.Credits > 0 {
-			holds, err = s.bonus.Take(ctx, tx, account.ID, modelID, estimate.Credits, bonus.Priority)
+		err := func() error {
+			holds, charged, whole = nil, estimate, false
+			var err error
+			anchor, err = lockedAllowanceAnchor(ctx, tx, account.CreatedAt)
 			if err != nil {
 				return err
 			}
-			charged, whole = uncovered(estimate, bonus.Total(holds))
-		}
+			if reset != nil {
+				if _, err := tx.Exec(ctx,
+					`UPDATE users SET updated_at = updated_at WHERE id = ?`, account.ID); err != nil {
+					return fmt.Errorf("quota: lock account for automatic reset: %w", err)
+				}
+			}
 
-		// The minute is charged once, here. The walk below may run again after a
-		// reset card has cleared the window, and that retry does not charge the
-		// minute a second time.
-		if err := reserveRate(ctx, tx, policy, key, estimate.Tokens, now); err != nil {
-			return err
-		}
-		if whole {
-			return nil
-		}
-		walkErr := reserveAllowance(ctx, tx, policy, key, anchor, charged, now)
-		if walkErr == nil || reset == nil {
-			return walkErr
-		}
-		exceeded, ok := AsExceeded(walkErr)
-		if !ok {
-			return walkErr
-		}
+			// The bars that are switched on pay first, and what they pay does not
+			// count against the allowance windows. What they cannot cover is the
+			// windows'. The burst limits count the whole request whoever pays.
+			if s.bonus != nil && estimate.Credits > 0 {
+				holds, err = s.bonus.Take(ctx, tx, account.ID, modelID, estimate.Credits, bonus.Priority)
+				if err != nil {
+					return err
+				}
+				charged, whole = uncovered(estimate, bonus.Total(holds))
+			}
 
-		// A reset card restores allowance; spending one on a burst-rate refusal
-		// would trade a permanent item for a limit that clears in a minute. The
-		// minute was checked above, so only an allowance window reaches here.
-		resetWindows, spent, err := reset(ctx, tx, exceeded.Window)
+			// The minute is charged once, here. The walk below may run again after a
+			// reset card has cleared the window, and that retry does not charge the
+			// minute a second time.
+			if err := reserveRate(ctx, tx, policy, key, estimate.Tokens, now); err != nil {
+				return err
+			}
+			if whole {
+				return nil
+			}
+			walkErr := reserveAllowance(ctx, tx, policy, key, anchor, charged, now)
+			if walkErr == nil || reset == nil {
+				return walkErr
+			}
+			exceeded, ok := AsExceeded(walkErr)
+			if !ok {
+				return walkErr
+			}
+
+			// A reset card restores allowance; spending one on a burst-rate refusal
+			// would trade a permanent item for a limit that clears in a minute. The
+			// minute was checked above, so only an allowance window reaches here.
+			resetWindows, spent, err := reset(ctx, tx, exceeded.Window)
+			if err != nil {
+				return err
+			}
+			if !spent {
+				return walkErr
+			}
+			if err := clearAllowance(ctx, tx, key, anchor, now, resetWindows); err != nil {
+				return fmt.Errorf("quota: automatic reset: %w", err)
+			}
+			return reserveAllowance(ctx, tx, policy, key, anchor, charged, now)
+		}()
 		if err != nil {
 			return err
 		}
-		if !spent {
-			return walkErr
-		}
-		if err := clearAllowance(ctx, tx, key, anchor, now, resetWindows); err != nil {
-			return fmt.Errorf("quota: automatic reset: %w", err)
-		}
-		return reserveAllowance(ctx, tx, policy, key, anchor, charged, now)
+		generations, err = captureGenerations(ctx, tx, key, now, anchor, policy.tokenRateOn(), !whole)
+		return err
 	})
 	if err != nil {
 		// The transaction rolled back, so nothing is outstanding and a failed
 		// replacement reservation did not consume the card.
 		return Reservation{}, err
 	}
-	res := Reservation{at: now, estimate: charged, taken: !whole, anchor: anchor, guard: &releaseGuard{}}
+	res := Reservation{at: now, estimate: charged, taken: !whole, anchor: anchor, guard: &releaseGuard{}, generations: generations}
 	if policy.tokenRateOn() {
 		res.covered = estimate.Tokens - charged.Tokens
 	}
@@ -226,6 +237,23 @@ func (s *Service) reserveOnce(
 		res.funding = &funding{holds: holds, windows: !whole}
 	}
 	return s.noted(ctx, res), nil
+}
+
+// captureGenerations binds a refund to the exact counter rows it charged.
+// A reset may delete those rows, and a later request may recreate the same keys.
+func captureGenerations(ctx context.Context, q database.Queryer, key string, now time.Time, anchor int64, minute, allowance bool) (map[Window]string, error) {
+	generations := make(map[Window]string)
+	for _, window := range tokenWindows {
+		if window == WindowTPM && !minute || window != WindowTPM && !allowance {
+			continue
+		}
+		var generation string
+		if err := q.QueryRow(ctx, `SELECT generation FROM usage_counters WHERE scope_key = ? AND window_kind = ? AND window_start = ?`, key, window, bucketStart(window, now, anchor)).Scan(&generation); err != nil {
+			return nil, fmt.Errorf("quota: read counter generation: %w", err)
+		}
+		generations[window] = generation
+	}
+	return generations, nil
 }
 
 // uncovered is what of an estimate the windows still have to carry once the
@@ -405,4 +433,6 @@ type Reservation struct {
 	// A pointer for the same reason: every copy of the reservation shares one
 	// guard, so giving it back twice refunds it once.
 	guard *releaseGuard
+	// nil only for a legacy manually constructed reservation; real reservations capture every charged row.
+	generations map[Window]string
 }

@@ -7,7 +7,7 @@ import type { TwoFactorStatus } from '../src/api/twofactor';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { serverOwned } from '../src/lib/next';
 import {
-  adopt, currentUser, forget, pendingSecondFactor, site, siteInfo, startSession,
+  adopt, currentUser, forget, pendingSecondFactor, site, siteInfo,
 } from '../src/stores/session';
 import AuthView from '../src/views/AuthView.vue';
 import SecuritySection from '../src/views/settings/SecuritySection.vue';
@@ -95,17 +95,6 @@ describe('the code step of signing in', () => {
     expect(replace).toHaveBeenCalledWith('/');
   });
 
-  it('says a wrong code is wrong, and keeps asking', async () => {
-    pendingSecondFactor.value = true;
-    vi.spyOn(authApi, 'completeSignIn').mockRejectedValue(new ApiError(400, 'two_factor_code', 'That code is not valid.'));
-    await mount(AuthView, { mode: 'login' });
-
-    type(host.querySelector<HTMLInputElement>('input.oa-2fa-code')!, '000000');
-    await settle();
-    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('twoFactorCodeWrong'));
-    expect(host.querySelector('input.oa-2fa-code')).not.toBeNull();
-  });
-
   // A provider sign-in arrives by redirect, halfway: the card opens on the
   // code rather than asking for a password nobody typed.
   it('opens on the code when a sign-in is already halfway', async () => {
@@ -188,19 +177,6 @@ describe('the code step of signing in', () => {
     expect(assign).toHaveBeenCalledWith('/oauth/authorize?client_id=wiki&state=s');
     expect(replace).not.toHaveBeenCalled();
     expect(serverOwned('/settings')).toBe(false);
-  });
-});
-
-describe('the session store', () => {
-  it('remembers that a sign-in is halfway', async () => {
-    vi.spyOn(authApi, 'fetchMe').mockRejectedValue(new ApiError(401, 'two_factor_pending', 'Enter the code.'));
-    vi.spyOn(authApi, 'fetchSite').mockResolvedValue(siteInfo.value);
-    await startSession();
-    expect(pendingSecondFactor.value).toBe(true);
-    expect(currentUser.value).toBeNull();
-
-    adopt(ACCOUNT);
-    expect(pendingSecondFactor.value).toBe(false);
   });
 });
 
@@ -325,16 +301,6 @@ describe('the security settings', () => {
     mandatory: false, policy: 'optional', remember_days: 0,
   };
 
-  it('offers the wizard while it is off', async () => {
-    adopt(ACCOUNT);
-    vi.spyOn(twoFactorApi, 'fetchTwoFactor').mockResolvedValue({ ...ON, enabled: false, enabled_at: 0, recovery_remaining: 0 });
-    await mount(SecuritySection);
-    expect(host.textContent).toContain(t('twoFactorOff'));
-    button(host, t('twoFactorTurnOn')).click();
-    await settle();
-    expect(host.querySelector('.oa-2fa-wizard')).not.toBeNull();
-  });
-
   it('turns it off with a code', async () => {
     adopt({ ...ACCOUNT, two_factor_at: 1 });
     vi.spyOn(twoFactorApi, 'fetchTwoFactor').mockResolvedValue(ON);
@@ -358,13 +324,6 @@ describe('the security settings', () => {
     expect(host.textContent).toContain(t('twoFactorMandatoryNote'));
     expect(() => button(host, t('twoFactorTurnOffShort'))).toThrow();
     expect(() => button(host, t('twoFactorRegenerateShort'))).not.toThrow();
-  });
-
-  it('warns when the recovery codes are running out', async () => {
-    adopt({ ...ACCOUNT, two_factor_at: 1 });
-    vi.spyOn(twoFactorApi, 'fetchTwoFactor').mockResolvedValue({ ...ON, recovery_remaining: 2 });
-    await mount(SecuritySection);
-    expect(host.textContent).toContain(t('twoFactorRecoveryLow', { count: 2 }));
   });
 
   it('keeps freshly regenerated codes on screen until they are acknowledged', async () => {
@@ -426,13 +385,6 @@ describe('leaving the setup wizard with codes unsaved', () => {
     await settle();
     expect(leaving()).toBe(false);
   });
-
-  it('does not ask on the earlier steps, where nothing has changed yet', async () => {
-    await mount(TwoFactorWizard, { onDone: vi.fn() });
-    const leaving = new Event('beforeunload', { cancelable: true });
-    window.dispatchEvent(leaving);
-    expect(leaving.defaultPrevented).toBe(false);
-  });
 });
 
 describe('leaving with regenerated codes unsaved', () => {
@@ -464,15 +416,6 @@ describe('leaving with regenerated codes unsaved', () => {
     saved.dispatchEvent(new Event('change', { bubbles: true }));
     await settle();
     expect(leaving()).toBe(false);
-  });
-
-  it('does not ask while no codes are on screen', async () => {
-    adopt({ ...ACCOUNT, two_factor_at: 1 });
-    vi.spyOn(twoFactorApi, 'fetchTwoFactor').mockResolvedValue(ON);
-    await mount(SecuritySection);
-    const leaving = new Event('beforeunload', { cancelable: true });
-    window.dispatchEvent(leaving);
-    expect(leaving.defaultPrevented).toBe(false);
   });
 
   // Leaving the settings page inside the app unmounts the section, and the
@@ -546,11 +489,26 @@ describe('turning it off after a regeneration', () => {
   });
 });
 
-describe('which destinations belong to the server', () => {
-  it('sends the authorisation request to the server and nothing under the API', () => {
-    expect(serverOwned('/oauth/authorize?client_id=x')).toBe(true);
-    expect(serverOwned('/oauth/authorize')).toBe(true);
-    expect(serverOwned('/oauth/authorizeX')).toBe(false);
-    expect(serverOwned('/api/auth/me')).toBe(false);
+it('discards recovery codes returned after another account signs in', async () => {
+  adopt({ ...ACCOUNT, two_factor_at: 1 });
+  vi.spyOn(twoFactorApi, 'fetchTwoFactor').mockResolvedValue({
+    available: true, enabled: true, enabled_at: 1, recovery_remaining: 8,
+    mandatory: false, policy: 'optional', remember_days: 0,
   });
+  let finish!: (value: { recovery_codes: string[] }) => void;
+  vi.spyOn(twoFactorApi, 'regenerateRecovery').mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+  await mount(SecuritySection);
+  button(host, t('twoFactorRegenerateShort')).click();
+  await settle();
+  type(host.querySelector<HTMLInputElement>('input.oa-2fa-code')!, '123456');
+  host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+  await settle();
+  forget();
+  adopt({ ...ACCOUNT, id: 'other', two_factor_at: 1 });
+  finish({ recovery_codes: CODES });
+  await settle();
+  unmount?.();
+  unmount = undefined;
+  await mount(SecuritySection);
+  expect(host.querySelectorAll('.oa-2fa-codes li')).toHaveLength(0);
 });

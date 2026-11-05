@@ -29,18 +29,6 @@ func TestParameterisedSequencesAreConsumedWithoutTyping(t *testing.T) {
 	}
 }
 
-// Home and End arrive as ESC [ 7 ~ and ESC [ 8 ~ from rxvt-style terminals.
-func TestRxvtHomeAndEndMoveTheCursor(t *testing.T) {
-	editor, client, _ := newPipeEditor(t, nil)
-	line, err := drive(t, editor, client, "bc\x1b[7~a\x1b[8~d\r")
-	if err != nil {
-		t.Fatalf("ReadLine: %v", err)
-	}
-	if line != "abcd" {
-		t.Fatalf("got %q, want %q", line, "abcd")
-	}
-}
-
 // Up arrow during reverse search used to cancel the search and then type "[A".
 // The Esc still cancels, and the rest of the arrow key is swallowed, so the
 // draft comes back intact and nothing is inserted.

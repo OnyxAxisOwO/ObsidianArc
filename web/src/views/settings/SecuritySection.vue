@@ -27,7 +27,7 @@ import { t } from '@/composables/useI18n';
 import { IconAuto, IconCheck, IconCopy, IconShield } from '@/icons';
 import { absoluteTime, relativeTime } from '@/lib/format';
 import { describeUserAgent } from '@/lib/ua';
-import { adopt, currentPreferences } from '@/stores/session';
+import { adopt, currentPreferences, isCurrentSession, sessionStamp } from '@/stores/session';
 import { pendingRecovery } from './recovery';
 import { matchesSettings } from './search';
 import TwoFactorWizard from './TwoFactorWizard.vue';
@@ -103,12 +103,14 @@ function refusal(failure: unknown): string {
 
 async function confirm(): Promise<void> {
   if (busy.value || !code.value.trim()) return;
+  const session = sessionStamp();
   busy.value = true;
   flash.value = '';
   notice.value = '';
   try {
     if (action.value === 'disable') {
       const { user } = await disableTwoFactor(code.value.trim());
+      if (!isCurrentSession(session)) return;
       adopt(user, currentPreferences.value);
       notice.value = t('twoFactorTurnedOff');
       // Codes from before this setup are of no use to a later one, and would
@@ -116,15 +118,16 @@ async function confirm(): Promise<void> {
       pendingRecovery.value = null;
     } else {
       const { recovery_codes: codes } = await regenerateRecovery(code.value.trim());
+      if (!isCurrentSession(session)) return;
       pendingRecovery.value = { codes, saved: false };
     }
     action.value = action.value === 'recovery' ? 'recovery' : '';
     code.value = '';
     await load();
   } catch (failure) {
-    flash.value = refusal(failure);
+    if (isCurrentSession(session)) flash.value = refusal(failure);
   } finally {
-    busy.value = false;
+    if (isCurrentSession(session)) busy.value = false;
   }
 }
 

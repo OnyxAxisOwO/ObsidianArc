@@ -116,6 +116,20 @@ func TestAnImageCallIsAdmittedOnlyForEveryPictureItMayBill(t *testing.T) {
 	if got := upstreamCalls.Load(); got != 1 {
 		t.Fatalf("the provider was called %d times, want 1", got)
 	}
+
+	// Only a token window remains. Image turns never charge tokens, so
+	// reserving four pictures cannot be refused for spending four times the tokens.
+	if res := in.do(http.MethodPut, "/api/admin/quota/policies", map[string]any{
+		"scope": "global", "tpm": 5000,
+		"windows": map[string]any{"5h": map[string]any{"enabled": false}},
+	}, admin); res.Code != http.StatusOK {
+		t.Fatalf("save token-only policy: %d %s", res.Code, res.Body.String())
+	}
+	if res := in.do(http.MethodPost, "/api/images/generate", map[string]any{
+		"model_id": catalogueID, "prompt": "a lighthouse", "n": 4,
+	}, member); res.Code != http.StatusOK {
+		t.Fatalf("four pictures refused by a token window: %d %s", res.Code, res.Body.String())
+	}
 }
 
 func storedDefaultGroupID(t *testing.T, in *instance) string {

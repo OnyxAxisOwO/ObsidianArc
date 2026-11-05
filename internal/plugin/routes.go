@@ -99,9 +99,9 @@ func (m *Manager) buildRouter(pkgs map[string]*loaded) (*routeTable, error) {
 			var h http.Handler
 			switch {
 			case route.Access != arcx.AccessAdmin:
-				h = httpx.Wrap(m.routeHandler(l.name, route))
+				h = httpx.Wrap(m.routeHandler(l, route))
 			case m.host != nil && m.host.Admin != nil:
-				h = m.host.Admin.Protect(route.Permission, m.routeHandler(l.name, route))
+				h = m.host.Admin.Protect(route.Permission, m.routeHandler(l, route))
 			default:
 				// An admin route without the backoffice's checks has nothing to
 				// answer it. Serving it bare would hand the backend's answer to
@@ -137,14 +137,13 @@ func (m *Manager) buildRouter(pkgs map[string]*loaded) (*routeTable, error) {
 var wildcardRE = regexp.MustCompile(`\{([A-Za-z_][A-Za-z0-9_]*)(?:\.\.\.)?\}`)
 
 // routeHandler is one route: read the request, hand it to the backend, write
-// what comes back. The package is looked up by name when the request comes,
-// not held from when the table was built: an update swaps the backend, and a
-// request that arrives after it must reach the new one.
-func (m *Manager) routeHandler(name string, route arcx.Route) httpx.Handler {
+// what comes back. The backend and permission come from the same router
+// snapshot. A request delayed across an update is refused rather than sent to
+// a different package using the old route's authorization.
+func (m *Manager) routeHandler(l *loaded, route arcx.Route) httpx.Handler {
 	wildcards := wildcardRE.FindAllStringSubmatch(route.Pattern, -1)
 	return func(w http.ResponseWriter, r *http.Request) error {
-		l := m.loadedPackage(name)
-		if l == nil {
+		if m.loadedPackage(l.name) != l {
 			return httpx.NotFound("No such endpoint.")
 		}
 		// The console dispatches into these handlers with requests it made

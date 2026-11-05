@@ -149,7 +149,25 @@ const sweepSampleLimit = 200
 const disabledNoticeTimeout = 5 * time.Second
 
 func (c *Checker) probe(ctx context.Context, record model.Model) (Sample, bool) {
-	upstream, err := c.Providers.Resolve(ctx, record.ProviderID)
+	target := record
+	var err error
+	if record.RouteToID != "" {
+		target, err = c.Models.ByID(ctx, record.RouteToID)
+		if err == nil && !target.Enabled {
+			err = model.ErrDisabled
+		}
+		if err == nil {
+			var enabled bool
+			err = c.Store.db.QueryRow(ctx, `SELECT enabled FROM providers WHERE id = ?`, target.ProviderID).Scan(&enabled)
+			if err == nil && !enabled {
+				err = model.ErrDisabled
+			}
+		}
+	}
+	var upstream adapter.Provider
+	if err == nil {
+		upstream, err = c.Providers.Resolve(ctx, target.ProviderID)
+	}
 	if err != nil {
 		// The provider is unreadable — a changed secret key, or it has been
 		// deleted out from under the model. That is a failure of this model
@@ -167,7 +185,10 @@ func (c *Checker) probe(ctx context.Context, record model.Model) (Sample, bool) 
 	probeCtx, cancel := context.WithTimeout(ctx, c.Timeout)
 	defer cancel()
 
-	latency, err := Probe(probeCtx, c.Registry, upstream, record.Spec())
+	if target.ReasoningStyle != "" {
+		upstream.ReasoningStyle = target.ReasoningStyle
+	}
+	latency, err := Probe(probeCtx, c.Registry, upstream, target.Spec())
 	code, message := "", ""
 	if err != nil {
 		code, message = Code(err), Message(err)

@@ -438,7 +438,7 @@ func (s *Service) resolve(
 	// below will accept is hashed; that transaction makes the same checks and
 	// refuses the rest, so nothing is accepted here that it would not accept.
 	var passwordHash string
-	if pw := strings.TrimSpace(details.Password); pw != "" &&
+	if pw := details.Password; strings.TrimSpace(pw) != "" &&
 		s.settings.Bool(settings.OAuthAllowPassword) && auth.ValidatePassword(pw) == nil {
 		hash, err := s.auth.HashPassword(ctx, pw)
 		if err != nil {
@@ -623,7 +623,10 @@ func (s *Service) resolve(
 			if s.settings.Bool(settings.OAuthRequirePassword) && strings.TrimSpace(details.Password) == "" {
 				return auth.ErrPasswordTooShort
 			}
-			password := strings.TrimSpace(details.Password)
+			password := details.Password
+			if strings.TrimSpace(password) == "" {
+				password = ""
+			}
 			if password != "" {
 				if !s.settings.Bool(settings.OAuthAllowPassword) {
 					return ErrPasswordNotAllowed

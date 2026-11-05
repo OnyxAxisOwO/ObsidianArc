@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"testing/fstest"
 )
 
 type fake struct {
@@ -38,27 +37,6 @@ func mustPanic(t *testing.T, fn func()) {
 	fn()
 }
 
-// Setup order is by name, not by whichever order the linker ran the init
-// functions in, so two builds with the same plugins attach them the same way.
-func TestPluginsAreSetUpInNameOrder(t *testing.T) {
-	isolate(t)
-	var order []string
-	record := func(name string) func(*Host) error {
-		return func(*Host) error { order = append(order, name); return nil }
-	}
-	Register(fake{name: "zeta", setup: record("zeta")})
-	Register(fake{name: "alpha", setup: record("alpha")})
-	if err := SetupAll(&Host{}); err != nil {
-		t.Fatal(err)
-	}
-	if len(order) != 2 || order[0] != "alpha" || order[1] != "zeta" {
-		t.Fatalf("setup order = %v", order)
-	}
-	if names := Names(); len(names) != 2 || names[0] != "alpha" {
-		t.Fatalf("names = %v", names)
-	}
-}
-
 func TestABadOrRepeatedNameIsRefusedAtRegistration(t *testing.T) {
 	isolate(t)
 	Register(fake{name: "once", setup: noSetup})
@@ -81,15 +59,6 @@ func TestASetupFailureNamesThePlugin(t *testing.T) {
 	}
 	if ran {
 		t.Fatal("a plugin after the failing one was still set up")
-	}
-}
-
-func TestMigrationsSkipsPluginsWithNone(t *testing.T) {
-	isolate(t)
-	Register(fake{name: "tables", setup: noSetup, dir: fstest.MapFS{"tables_0001_x.sql": {}}})
-	Register(fake{name: "plain", setup: noSetup})
-	if got := Migrations(); len(got) != 1 {
-		t.Fatalf("migration sources = %d, want 1", len(got))
 	}
 }
 

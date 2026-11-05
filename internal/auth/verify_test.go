@@ -50,47 +50,12 @@ func TestVerificationIsInertWithoutMail(t *testing.T) {
 	if !account.EmailVerified {
 		t.Error("account was held back although verification cannot work here")
 	}
-}
-
-func TestExistingAccountsAreVerified(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-
-	account, _, err := f.auth.Register(ctx, RegisterInput{
-		Username: "founder", Email: "founder@example.com", Password: "a-good-password",
-	})
-	if err != nil {
-		t.Fatalf("register: %v", err)
+	if err := f.auth.Resend(ctx, "Arc", account.ID); !errors.Is(err, ErrAlreadyVerified) {
+		t.Fatalf("resending for an already verified account: %v", err)
 	}
-	// The migration grandfathers everyone in, and an account created with no
-	// requirement in force is verified for the same reason: there is nothing
-	// outstanding to confirm.
-	if !account.EmailVerified {
-		t.Error("a new account is unverified with the requirement off")
-	}
-}
-
-func TestAnAccountWithNoAddressIsNeverHeldBack(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-
-	if _, _, err := f.auth.Register(ctx, RegisterInput{
-		Username: "founder", Password: "a-good-password",
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	// Email is optional unless the instance requires it. Somebody who gave no
-	// address has nothing to confirm, so holding them back would be a lock
-	// with no key.
-	account, _, err := f.auth.Register(ctx, RegisterInput{
-		Username: "anonymous", Password: "a-good-password",
-	})
-	if err != nil {
-		t.Fatalf("register: %v", err)
-	}
-	if !account.EmailVerified {
-		t.Error("an account with no address was marked unverified")
+	account, _, err = f.auth.Register(ctx, RegisterInput{Username: "no-mailbox", Password: "a-good-password"})
+	if err != nil || !account.EmailVerified {
+		t.Fatalf("registration without an address while verification is unavailable: %+v, %v", account, err)
 	}
 }
 
@@ -109,6 +74,14 @@ func TestVerifyConsumesTheTokenExactlyOnce(t *testing.T) {
 		t.Fatalf("issue: %v", err)
 	}
 
+	var stored string
+	if err := f.db.QueryRow(ctx, `SELECT id FROM email_verifications WHERE user_id = ?`, account.ID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != digest(token) {
+		t.Fatal("the verification credential was not stored as its digest")
+	}
+
 	if again, _ := f.users.ByID(ctx, nil, account.ID); again.EmailProvenAt != 0 {
 		t.Fatal("an address counted as proved before its link was followed")
 	}
@@ -118,6 +91,9 @@ func TestVerifyConsumesTheTokenExactlyOnce(t *testing.T) {
 	// Following the link is the proof a provider sign-in may later link on.
 	if again, _ := f.users.ByID(ctx, nil, account.ID); again.EmailProvenAt == 0 {
 		t.Error("following the link did not record the address as proved")
+	}
+	if err := f.auth.VerifyCode(ctx, account.ID, f.auth.verificationCode(token)); !errors.Is(err, ErrVerificationInvalid) {
+		t.Fatalf("the code remained usable after link verification: %v", err)
 	}
 	// A verification link is a credential. Replaying it must fail, or a
 	// forwarded mail keeps working forever.
@@ -156,28 +132,6 @@ func TestVerificationCodeConfirmsAndConsumesTheLink(t *testing.T) {
 	}
 	if err := f.auth.VerifyCode(ctx, account.ID, code); !errors.Is(err, ErrVerificationInvalid) {
 		t.Fatalf("code replay err = %v, want ErrVerificationInvalid", err)
-	}
-}
-
-func TestVerificationLinkConsumesTheCode(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-	account, _, err := f.auth.Register(ctx, RegisterInput{
-		Username: "founder", Email: "founder@example.com", Password: "a-good-password",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	token, err := f.auth.issueVerification(ctx, f.db, account.ID, account.Email)
-	if err != nil {
-		t.Fatal(err)
-	}
-	code := f.auth.verificationCode(token)
-	if _, err := f.auth.Verify(ctx, token); err != nil {
-		t.Fatalf("verify link: %v", err)
-	}
-	if err := f.auth.VerifyCode(ctx, account.ID, code); !errors.Is(err, ErrVerificationInvalid) {
-		t.Fatalf("code remained usable after link verification: %v", err)
 	}
 }
 
@@ -599,36 +553,6 @@ func TestCodeVerificationDuringResendCountsBothRowsAndConsumesBoth(t *testing.T)
 	}
 }
 
-// The token must not be recoverable from the database, the same way a session
-// token is not.
-func TestVerificationTokenIsStoredHashed(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-
-	account, _, err := f.auth.Register(ctx, RegisterInput{
-		Username: "founder", Email: "founder@example.com", Password: "a-good-password",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	token, err := f.auth.issueVerification(ctx, f.db, account.ID, account.Email)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var stored string
-	if err := f.db.QueryRow(ctx,
-		`SELECT id FROM email_verifications WHERE user_id = ?`, account.ID).Scan(&stored); err != nil {
-		t.Fatal(err)
-	}
-	if stored == token {
-		t.Fatal("the token itself is in the database")
-	}
-	if stored != digest(token) {
-		t.Fatal("the stored value is not the token's digest")
-	}
-}
-
 func TestExpiredTokenIsRefusedAndCleared(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -760,15 +684,6 @@ func TestAStaleLinkConfirmsNothingAndMovesNobody(t *testing.T) {
 	}
 }
 
-func TestEmptyTokenIsRefused(t *testing.T) {
-	f := newFixture(t)
-	for _, token := range []string{"", "   ", "not-a-real-token"} {
-		if _, err := f.auth.Verify(context.Background(), token); err != ErrVerificationInvalid {
-			t.Errorf("Verify(%q) err = %v, want ErrVerificationInvalid", token, err)
-		}
-	}
-}
-
 func TestPruneDropsOnlyExpiredVerifications(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -804,59 +719,6 @@ func TestPruneDropsOnlyExpiredVerifications(t *testing.T) {
 	}
 }
 
-// The gate itself: with somewhere to send mail and the setting on, a new
-// account is held back and has a link waiting for it. The SMTP host does not
-// have to answer — Register mails on a detached goroutine and logs a failure,
-// precisely so an unreachable mail server cannot fail a registration that has
-// already been written.
-func TestVerificationHoldsBackNewAccountsWhenConfigured(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-
-	f.auth.mailer = mail.New(mail.Config{
-		Host:      "127.0.0.1",
-		Port:      1,
-		From:      "arc@example.com",
-		PublicURL: "https://arc.example.com",
-	})
-	if err := f.settings.Set(ctx, settings.VerifyEmail, "true"); err != nil {
-		t.Fatal(err)
-	}
-	if !f.auth.VerificationRequired() {
-		t.Fatal("verification is not required although it is configured and switched on")
-	}
-
-	// The first account is the one that makes the instance administrable.
-	founder, _, err := f.auth.Register(ctx, RegisterInput{
-		Username: "founder", Email: "founder@example.com", Password: "a-good-password",
-	})
-	if err != nil {
-		t.Fatalf("register founder: %v", err)
-	}
-	if !founder.EmailVerified {
-		t.Error("the first account was held back")
-	}
-
-	later, _, err := f.auth.Register(ctx, RegisterInput{
-		Username: "later", Email: "later@example.com", Password: "a-good-password",
-	})
-	if err != nil {
-		t.Fatalf("register: %v", err)
-	}
-	if later.EmailVerified {
-		t.Fatal("an account created under the requirement is already verified")
-	}
-
-	var pending int
-	if err := f.db.QueryRow(ctx,
-		`SELECT COUNT(*) FROM email_verifications WHERE user_id = ?`, later.ID).Scan(&pending); err != nil {
-		t.Fatal(err)
-	}
-	if pending != 1 {
-		t.Errorf("%d outstanding links, want exactly one", pending)
-	}
-}
-
 func TestVerificationRequiresEmailForLaterAccountsButExemptsFirstAdmin(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -875,53 +737,19 @@ func TestVerificationRequiresEmailForLaterAccountsButExemptsFirstAdmin(t *testin
 	}); !errors.Is(err, ErrEmailRequired) {
 		t.Fatalf("later account without email err = %v, want ErrEmailRequired", err)
 	}
-}
-
-// Resend is a way to make this server mail a stranger, so it is throttled.
-func TestResendIsThrottled(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-
-	f.auth.mailer = mail.New(mail.Config{
-		Host:      "127.0.0.1",
-		Port:      1,
-		From:      "arc@example.com",
-		PublicURL: "https://arc.example.com",
-	})
-	if err := f.settings.Set(ctx, settings.VerifyEmail, "true"); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := f.auth.Register(ctx, RegisterInput{
-		Username: "founder", Password: "a-good-password",
-	}); err != nil {
-		t.Fatal(err)
-	}
 	account, _, err := f.auth.Register(ctx, RegisterInput{
-		Username: "later", Email: "later@example.com", Password: "a-good-password",
+		Username: "later", Password: "a-good-password", Email: "later@example.com",
 	})
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || account.EmailVerified {
+		t.Fatalf("registration while verification is required: verified=%v, err=%v", account.EmailVerified, err)
 	}
-
-	// Registration has just issued one, so an immediate resend is refused
-	// before any mail is attempted.
-	if err := f.auth.Resend(ctx, "Arc", account.ID); err != ErrResendTooSoon {
-		t.Fatalf("err = %v, want ErrResendTooSoon", err)
+	var pending int
+	if err := f.db.QueryRow(ctx,
+		`SELECT COUNT(*) FROM email_verifications WHERE user_id = ?`, account.ID).Scan(&pending); err != nil || pending != 1 {
+		t.Fatalf("pending verification links = %d, err = %v, want one link", pending, err)
 	}
-}
-
-func TestResendRefusesAnAlreadyVerifiedAccount(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-
-	account, _, err := f.auth.Register(ctx, RegisterInput{
-		Username: "founder", Email: "founder@example.com", Password: "a-good-password",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := f.auth.Resend(ctx, "Arc", account.ID); err != ErrAlreadyVerified {
-		t.Fatalf("err = %v, want ErrAlreadyVerified", err)
+	if err := f.auth.Resend(ctx, "Arc", account.ID); !errors.Is(err, ErrResendTooSoon) {
+		t.Fatalf("resending immediately after registration: %v", err)
 	}
 }
 

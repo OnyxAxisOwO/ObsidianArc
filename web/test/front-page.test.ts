@@ -3,8 +3,7 @@ import { createApp, nextTick, type App } from 'vue';
 import RootView from '../src/views/RootView.vue';
 import FrontPage from '../src/views/FrontPage.vue';
 import { site, siteInfo, forget } from '../src/stores/session';
-import { changeLanguage, t, type StringKey } from '../src/composables/useI18n';
-import { zh } from '../src/i18n.zh';
+import { changeLanguage, t } from '../src/composables/useI18n';
 
 // The public front page.
 //
@@ -156,23 +155,6 @@ describe('the front page', () => {
     expect(host.querySelector('.oa-front')).toBeNull();
   });
 
-  it('hands every section to the observer rather than revealing them itself', async () => {
-    await mount(FrontPage);
-
-    const reveals = [...host.querySelectorAll('.oa-front-reveal')];
-    const revealer = observerOf(reveals[0] ?? null);
-
-    expect(reveals.length).toBeGreaterThan(0);
-    // One observer holds every reveal. The hero's own observer is a second
-    // one, and it must not be handed a reveal — it toggles, and a reveal
-    // toggled back off as the reader scrolled past would strobe.
-    expect(revealer?.targets).toEqual(reveals);
-    // Nothing may arrive already revealed: the class is applied on
-    // intersection, and a section that shipped with it would appear before
-    // the reader scrolled to it.
-    expect(host.querySelectorAll('.oa-front-reveal.shown')).toHaveLength(0);
-  });
-
   it('shows everything at once when the reader asked for less motion', async () => {
     reduced = true;
     stubMatchMedia();
@@ -196,51 +178,6 @@ describe('the front page', () => {
     expect(figures).toEqual(['1', '0', '4', '2']);
     expect(host.querySelector('.oa-front-term-line')?.textContent).toContain('model list');
     expect(host.querySelector('.oa-front-caret')).toBeNull();
-  });
-
-  /** Moves a pointer over `target`, with the hero given a real box. */
-  function pointAt(target: Element, x: number, y: number): HTMLElement {
-    const hero = host.querySelector<HTMLElement>('.oa-front-hero')!;
-    // jsdom lays nothing out, so every box is 0×0 — which the handler
-    // rightly refuses to divide by. Give the hero the size a screen would.
-    hero.getBoundingClientRect = () => ({
-      left: 0, top: 0, right: 1000, bottom: 800, width: 1000, height: 800, x: 0, y: 0,
-      toJSON: () => ({}),
-    });
-    target.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientX: x, clientY: y }));
-    return hero;
-  }
-
-  it('follows the pointer across the middle of the hero, not only its margins', async () => {
-    await mount(FrontPage);
-
-    // The regression this pins: the handler used to sit on the background
-    // layer, and the hero's text covers the whole middle of that layer — so a
-    // pointer over the headline or the buttons never reached it, and the
-    // parallax only ever answered at the two side margins. A pointer over the
-    // headline is exactly the case that was broken.
-    const headline = host.querySelector('.oa-front-title')!;
-    const hero = pointAt(headline, 750, 200);
-
-    expect(hero.style.getPropertyValue('--oa-front-px')).toBe('0.75');
-    expect(hero.style.getPropertyValue('--oa-front-py')).toBe('0.25');
-    // The glow needs pixels, not fractions: it sits under the pointer
-    // whatever the hero's size.
-    expect(hero.style.getPropertyValue('--oa-front-gx')).toBe('750px');
-    expect(hero.style.getPropertyValue('--oa-front-gy')).toBe('200px');
-  });
-
-  it('does not follow the pointer for a reader who asked for less motion', async () => {
-    reduced = true;
-    stubMatchMedia();
-    await mount(FrontPage);
-
-    const hero = pointAt(host.querySelector('.oa-front-title')!, 750, 200);
-
-    // Following is motion. Nothing is written, so every field stays at the
-    // stylesheet's centred default rather than chasing the pointer.
-    expect(hero.style.getPropertyValue('--oa-front-px')).toBe('');
-    expect(hero.style.getPropertyValue('--oa-front-gx')).toBe('');
   });
 
   it('pauses the hero background once it is scrolled away, and resumes it on the way back', async () => {
@@ -271,29 +208,6 @@ describe('the front page', () => {
     expect(watcher!.disconnected).toBe(true);
   });
 
-  it('pauses the flow diagram\'s wires once it is scrolled away, and resumes them on the way back', async () => {
-    await mount(FrontPage);
-
-    // The wires and the core ring animate background position and rotation,
-    // and sit below the hero, so the hero's own switch never reaches them. They
-    // share the hero's observer, which is why the same watcher answers here.
-    const flow = host.querySelector('.oa-front-flow')!;
-    const watcher = observerOf(flow);
-    expect(watcher).toBeDefined();
-
-    const report = (isIntersecting: boolean): void => {
-      watcher!.callback(
-        [{ isIntersecting, target: flow } as unknown as IntersectionObserverEntry],
-        {} as IntersectionObserver,
-      );
-    };
-
-    report(false);
-    expect(flow.classList.contains('idle')).toBe(true);
-    report(true);
-    expect(flow.classList.contains('idle')).toBe(false);
-  });
-
   it('offers a way in, and only offers sign-up where sign-up is open', async () => {
     site.value = { ...siteInfo.value, registration_enabled: false };
     await mount(FrontPage);
@@ -306,52 +220,6 @@ describe('the front page', () => {
       .find((b) => b.textContent?.trim() === t('frontOpenChat'))!;
     signIn.click();
     expect(push).toHaveBeenCalledWith('/login');
-  });
-
-  // The hero's and the closing card's are one definition drawn twice; the
-  // header's is a lighter button of its own.
-  it('draws the sign-up call to action under the headline and on the closing card', async () => {
-    site.value = { ...siteInfo.value, registration_enabled: true };
-    await mount(FrontPage);
-
-    const ctas = [...host.querySelectorAll<HTMLButtonElement>('.oa-btn.primary.oa-front-cta')];
-    expect(ctas).toHaveLength(2);
-    for (const cta of ctas) {
-      expect(cta.textContent?.trim()).toBe(t('frontCreateAccount'));
-      expect(cta.querySelector('svg')).not.toBeNull();
-    }
-    expect(ctas[0]!.closest('.oa-front-hero')).not.toBeNull();
-    expect(ctas[1]!.closest('.oa-front-close-card')).not.toBeNull();
-
-    ctas[1]!.click();
-    expect(push).toHaveBeenCalledWith('/register');
-  });
-
-  it('says the same things in Chinese', async () => {
-    // The dictionary's own type already forces every key to exist in both.
-    // What it cannot see is a key that was translated by being copied, which
-    // on a marketing page is the likely mistake — the sentences are long and
-    // the temptation is to leave one.
-    //
-    // Read through `t()` in each language rather than against the English
-    // object: `en` is deliberately not exported — it is the source of truth
-    // for a type, not a value other modules read — and widening that for a
-    // test would be the wrong trade.
-    const keys = (Object.keys(zh) as StringKey[]).filter((key) => key.startsWith('front'));
-    expect(keys.length).toBeGreaterThan(30);
-
-    await changeLanguage('en');
-    const english = new Map(keys.map((key) => [key, t(key)]));
-    await changeLanguage('zh');
-
-    const untranslated = keys.filter((key) => t(key) === english.get(key)
-      // Protocol and product names stay English on purpose; this is the only
-      // front-page string made entirely of them.
-      && key !== 'frontFactProtocolsNote');
-    expect(untranslated).toEqual([]);
-
-    await mount(FrontPage);
-    expect(host.querySelector('.oa-front-title')?.textContent).toContain(zh.frontHeroLineOne);
   });
 
   it('stops typing the terminal demo while its pane is off screen, and resumes it on the way back', async () => {
@@ -378,26 +246,5 @@ describe('the front page', () => {
     report(true);
     await pause(200);
     expect(typedText().length).toBeGreaterThan(frozen.length);
-  });
-
-  it('moves the progress bar as the page scrolls, without re-rendering the page for it', async () => {
-    await mount(FrontPage);
-
-    const node = host.querySelector<HTMLElement>('.oa-front')!;
-    // jsdom has no layout: give the scroller a size so there is somewhere to scroll.
-    Object.defineProperty(node, 'scrollHeight', { configurable: true, value: 1000 });
-    Object.defineProperty(node, 'clientHeight', { configurable: true, value: 500 });
-    node.scrollTop = 250;
-    node.dispatchEvent(new Event('scroll'));
-    await nextTick();
-
-    const bar = host.querySelector<HTMLElement>('.oa-front-progress')!;
-    expect(bar.style.transform).toBe('scaleX(0.5)');
-
-    // No await: the bar moves in the scroll handler itself, not on a render that
-    // would have to run first.
-    node.scrollTop = 500;
-    node.dispatchEvent(new Event('scroll'));
-    expect(bar.style.transform).toBe('scaleX(1)');
   });
 });

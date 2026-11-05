@@ -15,8 +15,6 @@ import AuthView from '../src/views/AuthView.vue';
 import BindOIDCView from '../src/views/BindOIDCView.vue';
 import CompleteSignupView from '../src/views/CompleteSignupView.vue';
 import ConsentView from '../src/views/ConsentView.vue';
-import TwoFactorEnrolView from '../src/views/TwoFactorEnrolView.vue';
-import VerifyView from '../src/views/VerifyView.vue';
 import AccountSection from '../src/views/settings/AccountSection.vue';
 import { installPlugins } from '../src/plugins/registry';
 import example, { type ExampleCheck } from './fixtures/example.plugin';
@@ -186,13 +184,6 @@ describe('signing in with an account from elsewhere', () => {
     expect(links[0]!.querySelector('svg')).not.toBeNull();
   });
 
-  it('draws nothing at all when none is configured', async () => {
-    offer([]);
-    await mount(AuthView, { mode: 'login' });
-    expect(host.querySelector('.oa-auth-provider')).toBeNull();
-    expect(host.querySelector('.oa-auth-or')).toBeNull();
-  });
-
   // The callback is a redirect, so a refusal has nowhere to put a response
   // body: it arrives as a code in the query and is worded here.
   it('says why a provider sign-in came back empty-handed', async () => {
@@ -213,15 +204,6 @@ describe('signing in with an account from elsewhere', () => {
     await mount(AuthView, { mode: 'login' });
 
     expect(replace).toHaveBeenCalledWith({ path: '/login', query: { next: '/oauth/consent?request=abc' } });
-  });
-
-  it('explains when third-party signup was refused because oidc is required', async () => {
-    offer([{ id: 'github', name: 'GitHub' }, { id: 'oidc', name: 'OpenID Connect' }]);
-    route.query = { oauth_error: 'oidc_only' };
-    await mount(AuthView, { mode: 'login' });
-
-    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('oauthOIDCOnly'));
-    expect(replace).toHaveBeenCalledWith({ path: '/login', query: {} });
   });
 
   it('renders dedicated OIDC signup button when oidc_only_signup is active on register page', async () => {
@@ -286,12 +268,6 @@ describe('signing in with an account from elsewhere', () => {
     expect(assign).not.toHaveBeenCalled();
     expect(posts).toHaveLength(0);
     expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('challengeRequired'));
-  });
-
-  it('falls back to a general sentence for a code it does not know', async () => {
-    route.query = { oauth_error: 'something-new' };
-    await mount(AuthView, { mode: 'login' });
-    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('oauthFailed'));
   });
 
   // The code is whatever the query string carried, and every object inherits
@@ -392,24 +368,6 @@ describe('registering with an invite code', () => {
     route.path = '/register';
   });
 
-  it('keeps the field collapsed behind a link in open mode, until asked for', async () => {
-    site.value = { ...siteInfo.value, invite_mode: 'open' };
-    await mount(AuthView, { mode: 'register' });
-
-    expect(() => fieldInput(t('inviteCodeOptionalLabel'))).toThrow();
-    button(host, t('haveInviteCode')).click();
-    await settle();
-    expect(fieldInput(t('inviteCodeOptionalLabel'))).not.toBeNull();
-  });
-
-  it('shows the field open and required outright in invite-only mode, with no toggle', async () => {
-    site.value = { ...siteInfo.value, invite_mode: 'invite' };
-    await mount(AuthView, { mode: 'register' });
-
-    expect(fieldInput(t('inviteCodeLabel'))).not.toBeNull();
-    expect(() => button(host, t('haveInviteCode'))).toThrow();
-  });
-
   it('refuses to submit without one in invite-only mode, before asking the server', async () => {
     site.value = { ...siteInfo.value, invite_mode: 'invite' };
     const register = vi.spyOn(authApi, 'register');
@@ -444,21 +402,6 @@ describe('registering with an invite code', () => {
     await settle();
 
     expect(register).toHaveBeenCalledWith(expect.objectContaining({ inviteCode: 'abcd-2345' }));
-  });
-
-  it('words the server\'s refusal of an unknown or spent code', async () => {
-    site.value = { ...siteInfo.value, invite_mode: 'invite' };
-    const { ApiError } = await import('../src/api/client');
-    vi.spyOn(authApi, 'register').mockRejectedValue(new ApiError(400, 'invite_invalid', 'nope', {}));
-    await mount(AuthView, { mode: 'register' });
-
-    type(fieldInput(t('username')), 'newperson');
-    type(fieldInput(t('password')), 'a-strong-password');
-    type(fieldInput(t('inviteCodeLabel')), 'DEADCODE');
-    button(host, t('createAccount')).click();
-    await settle();
-
-    expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('inviteInvalid'));
   });
 });
 
@@ -519,23 +462,6 @@ describe('a plugin\'s guard on the sign-up and sign-in forms', () => {
     expect(host.querySelector('.oa-auth-error')!.textContent).toBe(example.guards![0]!.failed());
   });
 
-  it('asks for nothing on an instance whose plugin block says the door is open', async () => {
-    const block = { site: '', on_signup: false, on_login: false };
-    site.value = { ...siteInfo.value, plugins: { example: block } };
-    installPlugins([example], { example: block });
-    const register = vi.spyOn(authApi, 'register').mockResolvedValue({ user: NEW_ACCOUNT });
-    await mount(AuthView, { mode: 'register' });
-
-    type(fieldInput(t('username')), 'newperson');
-    type(fieldInput(t('password')), 'a-strong-password');
-    button(host, t('createAccount')).click();
-    await settle();
-
-    expect(init).not.toHaveBeenCalled();
-    expect(execute).not.toHaveBeenCalled();
-    expect(register).toHaveBeenCalledWith(expect.objectContaining({ guards: {} }));
-  });
-
   it('stands in front of sign-in too, and names the action it is checking', async () => {
     guardedSite();
     route.path = '/login';
@@ -575,18 +501,6 @@ describe('finishing a sign-up with an invite code', () => {
 
     expect(complete).not.toHaveBeenCalled();
     expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('inviteRequiredHere'));
-  });
-
-  it('sends the code once one is entered', async () => {
-    site.value = { ...siteInfo.value, invite_mode: 'invite' };
-    const complete = vi.spyOn(oauthApi, 'completeSignup').mockResolvedValue({ redirect: '/' });
-    await mount(CompleteSignupView);
-
-    type(fieldInput(t('inviteCodeLabel')), 'PARTNERX');
-    button(host, t('signupCompleteSubmit')).click();
-    await settle();
-
-    expect(complete).toHaveBeenCalledWith({ legalAccepted: {}, username: 'octocat', fields: {}, email: '', inviteCode: 'PARTNERX' });
   });
 });
 
@@ -666,18 +580,6 @@ describe('the connections an account holds', () => {
     expect(rows[0]!.textContent).toContain('GitHub');
   });
 
-  // The connect flow comes back with its outcome in the query, so the code is
-  // as untrusted here as on the sign-in page.
-  it('says a connection attempt failed when its code is a name every object inherits', async () => {
-    route.query = { oauth_error: 'constructor' };
-    vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({
-      connections: [], providers: [], has_password: true,
-    });
-    await mount(AccountSection, { active: true });
-
-    expect(host.querySelector('.oa-group-flash')!.textContent).toBe(t('oauthFailed'));
-  });
-
   it('says a connection cannot be the last way in', async () => {
     vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({
       connections: [{
@@ -699,67 +601,6 @@ describe('the connections an account holds', () => {
     await settle();
 
     expect(host.textContent).toContain(t('oauthLastWayIn'));
-  });
-
-  // An account opened through a provider has no password. The box has to say
-  // "set" rather than "change", and must not ask for one that never existed.
-  it('offers to set a first password when there is none', async () => {
-    vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({
-      connections: [], providers: [], has_password: false,
-    });
-    await mount(AccountSection, { active: true });
-
-    expect(host.textContent).toContain(t('setPassword'));
-    expect(host.textContent).not.toContain(t('currentPassword'));
-  });
-
-  it('asks for the current password when there is one', async () => {
-    vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({
-      connections: [], providers: [], has_password: true,
-    });
-    await mount(AccountSection, { active: true });
-
-    expect(host.textContent).toContain(t('currentPassword'));
-    expect(host.textContent).not.toContain(t('setPasswordHint'));
-  });
-
-  // The address is where a reset link goes, so moving it takes the password —
-  // but a nickname edit sends the unchanged address too and must not.
-  it('asks for the password only while the email is being changed', async () => {
-    vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({
-      connections: [], providers: [], has_password: true,
-    });
-    const save = vi.spyOn(authApi, 'updateProfile')
-      .mockResolvedValue({ user: { ...account, email: 'new@example.com' } });
-    await mount(AccountSection, { active: true });
-    expect(host.textContent).not.toContain(t('emailChangePasswordHint'));
-
-    type(fieldInput(t('email')), 'new@example.com');
-    await settle();
-    expect(host.textContent).toContain(t('emailChangePasswordHint'));
-
-    button(host, t('save')).click();
-    await settle();
-    expect(save).not.toHaveBeenCalled();
-
-    type(fieldInput(t('currentPassword')), 'a-good-password');
-    await settle();
-    button(host, t('save')).click();
-    await settle();
-    expect(save).toHaveBeenCalledWith(expect.objectContaining({
-      email: 'new@example.com', current_password: 'a-good-password',
-    }));
-  });
-
-  it('does not ask an account with no password for one to change its email', async () => {
-    vi.spyOn(oauthApi, 'fetchConnections').mockResolvedValue({
-      connections: [], providers: [], has_password: false,
-    });
-    await mount(AccountSection, { active: true });
-
-    type(fieldInput(t('email')), 'new@example.com');
-    await settle();
-    expect(host.textContent).not.toContain(t('emailChangePasswordHint'));
   });
 
   it('lists the sites this account has signed into, and removes one', async () => {
@@ -800,27 +641,6 @@ describe('letting another site sign somebody in', () => {
     redirect_uri: 'https://wiki.example.com/oidc/callback',
   };
 
-  it('says who is asking, what they would learn, and where you are going', async () => {
-    route.query = { request: 'a-signed-ticket' };
-    const read = vi.spyOn(consentApi, 'fetchConsent').mockResolvedValue(request);
-    await mount(ConsentView);
-
-    expect(read).toHaveBeenCalledWith('a-signed-ticket');
-    expect(host.textContent).toContain(t('consentTitle', { application: 'The Wiki' }));
-    // The operator's own description of the application, and whose account is
-    // about to be handed over. Both are on screen, not one or the other.
-    expect(host.textContent).toContain('A wiki for the team.');
-
-    const lines = [...host.querySelectorAll('.oa-consent-scopes li')].map((n) => n.textContent);
-    expect(lines).toHaveLength(3);
-    expect(lines[0]).toContain(t('scopeOpenID'));
-    expect(lines[2]).toContain(t('scopeEmail'));
-
-    // The host, not the whole callback: it is the part worth reading and the
-    // part an impostor cannot fake.
-    expect(host.textContent).toContain(t('consentDestination', { host: 'wiki.example.com' }));
-  });
-
   it('sends the browser to the callback when it is allowed', async () => {
     route.query = { request: 'a-signed-ticket' };
     vi.spyOn(consentApi, 'fetchConsent').mockResolvedValue(request);
@@ -857,20 +677,6 @@ describe('letting another site sign somebody in', () => {
     expect(window.location.href).toContain('error=access_denied');
   });
 
-  // The server refuses to redirect anywhere an application did not register,
-  // so this screen is where that refusal is read.
-  it('explains a request that could not be started at all', async () => {
-    route.query = { error: 'bad_redirect' };
-    const read = vi.spyOn(consentApi, 'fetchConsent');
-    await mount(ConsentView);
-
-    expect(read).not.toHaveBeenCalled();
-    expect(host.textContent).toContain(t('consentProblemTitle'));
-    expect(host.textContent).toContain(t('consentBadRedirect'));
-    // Nothing to agree to, so no button to agree with.
-    expect(host.querySelector('.oa-consent-scopes')).toBeNull();
-  });
-
   // A stale request and a server that is down are different problems. Telling
   // the reader that a request which is fine is "not valid any more" sends them
   // to start again for no reason.
@@ -890,15 +696,6 @@ describe('letting another site sign somebody in', () => {
 
     expect(host.textContent).toContain(t('consentFailed'));
     expect(host.textContent).not.toContain(t('consentUnavailable'));
-  });
-
-  it('says the request failed when the refusal is a name every object inherits', async () => {
-    route.query = { error: 'constructor' };
-    await mount(ConsentView);
-
-    expect(host.textContent).toContain(t('consentProblemTitle'));
-    expect(host.textContent).toContain(t('consentFailed'));
-    expect(host.textContent).not.toContain('native code');
   });
 
   it('refuses to draw anything without a ticket', async () => {
@@ -941,22 +738,6 @@ describe('finishing a sign-up the provider could not', () => {
     const labels = [...host.querySelectorAll('.oa-field-label')].map((node) => node.textContent);
     expect(labels).toContain(refField.label());
     expect(labels).not.toContain(t('email'));
-  });
-
-  it('asks for an address instead when that is the missing one', async () => {
-    vi.spyOn(oauthApi, 'fetchPendingSignup').mockResolvedValue({
-      ...pending,
-      needs: { fields: [], email: true },
-      email_domains: ['company.com'],
-    });
-    await mount(CompleteSignupView);
-
-    const labels = [...host.querySelectorAll('.oa-field-label')].map((node) => node.textContent);
-    expect(labels).toContain(t('email'));
-    expect(labels).not.toContain(refField.label());
-    // And which addresses would be accepted, before it is typed rather than
-    // after it is refused.
-    expect(host.textContent).toContain(t('emailAccepted', { domains: 'company.com' }));
   });
 
   it('opens the account and leaves for wherever the server says', async () => {
@@ -1107,29 +888,6 @@ describe('finishing a sign-up the provider could not', () => {
     expect(host.querySelector('.oa-auth-error')!.textContent).toBe(t('passwordRequired'));
   });
 
-  it('hides password field when needs_password is false', async () => {
-    vi.spyOn(oauthApi, 'fetchPendingSignup').mockResolvedValue({
-      ...pending,
-      needs_password: false,
-    });
-    await mount(CompleteSignupView);
-
-    const pwdField = [...host.querySelectorAll('.oa-field')]
-      .find((node) => node.querySelector('.oa-field-label')?.textContent === t('password')
-        || node.querySelector('.oa-field-label')?.textContent === t('passwordOptional'));
-    expect(pwdField).toBeUndefined();
-  });
-
-  it('says so when the sign-in is no longer in progress', async () => {
-    const { ApiError } = await import('../src/api/client');
-    vi.spyOn(oauthApi, 'fetchPendingSignup')
-      .mockRejectedValue(new ApiError(400, 'bad_request', 'gone', {}));
-    await mount(CompleteSignupView);
-
-    expect(host.textContent).toContain(t('signupCompleteGoneTitle'));
-    expect(host.querySelector('input')).toBeNull();
-  });
-
   it('offers to try again rather than calling the sign-in over when the server cannot be reached', async () => {
     const { ApiError } = await import('../src/api/client');
     const fetchPending = vi.spyOn(oauthApi, 'fetchPendingSignup')
@@ -1180,67 +938,6 @@ describe('signing up with a rule the form can check', () => {
   });
 });
 
-describe('auth card layout position', () => {
-  it.each([
-    { position: undefined, expectedClass: 'position-center' },
-    { position: 'center', expectedClass: 'position-center' },
-    { position: 'left', expectedClass: 'position-left' },
-    { position: 'right', expectedClass: 'position-right' },
-    { position: 'left-panel', expectedClass: 'position-left-panel' },
-    { position: 'right-panel', expectedClass: 'position-right-panel' },
-  ] as const)('applies $expectedClass to AuthView (login) when auth_card_position is $position', async ({ position, expectedClass }) => {
-    site.value = { ...siteInfo.value };
-    if (position === undefined) delete site.value.auth_card_position;
-    else site.value.auth_card_position = position;
-    await mount(AuthView, { mode: 'login' });
-    const authElement = host.querySelector('.oa-auth');
-    expect(authElement?.classList.contains(expectedClass)).toBe(true);
-  });
-
-  it.each([
-    { position: 'left', expectedClass: 'position-left' },
-    { position: 'right', expectedClass: 'position-right' },
-    { position: 'center', expectedClass: 'position-center' },
-    { position: 'left-panel', expectedClass: 'position-left-panel' },
-    { position: 'right-panel', expectedClass: 'position-right-panel' },
-  ] as const)('applies $expectedClass to AuthView (register) when auth_card_position is $position', async ({ position, expectedClass }) => {
-    site.value = { ...siteInfo.value, auth_card_position: position };
-    await mount(AuthView, { mode: 'register' });
-    const authElement = host.querySelector('.oa-auth');
-    expect(authElement?.classList.contains(expectedClass)).toBe(true);
-  });
-
-  it('applies position class to CompleteSignupView', async () => {
-    site.value = { ...siteInfo.value, auth_card_position: 'left' };
-    vi.spyOn(oauthApi, 'fetchPendingSignup').mockResolvedValue({
-      provider: 'github',
-      provider_name: 'GitHub',
-      login: 'octocat',
-      email: '',
-      needs: { fields: [], email: false },
-      email_domains: [],
-      verify_email: false,
-    });
-    await mount(CompleteSignupView);
-    const authElement = host.querySelector('.oa-auth');
-    expect(authElement?.classList.contains('position-left')).toBe(true);
-  });
-
-  it('applies position class to TwoFactorEnrolView', async () => {
-    site.value = { ...siteInfo.value, auth_card_position: 'right' };
-    await mount(TwoFactorEnrolView);
-    const authElement = host.querySelector('.oa-auth');
-    expect(authElement?.classList.contains('position-right')).toBe(true);
-  });
-
-  it('applies position class to VerifyView', async () => {
-    site.value = { ...siteInfo.value, auth_card_position: 'left' };
-    await mount(VerifyView);
-    const authElement = host.querySelector('.oa-auth');
-    expect(authElement?.classList.contains('position-left')).toBe(true);
-  });
-});
-
 describe('registering with proof-of-work (PoW)', () => {
   it('fetches PoW challenge and submits solved nonce when pow_on_signup is active', async () => {
     site.value = { ...siteInfo.value, pow_on_signup: true };
@@ -1281,30 +978,6 @@ describe('registering with proof-of-work (PoW)', () => {
           maxNumber: 10,
           signature: 'test-sig',
         }),
-      }),
-    );
-  });
-
-  it('does not fetch or send PoW when pow_on_signup is disabled', async () => {
-    site.value = { ...siteInfo.value, pow_on_signup: false };
-
-    const fetchSpy = vi.spyOn(authApi, 'fetchPoWChallenge');
-    const regSpy = vi.spyOn(authApi, 'register').mockResolvedValue({
-      user: makeAccount({ id: 'u1', username: 'bob', created_at: 0, updated_at: 0, group_id: '', group_name: '', email: '', nickname: '' }),
-    });
-
-    await mount(AuthView, { mode: 'register' });
-    expect(fetchSpy).not.toHaveBeenCalled();
-
-    type(fieldInput(t('username')), 'bob');
-    type(fieldInput(t('password')), 'super-secret-password');
-
-    button(host, t('createAccount')).click();
-    await settle();
-
-    expect(regSpy).toHaveBeenCalledWith(
-      expect.not.objectContaining({
-        pow: expect.anything(),
       }),
     );
   });

@@ -77,25 +77,6 @@ func TestMovingS3DestinationWithoutTheKeysIsRefused(t *testing.T) {
 	}
 }
 
-func TestMovingS3DestinationWithTheKeysSavesThem(t *testing.T) {
-	store := savedS3Store(t)
-	ctx := context.Background()
-	if err := store.Save(ctx, Config{
-		Type: StorageTypeS3, Enabled: true, Endpoint: "https://new-s3.example.test", Bucket: "arc-backups",
-		Region: "us-east-1", Prefix: "arc", AccessKeyID: "new-access", SecretKey: "new-secret",
-		IntervalHours: 24, RetentionDays: 7,
-	}); err != nil {
-		t.Fatalf("move the storage with new keys: %v", err)
-	}
-	loaded, err := store.Load(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if loaded.Endpoint != "https://new-s3.example.test" || loaded.AccessKeyID != "new-access" || loaded.SecretKey != "new-secret" {
-		t.Fatalf("moved storage = endpoint %q access %q secret %q", loaded.Endpoint, loaded.AccessKeyID, loaded.SecretKey)
-	}
-}
-
 func TestMovingS3DestinationNeedsEveryStoredKeyTyped(t *testing.T) {
 	// The access key ID is sealed like the secret, so each stored value has to be
 	// typed again for a new destination; retyping only one of them is refused.
@@ -116,6 +97,25 @@ func TestMovingS3DestinationNeedsEveryStoredKeyTyped(t *testing.T) {
 				t.Fatalf("moving with only the %s = %v, want ErrCredentialsNeededForMove", partial.name, err)
 			}
 		})
+	}
+}
+
+func TestMovingS3DestinationWithTheKeysSavesThem(t *testing.T) {
+	store := savedS3Store(t)
+	ctx := context.Background()
+	if err := store.Save(ctx, Config{
+		Type: StorageTypeS3, Enabled: true, Endpoint: "https://new-s3.example.test", Bucket: "arc-backups",
+		Region: "us-east-1", Prefix: "arc", AccessKeyID: "new-access", SecretKey: "new-secret",
+		IntervalHours: 24, RetentionDays: 7,
+	}); err != nil {
+		t.Fatalf("move the storage with new keys: %v", err)
+	}
+	loaded, err := store.Load(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Endpoint != "https://new-s3.example.test" || loaded.AccessKeyID != "new-access" || loaded.SecretKey != "new-secret" {
+		t.Fatalf("moved storage = endpoint %q access %q secret %q", loaded.Endpoint, loaded.AccessKeyID, loaded.SecretKey)
 	}
 }
 

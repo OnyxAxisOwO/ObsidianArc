@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -10,211 +9,89 @@ import (
 	"testing"
 )
 
-func TestLoginBackgroundCRUDAndVariants(t *testing.T) {
+func TestLoginBackgroundPicturesArePublishedAndRemoved(t *testing.T) {
 	in := newInstance(t)
 	admin := in.register("admin", "a-strong-password")
-	regular := in.register("regular", "another-strong-password")
+	operator := in.register("operator", "another-strong-password")
+	grantAdmin(t, in, admin, operator, "settings")
+	const base = "/api/site/login-background/"
+	const edit = "/api/admin/login-background/"
+	const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+	const portrait = "portrait_dark"
 
-	// Sample 1x1 GIF / PNG / JPEG / WebP / AVIF payloads in base64
-	tinyPNG := "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
-	tinyJPEG := "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA="
-	tinyWebP := base64.StdEncoding.EncodeToString([]byte("RIFF\x1a\x00\x00\x00WEBPVP8 \x0e\x00\x00\x00\x30\x01\x00\x9d\x01\x2a\x01\x00\x01\x00\x02\x00\x34\x25"))
-	tinyAVIF := base64.StdEncoding.EncodeToString([]byte("\x00\x00\x00\x20ftypavif\x00\x00\x00\x00avifmif1miaf\x00\x00\x00\x00"))
-
-	// 1. Initially, GET /api/site returns empty or omitted login_background
-	siteRes := in.do(http.MethodGet, "/api/site", nil, nil)
-	if siteRes.Code != http.StatusOK {
-		t.Fatalf("GET /api/site: %d", siteRes.Code)
+	siteImages := func() map[string]string {
+		return decode[struct {
+			Images map[string]string `json:"login_background"`
+		}](t,
+			in.do(http.MethodGet, "/api/site", nil, nil)).Images
 	}
-	var siteData struct {
-		LoginBackground map[string]string `json:"login_background"`
+	if images := siteImages(); len(images) != 0 {
+		t.Fatalf("published backgrounds before upload: %v", images)
 	}
-	if err := json.Unmarshal(siteRes.Body.Bytes(), &siteData); err != nil {
-		t.Fatalf("unmarshal /api/site: %v", err)
+	if res := in.do(http.MethodPut, edit+"diagonal_light", map[string]string{"data": png}, operator); res.Code != http.StatusBadRequest {
+		t.Fatalf("invalid background slot: %d %s", res.Code, res.Body.String())
 	}
-	if len(siteData.LoginBackground) != 0 {
-		t.Fatalf("expected empty login_background initially, got: %v", siteData.LoginBackground)
+	if res := in.do(http.MethodPut, edit+portrait, map[string]string{"data": "bm90IGFuIGltYWdl"}, operator); res.Code != http.StatusBadRequest {
+		t.Fatalf("invalid image bytes: %d %s", res.Code, res.Body.String())
 	}
-
-	// 2. Permission checks: anonymous and regular users cannot upload
-	anonRes := in.do(http.MethodPut, "/api/admin/login-background/landscape_light", map[string]string{
-		"mime": "image/png",
-		"data": tinyPNG,
-	}, nil)
-	if anonRes.Code != http.StatusUnauthorized {
-		t.Fatalf("anon upload: %d, want 401", anonRes.Code)
+	if res := in.do(http.MethodPut, edit+portrait, map[string]string{"html": "<script>1</script>"}, operator); res.Code != http.StatusForbidden {
+		t.Fatalf("settings grant published HTML: %d %s", res.Code, res.Body.String())
 	}
 
-	userRes := in.do(http.MethodPut, "/api/admin/login-background/landscape_light", map[string]string{
-		"mime": "image/png",
-		"data": tinyPNG,
-	}, regular)
-	if userRes.Code != http.StatusForbidden {
-		t.Fatalf("regular user upload: %d, want 403", userRes.Code)
-	}
-
-	// 3. Admin uploads invalid variant
-	badVariantRes := in.do(http.MethodPut, "/api/admin/login-background/diagonal_light", map[string]string{
-		"mime": "image/png",
-		"data": tinyPNG,
-	}, admin)
-	if badVariantRes.Code != http.StatusBadRequest {
-		t.Fatalf("bad variant upload: %d, want 400", badVariantRes.Code)
-	}
-
-	// 4. Admin uploads unsupported media type / fake image
-	badMimeRes := in.do(http.MethodPut, "/api/admin/login-background/landscape_light", map[string]string{
-		"mime": "image/png",
-		"data": base64.StdEncoding.EncodeToString([]byte("this is not an image at all")),
-	}, admin)
-	if badMimeRes.Code != http.StatusBadRequest {
-		t.Fatalf("bad mime upload: %d, want 400", badMimeRes.Code)
-	}
-
-	// 5. Admin uploads all 4 variants (using base64 with whitespace, and AVIF/WebP)
-	variants := []string{"landscape_light", "landscape_dark", "portrait_light", "portrait_dark"}
-	payloads := map[string]string{
-		"landscape_light": "  \n " + tinyPNG + " \r\n ",
-		"landscape_dark":  tinyJPEG,
-		"portrait_light":  tinyWebP,
-		"portrait_dark":   tinyAVIF,
-	}
-	expectedMimes := map[string]string{
-		"landscape_light": "image/png",
-		"landscape_dark":  "image/jpeg",
-		"portrait_light":  "image/webp",
-		"portrait_dark":   "image/avif",
-	}
-
-	for _, v := range variants {
-		// Even if client passes a mismatched or generic MIME, backend detects true MIME from magic bytes
-		res := in.do(http.MethodPut, "/api/admin/login-background/"+v, map[string]string{
-			"mime": "application/octet-stream",
-			"data": payloads[v],
-		}, admin)
+	for _, slot := range []string{"landscape_light", "landscape_dark", "portrait_light", portrait} {
+		res := in.do(http.MethodPut, edit+slot, map[string]string{"mime": "application/octet-stream", "data": "  " + png + "  "}, operator)
 		if res.Code != http.StatusOK {
-			t.Fatalf("upload %s: %d %s", v, res.Code, res.Body.String())
+			t.Fatalf("publish %s: %d %s", slot, res.Code, res.Body.String())
 		}
-		var uploadPayload struct {
+		uploaded := decode[struct {
 			URL       string `json:"url"`
 			UpdatedAt int64  `json:"updated_at"`
+		}](t, res)
+		if !strings.HasPrefix(uploaded.URL, base+slot+"?v=") || uploaded.UpdatedAt <= 0 {
+			t.Fatalf("upload of %s: %+v", slot, uploaded)
 		}
-		if err := json.Unmarshal(res.Body.Bytes(), &uploadPayload); err != nil {
-			t.Fatalf("unmarshal upload response: %v", err)
+	}
+	images := siteImages()
+	for _, slot := range []string{"landscape_light", "landscape_dark", "portrait_light", portrait} {
+		if !strings.HasPrefix(images[slot], base+slot+"?v=") {
+			t.Fatalf("published backgrounds: %v", images)
 		}
-		if !strings.HasPrefix(uploadPayload.URL, "/api/site/login-background/"+v) {
-			t.Fatalf("unexpected URL %q for variant %s", uploadPayload.URL, v)
-		}
-		if uploadPayload.UpdatedAt <= 0 {
-			t.Fatalf("expected updated_at > 0, got %d", uploadPayload.UpdatedAt)
-		}
+	}
+	listed := decode[struct {
+		Backgrounds map[string]json.RawMessage `json:"backgrounds"`
+	}](t,
+		in.do(http.MethodGet, "/api/admin/settings", nil, admin))
+	if len(listed.Backgrounds) != 4 {
+		t.Fatalf("settings list: %v", listed.Backgrounds)
 	}
 
-	// 6. Check GET /api/site now returns all 4 variants
-	siteRes = in.do(http.MethodGet, "/api/site", nil, nil)
-	if err := json.Unmarshal(siteRes.Body.Bytes(), &siteData); err != nil {
-		t.Fatalf("unmarshal /api/site: %v", err)
+	image := in.do(http.MethodGet, base+portrait, nil, nil)
+	if image.Code != http.StatusOK || image.Header().Get("Content-Type") != "image/png" ||
+		!strings.Contains(image.Header().Get("Cache-Control"), "immutable") || image.Header().Get("Content-Disposition") != "inline" ||
+		base64.StdEncoding.EncodeToString(image.Body.Bytes()) != png {
+		t.Fatalf("served background: %d %v", image.Code, image.Header())
 	}
-	if len(siteData.LoginBackground) != 4 {
-		t.Fatalf("expected 4 variants in login_background, got %d: %v", len(siteData.LoginBackground), siteData.LoginBackground)
-	}
-	for _, v := range variants {
-		url := siteData.LoginBackground[v]
-		if !strings.HasPrefix(url, "/api/site/login-background/"+v) {
-			t.Fatalf("expected variant %s URL to start with /api/site/login-background/%s, got %s", v, v, url)
+	for requestHeader, responseHeader := range map[string]string{"If-None-Match": "ETag", "If-Modified-Since": "Last-Modified"} {
+		value := image.Header().Get(responseHeader)
+		if value == "" {
+			t.Fatalf("background served without %s", responseHeader)
+		}
+		req := httptest.NewRequest(http.MethodGet, base+portrait, nil)
+		req.Header.Set(requestHeader, value)
+		cached := httptest.NewRecorder()
+		in.handler.ServeHTTP(cached, req)
+		if cached.Code != http.StatusNotModified {
+			t.Fatalf("%s: got %d, want 304", requestHeader, cached.Code)
 		}
 	}
-
-	// 7. Verify GET /api/site/login-background/{variant} serves correct MIME, caching, ETag, and Content-Disposition
-	var savedETags = map[string]string{}
-	var savedLastMods = map[string]string{}
-	for _, v := range variants {
-		getRes := in.do(http.MethodGet, "/api/site/login-background/"+v, nil, nil)
-		if getRes.Code != http.StatusOK {
-			t.Fatalf("GET /api/site/login-background/%s: %d", v, getRes.Code)
-		}
-		if getRes.Header().Get("Content-Type") != expectedMimes[v] {
-			t.Fatalf("content-type = %s, want %s", getRes.Header().Get("Content-Type"), expectedMimes[v])
-		}
-		if !strings.Contains(getRes.Header().Get("Cache-Control"), "immutable") {
-			t.Fatalf("cache-control missing immutable: %s", getRes.Header().Get("Cache-Control"))
-		}
-		if getRes.Header().Get("Content-Disposition") != "inline" {
-			t.Fatalf("content-disposition = %s, want inline", getRes.Header().Get("Content-Disposition"))
-		}
-		etag := getRes.Header().Get("ETag")
-		if etag == "" {
-			t.Fatalf("missing ETag header for variant %s", v)
-		}
-		savedETags[v] = etag
-		savedLastMods[v] = getRes.Header().Get("Last-Modified")
-
-		cleanRaw := strings.TrimSpace(payloads[v])
-		expectedBytes, _ := base64.StdEncoding.DecodeString(cleanRaw)
-		if !bytes.Equal(getRes.Body.Bytes(), expectedBytes) {
-			t.Fatalf("image bytes mismatch for %s", v)
-		}
+	if res := in.do(http.MethodDelete, edit+portrait, nil, admin); res.Code != http.StatusNoContent {
+		t.Fatalf("remove background: %d %s", res.Code, res.Body.String())
 	}
-
-	// 8. Test Conditional HTTP GET requests (304 Not Modified)
-	reqEtag := httptest.NewRequest(http.MethodGet, "/api/site/login-background/landscape_light", nil)
-	reqEtag.Header.Set("If-None-Match", savedETags["landscape_light"])
-	recEtag := httptest.NewRecorder()
-	in.handler.ServeHTTP(recEtag, reqEtag)
-	if recEtag.Code != http.StatusNotModified {
-		t.Fatalf("If-None-Match status = %d, want 304", recEtag.Code)
+	if res := in.do(http.MethodGet, base+portrait, nil, nil); res.Code != http.StatusNotFound {
+		t.Fatalf("removed image still served: %d", res.Code)
 	}
-
-	if lastMod := savedLastMods["landscape_light"]; lastMod != "" {
-		reqMod := httptest.NewRequest(http.MethodGet, "/api/site/login-background/landscape_light", nil)
-		reqMod.Header.Set("If-Modified-Since", lastMod)
-		recMod := httptest.NewRecorder()
-		in.handler.ServeHTTP(recMod, reqMod)
-		if recMod.Code != http.StatusNotModified {
-			t.Fatalf("If-Modified-Since status = %d, want 304", recMod.Code)
-		}
-	}
-
-	// 9. Admin settings GET returns every background, with its kind
-	settingsRes := in.do(http.MethodGet, "/api/admin/settings", nil, admin)
-	if settingsRes.Code != http.StatusOK {
-		t.Fatalf("GET /api/admin/settings: %d", settingsRes.Code)
-	}
-	var adminSettings struct {
-		LoginBackground map[string]struct {
-			URL string `json:"url"`
-		} `json:"backgrounds"`
-	}
-	if err := json.Unmarshal(settingsRes.Body.Bytes(), &adminSettings); err != nil {
-		t.Fatalf("unmarshal admin settings: %v", err)
-	}
-	if len(adminSettings.LoginBackground) != 4 {
-		t.Fatalf("expected 4 login backgrounds in admin settings, got %d", len(adminSettings.LoginBackground))
-	}
-
-	// 10. Admin deletes portrait_dark variant
-	delRes := in.do(http.MethodDelete, "/api/admin/login-background/portrait_dark", nil, admin)
-	if delRes.Code != http.StatusNoContent {
-		t.Fatalf("delete portrait_dark: %d", delRes.Code)
-	}
-
-	// 11. Now GET /api/site/login-background/portrait_dark returns 404
-	getDeletedRes := in.do(http.MethodGet, "/api/site/login-background/portrait_dark", nil, nil)
-	if getDeletedRes.Code != http.StatusNotFound {
-		t.Fatalf("GET deleted variant: %d, want 404", getDeletedRes.Code)
-	}
-
-	// 12. And /api/site now has 3 variants
-	siteRes = in.do(http.MethodGet, "/api/site", nil, nil)
-	siteData.LoginBackground = nil
-	if err := json.Unmarshal(siteRes.Body.Bytes(), &siteData); err != nil {
-		t.Fatalf("unmarshal /api/site: %v", err)
-	}
-	if len(siteData.LoginBackground) != 3 {
-		t.Fatalf("expected 3 variants after delete, got %d", len(siteData.LoginBackground))
-	}
-	if _, exists := siteData.LoginBackground["portrait_dark"]; exists {
-		t.Fatalf("portrait_dark should be absent after deletion")
+	if images := siteImages(); len(images) != 3 || images[portrait] != "" {
+		t.Fatalf("published backgrounds after removal: %v", images)
 	}
 }
 

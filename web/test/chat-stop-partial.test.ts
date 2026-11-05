@@ -123,3 +123,25 @@ describe('stopping a turn', () => {
     }
   });
 });
+
+it('does not finish an old turn into a new account while its reload is pending', async () => {
+  resetChat();
+  configureModel();
+  let finish!: (value: Awaited<ReturnType<typeof getConversation>>) => void;
+  vi.mocked(getConversation).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+  vi.mocked(sendTurn).mockImplementationOnce(async (_request, handlers) => {
+    handlers.onStart?.({ conversation_id: 'A', title: 'A', model_id: 'm', model_name: 'M' });
+  });
+  const old = runTurn({ content: 'private' });
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(finish).toBeTypeOf('function');
+  resetChat();
+  busy.value = true;
+  activeID.value = 'A';
+  finish(conversation(userRow, savedRow));
+  await old;
+  expect(busy.value).toBe(true);
+  expect(messages.value).toEqual([]);
+  resetChat();
+});

@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -186,99 +188,45 @@ func TestGeneratingAnImageIsChargedAndRecorded(t *testing.T) {
 	}
 }
 
-// The count is on the wire, and the allowance was reserved once however many
-// pictures were asked for.
-// A picture to work from turns the call into an edit: a different endpoint,
-// a multipart body, and the file carrying its own media type rather than the
-// octet-stream a plain form file would have — which is what providers that
-// sniff the upload refuse.
-func TestGeneratingAnImageFromAReferencePictureUploadsIt(t *testing.T) {
-	lab := newImageLab(t, 1)
-	lab.fixture.upstream.reply(`{"created":1,"data":[{"b64_json":"` + generatedPNG + `"}]}`)
+func TestGeneratingAnImageFromReferencePicturesUploadsThem(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		input     string
+		filenames []string
+	}{
+		{"single", `"image":"` + generatedPNG + `"`, []string{"image.png"}},
+		{"multiple", `"images":["` + generatedPNG + `","` + generatedPNG + `"]`, []string{"image1.png", "image2.png"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lab := newImageLab(t, 1)
+			lab.fixture.upstream.reply(`{"created":1,"data":[{"b64_json":"` + generatedPNG + `"}]}`)
+			recorder := lab.generate(t, `{"model_id":"`+lab.painter.ID+`","prompt":"combine styles",`+tc.input+`}`)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200: %s", recorder.Code, recorder.Body.String())
+			}
 
-	recorder := lab.generate(t, `{"model_id":"`+lab.painter.ID+
-		`","prompt":"make it night","image":"`+generatedPNG+`"}`)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200: %s", recorder.Code, recorder.Body.String())
-	}
-
-	call := lab.fixture.upstream.lastCall()
-	if !strings.HasSuffix(call.path, "/images/edits") {
-		t.Errorf("path = %q, want the edits endpoint", call.path)
-	}
-	if !strings.HasPrefix(call.contentType, "multipart/form-data") {
-		t.Errorf("content type = %q, want multipart", call.contentType)
-	}
-
-	form := readMultipart(t, call)
-	if form.Value["prompt"] == nil || form.Value["prompt"][0] != "make it night" {
-		t.Errorf("the prompt did not travel with the picture: %v", form.Value)
-	}
-	files := form.File["image"]
-	if len(files) != 1 {
-		t.Fatalf("image parts = %d, want 1", len(files))
-	}
-	if got := files[0].Header.Get("Content-Type"); got != "image/png" {
-		t.Errorf("the uploaded part is typed %q, want image/png", got)
-	}
-	if files[0].Filename != "image.png" {
-		t.Errorf("filename = %q, want image.png — some providers read the extension", files[0].Filename)
-	}
-}
-
-// The reference picture is sniffed rather than believed, the same way one
-// arriving from a provider is: an upload endpoint that stores what it is told
-// something is, is a way to store anything at all.
-func TestAReferencePictureThatIsNotAnImageIsRefused(t *testing.T) {
-	lab := newImageLab(t, 1)
-	lab.fixture.upstream.reply(`{"created":1,"data":[{"b64_json":"` + generatedPNG + `"}]}`)
-
-	notAnImage := base64.StdEncoding.EncodeToString([]byte("<html>an error page</html>"))
-	recorder := lab.generate(t, `{"model_id":"`+lab.painter.ID+
-		`","prompt":"make it night","image":"`+notAnImage+`"}`)
-
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400: %s", recorder.Code, recorder.Body.String())
-	}
-	if call := lab.fixture.upstream.lastCall(); call.path != "" {
-		t.Errorf("the provider was called anyway, at %q", call.path)
-	}
-}
-
-func TestGeneratingAnImageFromMultipleReferencePicturesUploadsThem(t *testing.T) {
-	lab := newImageLab(t, 1)
-	lab.fixture.upstream.reply(`{"created":1,"data":[{"b64_json":"` + generatedPNG + `"}]}`)
-
-	recorder := lab.generate(t, `{"model_id":"`+lab.painter.ID+
-		`","prompt":"combine styles","images":["`+generatedPNG+`","`+generatedPNG+`"]}`)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200: %s", recorder.Code, recorder.Body.String())
-	}
-
-	call := lab.fixture.upstream.lastCall()
-	if !strings.HasSuffix(call.path, "/images/edits") {
-		t.Errorf("path = %q, want the edits endpoint", call.path)
-	}
-	if !strings.HasPrefix(call.contentType, "multipart/form-data") {
-		t.Errorf("content type = %q, want multipart", call.contentType)
-	}
-
-	form := readMultipart(t, call)
-	if form.Value["prompt"] == nil || form.Value["prompt"][0] != "combine styles" {
-		t.Errorf("the prompt did not travel with the picture: %v", form.Value)
-	}
-	files := form.File["image"]
-	if len(files) != 2 {
-		t.Fatalf("image parts = %d, want 2", len(files))
-	}
-	for i, f := range files {
-		if got := f.Header.Get("Content-Type"); got != "image/png" {
-			t.Errorf("part %d is typed %q, want image/png", i, got)
-		}
-	}
-	if files[0].Filename != "image1.png" || files[1].Filename != "image2.png" {
-		t.Errorf("filenames = [%q, %q], want [image1.png, image2.png]",
-			files[0].Filename, files[1].Filename)
+			call := lab.fixture.upstream.lastCall()
+			if !strings.HasSuffix(call.path, "/images/edits") {
+				t.Errorf("path = %q, want the edits endpoint", call.path)
+			}
+			if !strings.HasPrefix(call.contentType, "multipart/form-data") {
+				t.Errorf("content type = %q, want multipart", call.contentType)
+			}
+			form := readMultipart(t, call)
+			if !slices.Equal(form.Value["prompt"], []string{"combine styles"}) {
+				t.Errorf("the prompt did not travel with the pictures: %v", form.Value)
+			}
+			var filenames []string
+			for _, part := range form.File["image"] {
+				filenames = append(filenames, part.Filename)
+				if got := part.Header.Get("Content-Type"); got != "image/png" {
+					t.Errorf("%s is typed %q, want image/png", part.Filename, got)
+				}
+			}
+			if !slices.Equal(filenames, tc.filenames) {
+				t.Errorf("filenames = %v, want %v", filenames, tc.filenames)
+			}
+		})
 	}
 }
 
@@ -307,6 +255,9 @@ func TestGeneratingAnImageWithInvalidReferencePictureInListIsRefused(t *testing.
 		`","prompt":"bad image in list","images":["`+generatedPNG+`","`+notAnImage+`"]}`)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400: %s", recorder.Code, recorder.Body.String())
+	}
+	if call := lab.fixture.upstream.lastCall(); call.path != "" {
+		t.Errorf("the provider was called anyway, at %q", call.path)
 	}
 }
 
@@ -494,12 +445,23 @@ func TestGeneratedImagesAreNotPrunedAsOrphans(t *testing.T) {
 		t.Fatalf("generate status = %d: %s", recorder.Code, recorder.Body.String())
 	}
 
-	removed, err := lab.fixture.conversations.DeleteOrphans(context.Background(), 0)
+	ctx := context.Background()
+	f := lab.fixture
+	orphan, err := f.conversations.Upload(ctx, conversation.UploadInput{
+		UserID: f.account.ID, Mime: "image/png", Data: []byte{1, 2, 3, 4},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if removed != 0 {
-		t.Errorf("DeleteOrphans removed %d attachments, want 0 for generated image", removed)
+	if _, err := f.db.Exec(ctx, `UPDATE attachments SET created_at = ?`, time.Now().Add(-24*time.Hour).UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := f.conversations.DeleteOrphans(ctx, conversation.OrphanTTL)
+	if err != nil || removed != 1 {
+		t.Fatalf("DeleteOrphans = %d, %v, want only the orphan removed", removed, err)
+	}
+	if _, _, err := f.conversations.Blob(ctx, f.account.ID, orphan.ID); !errors.Is(err, conversation.ErrAttachmentNotFound) {
+		t.Errorf("orphan remains after pruning: %v", err)
 	}
 }
 

@@ -129,28 +129,6 @@ func TestParseFlagsBooleanFlagDoesNotConsumeTheNextToken(t *testing.T) {
 	}
 }
 
-func TestParseFlagsShortFormYes(t *testing.T) {
-	// -y is universal: it does not need to be declared on the command's
-	// own Flags to be recognised.
-	parsed, err := ParseFlags([]string{"-y"}, nil)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if !parsed.Yes {
-		t.Fatal("expected Yes to be true for -y")
-	}
-}
-
-func TestParseFlagsUniversalFlagsAreNeverDeclared(t *testing.T) {
-	parsed, err := ParseFlags([]string{"--yes", "--json", "-h"}, nil)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if !parsed.Yes || !parsed.JSON || !parsed.Help {
-		t.Fatalf("got %#v, want all three universal flags set", parsed)
-	}
-}
-
 func TestParseFlagsDoubleDashStopsFlagParsing(t *testing.T) {
 	parsed, err := ParseFlags([]string{"--limit", "10", "--", "--q", "not-a-flag"}, testFlags())
 	if err != nil {

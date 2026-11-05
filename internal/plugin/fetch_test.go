@@ -28,6 +28,12 @@ func TestRefuseFetchAddress(t *testing.T) {
 		"[::]:80",
 		"100.100.100.200:80",
 		"[fd00:ec2::254]:80",
+		"[fd20:ce::254]:80",
+		"[2002:a9fe:a9fe::]:80",
+		"[2002:6464:64c8::1]:80",
+		"[64:ff9b::a9fe:a9fe]:80",
+		"[64:ff9b::169.254.169.254]:80",
+		"[64:ff9b::6464:64c8]:80",
 		// A zone names the interface an address is reached through, not a
 		// different host, so a zoned spelling of a refused address is refused too.
 		"[::%en0]:80",
@@ -44,6 +50,7 @@ func TestRefuseFetchAddress(t *testing.T) {
 		// Only the metadata address is refused, not its neighbours in CGNAT.
 		"100.101.102.103:80",
 		"93.184.216.34:443",
+		"[64:ff9b::808:808]:443",
 	}
 
 	for _, address := range refused {
@@ -117,8 +124,7 @@ func TestAFetchRedirectToAnotherOriginDoesNotCarryTheBackendsHeaders(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := newRig(t)
-	if _, err := r.manager.fetch(context.Background(), raw); err != nil {
+	if _, err := (&Manager{}).fetch(context.Background(), raw); err != nil {
 		t.Fatal(err)
 	}
 

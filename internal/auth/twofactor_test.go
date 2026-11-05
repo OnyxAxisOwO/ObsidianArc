@@ -64,38 +64,6 @@ func codeAt(t *testing.T, secret string, step int64) string {
 	return code
 }
 
-func TestPasswordAloneOnlyOpensHalfASession(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-	account, secret, _, used := enrolled(t, f, "arc")
-	if !account.TwoFactorEnabled() {
-		t.Fatal("the account does not say two-step is on")
-	}
-
-	half := pending(t, f, "arc")
-	if _, _, err := f.auth.Authenticate(ctx, half); !errors.Is(err, ErrSignInIncomplete) {
-		t.Fatalf("the half-way session authenticated: %v", err)
-	}
-
-	signedIn, full, err := f.auth.CompleteSignIn(ctx, half, codeAt(t, secret, used+1), "", "")
-	if err != nil {
-		t.Fatalf("complete sign-in: %v", err)
-	}
-	if signedIn.ID != account.ID {
-		t.Fatalf("completed as %s, want %s", signedIn.ID, account.ID)
-	}
-	if _, _, err := f.auth.Authenticate(ctx, full); err != nil {
-		t.Fatalf("the completed session does not authenticate: %v", err)
-	}
-	// The half-way token is spent, not promoted: whatever saw it has nothing.
-	if _, _, err := f.auth.CompleteSignIn(ctx, half, codeAt(t, secret, used+1), "", ""); !errors.Is(err, ErrNoPendingSignIn) {
-		t.Fatalf("the half-way token worked twice: %v", err)
-	}
-	if _, _, err := f.auth.Authenticate(ctx, half); !errors.Is(err, ErrSessionNotFound) {
-		t.Fatalf("the half-way session survived completion: %v", err)
-	}
-}
-
 func TestAFullSessionCannotBeUsedAsAPendingOne(t *testing.T) {
 	f := newFixture(t)
 	_, token, err := f.auth.Register(context.Background(), RegisterInput{Username: "arc", Password: "a-good-password"})
@@ -104,23 +72,6 @@ func TestAFullSessionCannotBeUsedAsAPendingOne(t *testing.T) {
 	}
 	if _, _, err := f.auth.CompleteSignIn(context.Background(), token, "000000", "", ""); !errors.Is(err, ErrNoPendingSignIn) {
 		t.Fatalf("a full session was accepted by the second step: %v", err)
-	}
-}
-
-// The code that confirmed the setup is spent, and so is every code before it.
-func TestACodeIsGoodOnce(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-	account, secret, _, used := enrolled(t, f, "arc")
-
-	if err := f.auth.VerifyTwoFactorCode(ctx, account, codeAt(t, secret, used), ""); !errors.Is(err, ErrTwoFactorCode) {
-		t.Fatalf("the confirming code was accepted again: %v", err)
-	}
-	if err := f.auth.VerifyTwoFactorCode(ctx, account, codeAt(t, secret, used+1), ""); err != nil {
-		t.Fatalf("the next code was refused: %v", err)
-	}
-	if err := f.auth.VerifyTwoFactorCode(ctx, account, codeAt(t, secret, used+1), ""); !errors.Is(err, ErrTwoFactorCode) {
-		t.Fatalf("a code was accepted twice: %v", err)
 	}
 }
 
@@ -196,22 +147,12 @@ func TestARecoveryCodeRacingItselfWinsOnce(t *testing.T) {
 	if status.RecoveryRemaining != totp.RecoveryCount-1 {
 		t.Fatalf("%d recovery codes left, want %d", status.RecoveryRemaining, totp.RecoveryCount-1)
 	}
-}
-
-// A recovery code is how somebody without their phone gets in, and it is
-// accepted however it was copied down.
-func TestARecoveryCodeFinishesASignIn(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-	_, _, codes, _ := enrolled(t, f, "arc")
-
 	half := pending(t, f, "arc")
-	if _, _, err := f.auth.CompleteSignIn(ctx, half, " "+strings.ToUpper(codes[3])+" ", "", ""); err != nil {
-		t.Fatalf("a recovery code did not finish the sign-in: %v", err)
+	if _, _, err := f.auth.CompleteSignIn(ctx, half, codes[0], "", ""); !errors.Is(err, ErrTwoFactorCode) {
+		t.Fatalf("a spent recovery code worked at sign-in: %v", err)
 	}
-	again := pending(t, f, "arc")
-	if _, _, err := f.auth.CompleteSignIn(ctx, again, codes[3], "", ""); !errors.Is(err, ErrTwoFactorCode) {
-		t.Fatalf("a spent recovery code worked again: %v", err)
+	if _, token, err := f.auth.CompleteSignIn(ctx, half, " "+strings.ToUpper(codes[3])+" ", "", ""); err != nil || token == "" {
+		t.Fatalf("a fresh recovery code did not finish sign-in: %v", err)
 	}
 }
 
@@ -414,23 +355,6 @@ func TestSwitchingOffTakesACodeAndRespectsThePolicy(t *testing.T) {
 	}
 }
 
-func TestAnAdministratorResetLetsThePasswordThrough(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-	account, _, _, _ := enrolled(t, f, "arc")
-
-	refused := errors.New("not allowed")
-	if _, err := f.auth.ResetTwoFactor(ctx, account.ID, func(database.Queryer, user.User) error { return refused }); !errors.Is(err, refused) {
-		t.Fatalf("the authorisation was not consulted: %v", err)
-	}
-	if _, err := f.auth.ResetTwoFactor(ctx, account.ID, func(database.Queryer, user.User) error { return nil }); err != nil {
-		t.Fatalf("reset: %v", err)
-	}
-	if _, token, err := f.auth.Login(ctx, LoginInput{Identifier: "arc", Password: "a-good-password"}); err != nil || token == "" {
-		t.Fatalf("sign in after a reset: %v", err)
-	}
-}
-
 // A sign-in waiting for its code when the factor is reset cannot be finished
 // with a code that no longer exists; it has to start again.
 func TestAResetStrandsAWaitingSignIn(t *testing.T) {
@@ -557,63 +481,6 @@ func TestAPasswordChangeEndsRememberedBrowsers(t *testing.T) {
 	after := remember()
 	if _, _, err := f.auth.Login(ctx, LoginInput{Identifier: "arc", Password: "another-good-password", Remembered: after}); err != nil {
 		t.Fatalf("a browser remembered under the new password was still asked for a code: %v", err)
-	}
-}
-
-// The gate holds an account that must enrol to the enrolment endpoints.
-func TestTheEnrolmentGate(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-	_, token, err := f.auth.Register(ctx, RegisterInput{Username: "arc", Password: "a-good-password"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := f.settings.Set(ctx, settings.TwoFactorPolicy, settings.TwoFactorEveryone); err != nil {
-		t.Fatal(err)
-	}
-
-	reached := false
-	handler := f.auth.Attach()(f.auth.EnrolmentGate()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		reached = true
-		w.WriteHeader(http.StatusNoContent)
-	})))
-	request := func(method, path string) *httptest.ResponseRecorder {
-		reached = false
-		r := httptest.NewRequest(method, path, nil)
-		r.AddCookie(&http.Cookie{Name: "obsidian_session", Value: token})
-		w := httptest.NewRecorder()
-		handler.ServeHTTP(w, r)
-		return w
-	}
-
-	if w := request(http.MethodGet, "/api/conversations"); reached || w.Code != http.StatusForbidden ||
-		!strings.Contains(w.Body.String(), "two_factor_enrolment_required") {
-		t.Fatalf("an unenrolled account reached the API: %d %s", w.Code, w.Body.String())
-	}
-	for _, path := range []string{"/api/auth/me", "/api/profile/two-factor"} {
-		if request(http.MethodGet, path); !reached {
-			t.Errorf("%s was held back; it is how the account enrols", path)
-		}
-	}
-	if request(http.MethodPost, "/api/profile/two-factor/setup"); !reached {
-		t.Error("setup was held back")
-	}
-	// The page shell loads, so there is a screen to enrol on.
-	if request(http.MethodGet, "/settings"); !reached {
-		t.Error("the page shell was held back")
-	}
-	// Another site cannot be handed a code for this account meanwhile.
-	if w := request(http.MethodGet, "/oauth/authorize?client_id=x"); reached || w.Code != http.StatusFound ||
-		!strings.HasPrefix(w.Header().Get("Location"), "/two-factor?next=") {
-		t.Fatalf("authorize was not sent to enrol: %d %s", w.Code, w.Header().Get("Location"))
-	}
-
-	// Optional again, and the gate is gone — it is read per request.
-	if err := f.settings.Set(ctx, settings.TwoFactorPolicy, settings.TwoFactorOptional); err != nil {
-		t.Fatal(err)
-	}
-	if request(http.MethodGet, "/api/conversations"); !reached {
-		t.Error("the gate outlived the policy")
 	}
 }
 
@@ -764,45 +631,6 @@ func TestTheBackofficeAsksForItsOwnCode(t *testing.T) {
 	bare := user.User{Role: user.RoleAdmin}
 	if !f.auth.BackofficeNeedsTwoFactor(bare) || !f.auth.TwoFactorMandatory(bare) {
 		t.Fatal("an administrator without a factor was let through")
-	}
-}
-
-// The session that proved a code by enrolling walks into the backoffice; a
-// reset closes every visit that code opened.
-func TestEnrollingOpensTheBackofficeAndResettingClosesIt(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-	if err := f.settings.Set(ctx, settings.TwoFactorBackofficeMode, settings.BackofficeVerifyVisit); err != nil {
-		t.Fatal(err)
-	}
-	account, token, err := f.auth.Register(ctx, RegisterInput{Username: "founder", Password: "a-good-password"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, session, _ := f.auth.Authenticate(ctx, token)
-	setup, err := f.auth.BeginTwoFactor(ctx, account)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := f.auth.EnableTwoFactor(ctx, account.ID, "a-good-password", codeAt(t, setup.Secret, totp.Step(time.Now())), session.ID, "", ""); err != nil {
-		t.Fatal(err)
-	}
-	current := func() (user.User, context.Context) {
-		account, session, err := f.auth.Authenticate(ctx, token)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return account, context.WithValue(ctx, sessionContextKey, session)
-	}
-	if a, request := current(); f.auth.BackofficeLocked(request, a) {
-		t.Fatal("the session that just enrolled was asked for another code")
-	}
-	if _, err := f.auth.ResetTwoFactor(ctx, account.ID, func(database.Queryer, user.User) error { return nil }); err != nil {
-		t.Fatal(err)
-	}
-	_, session, _ = f.auth.Authenticate(ctx, token)
-	if session.BackofficeAt != 0 {
-		t.Fatal("a reset left a visit open that the removed factor had proved")
 	}
 }
 

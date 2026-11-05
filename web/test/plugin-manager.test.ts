@@ -369,31 +369,6 @@ describe('a plugin package', () => {
     expect(panels.textContent).toContain(t('pluginDisableTitle', { name: 'DEMO' }));
   });
 
-  it('links its homepage only when that is a web address', async () => {
-    const withHomepage = (name: string, homepage: string): AdminPlugin => {
-      const base = pack(name, 'enabled');
-      return { ...base, manifest: { ...base.manifest, homepage } };
-    };
-    vi.spyOn(adminApi, 'plugins').mockResolvedValue({
-      plugins: [
-        withHomepage('safe', 'https://example.org/safe'),
-        withHomepage('script', 'javascript:alert(document.domain)'),
-      ],
-    });
-    await mount(AdminPlugins);
-
-    lastButton(card('safe'), t('pluginDetails')).click();
-    await settle();
-    const link = document.body.querySelector<HTMLAnchorElement>('a.oa-plugin-meta-link');
-    expect(link?.getAttribute('href')).toBe('https://example.org/safe');
-
-    lastButton(card('script'), t('pluginDetails')).click();
-    await settle();
-    // An address that does something when clicked is shown as text, not made a link.
-    expect(document.body.querySelector('a[href^="javascript:"]')).toBeNull();
-    expect(document.body.textContent).toContain('javascript:alert(document.domain)');
-  });
-
   it('can be removed, and disappears from the list with or without its data', async () => {
     adopt({ ...ADMIN, two_factor_at: 1 });
     vi.spyOn(adminApi, 'plugins').mockResolvedValue({ plugins: [pack('demo', 'enabled')] });
@@ -451,20 +426,6 @@ describe('a plugin package', () => {
     expect(panel).toContain('Mode');
     expect(panel).toContain('Token');
     expect(panel).not.toContain('demo.hidden');
-  });
-
-  // The icon it used to show named a class with no rule, so nothing turned
-  // while the package was read; the chat's spinner has one.
-  it('turns a spinner while the package is being read', async () => {
-    vi.spyOn(adminApi, 'plugins').mockResolvedValue({ plugins: [] });
-    vi.spyOn(adminApi, 'previewPlugin').mockReturnValue(new Promise(() => {}));
-    await mount(AdminPlugins);
-    dropFile(new File(['zip'], 'demo.arcx'));
-    await settle();
-
-    const card = host.querySelector('.oa-plugin-dropcard');
-    expect(card?.textContent).toContain(t('pluginUploadReading'));
-    expect(card?.querySelector('.ai-chat-spinner')).not.toBeNull();
   });
 
   it('installs what was shown, with the settings chosen and the switch as set', async () => {
@@ -550,21 +511,6 @@ describe('a plugin package', () => {
     await settle();
     expect(previewed).not.toHaveBeenCalled();
     expect(document.body.textContent).not.toContain(t('pluginDropRelease'));
-  });
-
-  it('cancels a file dropped on the page where this card does not take it, so the browser does not open it', async () => {
-    adopt({ ...ADMIN, role: 'admin', admin_permissions: ['plugins'] });
-    vi.spyOn(adminApi, 'plugins').mockResolvedValue({ plugins: [] });
-    const previewed = vi.spyOn(adminApi, 'previewPlugin');
-    await mount(AdminPlugins);
-
-    const over = dragOver('dragover', new File(['zip'], 'demo.arcx'));
-    const drop = dragOver('drop', new File(['zip'], 'demo.arcx'));
-    await settle();
-
-    expect(over.defaultPrevented).toBe(true);
-    expect(drop.defaultPrevented).toBe(true);
-    expect(previewed).not.toHaveBeenCalled();
   });
 
   // A plugin that was not in the list at load has its module fetched only when

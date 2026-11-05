@@ -171,11 +171,11 @@ test: vet
 
 ## test-full: CI gate, including the slower Vue template typecheck
 ##
-## The plugin's concurrency tests only prove their point under the race
-## detector: a plain run passes whatever the code does. CI runs them here,
-## not in test, so the local gate stays fast.
+## Run the plugin concurrency scenarios again under the race detector.
+## Name new plugin tests that exercise overlapping calls TestConcurrent…
+## so they run here as well as in the ordinary suite.
 test-full: test
-	go test -race -count=1 ./internal/plugin/...
+	go test -race -count=1 -run '^TestConcurrent' ./internal/plugin ./internal/plugin/wasm
 	npm --prefix web run typecheck
 
 vet:

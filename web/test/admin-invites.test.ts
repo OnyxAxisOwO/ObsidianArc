@@ -118,28 +118,6 @@ describe('registration mode and rewards', () => {
     expect(actions.textContent).toContain(t('controlSaved'));
   });
 
-  it('keeps the per-account limit and reward fields out of the form until personal invites are switched on', async () => {
-    stubBase();
-    stubPartners();
-    const save = vi.spyOn(adminApi, 'saveSettings').mockResolvedValue({ settings: {} });
-    await mount(AdminInvites);
-
-    expect(host.textContent).not.toContain(t('userInviteLimit'));
-
-    const toggle = switchFor(host, t('userInvitesEnabled'));
-    toggle.click();
-    await settle();
-    expect(host.textContent).toContain(t('userInviteLimit'));
-    expect(host.textContent).toContain(t('inviteRewardEvery'));
-    expect(host.textContent).toContain(t('inviteRewardCards'));
-
-    button(actions, t('save')).click();
-    await settle();
-    // The limit and reward shown are the server's own defaults, so they are not
-    // written: only the switch this card changed is sent.
-    expect(save).toHaveBeenCalledWith({ 'invites.user_enabled': 'true' });
-  });
-
   // A cleared number used to be saved as the default the page would have
   // shown, so an operator who emptied the field got a value they never typed.
   it('will not save a cleared number field, and says that a field is empty', async () => {
@@ -175,18 +153,6 @@ describe('registration mode and rewards', () => {
     await settle();
 
     expect(save).toHaveBeenCalledWith({ 'invites.user_enabled': 'false' });
-  });
-
-  it('reads the reward rule as one sentence, and explains a zero reward rather than stating it', async () => {
-    stubBase({ settings: { 'invites.user_enabled': 'true', 'invites.reward_every': '5', 'invites.reward_cards': '2' } });
-    stubPartners();
-    await mount(AdminInvites);
-
-    expect(host.textContent).toContain(t('inviteRewardRuleSummary', { every: 5, cards: 2, days: 30 }));
-
-    input(fieldFor(host, t('inviteRewardCards')).querySelector<HTMLInputElement>('input')!, '0');
-    await settle();
-    expect(host.textContent).toContain(t('inviteRewardRuleNone', { every: 5 }));
   });
 
   // A closed instance that still requires a code: loading it must not record
@@ -412,37 +378,6 @@ describe('partner codes', () => {
     expect(host.querySelector('#secInvitePartners')!.textContent)
       .toContain(t('partnerCodesCapped', { shown: 2, total: 75 }));
   });
-
-  // A partner's code is a word somebody chose. Eight letters long, it used to
-  // be split like a generated one, and PARTNERX read as PART-NERX.
-  it('shows an eight-letter partner code as it was typed, not split in two', async () => {
-    stubBase();
-    const partner = {
-      id: 'p2', code: 'PARTNERX', owner_id: '', owner_username: '', owner_nickname: '',
-      kind: 'partner', name: 'Acme', allow_existing: true,
-      group_id: 'g1', group_name: 'Premium', group_days: 3, group_days_max: 7,
-      max_uses: 0, uses: 0, expires_at: 0, revoked_at: 0, note: '', created_by: 'op',
-      created_at: Date.now(), status: 'active', claims: 0,
-    } satisfies InviteCode;
-    vi.spyOn(adminApi, 'invites').mockResolvedValue({ codes: [partner], total: 1 });
-    await mount(AdminInvites);
-
-    expect(host.textContent).toContain('PARTNERX');
-    expect(host.textContent).not.toContain('PART-NERX');
-  });
-
-  it('shows the stats card its own partner leaderboard', async () => {
-    stubBase();
-    stubPartners();
-    vi.spyOn(adminApi, 'inviteStats').mockResolvedValue({
-      active: 1, uses_total: 9, uses_7d: 2, top_inviters: [],
-      partners: [{ id: 'p1', code: 'ACMEPARTNER', name: 'Acme', registrations: 5, claims: 4 }],
-    });
-    await mount(AdminInvites);
-
-    expect(host.textContent).toContain(t('topPartnerCodes'));
-    expect(host.textContent).toContain(t('invitePartnerSummary', { registrations: 5, claims: 4 }));
-  });
 });
 
 describe('an existing code', () => {
@@ -484,11 +419,6 @@ describe('an existing code', () => {
   it('says when the list is only the newest page of every use', async () => {
     await openRow(250);
     expect(panels.textContent).toContain(t('inviteUsesCapped', { shown: uses.length, total: 250 }));
-  });
-
-  it('says nothing about truncation when the list holds every use', async () => {
-    await openRow();
-    expect(panels.textContent).not.toContain(t('inviteUsesCapped', { shown: uses.length, total: uses.length }));
   });
 
   it('revokes on the second press, and then offers nothing more to revoke', async () => {

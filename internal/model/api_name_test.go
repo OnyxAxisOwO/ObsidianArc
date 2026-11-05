@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-
-	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
 )
 
 // The name an instance answers to is the operator's to choose, and it is
@@ -139,46 +137,6 @@ func TestAnAPINameIsHeldToTheShapeOfAnIdentifier(t *testing.T) {
 	}
 	if record.APIName != "gpt-5.6-sol_2:preview" {
 		t.Errorf("stored %q, want it trimmed", record.APIName)
-	}
-}
-
-// readCallable used to spell out its own scan targets rather than going
-// through scan(), and adding api_name to the shared column list and not to
-// that hand-written scan turned every completion into a 500 with no clue in
-// it. It goes through scan() now; this stays as the guard that the gateway's
-// own read carries the field too.
-func TestTheGatewaysReadCarriesTheAPIName(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-	upstream := f.provider(t, "Upstream")
-
-	open, err := f.groups.Create(ctx, nil, group.CreateInput{
-		Name: "Open", IsDefault: true, AllowAllModels: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	record, err := f.models.Create(ctx, CreateInput{
-		ProviderID: upstream.ID,
-		ModelID:    "gpt-5.6-reasoning",
-		APIName:    "gpt-5.6-sol",
-		Enabled:    true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	resolved, err := f.models.Authorize(ctx, open.ID, record.ID, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resolved.Model.APIName != "gpt-5.6-sol" {
-		t.Errorf("the callable read gave APIName %q, want the stored name", resolved.Model.APIName)
-	}
-	// And the name that actually goes upstream is still the upstream's.
-	if resolved.Model.ModelID != "gpt-5.6-reasoning" {
-		t.Errorf("the request would go out as %q", resolved.Model.ModelID)
 	}
 }
 

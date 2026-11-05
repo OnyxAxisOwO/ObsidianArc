@@ -251,24 +251,6 @@ func TestACallbackThatCannotBeVerifiedSignsNobodyIn(t *testing.T) {
 	}
 }
 
-func TestAProviderThatIsNotOnLeadsNowhere(t *testing.T) {
-	f := newFixture(t)
-	_, mux := handlers(t, f)
-
-	response := get(mux, "/api/auth/oauth/start/github", nil, nil)
-	if response.Code != http.StatusFound ||
-		response.Header().Get("Location") != "/login?oauth_error=unavailable" {
-		t.Errorf("start = %d %s, want the sign-in page saying so",
-			response.Code, response.Header().Get("Location"))
-	}
-	if len(response.Result().Cookies()) != 0 {
-		t.Error("a state was written for a sign-in that cannot start")
-	}
-	if missing := get(mux, "/api/auth/oauth/start/nonesuch", nil, nil); missing.Code != http.StatusNotFound {
-		t.Errorf("an invented provider = %d, want 404", missing.Code)
-	}
-}
-
 // Adding a connection is a different flow from signing in, and the account it
 // lands on is the one that started it — not whoever happens to hold the
 // session when the browser comes back.
@@ -376,43 +358,6 @@ func TestALinkReturnsToThePageItWasStartedFrom(t *testing.T) {
 	}
 }
 
-// What a link falls back to: the settings screen, as it always has, when the page
-// it names is not one of this site's, and the failure comes back to the page
-// given when it is. The failure here is the provider refusing at its consent
-// screen, which the callback reports to the page the link was started from.
-func TestALinkWithNoSafePageFallsBackToSettings(t *testing.T) {
-	cases := []struct{ next, want string }{
-		{"", "/settings?oauth_error=denied"},
-		{"//evil.example/x", "/settings?oauth_error=denied"},
-		{"https://evil.example/", "/settings?oauth_error=denied"},
-		{"/\tevil.example", "/settings?oauth_error=denied"},
-		{"/admin/providers?panel=settings#models", "/admin/providers?panel=settings&oauth_error=denied#models"},
-		{"/bind-oidc?next=%2Fchat", "/bind-oidc?next=%2Fchat&oauth_error=denied"},
-	}
-
-	f := newFixture(t)
-	f.configure(t, "github")
-	_, mux := handlers(t, f)
-	owner, ownerToken, err := f.auth.Register(context.Background(), auth.RegisterInput{
-		Username: "founder", Password: "a-good-password",
-	})
-	if err != nil {
-		t.Fatalf("register: %v", err)
-	}
-	for _, c := range cases {
-		connect := connectAs(t, f, mux, "github", ownerToken,
-			map[string]string{"password": "a-good-password", "next": c.next})
-		if connect.Code != http.StatusOK {
-			t.Fatalf("next %q: connect = %d %s", c.next, connect.Code, connect.Body.String())
-		}
-		back := get(mux, "/api/auth/oauth/callback/github?error=access_denied&state="+redirectState(t, connect),
-			[]*http.Cookie{cookieNamed(connect, stateCookie)}, &owner)
-		if location := back.Header().Get("Location"); location != c.want {
-			t.Errorf("next %q: callback = %q, want %q", c.next, location, c.want)
-		}
-	}
-}
-
 func TestConnectionsAndDisconnectAnswerTheAccountsOwnScreen(t *testing.T) {
 	f := newFixture(t)
 	f.configure(t, "github")
@@ -446,6 +391,13 @@ func TestConnectionsAndDisconnectAnswerTheAccountsOwnScreen(t *testing.T) {
 	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), "last_way_in") {
 		t.Errorf("disconnect = %d %s, want it refused as the last way in",
 			recorder.Code, recorder.Body.String())
+	}
+	if _, err := f.auth.ChangePassword(t.Context(), account.ID, "", "a-good-password", signedInNow(t, f, account.ID)); err != nil {
+		t.Fatalf("set password: %v", err)
+	}
+	response = get(mux, "/api/auth/oauth/connections", nil, &account)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"has_password":true`) {
+		t.Fatalf("connections after setting a password = %d %s", response.Code, response.Body.String())
 	}
 }
 

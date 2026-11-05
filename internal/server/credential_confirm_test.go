@@ -18,10 +18,14 @@ func TestASessionAloneCannotEnrolTheSecondStepOrMoveTheAddress(t *testing.T) {
 	member := in.register("member", "another-password")
 
 	setup := in.do(http.MethodPost, "/api/profile/two-factor/setup", nil, member)
-	secret := decode[struct {
-		Secret string `json:"secret"`
-	}](t, setup).Secret
-	code, _ := totp.Code(secret, totp.Step(time.Now()))
+	enrolment := decode[struct {
+		Secret           string `json:"secret"`
+		PasswordRequired bool   `json:"password_required"`
+	}](t, setup)
+	if !enrolment.PasswordRequired {
+		t.Fatal("the wizard did not ask for the account password")
+	}
+	code, _ := totp.Code(enrolment.Secret, totp.Step(time.Now()))
 
 	for want, password := range map[string]string{"password_required": "", "current_password_wrong": "not-the-password"} {
 		enable := in.do(http.MethodPost, "/api/profile/two-factor/enable",
@@ -38,14 +42,16 @@ func TestASessionAloneCannotEnrolTheSecondStepOrMoveTheAddress(t *testing.T) {
 	if me := in.do(http.MethodGet, "/api/auth/me", nil, member); strings.Contains(me.Body.String(), "thief@example.com") {
 		t.Fatalf("the address moved without the password: %s", me.Body.String())
 	}
+	if moved := in.do(http.MethodPatch, "/api/profile", map[string]string{
+		"email": "member@example.com", "current_password": "another-password",
+	}, member); moved.Code != http.StatusOK || !strings.Contains(moved.Body.String(), "member@example.com") {
+		t.Fatalf("email change with the correct password: %d %s", moved.Code, moved.Body.String())
+	}
 	if status := in.do(http.MethodGet, "/api/profile/two-factor", nil, member); !strings.Contains(status.Body.String(), `"enabled":false`) {
 		t.Fatalf("the second step was switched on without the password: %s", status.Body.String())
 	}
 }
 
-// Past the free attempts the endpoint answers 429 with a Retry-After, and the
-// right password waits too: a throttle that let it through would tell a
-// guesser the moment they were right.
 func TestPasswordConfirmationAnswersTooManyAttempts(t *testing.T) {
 	in := newInstance(t)
 	in.register("founder", "a-good-password")

@@ -26,58 +26,6 @@ func newStubRig(respond func(method, path string) (int, string)) *flagRig {
 	return rig
 }
 
-// mutatingCommandLines has one line for each command that can change something.
-// The arguments name records by id, so a line runs against a stub without a
-// lookup first.
-func mutatingCommandLines() []string {
-	providerID, modelID, otherModelID := id.New(), id.New(), id.New()
-	appID, noticeID, codeID := id.New(), id.New(), id.New()
-	feedbackID, replyID, groupID, userID, grantID := id.New(), id.New(), id.New(), id.New(), id.New()
-	keyID := id.New()
-	return []string{
-		"provider delete " + providerID + " --yes",
-		"model delete " + modelID + " --yes",
-		"model order " + modelID + " " + otherModelID,
-		"app delete " + appID + " --yes",
-		"notice delete " + noticeID + " --yes",
-		"code delete " + codeID + " --yes",
-		"quota delete global --yes",
-		"feedback delete " + feedbackID + " --yes",
-		"feedback reply delete " + feedbackID + " " + replyID + " --yes",
-		"group delete " + groupID + " --yes",
-		"group assign " + groupID + " --users " + userID,
-		"bonus revoke " + grantID + " --yes",
-		"checkin now",
-		"checkin claim w1",
-		"checkin",
-		"user delete " + userID + " --yes",
-		"user passwd " + userID + " --password a-good-password --yes",
-		"user passwd " + userID + " --generate --yes",
-		"user key-revoke " + userID + " " + keyID + " --yes",
-		"login-bg set landscape_light iVBORw0KGgo=",
-		"login-bg clear landscape_light --yes",
-		"logo set iVBORw0KGgo=",
-		"logo clear --yes",
-	}
-}
-
-// Under --json every command must print one JSON document. A change that
-// printed a sentence instead (the way the delete and grant commands did) hands
-// a script text it cannot parse, even though the change itself went through.
-func TestMutatingCommandsPrintOneJSONDocumentUnderJSON(t *testing.T) {
-	rig := newStubRig(func(string, string) (int, string) { return 200, `{"ok":true}` })
-	for _, line := range mutatingCommandLines() {
-		result, out := rig.runJSON(line + " --json")
-		if !result.OK {
-			t.Errorf("%s failed: %s", line, out)
-			continue
-		}
-		if !json.Valid([]byte(strings.TrimSpace(out))) {
-			t.Errorf("%s did not print one JSON document under --json:\n%s", line, out)
-		}
-	}
-}
-
 // Every command that can change something is run here, found from the registry
 // rather than from a list that could fall behind. Each required positional
 // argument is a fresh id, so a command that takes records by id reaches its

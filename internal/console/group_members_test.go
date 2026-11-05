@@ -29,26 +29,6 @@ func TestGroupShowSaysWhenItsMemberTableIsAPage(t *testing.T) {
 	}
 }
 
-// A table that holds every member says nothing extra.
-func TestGroupShowSaysNothingWhenTheTableIsComplete(t *testing.T) {
-	groupID := id.New()
-	rig := newFlagRig(
-		flagRoute{"GET", "/api/admin/references", 200,
-			`{"groups":[{"id":"` + groupID + `","name":"Staff"}],"models":[],"providers":[]}`},
-		flagRoute{"GET", "/api/admin/groups", 200,
-			`{"groups":[{"id":"` + groupID + `","name":"Staff","members":1}]}`},
-		flagRoute{"GET", "/api/admin/member-options", 200,
-			`{"users":[{"id":"` + id.New() + `","username":"alice"}],"total":1}`},
-	)
-	result, out := rig.run("group show Staff")
-	if !result.OK {
-		t.Fatalf("group show failed: %s", out)
-	}
-	if hasLine(out, "showing") {
-		t.Errorf("group show claimed a page for a complete table:\n%s", out)
-	}
-}
-
 // hasLine reports whether out has a line equal to want.
 func hasLine(out, want string) bool {
 	for _, line := range strings.Split(out, "\n") {

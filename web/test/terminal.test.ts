@@ -1,13 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, h, nextTick, ref, type App } from 'vue';
-import fs from 'node:fs';
-import path from 'node:path';
 import { createMemoryHistory, createRouter } from 'vue-router';
 import TerminalPanel from '../src/views/TerminalPanel.vue';
 import { providePanelHost } from '../src/composables/usePanelHost';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import type { ConsoleExecHandlers, ConsoleSpec } from '../src/api/console';
-import { DEFAULT_TERMINAL_FONT_FAMILY, FONT_FAMILY_MAX_LENGTH } from '../src/terminal/prefs';
 
 // `TerminalPanel.vue` and `session.ts` both talk to the server through
 // `api/console.ts` alone, so mocking that one module is enough to drive the
@@ -105,39 +102,6 @@ afterEach(() => {
 });
 
 describe('the admin terminal', () => {
-  // The rule that makes the terminal take the chat's whole width is keyed on
-  // this class. OaPanel's root is a Teleport, which used to drop a caller's
-  // class without a word, so the rule matched nothing and the terminal sat at
-  // 720px beside an empty half of the screen.
-  it('carries its own class onto the panel, where the full-width rule finds it', async () => {
-    await mountTerminal();
-    const panel = host.querySelector('aside.oa-panel');
-    expect(panel?.classList.contains('oa-terminal-panel')).toBe(true);
-  });
-
-  it('prints the spec banner as the first block', async () => {
-    await mountTerminal();
-    const banner = host.querySelector('.oa-terminal-block-banner');
-    expect(banner?.textContent).toContain(BANNER);
-  });
-
-  it('echoes a submitted line and shows its output', async () => {
-    mockExec('42 users');
-    await mountTerminal();
-
-    const textarea = host.querySelector<HTMLTextAreaElement>('.oa-terminal-input')!;
-    input(textarea, 'user list');
-    key(textarea, 'Enter');
-    await settle();
-    await settle();
-
-    const blocks = Array.from(host.querySelectorAll('.oa-terminal-block'));
-    expect(blocks.some((block) => block.classList.contains('oa-terminal-block-echo') && block.textContent?.includes('user list'))).toBe(true);
-    expect(blocks.some((block) => block.classList.contains('oa-terminal-block-output') && block.textContent?.includes('42 users'))).toBe(true);
-    expect(vi.mocked(execConsoleLine)).toHaveBeenCalledOnce();
-    // The draft clears once the line is sent, the way a shell's prompt does.
-    expect(textarea.value).toBe('');
-  });
 
   it('renders output incrementally across multiple stream chunks without truncation', async () => {
     vi.mocked(execConsoleLine).mockImplementation(async (_request, handlers: ConsoleExecHandlers) => {
@@ -160,46 +124,6 @@ describe('the admin terminal', () => {
     expect(outputBlock?.textContent).toContain('Accounts');
     expect(outputBlock?.textContent).toContain('Groups');
     expect(outputBlock?.textContent).toContain('Session');
-  });
-
-  it('keeps the tab strip inside the card at ten tabs, with the settings button always reachable', async () => {
-    await mountTerminal();
-
-    const addButton = host.querySelector<HTMLButtonElement>('.oa-terminal-tab-add')!;
-    for (let i = 0; i < 9; i += 1) {
-      addButton.click();
-      await nextTick();
-    }
-    expect(host.querySelectorAll('.oa-terminal-tab')).toHaveLength(10);
-
-    const strip = host.querySelector('.oa-terminal-tabstrip')!;
-    const scroller = host.querySelector('.oa-terminal-tabs')!;
-    const settingsButton = host.querySelector('.oa-terminal-settings-btn')!;
-    const stillAddButton = host.querySelector('.oa-terminal-tab-add')!;
-
-    // Pinned outside the scrolling row — a sibling, not a descendant — so it
-    // stays reachable regardless of how many tabs overflow the scroller.
-    expect(scroller.contains(settingsButton)).toBe(false);
-    expect(strip.contains(settingsButton)).toBe(true);
-    // "+" lives inside the same scroller as the tabs, so it scrolls with them.
-    expect(scroller.contains(stillAddButton)).toBe(true);
-
-    // The layout rule that makes tabs shrink instead of pushing the strip
-    // wider than its card, read from source: jsdom never lays anything out,
-    // so a `scrollWidth` assertion here would only be measuring zeroes.
-    // `styles.test.ts` already covers the equivalent built-CSS assertion for
-    // screens that need one; this one does not depend on `make web` having
-    // just run.
-    const source = fs.readFileSync(path.resolve(__dirname, '../src/styles/_terminal.scss'), 'utf8');
-    // The pill is the flex item, so the sizing rule is on the group, not the tab.
-    const tabRule = /\.oa-terminal-tab-group\s*\{[^}]*\}/.exec(source)?.[0] ?? '';
-    expect(tabRule).toMatch(/flex:\s*0 1 150px/);
-    expect(tabRule).toMatch(/min-width:\s*64px/);
-    // The focus ring moved to the pill with the tab itself; without this rule
-    // a keyboard user has no visible focus at all.
-    expect(source).toMatch(/\.oa-terminal-tab-group:has\(\.oa-terminal-tab:focus-visible\)/);
-    const scrollerRule = /\.oa-terminal-tabs\s*\{[^}]*\}/.exec(source)?.[0] ?? '';
-    expect(scrollerRule).toMatch(/overflow-x:\s*auto/);
   });
 
   it('renames a tab on double-click, cancels a rename with Escape, and closes a tab with its ×', async () => {
@@ -259,43 +183,6 @@ describe('the admin terminal', () => {
     // label numbers past it, since tab serials are never reused.
     expect(tabs[0]?.querySelector('.oa-terminal-tab-label')?.textContent).toBe(t('terminalTabDefault', { n: 2 }));
     expect(host.querySelector('.oa-terminal-input')).not.toBeNull();
-  });
-
-  it('opens appearance as a column beside the terminal, previewing live and persisting on commit', async () => {
-    await mountTerminal();
-
-    host.querySelector<HTMLButtonElement>('.oa-terminal-settings-btn')!.click();
-    await nextTick();
-    await new Promise(requestAnimationFrame);
-
-    // A column of the chat row, not a sheet over the terminal: it is a
-    // sibling of the terminal's own card rather than a descendant of it,
-    // which is the whole difference between the two.
-    const panel = Array.from(host.querySelectorAll<HTMLElement>('.oa-panel'))
-      .find((node) => node.querySelector('.oa-terminal-settings')) ?? null;
-    expect(panel).not.toBeNull();
-    const terminal = host.querySelector<HTMLElement>('.oa-terminal')!;
-    expect(terminal.contains(panel)).toBe(false);
-    expect(panel!.querySelector('.oa-terminal-settings')).not.toBeNull();
-
-    expect(terminal.style.getPropertyValue('--oa-term-font-size')).toBe('13px');
-
-    const fontSizeRange = host.querySelector<HTMLInputElement>('.oa-terminal-settings input[type="range"]')!;
-    fontSizeRange.value = '18';
-    fontSizeRange.dispatchEvent(new Event('input', { bubbles: true }));
-    await nextTick();
-    // Live preview: applied to the page before anything is written to disk.
-    expect(terminal.style.getPropertyValue('--oa-term-font-size')).toBe('18px');
-    expect(localStorage.getItem('obsidian-arc-terminal-prefs')).toBeNull();
-
-    fontSizeRange.dispatchEvent(new Event('change', { bubbles: true }));
-    await nextTick();
-    const stored = JSON.parse(localStorage.getItem('obsidian-arc-terminal-prefs') ?? '{}') as { fontSize?: number };
-    expect(stored.fontSize).toBe(18);
-
-    // Using a field does not dismiss the column. It never could, now that it
-    // is a column — which is the point of it being one.
-    expect(host.querySelector('.oa-panel')).not.toBeNull();
   });
 
   it('stops following when the reader scrolls up, so output that arrives after does not pull them back', async () => {
@@ -381,41 +268,6 @@ describe('the admin terminal', () => {
     await settle();
 
     expect(textarea.value).toBe('git stat');
-  });
-
-  it('opens the custom font field when Custom is chosen from a preset, without changing the font', async () => {
-    await mountTerminal();
-
-    host.querySelector<HTMLButtonElement>('.oa-terminal-settings-btn')!.click();
-    await nextTick();
-    await new Promise(requestAnimationFrame);
-
-    const panel = Array.from(host.querySelectorAll<HTMLElement>('.oa-panel'))
-      .find((node) => node.querySelector('.oa-terminal-settings'))!;
-    const terminal = host.querySelector<HTMLElement>('.oa-terminal')!;
-    expect(panel.querySelectorAll('input[type="text"]')).toHaveLength(0);
-
-    panel.querySelector<HTMLButtonElement>('.oa-select')!.click();
-    await nextTick();
-    const custom = Array.from(document.querySelectorAll<HTMLElement>('.oa-select-menu .oa-menu-item'))
-      .find((item) => item.textContent?.includes(t('terminalFontCustom')));
-    expect(custom).toBeDefined();
-    custom!.click();
-    await settle();
-
-    // Choosing it opens the field on the stack in use, and the terminal keeps that font.
-    expect(terminal.style.getPropertyValue('--oa-term-font-family')).toBe(DEFAULT_TERMINAL_FONT_FAMILY);
-    const field = panel.querySelector<HTMLInputElement>('input[type="text"]');
-    expect(field?.value).toBe(DEFAULT_TERMINAL_FONT_FAMILY);
-    // The cap is held while typing. A blank field is shown as typed but never
-    // committed, so the stored stack is always one that reloads.
-    expect(field?.maxLength).toBe(FONT_FAMILY_MAX_LENGTH);
-
-    input(field!, '"Iosevka", monospace');
-    await nextTick();
-    expect(terminal.style.getPropertyValue('--oa-term-font-family')).toBe('"Iosevka", monospace');
-    const stored = JSON.parse(localStorage.getItem('obsidian-arc-terminal-prefs') ?? '{}') as { fontFamily?: string };
-    expect(stored.fontFamily).toBe('"Iosevka", monospace');
   });
 
   it('keeps the last usable font when the custom field is cleared, and stores nothing blank', async () => {

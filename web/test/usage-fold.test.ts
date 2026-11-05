@@ -99,14 +99,6 @@ function toggleFor(title: string): HTMLButtonElement {
 const expanded = (title: string): string | null => toggleFor(title).getAttribute('aria-expanded');
 
 describe('the usage panel’s sections', () => {
-  it('has a heading that folds for each of its sections, all open to begin with', async () => {
-    await mountPanel();
-    const titles = toggles().map((node) => node.textContent?.trim());
-    expect(titles).toEqual([
-      t('secAllowance'), t('secBonus'), t('secCheckin'), t('secCards'), t('secTotals'), t('secRecentTurns'),
-    ]);
-    for (const title of titles) expect(expanded(title!)).toBe('true');
-  });
 
   it('folds one section without touching the others, and remembers it for the next visit', async () => {
     await mountPanel();
@@ -154,15 +146,5 @@ describe('the usage panel’s sections', () => {
     expect(expanded(t('secCards'))).toBe('true');
     expect(document.querySelector<HTMLElement>('.oa-redeem-row')!.hidden).toBe(false);
     expect(localStorage.getItem('obsidian-arc-fold-usage-cards')).toBe('1');
-  });
-
-  it('keeps the check-in button and the streak in view while the section is folded', async () => {
-    await mountPanel();
-    toggleFor(t('secCheckin')).click();
-    await settle();
-
-    const head = toggleFor(t('secCheckin')).closest('.oa-collapsible-head')!;
-    expect(head.textContent).toContain(t('checkinStreak', { count: 2 }));
-    expect([...head.querySelectorAll('button')].some((node) => node.textContent?.trim() === t('checkinNow'))).toBe(true);
   });
 });

@@ -40,7 +40,7 @@ const (
 // completionRequest is what an OpenAI client sends.
 //
 // Only the fields this server can honour are declared. The rest —
-// response_format, parallel_tool_calls, logprobs, n, seed and the others —
+// logprobs, n, seed and the others —
 // are accepted and ignored rather than rejected, because a client library
 // that always sends `n: 1` should not be refused for it. Nothing is forwarded
 // upstream that is not named here, so an unknown field cannot become a way to
@@ -57,6 +57,15 @@ type completionRequest struct {
 	// take. This is the layer whose job is to speak that dialect.
 	ReasoningEffort string `json:"reasoning_effort"`
 
+	CacheControl         *adapter.CacheControl `json:"cache_control"`
+	PromptCacheKey       string                `json:"prompt_cache_key"`
+	PromptCacheRetention string                `json:"prompt_cache_retention"`
+	ResponseFormat       json.RawMessage       `json:"response_format"`
+	Stop                 json.RawMessage       `json:"stop"`
+	ParallelToolCalls    *bool                 `json:"parallel_tool_calls"`
+	StreamOptions        *struct {
+		IncludeUsage bool `json:"include_usage"`
+	} `json:"stream_options"`
 	Tools []wireTool `json:"tools"`
 	// A string or an object, so it is read after the fact rather than typed
 	// here.
@@ -68,11 +77,14 @@ type completionRequest struct {
 // `tools`, and accepting a second spelling of the same thing is a second
 // thing to keep correct.
 type wireTool struct {
-	Type     string `json:"type"`
-	Function struct {
-		Name        string          `json:"name"`
-		Description string          `json:"description"`
-		Parameters  json.RawMessage `json:"parameters"`
+	CacheControl *adapter.CacheControl `json:"cache_control"`
+	Type         string                `json:"type"`
+	Function     struct {
+		Name         string                `json:"name"`
+		Description  string                `json:"description"`
+		Parameters   json.RawMessage       `json:"parameters"`
+		Strict       *bool                 `json:"strict"`
+		CacheControl *adapter.CacheControl `json:"cache_control"`
 	} `json:"function"`
 }
 
@@ -82,6 +94,7 @@ type wireMessage struct {
 	// both are read. Null on an assistant turn that was nothing but tool
 	// calls, which is why readContent tolerates one.
 	Content json.RawMessage `json:"content"`
+	Refusal string          `json:"refusal"`
 	// What the model asked for on an assistant turn the client is replaying.
 	ToolCalls []toolCallObject `json:"tool_calls"`
 	// On a tool result: which call it answers.
@@ -89,9 +102,10 @@ type wireMessage struct {
 }
 
 type contentPart struct {
-	Type     string `json:"type"`
-	Text     string `json:"text"`
-	ImageURL *struct {
+	Type         string                `json:"type"`
+	Text         string                `json:"text"`
+	CacheControl *adapter.CacheControl `json:"cache_control"`
+	ImageURL     *struct {
 		URL string `json:"url"`
 	} `json:"image_url"`
 }
@@ -109,6 +123,10 @@ func (h *Handlers) completions(w http.ResponseWriter, r *http.Request, who calle
 
 	request, err := h.buildRequest(body, resolved)
 	if err != nil {
+		return err
+	}
+
+	if err := validateProtocolControls(resolved.Provider, request); err != nil {
 		return err
 	}
 
@@ -180,6 +198,7 @@ func (h *Handlers) buffered(
 	startedAt := time.Now()
 	requestID := id.New()
 
+	var refusal strings.Builder
 	var reasoning strings.Builder
 	var answer strings.Builder
 	usage := adapter.Usage{}
@@ -188,7 +207,11 @@ func (h *Handlers) buffered(
 	sink := func(event adapter.Event) error {
 		switch event.Type {
 		case adapter.EventDelta:
-			answer.WriteString(event.Text)
+			if event.Refusal {
+				refusal.WriteString(event.Text)
+			} else {
+				answer.WriteString(event.Text)
+			}
 		case adapter.EventReasoning:
 			reasoning.WriteString(event.Text)
 		case adapter.EventToolCall:
@@ -207,30 +230,36 @@ func (h *Handlers) buffered(
 	// always streams, answered fine. The sink above assembles either shape.
 	request.Stream = true
 	result, chatErr := h.registry.Chat(r.Context(), resolved.Provider, request, sink)
+	chatErr = representableStop(result, chatErr)
 	usage = usage.Merge(result.Usage)
-	if result.Text != "" && answer.Len() == 0 {
-		answer.WriteString(result.Text)
-		reasoning.Reset()
+	if refusal.Len() == 0 {
+		refusal.WriteString(result.Refusal)
+	}
+	if text := answerOf(result); text != "" && answer.Len() == 0 {
+		answer.WriteString(text)
+	}
+	if result.Reasoning != "" && reasoning.Len() == 0 {
 		reasoning.WriteString(result.Reasoning)
 	}
 	if len(calls) == 0 {
 		calls = result.ToolCalls
 	}
 
-	if chatErr != nil {
+	if chatErr != nil && !deliveredRefusal(result, chatErr) {
 		h.record(r.Context(), who, resolved, requestID, usage, startedAt, chatErr)
 		return translateUpstream(chatErr)
 	}
-	h.record(r.Context(), who, resolved, requestID, usage, startedAt, nil)
+	h.record(r.Context(), who, resolved, requestID, usage, startedAt, chatErr)
 
 	message := &assistantMessage{
 		Role:      "assistant",
 		Reasoning: reasoning.String(),
+		Refusal:   refusal.String(),
 		ToolCalls: renderToolCalls(calls, requestID, 0, false),
 	}
 	// Null only when the turn was nothing but tool calls; an ordinary answer
 	// carries its text, and an empty one carries the empty string.
-	if text := answer.String(); text != "" || len(calls) == 0 {
+	if text := answer.String(); text != "" || (len(calls) == 0 && refusal.Len() == 0) {
 		message.Content = &text
 	}
 
@@ -266,10 +295,13 @@ func (h *Handlers) streamed(
 		return internalError(err)
 	}
 
+	streamCtx, stopHeartbeat := sse.KeepAlive(r.Context())
+	defer stopHeartbeat()
 	usage := adapter.Usage{}
 	// Whether any answer text has gone out. The opening role chunk does not
 	// count: it is the reason this is not simply "have we written anything".
 	streamedText := false
+	streamedRefusal := false
 	// Whether any thinking has gone out, for the same reason as the text above.
 	streamedReasoning := false
 	// How many calls have gone out, which is also the index the next one
@@ -308,6 +340,10 @@ func (h *Handlers) streamed(
 	sink := func(event adapter.Event) error {
 		switch event.Type {
 		case adapter.EventDelta:
+			if event.Refusal {
+				streamedRefusal = true
+				return emit(responseMessage{Refusal: event.Text}, nil)
+			}
 			streamedText = true
 			return emit(responseMessage{Content: event.Text}, nil)
 		case adapter.EventReasoning:
@@ -322,16 +358,24 @@ func (h *Handlers) streamed(
 	}
 
 	clientGone := false
-	result, chatErr := h.registry.Chat(r.Context(), resolved.Provider, request, watchWrites(sink, &clientGone))
+	result, chatErr := h.registry.Chat(streamCtx, resolved.Provider, request, watchWrites(sink, &clientGone))
+	if heartbeatErr := stopHeartbeat(); heartbeatErr != nil {
+		chatErr = heartbeatErr
+		clientGone = true
+	}
+	chatErr = representableStop(result, chatErr)
 	usage = usage.Merge(result.Usage)
+	if result.Refusal != "" && !streamedRefusal {
+		_ = emit(responseMessage{Refusal: result.Refusal}, nil)
+	}
 	// A provider that could not stream answered all at once; its thinking and
 	// its text still have to reach the client as chunks, thinking first, as it
 	// would have arrived.
 	if result.Reasoning != "" && !streamedReasoning {
 		_ = emit(responseMessage{Reasoning: result.Reasoning}, nil)
 	}
-	if result.Text != "" && !streamedText {
-		_ = emit(responseMessage{Content: result.Text}, nil)
+	if text := answerOf(result); text != "" && !streamedText {
+		_ = emit(responseMessage{Content: text}, nil)
 	}
 	// The same for its tool calls — and this is the path a model marked as
 	// not streaming always takes, so it is the ordinary case for one of them
@@ -340,9 +384,19 @@ func (h *Handlers) streamed(
 		_ = emitCalls(result.ToolCalls)
 	}
 
-	gone := h.settleStream(r, who, resolved, requestID, usage, startedAt, chatErr, clientGone)
+	defer func() {
+		failure := chatErr
+		if writeErr := sse.Err(); writeErr != nil {
+			clientGone = true
+			if failure == nil {
+				failure = writeErr
+			}
+		}
+		h.settleStream(r, who, resolved, requestID, usage, startedAt, failure, clientGone)
+	}()
+	gone := abandoned(clientGone, r, chatErr)
 
-	if chatErr != nil {
+	if chatErr != nil && !deliveredRefusal(result, chatErr) {
 		if gone {
 			// The client hung up. Writing to a closed connection is not a
 			// failure worth reporting to it.
@@ -369,9 +423,11 @@ func (h *Handlers) streamed(
 			Delta:        &responseMessage{},
 			FinishReason: finishReason(result.FinishReason, streamedCalls),
 		}},
-		Usage: usageOf(usage),
 	}
 	_ = sse.Event("", final)
+	if request.IncludeUsage {
+		_ = sse.Event("", completionChunk{ID: completionID(requestID), Object: "chat.completion.chunk", Created: startedAt.Unix(), Model: label, Choices: []choice{}, Usage: usageOf(usage)})
+	}
 	_ = sse.Literal("[DONE]")
 	return nil
 }
@@ -383,6 +439,7 @@ func (h *Handlers) buildRequest(body completionRequest, resolved model.Resolved)
 		return adapter.ChatRequest{}, badRequest("messages", "At least one message is required.")
 	}
 	var system strings.Builder
+	var systemParts []adapter.Part
 	messages := make([]adapter.Message, 0, len(body.Messages))
 	pictureLimit := h.pictureCeiling()
 
@@ -399,6 +456,7 @@ func (h *Handlers) buildRequest(body completionRequest, resolved model.Resolved)
 			// needs it folded into the first message.
 			for _, part := range parts {
 				if part.Kind == adapter.PartText {
+					systemParts = append(systemParts, part)
 					if system.Len() > 0 {
 						system.WriteString("\n\n")
 					}
@@ -406,6 +464,9 @@ func (h *Handlers) buildRequest(body completionRequest, resolved model.Resolved)
 				}
 			}
 		case "assistant":
+			if incoming.Refusal != "" {
+				parts = append(parts, adapter.Part{Kind: adapter.PartText, Text: incoming.Refusal})
+			}
 			for _, call := range incoming.ToolCalls {
 				if call.Function.Name == "" {
 					continue
@@ -499,17 +560,31 @@ func (h *Handlers) buildRequest(body completionRequest, resolved model.Resolved)
 		return adapter.ChatRequest{}, err
 	}
 
+	format, err := readOutputFormat(body.ResponseFormat)
+	if err != nil {
+		return adapter.ChatRequest{}, err
+	}
+	stop, err := readStop(body.Stop)
+	if err != nil {
+		return adapter.ChatRequest{}, err
+	}
+	if !partsHaveCache(systemParts) {
+		systemParts = nil
+	}
 	return adapter.ChatRequest{
-		Model:       resolved.Upstream.Spec(),
-		System:      prompt,
-		Messages:    messages,
-		Temperature: body.Temperature,
-		MaxTokens:   maxTokens,
-		Reasoning:   reasoning,
-		Stream:      stream,
-		Tools:       tools,
-		ToolChoice:  choice,
-		Extra:       resolved.Upstream.Extra(),
+		SystemParts: systemParts, CacheControl: body.CacheControl, PromptCacheKey: body.PromptCacheKey, PromptCacheRetention: body.PromptCacheRetention,
+		OutputFormat: format, Stop: stop, ParallelToolCalls: body.ParallelToolCalls,
+		IncludeUsage: body.StreamOptions != nil && body.StreamOptions.IncludeUsage,
+		Model:        resolved.Upstream.Spec(),
+		System:       prompt,
+		Messages:     messages,
+		Temperature:  body.Temperature,
+		MaxTokens:    maxTokens,
+		Reasoning:    reasoning,
+		Stream:       stream,
+		Tools:        tools,
+		ToolChoice:   choice,
+		Extra:        resolved.Upstream.Extra(),
 	}, nil
 }
 
@@ -541,6 +616,7 @@ func readTools(declared []wireTool) ([]adapter.Tool, error) {
 			Name:        name,
 			Description: tool.Function.Description,
 			Parameters:  tool.Function.Parameters,
+			Strict:      tool.Function.Strict, CacheControl: toolCacheControl(tool),
 		})
 	}
 	return out, nil
@@ -653,7 +729,7 @@ func readContent(raw json.RawMessage, pictureLimit int64) ([]adapter.Part, error
 		switch part.Type {
 		case "text", "input_text", "":
 			if strings.TrimSpace(part.Text) != "" {
-				out = append(out, adapter.Part{Kind: adapter.PartText, Text: part.Text})
+				out = append(out, adapter.Part{Kind: adapter.PartText, Text: part.Text, CacheControl: part.CacheControl})
 			}
 		case "image_url", "input_image":
 			if part.ImageURL == nil {
@@ -663,6 +739,7 @@ func readContent(raw json.RawMessage, pictureLimit int64) ([]adapter.Part, error
 			if err != nil {
 				return nil, err
 			}
+			image.CacheControl = part.CacheControl
 			out = append(out, image)
 		default:
 			return nil, badRequest("messages", "Unsupported content part: "+part.Type+".")
@@ -746,8 +823,8 @@ func parseEffort(value string) (adapter.Effort, bool) {
 		return adapter.EffortLow, true
 	case "medium":
 		return adapter.EffortMedium, true
-	case "high":
-		return adapter.EffortHigh, true
+	case "high", "xhigh":
+		return adapter.Effort(strings.ToLower(strings.TrimSpace(value))), true
 	}
 	return "", false
 }
@@ -792,6 +869,7 @@ type choice struct {
 type assistantMessage struct {
 	Role      string           `json:"role"`
 	Content   *string          `json:"content"`
+	Refusal   string           `json:"refusal,omitempty"`
 	Reasoning string           `json:"reasoning_content,omitempty"`
 	ToolCalls []toolCallObject `json:"tool_calls,omitempty"`
 }
@@ -799,6 +877,7 @@ type assistantMessage struct {
 type responseMessage struct {
 	Role    string `json:"role,omitempty"`
 	Content string `json:"content,omitempty"`
+	Refusal string `json:"refusal,omitempty"`
 	// The model's thinking, under the field name DeepSeek introduced and
 	// OpenRouter adopted, since OpenAI's own schema has nowhere to put it.
 	//
@@ -868,19 +947,29 @@ type usageBlock struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
-	Details          *struct {
+	PromptDetails    *struct {
+		CachedTokens     int `json:"cached_tokens"`
+		CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
+	} `json:"prompt_tokens_details,omitempty"`
+	Details *struct {
 		ReasoningTokens int `json:"reasoning_tokens"`
 	} `json:"completion_tokens_details,omitempty"`
 }
 
 func usageOf(u adapter.Usage) *usageBlock {
-	if u.Total() == 0 {
+	if !u.HasUsage() {
 		return nil
 	}
 	block := &usageBlock{
 		PromptTokens:     u.InputTokens,
-		CompletionTokens: u.OutputTokens,
+		CompletionTokens: u.OutputTokens + u.ReasoningTokens,
 		TotalTokens:      u.Total(),
+	}
+	if u.CacheReadTokens > 0 || u.CacheCreationTokens > 0 {
+		block.PromptDetails = &struct {
+			CachedTokens     int `json:"cached_tokens"`
+			CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
+		}{u.CacheReadTokens, u.CacheCreationTokens}
 	}
 	if u.ReasoningTokens > 0 {
 		block.Details = &struct {
@@ -904,7 +993,7 @@ func usageOf(u adapter.Usage) *usageBlock {
 func finishReason(upstream string, toolCalls int) *string {
 	reason := "stop"
 	switch strings.ToLower(strings.TrimSpace(upstream)) {
-	case "length", "max_tokens", "model_length":
+	case "length", "max_tokens", "model_length", "model_context_window_exceeded":
 		reason = "length"
 	case "content_filter", "refusal":
 		reason = "content_filter"
@@ -961,11 +1050,8 @@ func abandoned(clientGone bool, r *http.Request, failure error) bool {
 	return clientGone || (r.Context().Err() != nil && chat.Cancelled(failure))
 }
 
-// settleStream records a streamed turn once its provider call has returned, and
-// reports whether the client had already gone. The record is written either way,
-// because the tokens were spent either way. The protocol's error frame, if there
-// is one, is only written afterwards, and only to a client that is still there,
-// which is why the order is fixed here rather than left to each protocol.
+// settleStream records once, after all client writes have been attempted. A
+// failed closing flush is an aborted delivery too, even if generation finished.
 func (h *Handlers) settleStream(
 	r *http.Request, who caller, resolved model.Resolved, requestID string,
 	usage adapter.Usage, startedAt time.Time, chatErr error, clientGone bool,
@@ -981,7 +1067,7 @@ func (h *Handlers) settleStream(
 // turn short: recording it as an error would blame the provider and this server
 // for a hang-up neither caused.
 func abortedWhenGone(failure error, gone bool) error {
-	if failure != nil && gone {
+	if gone {
 		return context.Canceled
 	}
 	return failure

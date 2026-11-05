@@ -9,6 +9,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/bonus"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
@@ -152,8 +153,8 @@ func bump(ctx context.Context, q database.Queryer, key string, window Window, st
 	// in for both, a refund inserted a negative counter, and every card used
 	// mid-turn handed out several turns' worth of free allowance.
 	err := q.QueryRow(ctx,
-		`INSERT INTO usage_counters (scope_key, window_kind, window_start, requests, tokens, credits)
-		 VALUES (?, ?, ?, ?, ?, ?)
+		`INSERT INTO usage_counters (scope_key, window_kind, window_start, requests, tokens, credits, generation)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT (scope_key, window_kind, window_start) DO UPDATE SET
 		   requests = usage_counters.requests + ?,
 		   -- Refunds arrive here as negative deltas. Clamped, because two
@@ -166,7 +167,7 @@ func bump(ctx context.Context, q database.Queryer, key string, window Window, st
 		   credits  = CASE WHEN usage_counters.credits + ? < 0
 		                   THEN 0 ELSE usage_counters.credits + ? END
 		 RETURNING requests, tokens, credits`,
-		key, window, start, max(requests, 0), max(tokens, 0), max(credits, 0),
+		key, window, start, max(requests, 0), max(tokens, 0), max(credits, 0), id.Secret(16),
 		requests, tokens, tokens, credits, credits).
 		Scan(&out.Requests, &out.Tokens, &out.Credits)
 	if err != nil {

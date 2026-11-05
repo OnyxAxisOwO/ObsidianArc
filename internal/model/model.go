@@ -662,14 +662,14 @@ func (s *Store) EnableIfAutoDisabled(ctx context.Context, modelID string) (bool,
 		// exist locks nothing, and the update below then matches nothing.
 		if _, err := tx.Exec(ctx,
 			`UPDATE providers SET updated_at = updated_at
-			 WHERE id = (SELECT provider_id FROM models WHERE id = ?)`, modelID); err != nil {
+			 WHERE id = (SELECT COALESCE(t.provider_id, m.provider_id) FROM models m LEFT JOIN models t ON t.id = m.route_to_id WHERE m.id = ?)`, modelID); err != nil {
 			return fmt.Errorf("model: lock provider: %w", err)
 		}
 		result, err := tx.Exec(ctx,
 			`UPDATE models SET enabled = ?, auto_disabled = ?, updated_at = ?
 			 WHERE id = ? AND enabled = ? AND auto_disabled = ?
-			   AND EXISTS (SELECT 1 FROM providers WHERE providers.id = models.provider_id AND providers.enabled = ?)`,
-			true, false, time.Now().UnixMilli(), modelID, false, true, true)
+			   AND EXISTS (SELECT 1 FROM providers p WHERE p.id = COALESCE((SELECT t.provider_id FROM models t WHERE t.id = models.route_to_id AND t.enabled = ?), CASE WHEN models.route_to_id IS NULL THEN models.provider_id END) AND p.enabled = ?)`,
+			true, false, time.Now().UnixMilli(), modelID, false, true, true, true)
 		if err != nil {
 			return fmt.Errorf("model: enable if auto disabled: %w", err)
 		}

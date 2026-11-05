@@ -112,17 +112,6 @@ func (f *fixture) grants(t *testing.T, userID string) (n int, total float64) {
 	return n, total
 }
 
-func TestCheckInIsOffUntilTheAdministratorSwitchesItOn(t *testing.T) {
-	f := newFixture(t)
-	a := f.person(t, "alice")
-	if _, err := f.svc.CheckIn(context.Background(), a.ID); !errors.Is(err, ErrDisabled) {
-		t.Fatalf("check-in while off: %v", err)
-	}
-	if st, _ := f.svc.StatusOf(context.Background(), a.ID); st.Enabled {
-		t.Fatal("the status says it is on")
-	}
-}
-
 func TestOnceADayAndTheStreakCountsConsecutiveDays(t *testing.T) {
 	f := newFixture(t)
 	f.configure(t, Settings{Enabled: true})

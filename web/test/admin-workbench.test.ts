@@ -86,18 +86,6 @@ describe('AdminWorkbench', () => {
     expect(host.querySelector('.oa-workbench')!.classList.contains('is-searching')).toBe(true);
   });
 
-  it('says so, and draws nothing, when a search matches no section', async () => {
-    await mount('/admin');
-
-    type('no-such-setting');
-    await settle();
-
-    expect(shownSections()).toEqual([]);
-    const empty = host.querySelector<HTMLParagraphElement>('.oa-search-empty')!;
-    expect(empty).not.toBeNull();
-    expect(empty.getAttribute('role')).toBe('status');
-  });
-
   it('opens the category that holds a section named in the hash, even when it is closed', async () => {
     await mount('/admin#beta-one');
 

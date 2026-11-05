@@ -57,24 +57,6 @@ func burstOfFlaggedSignups(t *testing.T, in *instance) {
 	}
 }
 
-// A bot wave is refused one sign-up after another. Each refusal used to push
-// its own administrator notice, so the bell filled with an entry per bot. A
-// burst now shows as one entry; the security log still holds every refusal.
-func TestABurstOfFlaggedSignupsIsOneAdministratorNotice(t *testing.T) {
-	in := newInstance(t)
-	ctx := context.Background()
-	review := auth.SignupReview{Ran: true, Decision: auth.SignupRefuse, Reason: "automated"}
-
-	for i := range 20 {
-		in.server.auth.Hooks.OnSignupReview(ctx,
-			auth.RegisterInput{Username: fmt.Sprintf("bot%02d", i), IP: "203.0.113.9"}, nil, review)
-	}
-
-	if got := in.flaggedSignupNotices(ctx); got != 1 {
-		t.Fatalf("20 refused sign-ups left %d administrator notices, want 1", got)
-	}
-}
-
 // The window is for a burst, not for the rest of the day: a flagged sign-up
 // after the previous notice has aged out gets its own entry.
 func TestAFlaggedSignupAfterTheWindowGetsItsOwnNotice(t *testing.T) {

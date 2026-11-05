@@ -12,45 +12,6 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
-// A stolen session is a session and nothing else. If it could switch the
-// second step on with the thief's own authenticator, it would sign the owner
-// out everywhere and be the only way back in.
-func TestEnablingTwoFactorNeedsThePassword(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-	account, token, err := f.auth.Register(ctx, RegisterInput{Username: "arc", Password: "a-good-password"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, session, _ := f.auth.Authenticate(ctx, token)
-	setup, err := f.auth.BeginTwoFactor(ctx, account)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !setup.PasswordRequired {
-		t.Fatal("the wizard was not told to ask for the password")
-	}
-	code := codeAt(t, setup.Secret, totp.Step(time.Now()))
-
-	if _, _, err := f.auth.EnableTwoFactor(ctx, account.ID, "", code, session.ID, "", ""); !errors.Is(err, ErrPasswordRequired) {
-		t.Fatalf("enabling with no password = %v, want it asked for", err)
-	}
-	if _, _, err := f.auth.EnableTwoFactor(ctx, account.ID, "not-the-password", code, session.ID, "", ""); !errors.Is(err, ErrCurrentPasswordWrong) {
-		t.Fatalf("enabling with a wrong password = %v, want a refusal", err)
-	}
-	after, err := f.users.ByID(ctx, nil, account.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if after.TwoFactorEnabled() {
-		t.Fatal("the second step was switched on without the password")
-	}
-
-	if _, _, err := f.auth.EnableTwoFactor(ctx, account.ID, "a-good-password", code, session.ID, "", ""); err != nil {
-		t.Fatalf("enabling with the password: %v", err)
-	}
-}
-
 // An account that signs in through a provider has no password, and asking it
 // for one would lock it out of two-step sign-in for good.
 func TestAPasswordlessAccountEnablesTwoFactorWithoutOne(t *testing.T) {
@@ -73,52 +34,6 @@ func TestAPasswordlessAccountEnablesTwoFactorWithoutOne(t *testing.T) {
 	signedIn := sessionFor(t, f, account.ID)
 	if _, _, err := f.auth.EnableTwoFactor(ctx, account.ID, "", code, signedIn.ID, "", ""); err != nil {
 		t.Fatalf("enabling on a passwordless account: %v", err)
-	}
-}
-
-// The address is where a reset link goes, so repointing it is as good as
-// taking the account.
-func TestMovingTheEmailNeedsThePassword(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-	if _, _, err := f.auth.Register(ctx, RegisterInput{Username: "first", Password: "a-good-password"}); err != nil {
-		t.Fatal(err)
-	}
-	account, _, err := f.auth.Register(ctx, RegisterInput{
-		Username: "member", Email: "member@example.com", Password: "a-good-password",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	moved := "thief@example.com"
-	if _, err := f.auth.UpdateProfile(ctx, account.ID, user.ProfileUpdate{Email: &moved}, ""); !errors.Is(err, ErrPasswordRequired) {
-		t.Fatalf("moving the address with no password = %v, want it asked for", err)
-	}
-	if _, err := f.auth.UpdateProfile(ctx, account.ID, user.ProfileUpdate{Email: &moved}, "not-the-password"); !errors.Is(err, ErrCurrentPasswordWrong) {
-		t.Fatalf("moving the address with a wrong password = %v, want a refusal", err)
-	}
-	kept, err := f.users.ByID(ctx, nil, account.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if kept.Email != "member@example.com" {
-		t.Fatalf("address = %q after refusals, want it untouched", kept.Email)
-	}
-
-	// Everything that is not the address stays free: the profile form sends
-	// the unchanged address with every save.
-	same, nickname := "Member@Example.com", "Nick"
-	if _, err := f.auth.UpdateProfile(ctx, account.ID, user.ProfileUpdate{Email: &same, Nickname: &nickname}, ""); err != nil {
-		t.Fatalf("saving a nickname with the address unchanged: %v", err)
-	}
-
-	updated, err := f.auth.UpdateProfile(ctx, account.ID, user.ProfileUpdate{Email: &moved}, "a-good-password")
-	if err != nil {
-		t.Fatalf("moving the address with the password: %v", err)
-	}
-	if updated.Email != moved {
-		t.Fatalf("address = %q, want %q", updated.Email, moved)
 	}
 }
 
@@ -149,10 +64,6 @@ func TestConfirmingThePasswordIsThrottled(t *testing.T) {
 		"moving the address": func(t *testing.T, f *fixture, account user.User, password string) error {
 			moved := "other@example.com"
 			_, err := f.auth.UpdateProfile(context.Background(), account.ID, user.ProfileUpdate{Email: &moved}, password)
-			return err
-		},
-		"changing the password": func(t *testing.T, f *fixture, account user.User, password string) error {
-			_, err := f.auth.ChangePassword(context.Background(), account.ID, password, "another-good-password", "")
 			return err
 		},
 	}

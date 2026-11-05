@@ -63,6 +63,7 @@ type anthropicToolResultBlock struct {
 	Type      string `json:"type"`
 	ToolUseID string `json:"tool_use_id"`
 	Content   string `json:"content"`
+	IsError   bool   `json:"is_error,omitempty"`
 }
 
 func (a anthropicAdapter) buildBody(p Provider, req ChatRequest) (map[string]any, bool) {
@@ -102,21 +103,17 @@ func (a anthropicAdapter) buildBody(p Provider, req ChatRequest) (map[string]any
 		if budget <= 0 {
 			budget = reasoningBudget(req.Reasoning.Effort)
 		}
-		if budget < budgetMin {
-			// The API refuses anything smaller, and a tier configured below
-			// the floor should still think rather than fail the turn.
-			budget = budgetMin
+		budget = max(budget, budgetMin)
+		if req.MaxTokens <= 0 && req.Model.MaxOutputTokens <= 0 {
+			maxTokens = max(maxTokens, budget+budgetHeadroom)
 		}
-		if budget+budgetHeadroom > maxTokens {
-			// Prefer keeping the requested budget and raising the ceiling;
-			// shrinking the budget instead would quietly downgrade what the
-			// user asked for.
-			maxTokens = budget + budgetHeadroom
+		if clamped, fits := ClampThinkingBudget(budget, maxTokens); fits {
+			body["thinking"] = map[string]any{"type": "enabled", "budget_tokens": clamped}
+		} else {
+			thinking = false
 		}
-		body["thinking"] = map[string]any{"type": "enabled", "budget_tokens": budget}
-		// The API rejects a temperature other than 1 while thinking is on, so
-		// the user's value is dropped rather than made into an error.
-	} else if req.Temperature != nil {
+	}
+	if !thinking && req.Temperature != nil {
 		body["temperature"] = *req.Temperature
 	}
 
@@ -128,6 +125,26 @@ func (a anthropicAdapter) buildBody(p Provider, req ChatRequest) (map[string]any
 		body["system"] = req.System
 	}
 
+	if len(req.Stop) > 0 {
+		body["stop_sequences"] = req.Stop
+	}
+	if req.CacheControl != nil {
+		body["cache_control"] = req.CacheControl
+	}
+	if len(req.SystemParts) > 0 && req.Model.SupportsSystem {
+		parts := make([]map[string]any, 0, len(req.SystemParts))
+		for _, part := range req.SystemParts {
+			block := map[string]any{"type": "text", "text": part.Text}
+			if part.CacheControl != nil {
+				block["cache_control"] = part.CacheControl
+			}
+			parts = append(parts, block)
+		}
+		body["system"] = parts
+	}
+	if req.OutputFormat.Type == "json_schema" {
+		body["output_config"] = map[string]any{"format": map[string]any{"type": "json_schema", "schema": req.OutputFormat.Schema}}
+	}
 	if len(req.Tools) > 0 {
 		body["tools"] = anthropicTools(req.Tools)
 		// While reasoning is requested the API accepts only auto and none, so a
@@ -135,11 +152,19 @@ func (a anthropicAdapter) buildBody(p Provider, req ChatRequest) (map[string]any
 		// same trade as the temperature above. It is dropped on continuations
 		// too, where thinking itself is off: see wantsThinking.
 		if choice, ok := anthropicToolChoice(req.ToolChoice); ok &&
-			(!wantsThinking || req.ToolChoice.Mode == ToolChoiceNone) {
+			(!wantsThinking || req.ToolChoice.Mode == ToolChoiceNone || (!thinking && !carriesToolTurns(req.Messages))) {
 			body["tool_choice"] = choice
 		}
 	}
 
+	if req.ParallelToolCalls != nil && len(req.Tools) > 0 {
+		choice, ok := body["tool_choice"].(map[string]any)
+		if !ok {
+			choice = map[string]any{"type": "auto"}
+		}
+		choice["disable_parallel_tool_use"] = !*req.ParallelToolCalls
+		body["tool_choice"] = choice
+	}
 	for key, value := range req.Extra {
 		body[key] = value
 	}
@@ -172,6 +197,12 @@ func anthropicTools(tools []Tool) []map[string]any {
 			"name": tool.Name,
 			// The same schema under the name this protocol gives the field.
 			"input_schema": schemaOrEmpty(tool.Parameters),
+		}
+		if tool.CacheControl != nil {
+			entry["cache_control"] = tool.CacheControl
+		}
+		if tool.Strict != nil {
+			entry["strict"] = *tool.Strict
 		}
 		if tool.Description != "" {
 			entry["description"] = tool.Description
@@ -210,13 +241,9 @@ func toolInput(arguments string) json.RawMessage {
 	return json.RawMessage(trimmed)
 }
 
-// ClampThinkingBudget fits a thinking budget under an output ceiling, for a
-// budget that came from a caller rather than from an operator's tier. buildBody
-// raises max_tokens to budget plus headroom when that exceeds the request's own
-// limit, so a budget above ceiling minus headroom would lift the answer past
-// the ceiling the operator set. It reports false when the ceiling leaves no
-// room for the smallest budget the API accepts, which means thinking should
-// be left off. A zero ceiling means none is set.
+// ClampThinkingBudget fits a thinking budget under the outgoing token ceiling.
+// A zero ceiling means none is set. If even the minimum does not fit, thinking
+// is disabled rather than raising a caller's or operator's output limit.
 func ClampThinkingBudget(budget, ceiling int) (int, bool) {
 	if budget <= 0 {
 		// The same default buildBody applies when no budget is named.
@@ -239,7 +266,7 @@ func reasoningBudget(effort Effort) int {
 	switch effort {
 	case EffortLow:
 		return budgetLow
-	case EffortHigh:
+	case EffortHigh, Effort("xhigh"):
 		return budgetHigh
 	default:
 		return budgetMedium
@@ -287,7 +314,7 @@ func (anthropicAdapter) buildMessages(req ChatRequest) ([]anthropicMessage, bool
 					continue
 				}
 				results = append(results, anthropicToolResultBlock{
-					Type: "tool_result", ToolUseID: part.ToolCallID, Content: part.Text,
+					Type: "tool_result", ToolUseID: part.ToolCallID, Content: part.Text, IsError: part.ToolIsError,
 				})
 			}
 		}
@@ -305,6 +332,32 @@ func (anthropicAdapter) buildMessages(req ChatRequest) ([]anthropicMessage, bool
 		}
 		blocks = append(blocks, images...)
 		blocks = append(blocks, calls...)
+		if hasCacheControl(message.Parts) {
+			// Moving or joining a marked block changes the cached prefix.
+			blocks = nil
+			for _, part := range message.Parts {
+				block := map[string]any{}
+				switch part.Kind {
+				case PartText:
+					block = map[string]any{"type": "text", "text": part.Text}
+				case PartImage:
+					if !req.Model.SupportsImages || len(part.Data) == 0 {
+						continue
+					}
+					block = map[string]any{"type": "image", "source": map[string]any{"type": "base64", "media_type": part.MediaType, "data": base64.StdEncoding.EncodeToString(part.Data)}}
+				case PartToolCall:
+					block = map[string]any{"type": "tool_use", "id": part.ToolCallID, "name": part.ToolName, "input": toolInput(part.ToolArgs)}
+				case PartToolResult:
+					block = map[string]any{"type": "tool_result", "tool_use_id": part.ToolCallID, "content": part.Text, "is_error": part.ToolIsError}
+				default:
+					continue
+				}
+				if part.CacheControl != nil {
+					block["cache_control"] = part.CacheControl
+				}
+				blocks = append(blocks, block)
+			}
+		}
 		if len(blocks) == 0 {
 			continue
 		}
@@ -337,7 +390,11 @@ func (anthropicAdapter) buildMessages(req ChatRequest) ([]anthropicMessage, bool
 		content := out[0].Content.([]any)
 		kept := content[:0]
 		for _, block := range content {
-			if _, orphaned := block.(anthropicToolResultBlock); !orphaned {
+			_, orphaned := block.(anthropicToolResultBlock)
+			if mapped, ok := block.(map[string]any); ok && mapped["type"] == "tool_result" {
+				orphaned = true
+			}
+			if !orphaned {
 				kept = append(kept, block)
 			}
 		}
@@ -402,11 +459,9 @@ func (anthropicAdapter) readOnce(response *http.Response) (Result, error) {
 			Name     string          `json:"name"`
 			Input    json.RawMessage `json:"input"`
 		} `json:"content"`
-		StopReason string `json:"stop_reason"`
-		Usage      struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-		} `json:"usage"`
+		StopReason   string              `json:"stop_reason"`
+		StopSequence *string             `json:"stop_sequence"`
+		Usage        anthropicTokenUsage `json:"usage"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
 		return Result{}, unreadable(err, "The provider returned a response we could not read.")
@@ -414,10 +469,7 @@ func (anthropicAdapter) readOnce(response *http.Response) (Result, error) {
 	// A refusal is a delivered answer, so the provider billed the prompt and
 	// the refusal output. The counts travel with the error, or the ledger
 	// would record the turn as the request fee alone.
-	usage := Usage{InputTokens: payload.Usage.InputTokens, OutputTokens: payload.Usage.OutputTokens}
-	if payload.StopReason == "refusal" {
-		return Result{Usage: usage}, &Error{Kind: ErrorRefusal, Message: "The model declined to answer."}
-	}
+	usage := payload.Usage.toUsage()
 
 	var result Result
 	for _, block := range payload.Content {
@@ -438,6 +490,10 @@ func (anthropicAdapter) readOnce(response *http.Response) (Result, error) {
 	}
 	result.FinishReason = payload.StopReason
 	result.Usage = usage
+	result.StopSequence = payload.StopSequence
+	if payload.StopReason == "refusal" {
+		return result, &Error{Kind: ErrorRefusal, Message: "The model declined to answer."}
+	}
 	return result, nil
 }
 
@@ -448,28 +504,26 @@ type anthropicStreamEvent struct {
 	// interleave.
 	Index        int `json:"index"`
 	ContentBlock struct {
-		Type string `json:"type"`
-		ID   string `json:"id"`
-		Name string `json:"name"`
+		Type     string          `json:"type"`
+		ID       string          `json:"id"`
+		Name     string          `json:"name"`
+		Text     string          `json:"text"`
+		Thinking string          `json:"thinking"`
+		Input    json.RawMessage `json:"input"`
 	} `json:"content_block"`
 	Delta struct {
 		Type     string `json:"type"`
 		Text     string `json:"text"`
 		Thinking string `json:"thinking"`
 		// A tool call's arguments, a few characters at a time.
-		PartialJSON string `json:"partial_json"`
-		StopReason  string `json:"stop_reason"`
+		PartialJSON  string  `json:"partial_json"`
+		StopReason   string  `json:"stop_reason"`
+		StopSequence *string `json:"stop_sequence"`
 	} `json:"delta"`
 	Message struct {
-		Usage struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-		} `json:"usage"`
+		Usage anthropicTokenUsage `json:"usage"`
 	} `json:"message"`
-	Usage struct {
-		InputTokens  int `json:"input_tokens"`
-		OutputTokens int `json:"output_tokens"`
-	} `json:"usage"`
+	Usage anthropicTokenUsage `json:"usage"`
 	Error struct {
 		Message string `json:"message"`
 	} `json:"error"`
@@ -501,6 +555,7 @@ func (anthropicAdapter) readStream(ctx context.Context, response *http.Response,
 	type pendingCall struct {
 		call      ToolCall
 		arguments strings.Builder
+		initial   json.RawMessage
 	}
 	pending := map[int]*pendingCall{}
 	// message_stop is the provider's own word that the answer is complete. A
@@ -510,15 +565,20 @@ func (anthropicAdapter) readStream(ctx context.Context, response *http.Response,
 	// message_stop says the same, and is accepted alone: a compatible provider
 	// that sends it and then closes is not cut short.
 	sawStop := false
+	var tokenUsage anthropicTokenUsage
 
 	err := readEventStream(response.Body, func(data []byte) error {
-		var event anthropicStreamEvent
-		if err := json.Unmarshal(data, &event); err != nil {
-			// A frame we cannot parse is skipped rather than fatal: a proxy
-			// injecting a keepalive should not end a good generation.
+		if string(data) == "[DONE]" {
 			return nil
 		}
+		var event anthropicStreamEvent
+		if err := json.Unmarshal(data, &event); err != nil {
+			return malformedStream()
+		}
 
+		if event.Type == "" {
+			return malformedStream()
+		}
 		if event.Type == "error" {
 			return &Error{Kind: ErrorUpstream, Message: redactSecret(firstNonEmpty(event.Error.Message, "The provider reported an error mid-stream."), secret)}
 		}
@@ -526,14 +586,12 @@ func (anthropicAdapter) readStream(ctx context.Context, response *http.Response,
 		// Anthropic reports input tokens when the message starts and output
 		// tokens as it ends, so both have to be folded in rather than
 		// overwriting one another.
-		for _, usage := range [...]Usage{
-			{InputTokens: event.Message.Usage.InputTokens, OutputTokens: event.Message.Usage.OutputTokens},
-			{InputTokens: event.Usage.InputTokens, OutputTokens: event.Usage.OutputTokens},
-		} {
-			if usage.Total() <= 0 {
+		for _, reported := range [...]anthropicTokenUsage{event.Message.Usage, event.Usage} {
+			if !reported.reported() {
 				continue
 			}
-			result.Usage = result.Usage.Merge(usage)
+			tokenUsage = tokenUsage.merge(reported)
+			result.Usage = result.Usage.Merge(tokenUsage.toUsage())
 			if err := sink(Event{Type: EventUsage, Usage: result.Usage}); err != nil {
 				sinkErr = err
 				return err
@@ -541,16 +599,44 @@ func (anthropicAdapter) readStream(ctx context.Context, response *http.Response,
 		}
 		if event.Delta.StopReason != "" {
 			result.FinishReason = event.Delta.StopReason
+			if event.Type == "message_delta" {
+				result.Usage.complete = true
+			}
+			result.StopSequence = event.Delta.StopSequence
 		}
 
 		switch event.Type {
 		case "message_stop":
 			sawStop = true
+			if len(pending) > 0 {
+				return incompleteStream()
+			}
+			return errStreamDone
 		case "content_block_start":
-			if event.ContentBlock.Type == "tool_use" && event.ContentBlock.Name != "" {
-				pending[event.Index] = &pendingCall{call: ToolCall{
-					ID: event.ContentBlock.ID, Name: event.ContentBlock.Name,
-				}}
+			switch event.ContentBlock.Type {
+			case "tool_use":
+				if _, exists := pending[event.Index]; exists {
+					return malformedStream()
+				}
+				pending[event.Index] = &pendingCall{call: ToolCall{ID: event.ContentBlock.ID, Name: event.ContentBlock.Name}, initial: event.ContentBlock.Input}
+			case "text":
+				if value := event.ContentBlock.Text; value != "" {
+					text.WriteString(value)
+					result.Text = text.String()
+					if err := sink(Event{Type: EventDelta, Text: value}); err != nil {
+						sinkErr = err
+						return err
+					}
+				}
+			case "thinking":
+				if value := event.ContentBlock.Thinking; value != "" {
+					reasoning.WriteString(value)
+					result.Reasoning = reasoning.String()
+					if err := sink(Event{Type: EventReasoning, Text: value}); err != nil {
+						sinkErr = err
+						return err
+					}
+				}
 			}
 		case "content_block_stop":
 			open, found := pending[event.Index]
@@ -560,6 +646,9 @@ func (anthropicAdapter) readStream(ctx context.Context, response *http.Response,
 			delete(pending, event.Index)
 			call := open.call
 			raw := open.arguments.String()
+			if raw == "" {
+				raw = string(open.initial)
+			}
 			if !wellFormedArguments(raw) {
 				// A stream cut off at max_tokens leaves this half-written. It ends
 				// the turn as the OpenAI stream does, rather than running the tool
@@ -605,6 +694,8 @@ func (anthropicAdapter) readStream(ctx context.Context, response *http.Response,
 					return toolArgumentsTooLarge()
 				}
 				open.arguments.WriteString(event.Delta.PartialJSON)
+			} else {
+				return malformedStream()
 			}
 		}
 		return nil
@@ -623,10 +714,13 @@ func (anthropicAdapter) readStream(ctx context.Context, response *http.Response,
 		}
 		return result, networkError(ctx, err)
 	}
-	if !sawStop && result.FinishReason == "" {
+	if len(pending) > 0 || (!sawStop && result.FinishReason == "") {
 		// The partial answer is kept, so the caller can still charge for
 		// what was generated.
 		return result, &Error{Kind: ErrorUpstream, Message: "The answer stopped before it finished."}
+	}
+	if result.FinishReason == "refusal" {
+		return result, &Error{Kind: ErrorRefusal, Message: "The model declined to answer."}
 	}
 	return result, nil
 }

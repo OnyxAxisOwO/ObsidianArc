@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -51,8 +52,9 @@ type openAIToolFunction struct {
 }
 
 type openAITextPart struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type         string        `json:"type"`
+	Text         string        `json:"text"`
+	CacheControl *CacheControl `json:"cache_control,omitempty"`
 }
 
 type openAIImagePart struct {
@@ -65,7 +67,7 @@ type openAIImagePart struct {
 func (a openAIAdapter) buildBody(p Provider, req ChatRequest) (map[string]any, bool) {
 	messages, carriedImages := a.buildMessages(req)
 
-	if req.System != "" && req.Model.SupportsSystem {
+	if (req.System != "" || len(req.SystemParts) > 0) && req.Model.SupportsSystem {
 		// Unlike Anthropic, the system prompt is a message here.
 		messages = append([]openAIMessage{{Role: "system", Content: req.System}}, messages...)
 	}
@@ -73,6 +75,40 @@ func (a openAIAdapter) buildBody(p Provider, req ChatRequest) (map[string]any, b
 	body := map[string]any{
 		"model":    req.Model.ModelID,
 		"messages": messages,
+	}
+	if len(req.SystemParts) > 0 && req.Model.SupportsSystem {
+		parts := make([]openAITextPart, 0, len(req.SystemParts))
+		for _, part := range req.SystemParts {
+			parts = append(parts, openAITextPart{Type: "text", Text: part.Text, CacheControl: part.CacheControl})
+		}
+		messages[0].Content = parts
+	}
+	body["messages"] = messages
+	if len(req.Stop) > 0 {
+		body["stop"] = req.Stop
+	}
+	if req.CacheControl != nil {
+		body["cache_control"] = req.CacheControl
+	}
+	if req.PromptCacheKey != "" {
+		body["prompt_cache_key"] = req.PromptCacheKey
+	}
+	if req.PromptCacheRetention != "" {
+		body["prompt_cache_retention"] = req.PromptCacheRetention
+	}
+	if req.ParallelToolCalls != nil {
+		body["parallel_tool_calls"] = *req.ParallelToolCalls
+	}
+	if format := req.OutputFormat; format.Type != "" {
+		rendered := map[string]any{"type": format.Type}
+		if format.Type == "json_schema" {
+			schema := map[string]any{"name": format.Name, "schema": format.Schema}
+			if format.Strict != nil {
+				schema["strict"] = *format.Strict
+			}
+			rendered["json_schema"] = schema
+		}
+		body["response_format"] = rendered
 	}
 	if req.Temperature != nil {
 		body["temperature"] = *req.Temperature
@@ -125,10 +161,18 @@ func openAITools(tools []Tool) []map[string]any {
 	out := make([]map[string]any, 0, len(tools))
 	for _, tool := range tools {
 		function := map[string]any{"name": tool.Name, "parameters": schemaOrEmpty(tool.Parameters)}
+		if tool.Strict != nil {
+			function["strict"] = *tool.Strict
+		}
+
 		if tool.Description != "" {
 			function["description"] = tool.Description
 		}
-		out = append(out, map[string]any{"type": "function", "function": function})
+		entry := map[string]any{"type": "function", "function": function}
+		if tool.CacheControl != nil {
+			entry["cache_control"] = tool.CacheControl
+		}
+		out = append(out, entry)
 	}
 	return out
 }
@@ -167,9 +211,15 @@ func (openAIAdapter) buildMessages(req ChatRequest) ([]openAIMessage, bool) {
 				if part.Kind != PartToolResult || part.ToolCallID == "" {
 					continue
 				}
-				out = append(out, openAIMessage{
-					Role: "tool", Content: part.Text, ToolCallID: part.ToolCallID,
-				})
+				content := part.Text
+				if part.ToolIsError {
+					content = "[tool_error]\n" + content
+				}
+				var rendered any = content
+				if part.CacheControl != nil {
+					rendered = []openAITextPart{{Type: "text", Text: content, CacheControl: part.CacheControl}}
+				}
+				out = append(out, openAIMessage{Role: "tool", Content: rendered, ToolCallID: part.ToolCallID})
 			}
 			continue
 		}
@@ -210,6 +260,20 @@ func (openAIAdapter) buildMessages(req ChatRequest) ([]openAIMessage, bool) {
 			}
 		}
 
+		if hasCacheControl(message.Parts) {
+			parts = nil
+			for _, part := range message.Parts {
+				switch part.Kind {
+				case PartText:
+					parts = append(parts, openAITextPart{Type: "text", Text: part.Text, CacheControl: part.CacheControl})
+				case PartImage:
+					if req.Model.SupportsImages && len(part.Data) > 0 {
+						parts = append(parts, map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:" + part.MediaType + ";base64," + base64.StdEncoding.EncodeToString(part.Data)}, "cache_control": part.CacheControl})
+					}
+				}
+			}
+			text.Reset()
+		}
 		var content any
 		if len(parts) == 0 {
 			// A plain string, not a one-element array: several compatible
@@ -236,7 +300,7 @@ func (openAIAdapter) buildMessages(req ChatRequest) ([]openAIMessage, bool) {
 		// the calls after it are addressed by id, and folding two turns
 		// together would put a call and its answer on the same side.
 		if last := len(out) - 1; last >= 0 && out[last].Role == role && content != nil &&
-			len(calls) == 0 && len(out[last].ToolCalls) == 0 {
+			len(calls) == 0 && len(out[last].ToolCalls) == 0 && !requestHasCacheControl(req) {
 			out[last].Content = mergeOpenAIContent(out[last].Content, content)
 			continue
 		}
@@ -337,11 +401,10 @@ func (openAIAdapter) readOnce(response *http.Response) (Result, error) {
 	}
 
 	choice := payload.Choices[0]
-	if choice.Message.Refusal != "" {
-		return Result{Usage: usage}, &Error{Kind: ErrorRefusal, Message: choice.Message.Refusal}
-	}
-
 	reasoning, answer := splitThinking(choice.Message.Content)
+	if choice.Message.Refusal != "" {
+		return Result{Text: answer + choice.Message.Refusal, Refusal: choice.Message.Refusal, Reasoning: firstNonEmpty(choice.Message.ReasoningContent, choice.Message.Reasoning) + reasoning, Usage: usage, FinishReason: choice.FinishReason}, &Error{Kind: ErrorRefusal, Message: "The model declined to answer."}
+	}
 	result := Result{
 		Text:         answer,
 		Reasoning:    firstNonEmpty(choice.Message.ReasoningContent, choice.Message.Reasoning) + reasoning,
@@ -365,8 +428,16 @@ func (openAIAdapter) readOnce(response *http.Response) (Result, error) {
 }
 
 type openAIUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens         *int `json:"total_tokens"`
+	PromptTokens        int  `json:"prompt_tokens"`
+	CompletionTokens    int  `json:"completion_tokens"`
+	PromptTokensDetails struct {
+		CachedTokens     int `json:"cached_tokens"`
+		CacheWriteTokens int `json:"cache_write_tokens"`
+	} `json:"prompt_tokens_details"`
+	// DeepSeek uses these instead of prompt_tokens_details.
+	PromptCacheHitTokens  int `json:"prompt_cache_hit_tokens"`
+	PromptCacheMissTokens int `json:"prompt_cache_miss_tokens"`
 	// Where the reasoning cost is reported, when it is reported separately.
 	CompletionTokensDetails struct {
 		ReasoningTokens int `json:"reasoning_tokens"`
@@ -374,17 +445,36 @@ type openAIUsage struct {
 }
 
 func (u openAIUsage) toUsage() Usage {
-	return Usage{
-		InputTokens:     u.PromptTokens,
-		OutputTokens:    u.CompletionTokens,
-		ReasoningTokens: u.CompletionTokensDetails.ReasoningTokens,
+	completion := max(0, u.CompletionTokens)
+	reasoning := max(0, u.CompletionTokensDetails.ReasoningTokens)
+	cached := max(0, max(u.PromptTokensDetails.CachedTokens, u.PromptCacheHitTokens))
+	input := max(0, max(u.PromptTokens, u.PromptCacheHitTokens+u.PromptCacheMissTokens))
+	// Standard OpenAI counts reasoning inside completion. Some compatible
+	// endpoints report a separate count: their total (or reasoning exceeding
+	// completion when total is absent) identifies that additive dialect.
+	separate := reasoning > completion
+	if u.TotalTokens != nil {
+		switch *u.TotalTokens {
+		case input + completion:
+			separate = false
+		case input + completion + reasoning:
+			separate = true
+		}
 	}
+	output := completion
+	if !separate {
+		reasoning = min(reasoning, completion)
+		output -= reasoning
+	}
+	zero := u.TotalTokens != nil && *u.TotalTokens == 0 && input+completion+reasoning == 0
+	return Usage{InputTokens: input, OutputTokens: output, ReasoningTokens: reasoning, CacheReadTokens: min(cached, input), CacheCreationTokens: min(max(0, u.PromptTokensDetails.CacheWriteTokens), max(0, input-cached)), inputReported: input > 0 || zero, outputReported: completion > 0 || zero}
 }
 
 type openAIStreamChunk struct {
 	Choices []struct {
 		Delta struct {
 			Content          string                `json:"content"`
+			Refusal          string                `json:"refusal"`
 			Reasoning        string                `json:"reasoning"`
 			ReasoningContent string                `json:"reasoning_content"`
 			ToolCalls        []openAIToolCallDelta `json:"tool_calls"`
@@ -444,11 +534,15 @@ func (a *toolCallAssembly) absorb(fragments []openAIToolCallDelta) error {
 		if fragment.ID != "" {
 			a.calls[position].ID = fragment.ID
 		}
-		// Assigned rather than appended: a server that repeats the whole
-		// name on every fragment is more common than one that splits it, and
-		// appending would turn "search" into "searchsearchsearch".
-		if fragment.Function.Name != "" {
-			a.calls[position].Name = fragment.Function.Name
+		if name := fragment.Function.Name; name != "" {
+			previous := a.calls[position].Name
+			switch {
+			case name == previous:
+			case strings.HasPrefix(name, previous):
+				a.calls[position].Name = name
+			default:
+				a.calls[position].Name += name
+			}
 		}
 		if a.arguments[position].Len()+len(fragment.Function.Arguments) > MaxToolArgumentBytes {
 			return toolArgumentsTooLarge()
@@ -551,7 +645,25 @@ func (a *toolCallAssembly) continuation(fragment openAIToolCallDelta) int {
 // finish emits each assembled call, once, now that no more fragments are
 // coming.
 func (a *toolCallAssembly) finish(result *Result, sink Sink) error {
-	for position, call := range a.calls {
+	positions := make([]int, 0, len(a.calls))
+	indexes := make([]int, 0, len(a.at))
+	for index := range a.at {
+		indexes = append(indexes, index)
+	}
+	sort.Ints(indexes)
+	used := map[int]bool{}
+	for _, index := range indexes {
+		position := a.at[index]
+		positions = append(positions, position)
+		used[position] = true
+	}
+	for position := range a.calls {
+		if !used[position] {
+			positions = append(positions, position)
+		}
+	}
+	for _, position := range positions {
+		call := a.calls[position]
 		if call.Name == "" {
 			// Fragments for a call whose name never arrived. Nothing can be
 			// invoked from that, and forwarding it would have the client
@@ -595,10 +707,33 @@ func (openAIAdapter) readStream(ctx context.Context, response *http.Response, si
 		// joined from it and the field's once, in settle, rather than on every
 		// delta: joining two growing strings per delta copies both each time.
 		inlineSoFar string
+		refusal     strings.Builder
 	)
 
+	holdingTools := false
+	var held []Event
+	emitOutput := func(event Event) error {
+		if holdingTools {
+			held = append(held, event)
+			return nil
+		}
+		return sink(event)
+	}
+	releaseHeld := func() error {
+		for _, event := range held {
+			if err := sink(event); err != nil {
+				sinkErr = err
+				return err
+			}
+		}
+		held = nil
+		holdingTools = false
+		return nil
+	}
 	settle := func() {
 		result.Reasoning = fieldReasoning.String() + inlineSoFar
+		result.Refusal = refusal.String()
+		result.Text += result.Refusal
 	}
 
 	flushContent := func(final bool) error {
@@ -629,14 +764,14 @@ func (openAIAdapter) readStream(ctx context.Context, response *http.Response, si
 		if shownInline > emittedInline {
 			delta := inline[emittedInline:shownInline]
 			emittedInline = shownInline
-			if err := sink(Event{Type: EventReasoning, Text: delta}); err != nil {
+			if err := emitOutput(Event{Type: EventReasoning, Text: delta}); err != nil {
 				return err
 			}
 		}
 		if visible > emittedAnswer {
 			delta := answer[emittedAnswer:visible]
 			emittedAnswer = visible
-			if err := sink(Event{Type: EventDelta, Text: delta}); err != nil {
+			if err := emitOutput(Event{Type: EventDelta, Text: delta}); err != nil {
 				return err
 			}
 		}
@@ -645,10 +780,19 @@ func (openAIAdapter) readStream(ctx context.Context, response *http.Response, si
 		return nil
 	}
 
+	sawDone, toolsFinished := false, false
 	err := readEventStream(response.Body, func(data []byte) error {
+		if string(data) == "[DONE]" {
+			result.Usage.complete = result.Usage.outputReported
+			sawDone = true
+			return errStreamDone
+		}
 		var chunk openAIStreamChunk
 		if err := json.Unmarshal(data, &chunk); err != nil {
-			return nil
+			return malformedStream()
+		}
+		if chunk.Choices == nil && chunk.Usage == nil && chunk.XGroq.Usage == nil && chunk.Error.Message == "" {
+			return malformedStream()
 		}
 		if chunk.Error.Message != "" {
 			return &Error{Kind: ErrorUpstream, Message: redactSecret(chunk.Error.Message, secret)}
@@ -659,6 +803,9 @@ func (openAIAdapter) readStream(ctx context.Context, response *http.Response, si
 				continue
 			}
 			result.Usage = result.Usage.Merge(usage.toUsage())
+			if result.FinishReason != "" {
+				result.Usage.complete = true
+			}
 			if err := sink(Event{Type: EventUsage, Usage: result.Usage}); err != nil {
 				sinkErr = err
 				return err
@@ -669,13 +816,20 @@ func (openAIAdapter) readStream(ctx context.Context, response *http.Response, si
 		}
 
 		choice := chunk.Choices[0]
+		if toolsFinished && (len(choice.Delta.ToolCalls) > 0 || choice.Delta.Content != "" || choice.Delta.Refusal != "") {
+			return malformedStream()
+		}
+
 		if choice.FinishReason != "" {
 			result.FinishReason = choice.FinishReason
+			if chunk.Usage != nil || chunk.XGroq.Usage != nil {
+				result.Usage.complete = true
+			}
 		}
 
 		if thought := firstNonEmpty(choice.Delta.ReasoningContent, choice.Delta.Reasoning); thought != "" {
 			fieldReasoning.WriteString(thought)
-			if err := sink(Event{Type: EventReasoning, Text: thought}); err != nil {
+			if err := emitOutput(Event{Type: EventReasoning, Text: thought}); err != nil {
 				sinkErr = err
 				return err
 			}
@@ -684,17 +838,39 @@ func (openAIAdapter) readStream(ctx context.Context, response *http.Response, si
 		// Before the early return below: a tool-call frame usually carries no
 		// content at all, so reading it after that test would read none of
 		// them.
+		if len(choice.Delta.ToolCalls) > 0 {
+			holdingTools = true
+		}
 		if err := tools.absorb(choice.Delta.ToolCalls); err != nil {
 			return err
 		}
 
-		if choice.Delta.Content == "" {
-			return nil
-		}
 		content.WriteString(choice.Delta.Content)
-		if err := flushContent(false); err != nil {
+		if err := flushContent(choice.FinishReason != ""); err != nil {
 			sinkErr = err
 			return err
+		}
+		if choice.Delta.Refusal != "" {
+			refusal.WriteString(choice.Delta.Refusal)
+			if err := emitOutput(Event{Type: EventDelta, Text: choice.Delta.Refusal, Refusal: true}); err != nil {
+				sinkErr = err
+				return err
+			}
+		}
+		if choice.FinishReason != "" && !toolsFinished {
+			if err := tools.finish(&result, func(event Event) error {
+				err := sink(event)
+				if err != nil {
+					sinkErr = err
+				}
+				return err
+			}); err != nil {
+				return err
+			}
+			toolsFinished = true
+			if err := releaseHeld(); err != nil {
+				return err
+			}
 		}
 		return nil
 	})
@@ -713,6 +889,14 @@ func (openAIAdapter) readStream(ctx context.Context, response *http.Response, si
 		return result, networkError(ctx, err)
 	}
 
+	if !sawDone && result.FinishReason == "" {
+		settle()
+		return result, incompleteStream()
+	}
+	if refusal.Len() > 0 {
+		settle()
+		return result, &Error{Kind: ErrorRefusal, Message: "The model declined to answer."}
+	}
 	// Release anything held back as a possible tag prefix now that no more
 	// deltas are coming.
 	err = flushContent(true)
@@ -720,7 +904,12 @@ func (openAIAdapter) readStream(ctx context.Context, response *http.Response, si
 	if err != nil {
 		return result, err
 	}
-	if err := tools.finish(&result, sink); err != nil {
+	if !toolsFinished {
+		if err := tools.finish(&result, sink); err != nil {
+			return result, err
+		}
+	}
+	if err := releaseHeld(); err != nil {
 		return result, err
 	}
 	return result, nil
@@ -1084,7 +1273,7 @@ func emitAll(sink Sink, result Result) error {
 			return err
 		}
 	}
-	if result.Usage.Total() > 0 {
+	if result.Usage.HasUsage() {
 		if err := sink(Event{Type: EventUsage, Usage: result.Usage}); err != nil {
 			return err
 		}

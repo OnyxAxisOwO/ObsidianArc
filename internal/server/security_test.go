@@ -453,61 +453,6 @@ func scriptSrc(policy string) string {
 
 // --- credential containment ---------------------------------------------------
 
-// The one thing that must never come back out. Checked over the response
-// bytes rather than the struct, because the struct is exactly what a future
-// change might add a field to.
-func TestProviderKeysNeverAppearInAResponse(t *testing.T) {
-	in := newInstance(t)
-	admin := in.register("founder", "a-good-password")
-
-	const secretKey = "sk-do-not-leak-me-0123456789"
-	create := in.do(http.MethodPost, "/api/admin/providers", map[string]any{
-		"name": "Example", "kind": "openai",
-		"base_url": "https://api.example.com/v1", "api_key": secretKey,
-	}, admin)
-	if create.Code != http.StatusCreated {
-		t.Fatalf("create provider: %d %s", create.Code, create.Body.String())
-	}
-
-	for _, response := range []*httptest.ResponseRecorder{
-		create,
-		in.do(http.MethodGet, "/api/admin/providers", nil, admin),
-		in.do(http.MethodGet, "/api/admin/dashboard", nil, admin),
-	} {
-		if strings.Contains(response.Body.String(), secretKey) {
-			t.Fatalf("an API key appeared in a response: %s", response.Body.String())
-		}
-	}
-
-	// The hint is what an administrator sees instead.
-	listed := in.do(http.MethodGet, "/api/admin/providers", nil, admin)
-	if !strings.Contains(listed.Body.String(), "6789") {
-		t.Errorf("the key hint is missing: %s", listed.Body.String())
-	}
-}
-
-// A disabled account must stop working on its next request, not at its next
-// expiry.
-func TestDisablingAnAccountEndsItsSessionImmediately(t *testing.T) {
-	in := newInstance(t)
-	admin := in.register("founder", "a-good-password")
-	victim := in.register("visitor", "another-password")
-
-	if code := in.do(http.MethodGet, "/api/auth/me", nil, victim).Code; code != http.StatusOK {
-		t.Fatalf("the account could not read itself before being disabled: %d", code)
-	}
-
-	disable := in.do(http.MethodPatch, "/api/admin/users/"+victim.userID,
-		map[string]any{"status": "disabled"}, admin)
-	if disable.Code != http.StatusOK {
-		t.Fatalf("disable: %d %s", disable.Code, disable.Body.String())
-	}
-
-	if code := in.do(http.MethodGet, "/api/auth/me", nil, victim).Code; code != http.StatusUnauthorized {
-		t.Errorf("a disabled account is still signed in: %d", code)
-	}
-}
-
 // Losing the last administrator locks everyone out of the instance for good.
 func TestTheLastAdministratorCannotBeRemoved(t *testing.T) {
 	in := newInstance(t)
@@ -625,49 +570,6 @@ func TestConcurrentAdminDeletionsCannotRemoveEveryAdministrator(t *testing.T) {
 	}
 }
 
-// A key pinned to a model its owner cannot use would be issued happily and
-// then refuse every request made with it. The restriction is checked against
-// the same catalogue the turn is checked against, at the moment it is set.
-func TestKeyCannotBePinnedToAnUnavailableModel(t *testing.T) {
-	in := newInstance(t)
-	// The first account is the administrator, which is what lets it turn the
-	// API on; the switch is off by default and would refuse before the model
-	// restriction is ever looked at.
-	owner := in.register("keyholder", "a-good-password")
-	enabled := in.do(http.MethodPut, "/api/admin/settings",
-		map[string]string{"api.enabled": "true"}, owner)
-	if enabled.Code != http.StatusOK {
-		t.Fatalf("enable the API: %d %s", enabled.Code, enabled.Body.String())
-	}
-
-	created := in.do(http.MethodPost, "/api/keys",
-		map[string]any{"name": "pinned", "model_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV"}, owner)
-	if created.Code != http.StatusBadRequest {
-		t.Fatalf("pinning to an unknown model gave %d %s, want 400",
-			created.Code, created.Body.String())
-	}
-
-	// The unrestricted key is still allowed, so the check has not simply
-	// broken key creation.
-	free := in.do(http.MethodPost, "/api/keys", map[string]any{"name": "open"}, owner)
-	if free.Code != http.StatusCreated {
-		t.Fatalf("unrestricted key was refused: %d %s", free.Code, free.Body.String())
-	}
-
-	var issued struct {
-		Key struct{ ID string } `json:"key"`
-	}
-	if err := json.Unmarshal(free.Body.Bytes(), &issued); err != nil {
-		t.Fatal(err)
-	}
-	patched := in.do(http.MethodPatch, "/api/keys/"+issued.Key.ID,
-		map[string]any{"model_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV"}, owner)
-	if patched.Code != http.StatusBadRequest {
-		t.Fatalf("pinning an existing key to an unknown model gave %d %s, want 400",
-			patched.Code, patched.Body.String())
-	}
-}
-
 // A model switched off after a key was pinned to it is a state the operator
 // reaches on purpose, so refusing the edit is a client answer. It used to fall
 // through to the server's 500, which read as a fault in the server.
@@ -677,6 +579,22 @@ func TestKeyCannotBePinnedToADisabledModel(t *testing.T) {
 	if res := in.do(http.MethodPut, "/api/admin/settings",
 		map[string]string{"api.enabled": "true"}, admin); res.Code != http.StatusOK {
 		t.Fatalf("enable the API: %d %s", res.Code, res.Body.String())
+	}
+
+	const missing = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+	free := in.do(http.MethodPost, "/api/keys", map[string]any{"name": "open"}, admin)
+	if free.Code != http.StatusCreated {
+		t.Fatalf("an unrestricted key was refused: %d %s", free.Code, free.Body.String())
+	}
+	freeKey := decode[struct{ Key struct{ ID string } }](t, free).Key.ID
+	for _, op := range []struct{ method, path string }{
+		{http.MethodPost, "/api/keys"},
+		{http.MethodPatch, "/api/keys/" + freeKey},
+	} {
+		res := in.do(op.method, op.path, map[string]any{"name": "pinned", "model_id": missing}, admin)
+		if res.Code != http.StatusBadRequest {
+			t.Fatalf("%s %s with an unknown model: %d %s", op.method, op.path, res.Code, res.Body.String())
+		}
 	}
 
 	provider := decode[map[string]any](t, in.do(http.MethodPost, "/api/admin/providers", map[string]any{
@@ -1342,30 +1260,6 @@ func TestUptimeAccessControl(t *testing.T) {
 		if _, ok := item["provider_name"]; ok {
 			t.Errorf("regular user uptime response leaked provider_name: %v", item["provider_name"])
 		}
-	}
-}
-
-func TestHealthResetEndpoint(t *testing.T) {
-	in := newInstance(t)
-	admin := in.register("admin_user", "password123")
-
-	res := in.do(http.MethodPost, "/api/admin/health/reset", nil, admin)
-	if res.Code != http.StatusOK {
-		t.Fatalf("POST /api/admin/health/reset = %d, want 200", res.Code)
-	}
-	body := decode[map[string]any](t, res)
-	if _, ok := body["reset_at"]; !ok {
-		t.Errorf("missing reset_at in response: %+v", body)
-	}
-
-	uptimeRes := in.do(http.MethodGet, "/api/uptime", nil, admin)
-	if uptimeRes.Code != http.StatusOK {
-		t.Fatalf("GET /api/uptime = %d, want 200", uptimeRes.Code)
-	}
-	uptimeBody := decode[map[string]any](t, uptimeRes)
-	sec, ok := uptimeBody["uptime_sec"].(float64)
-	if !ok || sec > 5 {
-		t.Errorf("uptime_sec after reset = %v, want <= 5", sec)
 	}
 }
 

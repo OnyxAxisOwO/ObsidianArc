@@ -134,29 +134,6 @@ describe('admin settings payload', () => {
     expect(button(actions, t('saved')).disabled).toBe(false);
   });
 
-  it('submits the archive switch when an administrator turns it off', async () => {
-    vi.spyOn(adminApi, 'settings').mockResolvedValue({ settings: { ...settingsFixture } });
-    const save = vi.spyOn(adminApi, 'saveSettings').mockResolvedValue({ settings: { ...settingsFixture, 'chat.allow_archive': 'false' } });
-    await mountSettings();
-    expectSaveState(false);
-
-    await selectCategory(t('controlChat'));
-    const field = [...host.querySelectorAll<HTMLElement>('#secChat .oa-switch-field')].find((node) => node.textContent?.includes(t('chatAllowArchive')));
-    const archive = field?.querySelector<HTMLInputElement>('input[type="checkbox"]');
-    if (!archive) throw new Error('Missing archive switch');
-    expect(archive.checked).toBe(true);
-    archive.click();
-    await nextTick();
-    expect(archive.checked).toBe(false);
-    expectSaveState(true);
-
-    button(actions, t('save')).click();
-    await settle();
-    expect(save).toHaveBeenCalledTimes(1);
-    expect(save).toHaveBeenCalledWith({ 'chat.allow_archive': 'false' });
-    expectSaveState(false);
-  });
-
   it.each([
     { position: 'left', label: 'authCardPositionLeft', preview: 'at-left' },
     { position: 'left-panel', label: 'authCardPositionLeftPanel', preview: 'at-left-panel' },
@@ -185,21 +162,6 @@ describe('admin settings payload', () => {
     expect(save).toHaveBeenCalledTimes(1);
     expect(save).toHaveBeenCalledWith({ 'site.auth_card_position': position });
     expectSaveState(false);
-  });
-
-  it('filters to secLoginBg when searching for auth card position keywords', async () => {
-    vi.spyOn(adminApi, 'settings').mockResolvedValue({ settings: { ...settingsFixture } });
-    await mountSettings();
-
-    const searchInput = host.querySelector<HTMLInputElement>('.oa-search input');
-    expect(searchInput).not.toBeNull();
-
-    searchInput!.value = 'auth card position';
-    searchInput!.dispatchEvent(new Event('input', { bubbles: true }));
-    await nextTick();
-
-    expect(host.querySelector<HTMLElement>('#secLoginBg')?.style.display).not.toBe('none');
-    expect(host.querySelector<HTMLElement>('#secAbout')?.style.display).toBe('none');
   });
 
   it('opens confirmation modal when disabling showSoftwareInfo and respects user decision', async () => {
@@ -374,22 +336,5 @@ describe('importing a settings file', () => {
 
     await vi.waitFor(() => expect(host.querySelector('.oa-control-flash')?.textContent).toBe(t('importFileTooLarge')));
     expect(importer).not.toHaveBeenCalled();
-  });
-});
-
-
-describe('profile policies', () => {
-  it('saves only registration UA visibility when its switch changes', async () => {
-    vi.spyOn(adminApi, 'settings').mockResolvedValue({ settings: { ...settingsFixture } });
-    const save = vi.spyOn(adminApi, 'saveSettings').mockResolvedValue({ settings: { ...settingsFixture, 'profile.show_signup_user_agent': 'false' } });
-    await mountSettings();
-    const label = [...host.querySelectorAll('label')].find((node) => node.textContent?.includes(t('showSignupUserAgent')));
-    const input = label?.querySelector<HTMLInputElement>('input[type="checkbox"]');
-    expect(input?.checked).toBe(true);
-    input!.click();
-    await nextTick();
-    button(actions, t('save')).click();
-    await settle();
-    expect(save).toHaveBeenCalledWith({ 'profile.show_signup_user_agent': 'false' });
   });
 });

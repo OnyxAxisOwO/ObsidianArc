@@ -146,7 +146,9 @@ func (w *gzipWriter) Write(b []byte) (int, error) {
 // not: a gzipWriter wraps the response of any client that sent
 // Accept-Encoding, whatever type comes back, so this is the flush the chat
 // and the API both depend on.
-func (w *gzipWriter) Flush() {
+func (w *gzipWriter) Flush() { _ = w.FlushError() }
+
+func (w *gzipWriter) FlushError() error {
 	// A flush before any status sends the headers, so the compression decision
 	// has to be made first: once they are on the wire, Content-Encoding can no
 	// longer be added and a gzip body would reach the client unlabelled.
@@ -154,7 +156,9 @@ func (w *gzipWriter) Flush() {
 		w.WriteHeader(http.StatusOK)
 	}
 	if w.on {
-		_ = w.gz.Flush()
+		if err := w.gz.Flush(); err != nil {
+			return err
+		}
 	}
 	// Through the controller rather than a type assertion on the writer
 	// directly beneath, because in the live chain that writer is the access
@@ -167,7 +171,7 @@ func (w *gzipWriter) Flush() {
 	// It only ever bit a client that sends Accept-Encoding, since nothing
 	// else is wrapped at all: every browser and every agent's HTTP library
 	// does, and plain curl does not, which is why hand-testing never saw it.
-	_ = http.NewResponseController(w.ResponseWriter).Flush()
+	return http.NewResponseController(w.ResponseWriter).Flush()
 }
 
 // Unwrap keeps http.ResponseController and Committed working through this

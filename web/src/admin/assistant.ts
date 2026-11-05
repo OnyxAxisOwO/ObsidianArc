@@ -1,3 +1,4 @@
+import { sessionRevision } from '@/api/session-ended';
 import { computed, ref } from 'vue';
 import { ApiError, BACKOFFICE_LOCKED, fetchApi, noteBackofficeRefusal, noteSessionEnded } from '@/api/client';
 import type { ConsoleExecHandlers, ConsoleExecRequest, ConsoleExecDone } from '@/api/console';
@@ -192,6 +193,7 @@ export function createAssistantSession() {
     if (!approve) {
       settle(action, 'skipped', t('assistantSkipped'), thread);
     } else {
+      const session = sessionRevision();
       const abort = new AbortController();
       controller = abort;
       busy.value = true;
@@ -208,7 +210,7 @@ export function createAssistantSession() {
             terminal = true; verdict = result.ok ? 'done' : 'failed';
             verification = requiresVerification(result.code);
             noteBackofficeRefusal(result.code);
-            noteSessionEnded(result.code);
+            noteSessionEnded(result.code, session);
             if (result.code === 'two_factor_backoffice') window.dispatchEvent(new Event(BACKOFFICE_LOCKED));
           },
           onError(result) { output += `\n${result.message}`; verification = requiresVerification(result.code); },

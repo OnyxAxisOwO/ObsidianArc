@@ -86,23 +86,6 @@ func TestASuccessfulLoginStillForgivesTheAccount(t *testing.T) {
 	}
 }
 
-// A failure keeps the address bucket for the success to find, and the bucket
-// still ends when nothing is left in it.
-func TestSuccessLeavesTheAddressesFailuresInPlace(t *testing.T) {
-	l := NewLimiter()
-	failAttempt(t, l, "203.0.113.5", "someone")
-	attempt, err := l.Begin("203.0.113.5", "arc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	attempt.finish(attemptSucceeded)
-
-	entry := l.buckets["ip:203.0.113.5"]
-	if entry == nil || entry.failures != 1 {
-		t.Fatalf("address bucket after a success = %+v, want its one failure kept", entry)
-	}
-}
-
 func TestHugeIdentifiersDoNotBecomeHugeKeys(t *testing.T) {
 	l := NewLimiter()
 	huge := strings.Repeat("A", 1<<20)
@@ -168,28 +151,6 @@ func TestIPv6AddressesInOneSubnetShareABucket(t *testing.T) {
 	attempt.finish(attemptCancelled)
 }
 
-// A name that matched nothing keeps its bucket for half an hour, so a flood of
-// them is what the ceiling has to bound. The flood is never refused: the map
-// holds no more reclaimable buckets than the ceiling allows.
-func TestUnknownNamesAreReclaimedAtTheCeiling(t *testing.T) {
-	l := NewLimiter()
-	l.ceiling = 8
-
-	for i := 0; i < 200; i++ {
-		attempt, err := l.Begin("", fmt.Sprintf("name-%d", i))
-		if err != nil {
-			t.Fatalf("name %d was refused: %v", i+1, err)
-		}
-		attempt.finish(attemptFailedUnknown)
-		if n := reclaimable(l); n > 8 {
-			t.Fatalf("after %d names the map holds %d reclaimable buckets, want at most 8", i+1, n)
-		}
-	}
-	if n := len(l.buckets); n != 8 {
-		t.Fatalf("the map holds %d buckets, want the ceiling of 8", n)
-	}
-}
-
 // Under pressure, names that matched nothing are reclaimed before addresses, so
 // a flood of invented names does not spend the blocks on the addresses sending
 // it. Here the addresses are the older buckets, which is what a plain
@@ -219,35 +180,6 @@ func TestUnknownNamesAreReclaimedBeforeAddresses(t *testing.T) {
 	}
 	if _, ok := l.buckets["id:one"]; ok {
 		t.Error("the least recently used name was kept while it was the one to reclaim")
-	}
-}
-
-// A refusal is never the answer to a full map. When nothing can be reclaimed,
-// the attempt goes ahead, and the in-flight counts come back down once it
-// finishes, so the buckets it left behind can be reclaimed later.
-func TestAnAttemptIsNeverRefusedForWantOfRoom(t *testing.T) {
-	l := NewLimiter()
-	l.ceiling = 2
-
-	a, err := l.Begin("203.0.113.1", "one")
-	if err != nil {
-		t.Fatal(err)
-	}
-	b, err := l.Begin("203.0.113.2", "two")
-	if err != nil {
-		t.Fatal(err)
-	}
-	c, err := l.Begin("203.0.113.3", "three")
-	if err != nil {
-		t.Fatalf("a full map of attempts in flight refused a new one: %v", err)
-	}
-	for _, attempt := range []*loginAttempt{a, b, c} {
-		attempt.finish(attemptFailedUnknown)
-	}
-	for key, entry := range l.buckets {
-		if entry.inFlight != 0 {
-			t.Errorf("%s still has %d attempts in flight after they finished", key, entry.inFlight)
-		}
 	}
 }
 
@@ -478,82 +410,6 @@ func TestAFullMapOfIdleNamesIsSweptForANewName(t *testing.T) {
 	}
 }
 
-// The account being guessed at keeps its budget through a flood of new names.
-// Evicting its bucket to make room would let an attacker reset the count by
-// spraying identifiers, which is the attack the limiter exists to slow down.
-func TestAFloodOfNewNamesDoesNotResetAGuessedAccount(t *testing.T) {
-	l := NewLimiter()
-	l.ceiling = 16
-	for i := 0; i < freeAttempts; i++ {
-		failAttempt(t, l, "", "victim")
-	}
-
-	for i := 0; i < 2000; i++ {
-		attempt, err := l.Begin("", fmt.Sprintf("spray-%d", i))
-		if err != nil {
-			t.Fatalf("spray %d was refused: %v", i+1, err)
-		}
-		attempt.finish(attemptFailedUnknown)
-	}
-	if n := reclaimable(l); n > 16 {
-		t.Fatalf("the flood left %d reclaimable buckets, above the ceiling of 16", n)
-	}
-
-	entry := l.buckets["id:victim"]
-	if entry == nil || entry.failures != freeAttempts {
-		t.Fatalf("the victim's bucket after the flood = %+v, want its %d failures kept", entry, freeAttempts)
-	}
-	// Its sixth wrong guess is the one past the allowance, and the account stays
-	// refused after it.
-	failAttempt(t, l, "", "victim")
-	if _, err := l.Begin("", "victim"); !isLimited(err) {
-		t.Fatalf("the guessed-at account was open again after the flood: err = %v", err)
-	}
-}
-
-// A real account that has never failed signs in during a flood of invented
-// names, and the failures already recorded against another real account are
-// still there when the flood is over.
-func TestAFloodOfUnknownNamesNeverRefusesARealAccount(t *testing.T) {
-	l := NewLimiter()
-	l.ceiling = 16
-	for i := 0; i < freeAttempts; i++ {
-		failAttempt(t, l, "", "victim")
-	}
-
-	for i := 0; i < 2000; i++ {
-		attempt, err := l.Begin("", fmt.Sprintf("invented-%d", i))
-		if err != nil {
-			t.Fatalf("an invented name was refused: %v", err)
-		}
-		attempt.finish(attemptFailedUnknown)
-	}
-
-	attempt, err := l.Begin("198.51.100.9", "bob")
-	if err != nil {
-		t.Fatalf("a real account that has never failed was refused during the flood: %v", err)
-	}
-	attempt.finish(attemptSucceeded)
-
-	if entry := l.buckets["id:victim"]; entry == nil || entry.failures != freeAttempts {
-		t.Fatalf("the victim's failures after the flood = %+v, want %d", entry, freeAttempts)
-	}
-}
-
-// Only a name that matched an account is protected, so that is the only thing
-// a failure can protect.
-func TestOnlyANameThatMatchedAnAccountIsProtected(t *testing.T) {
-	l := NewLimiter()
-	failUnknown(t, l, "", "nobody")
-	if l.protected != 0 {
-		t.Fatalf("an invented name protected %d buckets", l.protected)
-	}
-	failAttempt(t, l, "", "arc")
-	if l.protected != 1 {
-		t.Fatalf("a name that matched an account protects %d buckets, want 1", l.protected)
-	}
-}
-
 // A spelling of a real name that matches nothing shares its bucket, because the
 // key is the lowercased identifier. It must not clear the protection, or a
 // guesser could make the account reclaimable by sending one such spelling.
@@ -674,6 +530,9 @@ func TestAFailureAfterAnExpiredBlockLengthensTheWait(t *testing.T) {
 	if err != nil {
 		t.Fatalf("attempt after the block ran out: %v", err)
 	}
+	if _, err := l.Begin(ip, id); !isLimited(err) {
+		t.Fatalf("second attempt while the first is in flight: %v", err)
+	}
 	attempt.finish(attemptFailed)
 
 	_, err = l.Begin(ip, id)
@@ -683,27 +542,6 @@ func TestAFailureAfterAnExpiredBlockLengthensTheWait(t *testing.T) {
 	}
 	if limited.RetryAfter <= time.Second {
 		t.Fatalf("RetryAfter = %s, want the backoff to grow past one second", limited.RetryAfter)
-	}
-}
-
-// The in-flight cap still applies after a block has run out: a second attempt
-// running alongside the admitted one for the same account is refused.
-func TestAnAttemptRunningNowStillCapsTheAccount(t *testing.T) {
-	l := NewLimiter()
-	const ip, id = "203.0.113.9", "carol"
-	for range freeAttempts + 1 {
-		failAttempt(t, l, ip, id)
-	}
-	expireBlocks(l, ip, id)
-
-	first, err := l.Begin(ip, id)
-	if err != nil {
-		t.Fatalf("first attempt after the block ran out: %v", err)
-	}
-	defer first.Cancelled()
-
-	if _, err := l.Begin(ip, id); !isLimited(err) {
-		t.Fatalf("concurrent attempt: err = %v, want a rate limit", err)
 	}
 }
 

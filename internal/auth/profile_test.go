@@ -50,12 +50,12 @@ func TestAnAddressChangedInTheProfileIsHeldToTheAllowlist(t *testing.T) {
 		t.Fatalf("register: %v", err)
 	}
 
-	_, err = f.auth.UpdateProfile(ctx, account.ID, user.ProfileUpdate{
-		Email: ptr("member@elsewhere.test"),
-	}, "a-good-password")
-	var domain *EmailDomainError
-	if !errors.As(err, &domain) {
-		t.Fatalf("err = %v, want the domain refusal", err)
+	for _, email := range []string{"member@elsewhere.test", "member@evil-example.com", "member@example.com.evil.test"} {
+		_, err = f.auth.UpdateProfile(ctx, account.ID, user.ProfileUpdate{Email: &email}, "a-good-password")
+		var domain *EmailDomainError
+		if !errors.As(err, &domain) {
+			t.Fatalf("moving to %q: %v, want the domain refusal", email, err)
+		}
 	}
 
 	after, err := f.users.ByID(ctx, nil, account.ID)
@@ -64,6 +64,9 @@ func TestAnAddressChangedInTheProfileIsHeldToTheAllowlist(t *testing.T) {
 	}
 	if after.Email != "member@example.com" {
 		t.Errorf("address = %q, want the refused change not to have landed", after.Email)
+	}
+	if _, err := f.auth.UpdateProfile(ctx, account.ID, user.ProfileUpdate{Email: ptr("other@EXAMPLE.COM")}, "a-good-password"); err != nil {
+		t.Fatalf("an allowed domain in capitals was refused: %v", err)
 	}
 }
 
@@ -145,43 +148,6 @@ func TestChangingAnAddressWithdrawsItsConfirmation(t *testing.T) {
 	}
 	if address != "someone-else@example.com" {
 		t.Errorf("link was issued for %q, want the new address", address)
-	}
-}
-
-// The sequence that used to leave email and email_lower disagreeing: ask for
-// a link, move on, then open the old one. It cannot happen now — the change
-// drops what is outstanding — and this is the test that says so.
-func TestALinkDoesNotSurviveTheAddressItWasIssuedFor(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-	verifying(t, f)
-
-	account, _, err := f.auth.Register(ctx, RegisterInput{
-		Username: "founder", Email: "first@example.com", Password: "a-good-password",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	token, err := f.auth.issueVerification(ctx, f.db, account.ID, "first@example.com")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := f.auth.UpdateProfile(ctx, account.ID, user.ProfileUpdate{
-		Email: ptr("second@example.com"),
-	}, "a-good-password"); err != nil {
-		t.Fatalf("change address: %v", err)
-	}
-
-	if _, err := f.auth.Verify(ctx, token); !errors.Is(err, ErrVerificationInvalid) {
-		t.Fatalf("stale link err = %v, want ErrVerificationInvalid", err)
-	}
-	after, err := f.users.ByID(ctx, nil, account.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if after.Email != "second@example.com" {
-		t.Errorf("address = %q, want the one the account moved to", after.Email)
 	}
 }
 

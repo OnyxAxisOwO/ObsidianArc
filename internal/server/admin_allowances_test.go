@@ -89,6 +89,17 @@ func TestAdminAllowancesListsTheTightestFirst(t *testing.T) {
 	if got := decode[listing](t, in.do(http.MethodGet, "/api/admin/usage/allowances?limit=1&offset=1", nil, admin)); len(got.Rows) != 1 || got.Rows[0].Username != "nearly" || got.Total != 4 {
 		t.Errorf("second page = %+v (total %d), want nearly of 4", got.Rows, got.Total)
 	}
+	reset := in.do(http.MethodPost, "/api/admin/usage/reset", map[string]any{
+		"scope": "user", "id": people["nearly"].userID,
+	}, admin)
+	if reset.Code != http.StatusOK {
+		t.Fatalf("reset allowance: %d %s", reset.Code, reset.Body.String())
+	}
+	after := decode[listing](t, in.do(http.MethodGet, "/api/admin/usage/allowances", nil, admin))
+	if len(after.Rows) != 4 || after.Rows[2].Username != "nearly" || after.Rows[2].Pressure == nil || *after.Rows[2].Pressure != 0 {
+		t.Fatalf("allowances after resetting nearly: %+v", after.Rows)
+	}
+
 	if res := in.do(http.MethodGet, "/api/admin/usage/allowances?state=bogus", nil, admin); res.Code != http.StatusBadRequest {
 		t.Errorf("unknown state: %d, want 400", res.Code)
 	}

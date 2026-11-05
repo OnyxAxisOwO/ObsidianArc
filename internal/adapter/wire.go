@@ -299,7 +299,11 @@ func post(
 	// The headers are here, so the provider is answering. Everything from now
 	// on is the caller's to bound, and the deadline is handed to the body so
 	// closing the response releases it.
-	return limitResponse(done(response, nil)), nil
+	response = done(response, nil)
+	if p.StreamIdleTimeout > 0 && strings.Contains(strings.ToLower(response.Header.Get("Content-Type")), "text/event-stream") {
+		response.Body = &idleBody{ReadCloser: response.Body, timeout: p.StreamIdleTimeout}
+	}
+	return limitResponse(response), nil
 }
 
 // providerTimedOut is the error for a provider that did not start answering
@@ -364,6 +368,22 @@ func providerDeadline(ctx context.Context, p Provider) (
 		response.Body = &cancelOnClose{ReadCloser: response.Body, cancel: cancel}
 		return response
 	}
+}
+
+type idleBody struct {
+	io.ReadCloser
+	timeout time.Duration
+}
+
+func (b *idleBody) Read(p []byte) (int, error) {
+	var fired atomic.Bool
+	timer := time.AfterFunc(b.timeout, func() { fired.Store(true); _ = b.ReadCloser.Close() })
+	n, err := b.ReadCloser.Read(p)
+	timer.Stop()
+	if fired.Load() {
+		return n, &Error{Kind: ErrorNetwork, Message: "The provider's stream was idle beyond its configured timeout."}
+	}
+	return n, err
 }
 
 // cancelOnClose releases a request context when the caller is finished with
@@ -440,53 +460,108 @@ func readErrorBody(response *http.Response) []byte {
 
 // --- server-sent events -----------------------------------------------------
 
-// readEventStream walks an SSE response, handing each `data:` payload to fn.
-//
-// Hand-rolled because both protocols use only the `data` field of the format,
-// and because the framing needs to tolerate `\r\n` as well as `\n`: some
-// proxies rewrite line endings, and a parser that only knows about `\n` sees
-// one enormous never-ending event.
-//
-// Returning an error from fn stops the read, which is how a disconnected
-// client ends an upstream generation.
-//
-// The slice fn receives is the scanner's own buffer, reused for the next line,
-// so fn must decode it before returning and must not keep it.
-func readEventStream(body io.Reader, fn func(data []byte) error) error {
-	// The scanner's buffer bounds one event; what bounds how many a provider
-	// may send is the limit on the response body, put there by post.
-	scanner := bufio.NewScanner(body)
-	// A single event can carry a large reasoning delta; the default 64 KiB
-	// ceiling is not enough for every provider.
-	scanner.Buffer(make([]byte, 0, 16*1024), 1024*1024)
+func sseLines() bufio.SplitFunc {
+	skipLF := false
+	return func(data []byte, atEOF bool) (int, []byte, error) {
+		if skipLF && len(data) > 0 {
+			skipLF = false
+			if data[0] == '\n' {
+				return 1, nil, nil
+			}
+		}
+		for i, c := range data {
+			if c == '\n' {
+				return i + 1, data[:i], nil
+			}
+			if c == '\r' {
+				advance := i + 1
+				if advance < len(data) && data[advance] == '\n' {
+					advance++
+				} else if advance == len(data) {
+					skipLF = true
+				}
+				return advance, data[:i], nil
+			}
+		}
+		if atEOF && len(data) > 0 {
+			return len(data), data, nil
+		}
+		return 0, nil, nil
+	}
+}
 
+var errStreamDone = errors.New("adapter: stream complete")
+
+func malformedStream() *Error {
+	return &Error{Kind: ErrorUpstream, Message: "The provider sent a malformed stream event."}
+}
+func incompleteStream() *Error {
+	return &Error{Kind: ErrorUpstream, Message: "The answer stopped before it finished."}
+}
+
+// SSE joins data lines until the blank line ending an event. Comments are
+// keepalives, not JSON, and must not be confused with damaged data frames.
+func readEventStream(body io.Reader, fn func(data []byte) error) error {
+	const maxEventBytes = 1024 * 1024
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 0, 16*1024), maxEventBytes)
+	scanner.Split(sseLines())
+	firstLine := true
+	var data []byte
+	dispatch := func() error {
+		if len(data) == 0 {
+			return nil
+		}
+		payload := bytes.TrimSpace(data[:len(data)-1])
+		if len(payload) == 0 {
+			data = data[:0]
+			return nil
+		}
+		err := fn(payload)
+		data = data[:0]
+		return err
+	}
 	for scanner.Scan() {
-		line := bytes.TrimRight(scanner.Bytes(), "\r")
-		if len(line) == 0 || line[0] == ':' {
+		line := scanner.Bytes()
+		if firstLine {
+			line = bytes.TrimPrefix(line, []byte{0xef, 0xbb, 0xbf})
+			firstLine = false
+		}
+		if len(line) == 0 {
+			if err := dispatch(); err != nil {
+				if errors.Is(err, errStreamDone) {
+					return nil
+				}
+				return err
+			}
 			continue
 		}
-		data, found := bytes.CutPrefix(line, []byte("data:"))
-		if !found {
-			// `event:` and `id:` lines carry nothing either protocol needs;
-			// the payload itself names its own type.
+		if line[0] == ':' {
 			continue
 		}
-		trimmed := bytes.TrimSpace(data)
-		if len(trimmed) == 0 || string(trimmed) == "[DONE]" {
+		value, found := bytes.CutPrefix(line, []byte("data:"))
+		if !found && string(line) != "data" {
 			continue
 		}
-		if err := fn(trimmed); err != nil {
-			return err
+		value = bytes.TrimPrefix(value, []byte(" "))
+		if len(data)+len(value)+1 > maxEventBytes {
+			return &Error{Kind: ErrorUpstream, Message: "The provider sent one event larger than this server reads."}
 		}
+		data = append(data, value...)
+		data = append(data, '\n')
 	}
-	// A line past the buffer is the provider's frame being larger than this
-	// reader takes, not the connection failing. Reported as a network error it
-	// reads as an unreachable provider, which is retryable and untrue.
-	err := scanner.Err()
-	if errors.Is(err, bufio.ErrTooLong) {
-		return &Error{Kind: ErrorUpstream, Message: "The provider sent one event larger than this server reads."}
+	if err := scanner.Err(); err != nil {
+		if errors.Is(err, bufio.ErrTooLong) {
+			return &Error{Kind: ErrorUpstream, Message: "The provider sent one event larger than this server reads."}
+		}
+		return err
 	}
-	return err
+	// Some compatible endpoints omit the final blank line. Dispatch that last
+	// event, but the protocol reader still requires a completion marker.
+	if err := dispatch(); err != nil && !errors.Is(err, errStreamDone) {
+		return err
+	}
+	return nil
 }
 
 // --- inline reasoning --------------------------------------------------------

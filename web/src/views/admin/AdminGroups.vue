@@ -52,6 +52,7 @@ const loaded = ref(false);
 
 const { open: panelOpen, panel, key: panelKey, show: showPanel, hide: hidePanel, closed: panelClosed } = usePanelSlot();
 const existing = ref<Group | null>(null);
+let panelRevision = 0;
 const busy = ref(false);
 const panelError = ref('');
 const nameField = ref<InstanceType<typeof OaTextField> | null>(null);
@@ -125,6 +126,7 @@ function limitBadges(policy: QuotaPolicy): string[] {
 }
 
 function open(row: Group | null): void {
+  panelRevision++;
   busy.value = false;
   existing.value = row;
   panelError.value = '';
@@ -183,6 +185,7 @@ function open(row: Group | null): void {
  * than the page being mounted again — which put the reader back at the top.
  */
 function finish(): void {
+  panelRevision++;
   hidePanel();
   void load();
 }
@@ -225,6 +228,18 @@ async function save(): Promise<void> {
   busy.value = true;
   panelError.value = '';
   const wasCreating = creating.value;
+  const revision = panelRevision;
+  const targetID = existing.value?.id;
+  const quota = {
+    rpm: form.value.rpm,
+    tpm: form.value.tpm,
+    windows: Object.fromEntries(WINDOWS.map((kind) => [kind, {
+      enabled: form.value.windows[kind].enabled ? true : null,
+      requests: windowFigure(form.value.windows[kind].requests),
+      tokens: windowFigure(form.value.windows[kind].tokens),
+      credits: windowFigure(form.value.windows[kind].credits),
+    }])),
+  };
   try {
     const modelGrants = form.value.allowAll
       ? []
@@ -250,27 +265,25 @@ async function save(): Promise<void> {
 
     const saved = wasCreating
       ? (await adminApi.createGroup(payload)).group
-      : (await adminApi.updateGroup(existing.value!.id, payload)).group;
+      : (await adminApi.updateGroup(targetID!, payload)).group;
     // Once created, a retry must update this group. Creating it again would
     // be refused by the unique name index, and the group would be left with
     // no quota policy and no way back to it from this panel.
-    if (wasCreating) existing.value = saved;
+    if (wasCreating && revision === panelRevision) existing.value = saved;
 
     await adminApi.savePolicy({
       scope: 'group',
       scope_id: saved.id,
-      rpm: form.value.rpm,
-      tpm: form.value.tpm,
-      windows: Object.fromEntries(WINDOWS.map((kind) => [kind, {
-        enabled: form.value.windows[kind].enabled ? true : null,
-        requests: windowFigure(form.value.windows[kind].requests),
-        tokens: windowFigure(form.value.windows[kind].tokens),
-        credits: windowFigure(form.value.windows[kind].credits),
-      }])),
+      ...quota,
     });
 
-    finish();
+    if (revision === panelRevision) finish();
+    else void load();
   } catch (failure) {
+    if (revision !== panelRevision) {
+      void load();
+      return;
+    }
     busy.value = false;
     panelError.value = failureText(failure);
     // A group created before the policy failed is in the table now, and the
@@ -366,7 +379,7 @@ onMounted(load);
     :width="460"
     :busy="busy"
     :error="panelError"
-    @close="panelClosed"
+    @close="panelRevision++; panelClosed()"
     @confirm="save"
     @destructive="remove"
   >
