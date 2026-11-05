@@ -105,7 +105,7 @@ DEPLOY_DIR  ?= /data/obsidian-arc
 # deploy refuses otherwise (see scripts/deploy.sh).
 DROP_PLUGINS ?=
 
-.PHONY: all build web web-ci server run dev test test-full vet fmt typecheck web-test clean docker version docs docs-dev release package deploy
+.PHONY: all build web web-ci server run dev test test-go test-race test-full vet fmt typecheck web-test clean docker version docs docs-dev release package deploy
 
 all: build
 
@@ -159,7 +159,9 @@ dev:
 ## — no install — because a bundle on disk means the packages are already
 ## there, and an install is what would rewrite the lockfile. CI builds fresh,
 ## so nothing is newer than its bundle and this does not fire there either.
-test: vet
+test: test-go web-test
+
+test-go: vet
 	@test -d internal/web/dist/assets || $(MAKE) web
 	@if [ -n "$$(find web/src web/index.html web/vite.config.ts web/package.json -newer internal/web/dist/index.html -print 2>/dev/null | head -n 1)" ]; then \
 		echo "internal/web/dist is older than web/src: rebuilding"; \
@@ -167,16 +169,16 @@ test: vet
 	fi
 	sh scripts/deploy_test.sh
 	go test -p 4 ./...
-	npm --prefix web run test
 
 ## test-full: CI gate, including the slower Vue template typecheck
 ##
 ## Run the plugin concurrency scenarios again under the race detector.
 ## Name new plugin tests that exercise overlapping calls TestConcurrent…
 ## so they run here as well as in the ordinary suite.
-test-full: test
+test-full: test test-race typecheck
+
+test-race:
 	go test -race -count=1 -run '^TestConcurrent' ./internal/plugin ./internal/plugin/wasm
-	npm --prefix web run typecheck
 
 vet:
 	go vet ./...
