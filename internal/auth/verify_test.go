@@ -810,12 +810,8 @@ func TestFailedResendKeepsTheOldLinkAndAllowsImmediateRetry(t *testing.T) {
 func TestParallelResendsLeaveWithOneLink(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
-	verifying(t, f)
-	if err := f.settings.Set(ctx, settings.VerifyEmail, "true"); err != nil {
-		t.Fatal(err)
-	}
-	// The first account is exempt from verification, so it goes first and
-	// "later" is the account this is about.
+	// Create the account before enabling verification: registration sends mail
+	// asynchronously and could otherwise consume the relay held for the resend.
 	if _, _, err := f.auth.Register(ctx, RegisterInput{
 		Username: "founder", Password: "a-good-password",
 	}); err != nil {
@@ -827,12 +823,11 @@ func TestParallelResendsLeaveWithOneLink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Registration's own link would throttle the first resend, and this is
-	// about the window being open rather than about that one being closed.
 	if _, err := f.db.Exec(ctx,
-		`DELETE FROM email_verifications WHERE user_id = ?`, account.ID); err != nil {
+		`UPDATE users SET email_verified = ? WHERE id = ?`, false, account.ID); err != nil {
 		t.Fatal(err)
 	}
+	verifying(t, f)
 	reachedMail, releaseMail := holdVerificationMail(t, f)
 
 	const attempts = 8
