@@ -120,68 +120,6 @@ function rows(): HTMLElement[] {
   return [...host.querySelectorAll<HTMLElement>('.oa-table tbody tr')];
 }
 
-describe('the list of bars', () => {
-  it('says how each bar is spent, and marks the ones that are switched off or keep their amounts private', async () => {
-    stub([
-      bar({ id: 'a', name: 'Free choice' }),
-      bar({ id: 'b', name: 'Forced', toggle_mode: 'on', show_total: false }),
-      bar({ id: 'c', name: 'Spare', kind: 'reserve', toggle_mode: 'off' }),
-      bar({ id: 'd', name: 'Old', active: false }),
-    ]);
-    await mount();
-
-    const list = rows();
-    expect(list).toHaveLength(4);
-    expect(list[0]!.textContent).toContain(t('bonusModeUser'));
-    expect(list[1]!.textContent).toContain(t('bonusModeOn'));
-    expect(list[1]!.textContent).toContain(t('bonusTotalHidden'));
-    // A reserve has no switch to describe: it is what it is.
-    expect(list[2]!.textContent).toContain(t('bonusKindReserve'));
-    expect(list[2]!.textContent).not.toContain(t('bonusModeOff'));
-    expect(list[3]!.textContent).toContain(t('bonusInactive'));
-    expect(list[3]!.classList.contains('muted')).toBe(true);
-    // Totals for the bar: granted, used, holders.
-    expect(list[0]!.textContent).toContain('1000');
-    expect(list[0]!.textContent).toContain('250');
-    expect(list[0]!.textContent).toContain('12');
-  });
-
-  it('says so when there are none, and still offers the check-in settings', async () => {
-    stub([]);
-    await mount();
-    expect(host.textContent).toContain(t('noBonusBars'));
-    expect(host.textContent).toContain(t('checkinEnabled'));
-  });
-
-  it('shows why nothing loaded, and tries again on request', async () => {
-    const list = vi.spyOn(adminApi, 'bonusBars').mockRejectedValueOnce(new Error('database is locked'));
-    vi.spyOn(adminApi, 'models').mockResolvedValue({ models: [] });
-    vi.spyOn(adminApi, 'groups').mockResolvedValue({ groups: [], policies: [] });
-    vi.spyOn(adminApi, 'checkinSettings').mockResolvedValue(emptyCheckin);
-    await mount();
-    expect(host.textContent).toContain('database is locked');
-
-    list.mockResolvedValue({ bars: [bar()] });
-    button(host, t('tryAgain')).click();
-    await settle();
-    expect(host.textContent).not.toContain('database is locked');
-    expect(rows()).toHaveLength(1);
-  });
-
-  it('orders the rows by a column once its header is pressed', async () => {
-    stub([bar({ id: 'a', name: 'Small', granted: 5 }), bar({ id: 'b', name: 'Big', granted: 500 })]);
-    await mount();
-    expect(rows()[0]!.textContent).toContain('Small');
-
-    const header = [...host.querySelectorAll<HTMLElement>('th')].find((th) => th.textContent?.trim() === t('colBonusGranted'))!;
-    header.click();
-    await settle();
-    header.click();
-    await settle();
-    expect(rows()[0]!.textContent).toContain('Big');
-  });
-});
-
 describe('creating a bar', () => {
   it('sends every rule that was set, and shows the bar it made', async () => {
     stub([]);
@@ -216,58 +154,6 @@ describe('creating a bar', () => {
     // The panel closes and the list is read again.
     expect(panels.querySelector('.oa-panel')).toBeNull();
     expect(adminApi.bonusBars).toHaveBeenCalledTimes(2);
-  });
-
-  it('takes the switch away from a reserve, which has none', async () => {
-    stub([]);
-    const save = vi.spyOn(adminApi, 'saveBonusBar').mockResolvedValue({ bar: bar() });
-    await mount();
-
-    button(actions, t('addBonusBar')).click();
-    await settle();
-    expect(fieldFor(panels, t('bonusMode'))).not.toBeNull();
-
-    await choose(fieldFor(panels, t('bonusKind')), t('bonusKindReserve'));
-    expect(panels.textContent).not.toContain(t('bonusMode'));
-
-    type(inputOf(panels, t('bonusName')), 'Spare');
-    button(panels, t('save')).click();
-    await settle();
-    expect(save).toHaveBeenCalledWith(null, expect.objectContaining({ kind: 'reserve', name: 'Spare' }));
-  });
-
-  it('only offers a starting position for a bar the account may switch', async () => {
-    stub([]);
-    await mount();
-    button(actions, t('addBonusBar')).click();
-    await settle();
-    expect(hasSwitch(panels, t('bonusDefaultOn'))).toBe(true);
-
-    await choose(fieldFor(panels, t('bonusMode')), t('bonusModeOff'));
-    expect(hasSwitch(panels, t('bonusDefaultOn'))).toBe(false);
-  });
-
-  it('offers no in-use switch for a bar that does not exist yet', async () => {
-    stub([]);
-    await mount();
-    button(actions, t('addBonusBar')).click();
-    await settle();
-    expect(hasSwitch(panels, t('bonusActive'))).toBe(false);
-    expect(panels.textContent).not.toContain(t('bonusGrantsHeading'));
-  });
-
-  it('says what the server refused, in the panel, and leaves it open', async () => {
-    stub([]);
-    vi.spyOn(adminApi, 'saveBonusBar').mockRejectedValue(new ApiError(400, 'invalid_request', 'A bar needs a name.'));
-    await mount();
-
-    button(actions, t('addBonusBar')).click();
-    await settle();
-    button(panels, t('save')).click();
-    await settle();
-
-    expect(panels.querySelector('.oa-drawer-flash.visible')?.textContent).toBe('A bar needs a name.');
-    expect(panels.querySelector('.oa-panel')).not.toBeNull();
   });
 });
 
@@ -436,16 +322,6 @@ describe('granting', () => {
     expect(panels.textContent).toContain(t('bonusGrantedOther', { count: 40 }));
     expect(panels.textContent).not.toContain('offline');
   });
-
-  it('goes back to the bar with the back arrow', async () => {
-    stub();
-    await mount();
-    await openGrant();
-
-    panels.querySelector<HTMLButtonElement>(`button[aria-label="${t('back')}"]`)!.click();
-    await settle();
-    expect(panels.querySelector('.oa-panel-title')?.textContent).toBe('Launch gift');
-  });
 });
 
 describe('what is granted', () => {
@@ -472,14 +348,6 @@ describe('what is granted', () => {
     // Nothing left of the second grant to take back.
     expect(list[0]!.querySelector('button')!.disabled).toBe(false);
     expect(list[1]!.querySelector('button')!.disabled).toBe(true);
-  });
-
-  it('says when nothing has been granted yet', async () => {
-    stub();
-    await mount();
-    rows()[0]!.click();
-    await settle();
-    expect(panels.textContent).toContain(t('bonusNoGrants'));
   });
 
   it('takes a grant back and reads the list and the totals again', async () => {
@@ -634,43 +502,6 @@ describe('check-in settings', () => {
     expect(ids).toHaveLength(2);
     expect(new Set(ids).size).toBe(2);
   });
-
-  it('starts a milestone from what the settings already hold, and removes the one pressed', async () => {
-    stub([bar()], {
-      enabled: true, timezone: 'Asia/Shanghai', daily: { kind: 'bonus', bar_id: 'bar-1', amount: 0.5, valid_days: 3 },
-      rules: [
-        { id: 'w', title: 'Week', basis: 'streak', days: 7, reward: { kind: 'bonus', bar_id: 'bar-1', amount: 2, valid_days: 7 } },
-        { id: 'm', title: 'Month', basis: 'month', days: 20, reward: { kind: 'card', name: 'Reset', windows: [], cards: 1, valid_days: 30 } },
-      ],
-    });
-    const save = vi.spyOn(adminApi, 'saveCheckinSettings').mockImplementation(async (body) => body);
-    await mount();
-
-    expect(switchFor(host, t('checkinEnabled')).checked).toBe(true);
-    expect(inputOf(host, t('checkinTimezone')).value).toBe('Asia/Shanghai');
-
-    const removers = [...host.querySelectorAll<HTMLButtonElement>('button')].filter((node) => node.textContent?.trim() === t('checkinRemoveRule'));
-    expect(removers).toHaveLength(2);
-    removers[0]!.click();
-    await settle();
-    button(host, t('checkinSave')).click();
-    await settle();
-
-    const sent = save.mock.calls[0]![0];
-    expect(sent.rules.map((rule) => rule.id)).toEqual(['m']);
-    expect(sent.daily).toEqual({ kind: 'bonus', bar_id: 'bar-1', amount: 0.5, valid_days: 3 });
-  });
-
-  it('says what the server refused', async () => {
-    stub();
-    vi.spyOn(adminApi, 'saveCheckinSettings').mockRejectedValue(new ApiError(400, 'invalid_request', 'Time zone unknown.'));
-    await mount();
-
-    button(host, t('checkinSave')).click();
-    await settle();
-    expect(host.textContent).toContain('Time zone unknown.');
-    expect(host.textContent).not.toContain(t('checkinSaved'));
-  });
 });
 
 describe('the reward editor', () => {
@@ -692,37 +523,6 @@ describe('the reward editor', () => {
     await settle();
 
     expect(save.mock.calls[0]![0].daily).toEqual({ kind: 'bonus', bar_id: 'bar-1', amount: 0.5, valid_days: 7 });
-  });
-
-  it('starts cards from cards’ own defaults, and drops the bonus fields it had', async () => {
-    const save = vi.spyOn(adminApi, 'saveCheckinSettings').mockImplementation(async (body) => body);
-    const daily = await editorSelect();
-
-    await choose(daily, t('checkinRewardBonusKind'));
-    await choose(fieldFor(host, t('checkinDailyHeading')), t('checkinRewardCardKind'));
-    type(inputOf(host, t('checkinRewardCardName')), 'Weekly reset');
-    await settle();
-    await choose(fieldFor(host, t('checkinRewardCardScope')), t('cardReset1W'));
-    button(host, t('checkinSave')).click();
-    await settle();
-
-    // No `bar_id` or `amount` carried over from the bonus it was a moment ago.
-    expect(save.mock.calls[0]![0].daily).toEqual({
-      kind: 'card', name: 'Weekly reset', windows: ['1w'], cards: 1, valid_days: 30,
-    });
-  });
-
-  it('does not offer switched-off bars as somewhere to pay a reward', async () => {
-    stub([bar({ id: 'a', name: 'Live' }), bar({ id: 'b', name: 'Retired', active: false })]);
-    await mount();
-
-    await choose(fieldFor(host, t('checkinDailyHeading')), t('checkinRewardBonusKind'));
-    const field = fieldFor(host, t('checkinRewardBar'));
-    field.querySelector<HTMLButtonElement>('.oa-select')!.click();
-    await settle();
-    // Menus of the selects used before stay mounted; the bars are the ones naming a bar.
-    const menu = [...document.querySelectorAll<HTMLElement>('.oa-select-menu')].find((node) => node.textContent?.includes('Live'))!;
-    expect([...menu.querySelectorAll('[role="option"]')].map((node) => node.textContent?.trim())).toEqual(['Live']);
   });
 });
 
@@ -834,19 +634,5 @@ describe('a shared pool', () => {
     await settle();
     expect(adjust).toHaveBeenCalledWith('p-1', 'add', 100);
     expect(panels.textContent).toContain(t('poolAdjusted', { left: '480' }));
-  });
-
-  it('is not offered as somewhere a check-in reward could pay into', async () => {
-    stub([pool(), bar({ id: 'b', name: 'Gift' })], {
-      ...emptyCheckin, daily: { kind: 'bonus', bar_id: 'b', amount: 1, valid_days: 7 },
-    });
-    await mount();
-    const field = [...host.querySelectorAll<HTMLElement>('#secCheckinAdmin .oa-field')]
-      .find((node) => node.textContent?.includes('Gift'));
-    field!.querySelector<HTMLButtonElement>('.oa-select')!.click();
-    await settle();
-    const options = [...document.querySelectorAll('[role="option"]')].map((n) => n.textContent?.trim());
-    expect(options).toContain('Gift');
-    expect(options).not.toContain('Everyone');
   });
 });

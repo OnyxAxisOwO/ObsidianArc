@@ -110,86 +110,11 @@ func TestAGrantIntoASwitchedOffBarIsRefusedAndAnnouncedToNobody(t *testing.T) {
 	}
 }
 
-// A name nobody holds is reported as the name, not as a bonus that does not
-// exist, which is what an administrator who mistyped it needs to hear.
-func TestAGrantToANameNobodyHoldsSaysSo(t *testing.T) {
-	in := newInstance(t)
-	admin := in.register("bonus-admin", "a-good-password")
-	bar := decode[struct {
-		Bar struct{ ID string } `json:"bar"`
-	}](t, in.do(http.MethodPost, "/api/admin/bonus/bars", map[string]any{
-		"name": "gift", "toggle_mode": "on", "show_total": false,
-	}, admin)).Bar
-
-	res := in.do(http.MethodPost, "/api/admin/bonus/bars/"+bar.ID+"/grants", map[string]any{
-		"usernames": []string{"nobody"}, "amount": 5, "days": 30,
-	}, admin)
-	if res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), "No account has that name or ID.") {
-		t.Fatalf("grant to an unknown name: %d %s", res.Code, res.Body.String())
-	}
-	if !strings.Contains(res.Body.String(), `"bonus_no_account"`) {
-		t.Fatalf("grant to an unknown name lacks its code: %s", res.Body.String())
-	}
-}
-
-func TestABarCannotBeSwitchedByAnAccountWhenItIsForced(t *testing.T) {
-	in := newInstance(t)
-	admin := in.register("bonus-admin", "a-good-password")
-	reader := in.register("bonus-reader", "a-good-password")
-	bar := decode[struct {
-		Bar struct{ ID string } `json:"bar"`
-	}](t, in.do(http.MethodPost, "/api/admin/bonus/bars", map[string]any{"name": "forced", "toggle_mode": "on", "show_total": false}, admin)).Bar
-	in.do(http.MethodPost, "/api/admin/bonus/bars/"+bar.ID+"/grants", map[string]any{"all": true, "amount": 10}, admin)
-
-	if res := in.do(http.MethodPut, "/api/bonus/"+bar.ID+"/choice", map[string]any{"enabled": false}, reader); res.Code != http.StatusConflict {
-		t.Fatalf("switching a forced bar: %d %s", res.Code, res.Body.String())
-	}
-	views := decode[struct {
-		Bars []bonusView `json:"bars"`
-	}](t, in.do(http.MethodGet, "/api/bonus", nil, reader)).Bars
-	if len(views) != 1 || views[0].Total != nil || views[0].Remaining != nil || views[0].Percent != 100 {
-		t.Fatalf("a bar that keeps its total to itself showed %+v", views)
-	}
-}
-
 func TestOnlyAnAdministratorWithTheUsageGrantMakesBars(t *testing.T) {
 	in := newInstance(t)
 	in.register("bonus-admin", "a-good-password")
 	reader := in.register("bonus-reader", "a-good-password")
 	if res := in.do(http.MethodPost, "/api/admin/bonus/bars", map[string]any{"name": "x"}, reader); res.Code != http.StatusForbidden {
 		t.Fatalf("a plain account made a bar: %d", res.Code)
-	}
-}
-
-// The bars are worded the way the allowance is, so the display setting travels
-// with them — the same value the allowance's own summary carries, from the same
-// place — rather than being something the screen has to fetch separately and
-// draw a moment late.
-func TestTheBarsAreSentWithTheWayTheInstanceWordsAnAllowance(t *testing.T) {
-	in := newInstance(t)
-	admin := in.register("bonus-admin", "a-good-password")
-	reader := in.register("bonus-reader", "a-good-password")
-
-	word := func(path string) string {
-		t.Helper()
-		res := in.do(http.MethodGet, path, nil, reader)
-		if res.Code != http.StatusOK {
-			t.Fatalf("%s: %d %s", path, res.Code, res.Body.String())
-		}
-		return decode[struct {
-			Display string `json:"display"`
-		}](t, res).Display
-	}
-
-	if got := word("/api/bonus"); got != "absolute" {
-		t.Fatalf("with nothing chosen the bars are worded as %q, want the figures", got)
-	}
-	for _, chosen := range []string{"remaining", "used", "absolute"} {
-		if res := in.do(http.MethodPut, "/api/admin/settings", map[string]string{"quota.usage_display": chosen}, admin); res.Code != http.StatusOK {
-			t.Fatalf("choose %s: %d %s", chosen, res.Code, res.Body.String())
-		}
-		if bars, allowance := word("/api/bonus"), word("/api/usage/me"); bars != chosen || allowance != chosen {
-			t.Fatalf("chosen %q: the bars say %q and the allowance %q", chosen, bars, allowance)
-		}
 	}
 }

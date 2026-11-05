@@ -95,6 +95,14 @@ func TestSigningInWithASecondStepOverHTTP(t *testing.T) {
 	if full.cookie.Value == half.cookie.Value {
 		t.Fatal("the pending token was promoted instead of replaced")
 	}
+	spent := in.do(http.MethodGet, "/api/auth/me", nil, half)
+	if spent.Code != http.StatusUnauthorized || strings.Contains(spent.Body.String(), "two_factor_pending") {
+		t.Fatalf("the pending session survived completion: %d %s", spent.Code, spent.Body.String())
+	}
+	replay := in.do(http.MethodPost, "/api/auth/two-factor", map[string]string{"code": code}, half)
+	if replay.Code != http.StatusUnauthorized || errCode(t, replay) != "two_factor_expired" {
+		t.Fatalf("the pending token worked twice: %d %s", replay.Code, replay.Body.String())
+	}
 	if code := in.do(http.MethodGet, "/api/auth/me", nil, full).Code; code != http.StatusOK {
 		t.Fatalf("me after completing: %d", code)
 	}
@@ -104,6 +112,11 @@ func TestTheTwoStepPolicyThroughTheWiring(t *testing.T) {
 	in := newInstance(t)
 	founder := in.register("founder", "a-good-password")
 	member := in.register("member", "another-password")
+	in.enableAPI(founder)
+	key := in.mintKey(member)
+	if res := in.doWithKey(http.MethodGet, "/v1/models", key); res.Code != http.StatusOK {
+		t.Fatalf("key before the policy: %d %s", res.Code, res.Body.String())
+	}
 
 	// Requiring it without having it would shut the founder out of the very
 	// screen that could undo it.
@@ -143,8 +156,14 @@ func TestTheTwoStepPolicyThroughTheWiring(t *testing.T) {
 	if held.Code != http.StatusForbidden || !strings.Contains(held.Body.String(), "two_factor_enrolment_required") {
 		t.Fatalf("an unenrolled account under the everyone policy: %d %s", held.Code, held.Body.String())
 	}
+	if res := in.doWithKey(http.MethodGet, "/v1/models", key); res.Code != http.StatusForbidden || errCode(t, res) != "two_factor_enrolment_required" {
+		t.Fatalf("key issued before the policy: %d %s", res.Code, res.Body.String())
+	}
 	if !strings.Contains(in.do(http.MethodGet, "/api/auth/me", nil, member).Body.String(), `"two_factor_enrol":true`) {
 		t.Fatal("the account payload does not say it must enrol")
+	}
+	if status := in.do(http.MethodGet, "/api/profile/two-factor", nil, member); status.Code != http.StatusOK {
+		t.Fatalf("the enrolment status was itself held: %d %s", status.Code, status.Body.String())
 	}
 	in.enrol(member)
 	if code := in.do(http.MethodGet, "/api/conversations", nil, member).Code; code != http.StatusOK {
@@ -152,6 +171,9 @@ func TestTheTwoStepPolicyThroughTheWiring(t *testing.T) {
 	}
 	if code := in.do(http.MethodGet, "/api/admin/dashboard", nil, member).Code; code != http.StatusOK {
 		t.Fatalf("the backoffice still refuses after enrolling: %d", code)
+	}
+	if res := in.doWithKey(http.MethodGet, "/v1/models", key); res.Code != http.StatusOK {
+		t.Fatalf("key after enrolment: %d %s", res.Code, res.Body.String())
 	}
 
 	// Switching off is refused while the policy covers the account.
@@ -176,6 +198,12 @@ func TestTheTwoStepPolicyThroughTheWiring(t *testing.T) {
 	}
 	if code := in.do(http.MethodGet, "/api/conversations", nil, member).Code; code != http.StatusForbidden {
 		t.Fatalf("after a reset under the everyone policy the account should enrol again: %d", code)
+	}
+	again := in.do(http.MethodPost, "/api/auth/login", map[string]string{
+		"identifier": "member", "password": "another-password",
+	}, nil)
+	if again.Code != http.StatusOK || !strings.Contains(again.Body.String(), `"user"`) {
+		t.Fatalf("password sign-in after an administrator reset: %d %s", again.Code, again.Body.String())
 	}
 	events := in.do(http.MethodGet, "/api/admin/security/events?event=two_factor", nil, founder)
 	if !strings.Contains(events.Body.String(), `"decision":"reset"`) ||

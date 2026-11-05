@@ -32,10 +32,13 @@ curl https://ai.example.com/v1/responses \
 | `reasoning.effort` | 推理等级 |
 | `tools` / `tool_choice` | 受支持的函数工具与选择方式 |
 | `store` | 省略或设为 `false` |
+| `text.format` | `text`、`json_object` 或 `json_schema` 结构化输出 |
+| `parallel_tool_calls` | 并行工具调用控制 |
+| `prompt_cache_key` / `prompt_cache_retention` | 转发到 OpenAI 上游的缓存提示 |
 
 本端点读取 `max_output_tokens`，不要用 Chat Completions 的 `max_tokens` 替代。
 
-请求体上限为 12 MiB，最多 256 个受支持的函数工具。网关不另设 `input` 数组条目数上限；上游仍可能有消息数量、上下文或参数限制。
+请求体上限为 12 MiB，最多 1024 个受支持的函数工具。网关不另设 `input` 数组条目数上限；上游仍可能有消息数量、上下文或参数限制。
 
 ## 返回内容
 
@@ -64,7 +67,9 @@ curl https://ai.example.com/v1/responses \
 
 每次请求都要携带所需的完整历史。函数调用结果通过 `function_call_output` 输入项返回，使用 `call_id` 与先前调用对应。
 
-工具定义采用 Responses 的结构，函数名称与参数直接放在工具项中，不要照搬 Chat Completions 的 `function` 嵌套格式。
+工具定义采用 Responses 的结构，函数名称与参数直接放在工具项中，不要照搬 Chat Completions 的 `function` 嵌套格式。并行调用在上游重建为同一助手回合；命名空间展开后的工具名称必须唯一。不同命名空间中的同名工具会被拒绝，避免调用错误的函数。
+
+`usage.output_tokens` 包含 `output_tokens_details.reasoning_tokens`，后者是子集。缓存读取和兼容上游的写入统计位于 `input_tokens_details`。上游流损坏或提前结束时返回 `response.failed`，不会报告 `response.completed`。
 
 ## 不支持的能力
 
@@ -75,3 +80,11 @@ curl https://ai.example.com/v1/responses \
 当前没有后台任务、响应查询或删除接口，也没有内置网页搜索、文件检索或代码执行服务。客户端额外发送字段，不代表对应能力已实现。
 
 调用支持此格式的客户端时，确认它可以关闭服务端存储，并由客户端维护历史。
+
+## 拒答与托管工具边界
+
+模型的显式拒答使用 `type: "refusal"` 内容项，流式事件为 `response.refusal.delta` / `response.refusal.done`，完成对象中保留完整拒答文字。厂商错误诊断仍按错误响应处理。
+
+网关不执行厂商托管工具。为兼容默认携带这些声明的客户端，自动选择模式下仍过滤托管工具声明；这不表示工具可用。显式要求调用托管工具或没有受支持函数却指定 `required` 时，会在调用和计费前返回错误。上游的 `pause_turn` 需要本接口不支持的托管工具续传，会返回失败，而不是报告完成。
+
+文本块、系统消息和函数定义上的 Anthropic 风格 `cache_control` 会保留给支持该扩展的上游；也可发送顶层自动缓存控制。它与 OpenAI 原生的 `prompt_cache_key` / `prompt_cache_retention` 是不同的可选控制。

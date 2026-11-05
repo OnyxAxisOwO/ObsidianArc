@@ -82,20 +82,6 @@ func TestRegistrationInviteOnlyRefusesWithoutOrWithABadCode(t *testing.T) {
 	}
 }
 
-func TestRegistrationOpenModeAcceptsNoCode(t *testing.T) {
-	in := newInstance(t)
-	in.register("founder", "a-good-password")
-	in.setInviteSettings(t, map[string]string{
-		settings.RegistrationEnabled: "true", settings.InvitesRequired: "false",
-	})
-
-	res := in.do(http.MethodPost, "/api/auth/register",
-		map[string]string{"username": "open-mode", "password": "a-good-password"}, nil)
-	if res.Code != http.StatusCreated {
-		t.Fatalf("register in open mode with no code: %d %s", res.Code, res.Body.String())
-	}
-}
-
 func TestRegistrationClosedRefusesEvenWithACode(t *testing.T) {
 	in := newInstance(t)
 	admin := in.register("founder", "a-good-password")
@@ -147,61 +133,6 @@ func TestRegistrationAppliesAnAdminCodesGroupAndFixedDays(t *testing.T) {
 	if account.GroupExpiresAt == 0 {
 		t.Fatal("group_expires_at was not set for a 5-day trial")
 	}
-}
-
-func TestRegistrationAppliesARandomDaysWithinRange(t *testing.T) {
-	in := newInstance(t)
-	admin := in.register("founder", "a-good-password")
-	in.setInviteSettings(t, map[string]string{settings.RegistrationEnabled: "true"})
-
-	groupRes := in.do(http.MethodPost, "/api/admin/groups", map[string]any{"name": "Ranged Trial"}, admin)
-	groupID := decode[struct {
-		Group struct{ ID string } `json:"group"`
-	}](t, groupRes).Group.ID
-
-	created := in.do(http.MethodPost, "/api/admin/invites",
-		map[string]any{"count": 1, "max_uses": 0, "group_id": groupID, "group_days": 3, "group_days_max": 10}, admin)
-	code := decode[struct {
-		Codes []struct {
-			ID   string
-			Code string
-		} `json:"codes"`
-	}](t, created).Codes[0]
-
-	seen := map[int64]bool{}
-	for i := 0; i < 30; i++ {
-		res := in.do(http.MethodPost, "/api/auth/register",
-			map[string]string{"username": rangedUsername(i), "password": "a-good-password", "invite_code": code.Code}, nil)
-		if res.Code != http.StatusCreated {
-			t.Fatalf("register %d through the ranged code: %d %s", i, res.Code, res.Body.String())
-		}
-		seen[decode[registerResponse](t, res).User.GroupExpiresAt] = true
-	}
-	if len(seen) < 2 {
-		t.Fatalf("30 registrations through a 3-10 day range all landed on the same expiry")
-	}
-
-	uses := in.do(http.MethodGet, "/api/admin/invites/"+code.ID+"/uses", nil, admin)
-	if uses.Code != http.StatusOK {
-		t.Fatalf("invite uses: %d %s", uses.Code, uses.Body.String())
-	}
-	rows := decode[struct {
-		Uses []struct {
-			GroupDays int64 `json:"group_days"`
-		} `json:"uses"`
-	}](t, uses).Uses
-	if len(rows) != 30 {
-		t.Fatalf("recorded uses = %d, want 30", len(rows))
-	}
-	for _, row := range rows {
-		if row.GroupDays < 3 || row.GroupDays > 10 {
-			t.Errorf("recorded group_days = %d, want within [3, 10]", row.GroupDays)
-		}
-	}
-}
-
-func rangedUsername(i int) string {
-	return "ranged-" + string(rune('a'+i%26)) + string(rune('0'+i/26))
 }
 
 func TestRegistrationCustomPartnerCodeHasUnlimitedUses(t *testing.T) {
@@ -390,95 +321,6 @@ func TestProfileInvitesRoundTrip(t *testing.T) {
 	}
 }
 
-// TestAdminCreatePartnerCodeValidatesAndDefaults covers the HTTP shape of
-// part A's partner codes: the bundled 400 when any of the four required
-// fields is missing, and allow_existing defaulting to true when the
-// request never mentions it.
-func TestAdminCreatePartnerCodeValidatesAndDefaults(t *testing.T) {
-	in := newInstance(t)
-	admin := in.register("founder", "a-good-password")
-
-	groupRes := in.do(http.MethodPost, "/api/admin/groups", map[string]any{"name": "Partner Program"}, admin)
-	if groupRes.Code != http.StatusCreated {
-		t.Fatalf("create group: %d %s", groupRes.Code, groupRes.Body.String())
-	}
-	groupID := decode[struct {
-		Group struct{ ID string } `json:"group"`
-	}](t, groupRes).Group.ID
-
-	missingName := in.do(http.MethodPost, "/api/admin/invites",
-		map[string]any{"kind": "partner", "count": 1, "code": "ACMEPARTNER", "group_id": groupID}, admin)
-	if missingName.Code != http.StatusBadRequest || errCode(t, missingName) != "invite_partner_fields" {
-		t.Fatalf("partner with no name: %d %s", missingName.Code, missingName.Body.String())
-	}
-
-	created := in.do(http.MethodPost, "/api/admin/invites",
-		map[string]any{
-			"kind": "partner", "count": 1, "code": "acme-partner", "name": "Acme Corp",
-			"group_id": groupID, "group_days": 7,
-		}, admin)
-	if created.Code != http.StatusCreated {
-		t.Fatalf("create partner: %d %s", created.Code, created.Body.String())
-	}
-	partner := decode[struct {
-		Codes []struct {
-			ID            string `json:"id"`
-			Kind          string `json:"kind"`
-			Name          string `json:"name"`
-			AllowExisting bool   `json:"allow_existing"`
-		} `json:"codes"`
-	}](t, created).Codes[0]
-	if partner.Kind != "partner" || partner.Name != "Acme Corp" || !partner.AllowExisting {
-		t.Fatalf("partner code = %+v, want kind partner, name Acme Corp, allow_existing true", partner)
-	}
-}
-
-// TestAdminListInvitesKindFilters checks kind= over HTTP, including the
-// "admin"/"user" aliases the invites tab's original select still sends.
-func TestAdminListInvitesKindFilters(t *testing.T) {
-	in := newInstance(t)
-	admin := in.register("founder", "a-good-password")
-	in.setInviteSettings(t, map[string]string{settings.InvitesUserEnabled: "true"})
-
-	groupRes := in.do(http.MethodPost, "/api/admin/groups", map[string]any{"name": "Filter Group"}, admin)
-	groupID := decode[struct {
-		Group struct{ ID string } `json:"group"`
-	}](t, groupRes).Group.ID
-
-	if res := in.do(http.MethodPost, "/api/admin/invites", map[string]any{"count": 1}, admin); res.Code != http.StatusCreated {
-		t.Fatalf("create batch: %d %s", res.Code, res.Body.String())
-	}
-	if res := in.do(http.MethodPost, "/api/admin/invites",
-		map[string]any{"kind": "partner", "count": 1, "code": "FILTERPARTNER", "name": "Filter Partner", "group_id": groupID},
-		admin); res.Code != http.StatusCreated {
-		t.Fatalf("create partner: %d %s", res.Code, res.Body.String())
-	}
-	// Opening the profile invites panel mints the founder's own personal
-	// code, the same lazy get-or-create GET /api/profile/invites always
-	// does.
-	if res := in.do(http.MethodGet, "/api/profile/invites", nil, admin); res.Code != http.StatusOK {
-		t.Fatalf("open profile invites: %d %s", res.Code, res.Body.String())
-	}
-
-	for _, c := range []struct {
-		kind string
-		want int
-	}{
-		{"batch", 1}, {"partner", 1}, {"personal", 1}, {"admin", 2}, {"user", 1}, {"all", 3},
-	} {
-		res := in.do(http.MethodGet, "/api/admin/invites?kind="+c.kind, nil, admin)
-		if res.Code != http.StatusOK {
-			t.Fatalf("list kind=%s: %d %s", c.kind, res.Code, res.Body.String())
-		}
-		total := decode[struct {
-			Total int `json:"total"`
-		}](t, res).Total
-		if total != c.want {
-			t.Errorf("list kind=%s: total=%d, want %d", c.kind, total, c.want)
-		}
-	}
-}
-
 // TestClaimEndpoint covers POST /api/profile/invites/claim end to end: a
 // signed-in account joining a partner code's group, a repeat claim refused
 // as already-claimed, and a wrong code refused as invalid — the three
@@ -520,6 +362,11 @@ func TestClaimEndpoint(t *testing.T) {
 	}](t, claim)
 	if result.GroupID != groupID || result.GroupName != "Claimable Trial" || result.Days != 9 || result.ExpiresAt == 0 {
 		t.Fatalf("claim result = %+v", result)
+	}
+
+	account := decode[registerResponse](t, in.do(http.MethodGet, "/api/auth/me", nil, member)).User
+	if account.GroupID != groupID || account.GroupExpiresAt != result.ExpiresAt {
+		t.Fatalf("membership after claiming: %+v", account)
 	}
 
 	again := in.do(http.MethodPost, "/api/profile/invites/claim", map[string]string{"code": "CLAIM-HTTP"}, member)

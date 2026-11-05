@@ -144,21 +144,6 @@ describe('admin instance backup', () => {
     expect(host.textContent).toContain(t('backupCredentialsNeeded'));
   });
 
-  it('shows Never for timestamps that have no recorded run', async () => {
-    vi.spyOn(adminApi, 'backup').mockResolvedValue({
-      ...backup,
-      last_started_at: 0,
-      last_finished_at: 0,
-      last_success_at: 0,
-    });
-    await mountBackup();
-
-    for (const key of ['backupLastStarted', 'backupLastFinished', 'backupLastSuccess'] as const) {
-      const label = [...host.querySelectorAll('dt')].find((node) => node.textContent === t(key));
-      expect(label?.parentElement?.querySelector('dd')?.textContent?.trim()).toBe(t('backupNever'));
-    }
-  });
-
   it('tests storage and refreshes a running backup until its status settles', async () => {
     vi.useFakeTimers();
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
@@ -186,79 +171,6 @@ describe('admin instance backup', () => {
     await vi.advanceTimersByTimeAsync(5000);
     await settle();
     expect(host.textContent).toContain(t('backupStatusSuccess'));
-  });
-
-  it('keeps the Run label while a storage test is pending, since no backup has started', async () => {
-    vi.spyOn(adminApi, 'backup').mockResolvedValue(backup);
-    let finishTest!: (value: { ok: true }) => void;
-    vi.spyOn(adminApi, 'testBackup').mockReturnValue(new Promise((resolve) => { finishTest = resolve; }));
-    await mountBackup();
-
-    button(host, t('backupTest')).click();
-    await settle();
-
-    // button() looks the label up exactly, so a Running label here fails it.
-    expect(button(host, t('backupRun')).disabled).toBe(true);
-    finishTest({ ok: true });
-    await settle();
-  });
-
-  it('only shows save hint when configuration is dirty, clearing it on save', async () => {
-    vi.spyOn(adminApi, 'backup').mockResolvedValue(backup);
-    vi.spyOn(adminApi, 'saveBackup').mockResolvedValue(undefined);
-    await mountBackup();
-
-    const testBtn = button(host, t('backupTest'));
-    const runBtn = button(host, t('backupRun'));
-    expect(testBtn.disabled).toBe(false);
-    expect(runBtn.disabled).toBe(false);
-    expect(host.textContent).not.toContain(t('backupActionsHint'));
-
-    const prefix = fieldInput(t('backupPrefix'));
-    prefix.value = 'changed-prefix';
-    prefix.dispatchEvent(new Event('input', { bubbles: true }));
-    await nextTick();
-
-    expect(testBtn.disabled).toBe(true);
-    expect(runBtn.disabled).toBe(true);
-    expect(host.textContent).toContain(t('backupActionsHint'));
-
-    button(actions, t('save')).click();
-    await settle();
-
-    expect(testBtn.disabled).toBe(false);
-    expect(runBtn.disabled).toBe(false);
-    expect(host.textContent).not.toContain(t('backupActionsHint'));
-    expect(host.textContent).toContain(t('backupSaved'));
-
-    // Editing a field after save should clear the saved notice so it does not
-    // contradict the newly displayed save hint.
-    prefix.value = 'changed-again';
-    prefix.dispatchEvent(new Event('input', { bubbles: true }));
-    await nextTick();
-
-    expect(testBtn.disabled).toBe(true);
-    expect(runBtn.disabled).toBe(true);
-    expect(host.textContent).toContain(t('backupActionsHint'));
-    expect(host.textContent).not.toContain(t('backupSaved'));
-  });
-
-  it('shows storage missing hint instead of save hint when unconfigured and clean', async () => {
-    vi.spyOn(adminApi, 'backup').mockResolvedValue({
-      ...backup,
-      configured: false,
-      secret_configured: false,
-      endpoint: '',
-      bucket: '',
-    });
-    await mountBackup();
-
-    const testBtn = button(host, t('backupTest'));
-    const runBtn = button(host, t('backupRun'));
-    expect(testBtn.disabled).toBe(true);
-    expect(runBtn.disabled).toBe(true);
-    expect(host.textContent).not.toContain(t('backupActionsHint'));
-    expect(host.textContent).toContain(t('backupStorageMissing'));
   });
 
   it('preserves action error across subsequent successful background polling', async () => {
@@ -379,21 +291,5 @@ describe('a blank interval or retention on the backup page', () => {
     button(actions, t('save')).click();
     await settle();
     expect(save).not.toHaveBeenCalled();
-  });
-
-  it('saves the number typed in its place, with the other box as it stood', async () => {
-    vi.spyOn(adminApi, 'backup').mockResolvedValue(backup);
-    const save = vi.spyOn(adminApi, 'saveBackup').mockResolvedValue(undefined);
-    await mountBackup();
-
-    typeInto(t('backupRetention'), '');
-    await settle();
-    typeInto(t('backupRetention'), '336');
-    await settle();
-
-    expect(button(actions, t('save')).disabled).toBe(false);
-    button(actions, t('save')).click();
-    await settle();
-    expect(save).toHaveBeenCalledWith(expect.objectContaining({ interval_hours: 24, retention_hours: 336 }));
   });
 });

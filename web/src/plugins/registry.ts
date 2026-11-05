@@ -33,6 +33,7 @@ const loaded = shallowRef<readonly ArcPlugin[]>([]);
 // missing plugin may simply not have arrived; after, it is not coming.
 const settled = shallowRef(false);
 let configs: Record<string, PluginConfig> = {};
+let loadRevision = 0;
 
 /**
  * How a package's module is fetched: a dynamic import of the address the
@@ -62,12 +63,15 @@ export function pluginHost(): PluginHost {
  * and the core works without any plugin's half.
  */
 export async function loadPlugins(blocks: Record<string, PluginConfig> | undefined): Promise<void> {
-  configs = blocks ?? {};
-  const names = Object.keys(configs).sort();
+  const revision = ++loadRevision;
+  const nextConfigs = blocks ?? {};
+  const names = Object.keys(nextConfigs).sort();
   const found = await Promise.all(names.map((name) => {
-    const ui = configs[name]?.['_ui'];
+    const ui = nextConfigs[name]?.['_ui'];
     return typeof ui === 'string' && ui ? loadPackageModule(name, ui) : loadPluginModule(name);
   }));
+  if (revision !== loadRevision) return;
+  configs = nextConfigs;
   loaded.value = found.filter((plugin): plugin is ArcPlugin => plugin !== null);
   settled.value = true;
 }
@@ -146,6 +150,7 @@ function pluginConfig(name: string): PluginConfig {
 
 /** Tests stand an instance up with a plugin already in place. */
 export function installPlugins(list: ArcPlugin[], blocks: Record<string, PluginConfig> = {}): void {
+  loadRevision += 1;
   configs = blocks;
   loaded.value = list;
   settled.value = true;

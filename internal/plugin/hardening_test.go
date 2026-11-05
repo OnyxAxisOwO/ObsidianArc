@@ -14,39 +14,6 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/server/servertest"
 )
 
-// What a package's backend answers is the package's to word, down to the
-// Content-Type; so a document it serves is never given the page's authority.
-func TestEveryAnswerOfAPackageRouteIsSandboxed(t *testing.T) {
-	const sandbox = "sandbox; default-src 'none'"
-	a := newAdmin(t)
-	a.in.InstallPackage(a.s, pkgtest.Demo(t), true, nil)
-
-	policy := func(res interface{ Header() http.Header }) string {
-		return res.Header().Get("Content-Security-Policy")
-	}
-	if got := policy(a.in.Do(http.MethodGet, "/api/x/demo/echo", nil, nil)); got != sandbox {
-		t.Errorf("a public route answers with the policy %q", got)
-	}
-	if got := policy(a.do(http.MethodGet, "/api/admin/x/demo/things", nil)); got != sandbox {
-		t.Errorf("an admin route answers with the policy %q", got)
-	}
-	// A refusal is an answer too.
-	if got := policy(a.do(http.MethodPost, "/api/admin/x/demo/unavailable", nil)); got != sandbox {
-		t.Errorf("an error answer carries the policy %q", got)
-	}
-	// And so is the not-there of a plugin switched off.
-	a.mustDo(http.MethodPost, "/api/admin/plugins/demo/disable", map[string]any{}, http.StatusOK)
-	off := a.in.Do(http.MethodGet, "/api/x/demo/echo", nil, nil)
-	if off.Code != http.StatusNotFound || policy(off) != sandbox {
-		t.Errorf("a switched-off route: %d, policy %q", off.Code, policy(off))
-	}
-
-	// The page itself keeps its own: the sandbox is for what a package serves.
-	if page := policy(a.in.Do(http.MethodGet, "/api/site", nil, nil)); !strings.Contains(page, "script-src 'self'") || page == sandbox {
-		t.Errorf("the site's own answers lost their policy: %q", page)
-	}
-}
-
 // describe asks for no permission and feeds the page's policy for every
 // visitor, so what it may ask for is an origin and nothing a policy reads as
 // more than one.

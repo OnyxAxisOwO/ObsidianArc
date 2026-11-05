@@ -116,3 +116,19 @@ describe('expired session', () => {
     expect(currentUser.value).not.toBeNull();
   });
 });
+
+it.each(['json', 'stream'])('does not sign out the new account for an old %s refusal', async (kind) => {
+  signIn();
+  let finish!: (value: Response) => void;
+  vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => { finish = resolve; })));
+  const waiting = kind === 'json'
+    ? api.get('/api/chats').catch(() => undefined)
+    : sendTurn({ model_id: 'm' }, {}, new AbortController().signal).catch(() => undefined);
+  forget();
+  adopt({ id: 'user-2', username: 'other', role: 'user' } as unknown as Account);
+  finish(new Response(JSON.stringify({ error: { code: 'session_required', message: 'expired' } }),
+    { status: 401, headers: { 'Content-Type': 'application/json' } }));
+  await waiting;
+  expect(currentUser.value?.id).toBe('user-2');
+  forget();
+});

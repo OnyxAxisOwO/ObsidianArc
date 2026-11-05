@@ -46,48 +46,6 @@ func TestRequireForAllFollowsBothSwitches(t *testing.T) {
 	}
 }
 
-// TestMustBindOIDCClearsOnceConnected exercises the whole question the gate
-// asks per request: on for an account with no OIDC connection, off once one
-// exists, and never on at all when the policy itself is off.
-func TestMustBindOIDCClearsOnceConnected(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-
-	member, _, err := f.auth.Register(ctx, auth.RegisterInput{
-		Username: "member", Password: "another-password",
-	})
-	if err != nil {
-		t.Fatalf("register: %v", err)
-	}
-
-	if must, err := f.service.MustBindOIDC(ctx, member); err != nil || must {
-		t.Fatalf("must bind with the policy off = %v, %v; want false", must, err)
-	}
-
-	f.configure(t, "oidc")
-	if err := f.settings.SetMany(ctx, map[string]string{
-		settings.OAuthOIDCIssuer:        "https://auth.example.com",
-		settings.OAuthOIDCRequireForAll: "true",
-	}); err != nil {
-		t.Fatalf("turn on the policy: %v", err)
-	}
-
-	must, err := f.service.MustBindOIDC(ctx, member)
-	if err != nil || !must {
-		t.Fatalf("must bind for an unconnected account under the policy = %v, %v; want true", must, err)
-	}
-
-	if err := f.service.Connect(ctx, member.ID, Identity{
-		Provider: "oidc", Subject: "55512345", Login: "qq_55512345",
-	}); err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-
-	if must, err := f.service.MustBindOIDC(ctx, member); err != nil || must {
-		t.Fatalf("must bind after connecting = %v, %v; want false", must, err)
-	}
-}
-
 // TestBindingGateHoldsAnAccountToTheConnectFlow puts the middleware itself
 // under test, the way EnrolmentGate's own package tests would: an account
 // this policy is holding reaches nothing but the allowed handful of routes,

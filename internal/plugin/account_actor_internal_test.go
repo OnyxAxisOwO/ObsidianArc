@@ -125,7 +125,7 @@ func TestAPackageEndingAnAbsentAccountNeedsTheGrantToo(t *testing.T) {
 // and the call then sees the grant gone. Read before the lock, the grant would
 // be the one the session began with, and the revocation would only land after
 // the sessions were already ended.
-func TestAGrantRevokedWhileASessionRevokeIsInFlightIsHonouredWhenItLands(t *testing.T) {
+func TestConcurrentAGrantRevokedWhileASessionRevokeIsInFlightIsHonouredWhenItLands(t *testing.T) {
 	r := newAccountRig(t)
 	ctx := context.Background()
 	other := accountOf(t, r, "other", user.RoleUser)

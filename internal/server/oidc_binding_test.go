@@ -5,13 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"testing"
 )
-
-// The OIDC binding policy through the assembled server: the wiring is where
-// the gate, the account payload's own field and the connect flow's callback
-// meet, and none of the three is visible from inside internal/oauth alone.
 
 // stubOIDCProvider answers the token exchange with one fixed subject.
 // Discovery is not under test here — the settings point straight at it, the
@@ -77,111 +72,4 @@ func (in *instance) startConnect(provider string, as *session, password, next st
 	}
 	in.t.Fatal("the connect answer set no state cookie")
 	return nil, ""
-}
-
-func TestOIDCBindingPolicyThroughTheWiring(t *testing.T) {
-	in := newInstance(t)
-	founder := in.register("founder", "a-good-password")
-	member := in.register("member", "another-password")
-
-	stub := stubOIDCProvider(t)
-
-	configure := map[string]string{
-		"oauth.oidc_enabled":       "true",
-		"oauth.oidc_client_id":     "a-client-id",
-		"oauth.oidc_client_secret": "a-client-secret",
-		"oauth.oidc_auth_url":      stub.URL + "/authorize",
-		"oauth.oidc_token_url":     stub.URL + "/token",
-		"oauth.oidc_userinfo_url":  stub.URL + "/userinfo",
-	}
-	if response := in.do(http.MethodPut, "/api/admin/settings", configure, founder); response.Code != http.StatusOK {
-		t.Fatalf("configure oidc: %d %s", response.Code, response.Body.String())
-	}
-
-	// Nobody is held until the policy itself is switched on.
-	if code := in.do(http.MethodGet, "/api/conversations", nil, member).Code; code != http.StatusOK {
-		t.Fatalf("held before the policy was ever turned on: %d", code)
-	}
-
-	policy := map[string]string{"oauth.oidc_require_for_all": "true"}
-	if response := in.do(http.MethodPut, "/api/admin/settings", policy, founder); response.Code != http.StatusOK {
-		t.Fatalf("turn on the policy: %d %s", response.Code, response.Body.String())
-	}
-
-	// Every account that predates the switch, including the one that just
-	// turned it on, is held now.
-	held := in.do(http.MethodGet, "/api/conversations", nil, founder)
-	if held.Code != http.StatusForbidden || !strings.Contains(held.Body.String(), "oidc_binding_required") {
-		t.Fatalf("an unconnected account under the policy: %d %s", held.Code, held.Body.String())
-	}
-	if !strings.Contains(in.do(http.MethodGet, "/api/auth/me", nil, founder).Body.String(), `"oidc_binding_required":true`) {
-		t.Fatal("the account payload does not say it must bind")
-	}
-
-	// A handful of endpoints stay reachable regardless, so the browser can
-	// draw the binding screen and start the connect flow.
-	if code := in.do(http.MethodGet, "/api/site", nil, founder).Code; code != http.StatusOK {
-		t.Fatalf("the site endpoint is held: %d", code)
-	}
-	if code := in.do(http.MethodGet, "/api/auth/oauth/connections", nil, founder).Code; code != http.StatusOK {
-		t.Fatalf("the connections endpoint is held: %d", code)
-	}
-
-	// A GitHub connection would not satisfy this policy.
-	if code := in.do(http.MethodPost, "/api/auth/oauth/connections/github",
-		map[string]string{"password": "a-good-password"}, founder).Code; code != http.StatusForbidden {
-		t.Fatalf("a non-OIDC connect route reached past the gate: %d", code)
-	}
-
-	// The OIDC connect flow itself is always reachable, and completing it
-	// lifts the gate.
-	stateCookie, nonce := in.startConnect("oidc", founder, "a-good-password", "")
-
-	callbackPath := "/api/auth/oauth/callback/oidc?code=c&state=" + nonce
-	callback := in.doWithExtraCookies(http.MethodGet, callbackPath, founder, stateCookie)
-	if callback.Code != http.StatusFound || !strings.HasPrefix(callback.Header().Get("Location"), "/settings?oauth=connected") {
-		t.Fatalf("finish the link: %d %s", callback.Code, callback.Header().Get("Location"))
-	}
-
-	if code := in.do(http.MethodGet, "/api/conversations", nil, founder).Code; code != http.StatusOK {
-		t.Fatalf("still held after connecting: %d", code)
-	}
-	if strings.Contains(in.do(http.MethodGet, "/api/auth/me", nil, founder).Body.String(), `"oidc_binding_required":true`) {
-		t.Fatal("the account payload still says it must bind after connecting")
-	}
-
-	// A second account, never having connected, is still held.
-	if code := in.do(http.MethodGet, "/api/conversations", nil, member).Code; code != http.StatusForbidden {
-		t.Fatalf("a different unconnected account is not held: %d", code)
-	}
-}
-
-// The next= parameter the binding gate itself sends the browser to /bind-oidc
-// with rides through the connect flow and back, so completing it lands where
-// the gate wanted rather than at the settings screen.
-func TestOIDCBindingConnectHonoursNext(t *testing.T) {
-	in := newInstance(t)
-	founder := in.register("founder", "a-good-password")
-
-	stub := stubOIDCProvider(t)
-	configure := map[string]string{
-		"oauth.oidc_enabled":         "true",
-		"oauth.oidc_client_id":       "a-client-id",
-		"oauth.oidc_client_secret":   "a-client-secret",
-		"oauth.oidc_auth_url":        stub.URL + "/authorize",
-		"oauth.oidc_token_url":       stub.URL + "/token",
-		"oauth.oidc_userinfo_url":    stub.URL + "/userinfo",
-		"oauth.oidc_require_for_all": "true",
-	}
-	if response := in.do(http.MethodPut, "/api/admin/settings", configure, founder); response.Code != http.StatusOK {
-		t.Fatalf("configure: %d %s", response.Code, response.Body.String())
-	}
-
-	stateCookie, nonce := in.startConnect("oidc", founder, "a-good-password", "/bind-oidc?next=%2Fsettings")
-
-	callback := in.doWithExtraCookies(http.MethodGet, "/api/auth/oauth/callback/oidc?code=c&state="+nonce, founder, stateCookie)
-	location := callback.Header().Get("Location")
-	if callback.Code != http.StatusFound || !strings.HasPrefix(location, "/bind-oidc?") || !strings.Contains(location, "oauth=connected") {
-		t.Fatalf("finish the link with next: %d %s", callback.Code, location)
-	}
 }

@@ -14,7 +14,7 @@ import (
 // A compile that panics fails every caller waiting on it, at once. Before, the
 // handoff was never closed: the caller behind the first one waited until its own
 // deadline, and the backend could never compile again.
-func TestACompilePanicFailsEveryCallerWaitingOnItAtOnce(t *testing.T) {
+func TestConcurrentACompilePanicFailsEveryCallerWaitingOnItAtOnce(t *testing.T) {
 	compileHook = func() {
 		time.Sleep(20 * time.Millisecond)
 		panic("the compiler gave up")

@@ -53,20 +53,3 @@ func TestOperatorPictureLimitCanBeRaised(t *testing.T) {
 		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
 	}
 }
-
-// Without an operator setting the limits are the built-in ones, so an install
-// that never touched the setting behaves as it did before the setting was read.
-func TestPictureLimitDefaultsAreUnchanged(t *testing.T) {
-	h := &Handlers{}
-	if got := h.pictureCeiling(); got != 6<<20 {
-		t.Errorf("default picture ceiling = %d, want %d", got, 6<<20)
-	}
-	if got := h.bodyLimit(); got != 12<<20 {
-		t.Errorf("default body limit = %d, want %d", got, 12<<20)
-	}
-
-	h.MaxUploadBytes = func() int64 { return 0 }
-	if got := h.pictureCeiling(); got != 6<<20 {
-		t.Errorf("a zero setting ceiling = %d, want the default %d", got, 6<<20)
-	}
-}

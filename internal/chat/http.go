@@ -312,11 +312,13 @@ func (h *Handlers) chat(w http.ResponseWriter, r *http.Request) error {
 		return sse.Event(event, payload)
 	}
 
-	if err := h.service.Run(r.Context(), request, resolved, emit); err != nil {
+	streamCtx, stopHeartbeat := sse.KeepAlive(r.Context())
+	defer stopHeartbeat()
+	if err := h.service.Run(streamCtx, request, resolved, emit); err != nil {
 		// The stream is already committed, so there is no status left to set.
 		// A write failure means the client went away, which the gateway has
 		// already handled by saving what it had.
-		if r.Context().Err() != nil {
+		if streamCtx.Err() != nil {
 			return nil
 		}
 		// Refused before anything was written, so the person is told what to do

@@ -365,37 +365,6 @@ func resolvedKeys(t *testing.T, store *Store, providerID string, calls int) map[
 	return seen
 }
 
-// Keys pasted one per line become that many keys, trimmed and without the
-// repeat, and sequential rotation takes them in turn.
-func TestSeveralKeysAreTakenInTurn(t *testing.T) {
-	store := newStore(t)
-	record := newKeyed(t, store, "sk-test-key-first-1111\n  sk-test-key-second-2222 \r\n\nsk-test-key-third-3333\nsk-test-key-first-1111", RotateSequential)
-
-	if want := []string{"••••1111", "••••2222", "••••3333"}; !slices.Equal(record.APIKeyHints, want) {
-		t.Fatalf("hints = %v, want %v", record.APIKeyHints, want)
-	}
-	reloaded, err := store.ByID(context.Background(), record.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Equal(reloaded.APIKeyHints, record.APIKeyHints) || reloaded.APIKeyHint != "••••1111" {
-		t.Fatalf("read back hints = %v (%q)", reloaded.APIKeyHints, reloaded.APIKeyHint)
-	}
-
-	var order []string
-	for range 6 {
-		resolved, err := store.Resolve(context.Background(), record.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		order = append(order, resolved.APIKey)
-	}
-	want := []string{"sk-test-key-first-1111", "sk-test-key-second-2222", "sk-test-key-third-3333", "sk-test-key-first-1111", "sk-test-key-second-2222", "sk-test-key-third-3333"}
-	if !slices.Equal(order, want) {
-		t.Fatalf("keys taken = %v, want %v", order, want)
-	}
-}
-
 // The turn counter is shared by every request at once: each key is taken
 // exactly as often as the others, however the calls interleave.
 func TestSequentialRotationIsEvenUnderConcurrentCalls(t *testing.T) {

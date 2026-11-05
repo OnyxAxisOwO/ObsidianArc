@@ -50,6 +50,10 @@ func TestChangePasswordHandsTheBrowserItsNewCookie(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	_, other, err := f.auth.Login(ctx, LoginInput{Identifier: "arc", Password: "a-good-password"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	handler := &Handlers{service: f.auth}
 	changePassword := httpx.Wrap(handler.changePassword)
 	body := func(current, next string) *strings.Reader {
@@ -80,6 +84,13 @@ func TestChangePasswordHandsTheBrowserItsNewCookie(t *testing.T) {
 	}
 	if _, _, err := f.auth.Authenticate(ctx, token); !errors.Is(err, ErrSessionNotFound) {
 		t.Errorf("the old cookie still signs in: %v", err)
+	}
+
+	if _, _, err := f.auth.Authenticate(ctx, other); !errors.Is(err, ErrSessionNotFound) {
+		t.Errorf("another session survived the password change: %v", err)
+	}
+	if _, _, err := f.auth.Login(ctx, LoginInput{Identifier: "arc", Password: "a-good-password"}); !errors.Is(err, ErrInvalidCredentials) {
+		t.Errorf("the old password survived the change: %v", err)
 	}
 
 	// Ended after Attach resolved it and before the change landed.

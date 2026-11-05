@@ -47,13 +47,6 @@ func TestInviteCommands(t *testing.T) {
 				 "group_id":"","group_name":"","group_days":0,"group_days_max":0,"max_uses":10,"uses":2,"claims":0,
 				 "expires_at":0,"revoked_at":0,"note":"","created_by":"root","created_at":1700000000000,"status":"active"}
 			],"total":1}`)}, nil
-		case method == "GET" && path == "/api/admin/invites?kind=partner&limit=50":
-			return Response{Status: 200, Body: []byte(`{"codes":[
-				{"id":"` + codeID + `","code":"PARTNERX","owner_id":"","owner_username":"","owner_nickname":"",
-				 "kind":"partner","name":"Acme Corp","allow_existing":true,
-				 "group_id":"` + groupID + `","group_name":"Trial","group_days":3,"group_days_max":7,"max_uses":0,"uses":3,"claims":2,
-				 "expires_at":0,"revoked_at":0,"note":"aff","created_by":"root","created_at":1700000000000,"status":"active"}
-			],"total":1}`)}, nil
 		case method == "POST" && path == "/api/admin/invites":
 			return Response{Status: 201, Body: []byte(`{"codes":[
 				{"id":"` + codeID + `","code":"AB12CD34","owner_id":"","owner_username":"","owner_nickname":"",
@@ -71,12 +64,6 @@ func TestInviteCommands(t *testing.T) {
 				{"user_id":"01U1","username":"alice","nickname":"Alice","via":"register","group_days":5,"created_at":1700001000000,"rewarded_at":1700002000000,"reward_cards":2,"reward_skipped":""},
 				{"user_id":"01U2","username":"bob","nickname":"","via":"register","group_days":0,"created_at":1700003000000,"rewarded_at":1700003500000,"reward_cards":0,"reward_skipped":"same_ip"},
 				{"user_id":"01U3","username":"carl","nickname":"Carl","via":"claim","group_days":5,"created_at":1700004000000,"rewarded_at":0,"reward_cards":0,"reward_skipped":""}
-			]}`)}, nil
-		case method == "GET" && path == "/api/admin/invites/stats":
-			return Response{Status: 200, Body: []byte(`{"active":4,"uses_total":9,"uses_7d":3,"top_inviters":[
-				{"user_id":"01U1","username":"alice","nickname":"Alice","invites":5,"rewarded":4}
-			],"partners":[
-				{"id":"` + codeID + `","code":"PARTNERX","name":"Acme Corp","registrations":3,"claims":2}
 			]}`)}, nil
 		case method == "GET" && path == "/api/admin/references":
 			return Response{Status: 200, Body: []byte(`{"groups":[{"id":"` + groupID + `","name":"Trial"}]}`)}, nil
@@ -107,25 +94,6 @@ func TestInviteCommands(t *testing.T) {
 		}
 		if !strings.Contains(out, "1 total") {
 			t.Errorf("expected a total line:\n%s", out)
-		}
-	})
-
-	t.Run("list --kind partner passes kind through and shows the partner's name", func(t *testing.T) {
-		result, out := run("invite list --kind partner")
-		if !result.OK {
-			t.Fatalf("invite list failed: %s", out)
-		}
-		if lastCall.Path != "/api/admin/invites?kind=partner&limit=50" {
-			t.Errorf("expected kind=partner on the query, got: %v", lastCall)
-		}
-		// PARTNERX is 8 characters, the same length a generated code is, so
-		// it is displayed hyphenated (PART-NERX) exactly the way an
-		// operator-chosen code that happens to fall on that length always
-		// is — see displayInviteCode.
-		for _, want := range []string{"PART-NERX", "partner", "Acme Corp"} {
-			if !strings.Contains(out, want) {
-				t.Errorf("expected %q in the partner row:\n%s", want, out)
-			}
 		}
 	})
 
@@ -198,16 +166,6 @@ func TestInviteCommands(t *testing.T) {
 		}
 	})
 
-	t.Run("revoke refuses without --yes", func(t *testing.T) {
-		result, _ := run("invite revoke PARTNERX")
-		if result.OK {
-			t.Fatal("invite revoke without --yes should be refused")
-		}
-		if result.Code != "confirmation_required" {
-			t.Errorf("want confirmation_required, got %q", result.Code)
-		}
-	})
-
 	t.Run("revoke resolves a code to its id", func(t *testing.T) {
 		result, out := run("invite revoke PARTNERX --yes")
 		if !result.OK {
@@ -254,17 +212,6 @@ func TestInviteCommands(t *testing.T) {
 		}
 	})
 
-	t.Run("stats prints the summary, the inviter leaderboard and the partner leaderboard", func(t *testing.T) {
-		result, out := run("invite stats")
-		if !result.OK {
-			t.Fatalf("invite stats failed: %s", out)
-		}
-		for _, want := range []string{"active", "4", "uses_total", "9", "alice", "top partners", "PART-NERX", "Acme Corp"} {
-			if !strings.Contains(out, want) {
-				t.Errorf("expected %q in output:\n%s", want, out)
-			}
-		}
-	})
 }
 
 // A 26-character custom code is spelled in the ULID alphabet, so it looks

@@ -335,35 +335,11 @@ func TestAReplayedAssistantMessageMayCarryFieldsWeDoNotRead(t *testing.T) {
 	}
 	// Ignored, not forwarded: leniency is about what may arrive, and
 	// completionRequest still decides what leaves.
-	if _, present := f.upstream.received()["parallel_tool_calls"]; present {
-		t.Error("an unread field reached the provider")
+	if f.upstream.received()["parallel_tool_calls"] != false {
+		t.Error("parallel_tool_calls was not forwarded")
 	}
 	if _, present := f.upstream.received()["annotations"]; present {
 		t.Error("an unread field reached the provider")
-	}
-}
-
-// `stream` is absent from an ordinary call by every client library there is,
-// and the protocol says absent means false. Answering one with an event
-// stream hands it a body it is not parsing, which is where the official SDK
-// stopped.
-func TestStreamDefaultsToOffWhenTheFieldIsAbsent(t *testing.T) {
-	f := newFixture(t)
-	f.upstream.reply(answer)
-
-	body := `{"model":"` + f.model.ID + `","messages":[{"role":"user","content":"hi"}]}`
-	w := f.do(t, http.MethodPost, "/v1/chat/completions", f.token, body)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
-	}
-	if got := w.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
-		t.Errorf("Content-Type = %q, want application/json", got)
-	}
-	if strings.HasPrefix(strings.TrimSpace(w.Body.String()), "data:") {
-		t.Errorf("a request that did not ask for a stream got one: %s", w.Body.String())
-	}
-	if object := decodeJSON(t, w)["object"]; object != "chat.completion" {
-		t.Errorf("object = %v, want chat.completion", object)
 	}
 }
 

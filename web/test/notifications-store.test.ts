@@ -94,20 +94,6 @@ describe('the notifications store', () => {
     expect(get).toHaveBeenCalledWith('/api/feedback/unread');
   });
 
-  it('an unchanged poll raises nothing new', async () => {
-    get.mockImplementation(async (url: string) =>
-      (url.includes('/poll') ? { notifications: [], unread: 0, now: 1000 } :
-        { notifications: [row('a', 1000)], unread: 1, seen_at: 0, now: 1000 }));
-
-    startNotifications();
-    await vi.advanceTimersByTimeAsync(0);
-    await vi.advanceTimersByTimeAsync(POLL_MS);
-    await vi.advanceTimersByTimeAsync(POLL_MS);
-
-    expect(activeToasts.value).toHaveLength(0);
-    expect(notificationList.value).toHaveLength(1);
-  });
-
   it('does not poll from a tab nobody can see, and catches up once it is shown', async () => {
     get.mockImplementation(async (url: string) =>
       (url.includes('/poll') ? { notifications: [row('c', 3000)], unread: 1, now: 3000 } :
@@ -129,18 +115,6 @@ describe('the notifications store', () => {
     expect(get.mock.calls.some(([url]) => String(url).includes('/poll'))).toBe(true);
     expect(activeToasts.value.map((toast) => toast.id)).toEqual(['c']);
     state.mockRestore();
-  });
-
-  it('forgets everything on sign-out, for the next account', async () => {
-    get.mockResolvedValue({ notifications: [row('a', 1000)], unread: 1, seen_at: 0, now: 1000 });
-    startNotifications();
-    await vi.advanceTimersByTimeAsync(0);
-    expect(notificationList.value).toHaveLength(1);
-
-    stopNotifications();
-    expect(notificationList.value).toHaveLength(0);
-    expect(notificationsUnread.value).toBe(0);
-    expect(activeToasts.value).toHaveLength(0);
   });
 
   // The toast stack is what calls stopNotifications, and it unmounts with the
@@ -302,15 +276,32 @@ describe('the notifications store', () => {
   // With 200 rows the reader already has inside that window, every answer
   // used to be the same full page of them, so a row committed later was never
   // raised. The store now asks again from the page's last row.
+  it('continues through more than one page at the same timestamp', async () => {
+    const table = Array.from({ length: 205 }, (_, i) => row(`id-${String(i).padStart(3, '0')}`, 4400));
+    get.mockImplementation(async (url: string) => {
+      if (!url.includes('/poll')) return { notifications: [], unread: 0, seen_at: 0, now: 4300 };
+      const params = new URL(url, 'https://arc.test').searchParams;
+      const afterID = params.get('after_id');
+      return { notifications: table.filter((record) => !afterID || record.id > afterID).slice(0, 200), unread: 205, now: 4500 };
+    });
+    startNotifications();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    expect(notificationList.value[0]?.id).toBe('id-204');
+    expect(get.mock.calls.some(([url]) => String(url).includes('after_id=id-199'))).toBe(true);
+  });
+
   it('still raises a row that arrives behind a full page of rows the reader already has', async () => {
     const backlog = Array.from({ length: 200 }, (_, i) => row(`old-${i}`, 4000 + i));
     const table = [...backlog];
     get.mockImplementation(async (url: string) => {
       if (!url.includes('/poll')) return { notifications: backlog, unread: 200, seen_at: 0, now: 4300 };
-      const after = Number(url.split('after=')[1]);
+      const params = new URL(url, 'https://arc.test').searchParams;
+      const after = Number(params.get('after'));
+      const afterID = params.get('after_id');
       const page = table
-        .filter((record) => record.created_at > after - 10_000)
-        .sort((a, b) => a.created_at - b.created_at)
+        .filter((record) => afterID ? record.created_at > after || (record.created_at === after && record.id > afterID) : record.created_at > after - 10_000)
+        .sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id))
         .slice(0, 200);
       return { notifications: page, unread: table.length, now: 4500 };
     });

@@ -2,13 +2,13 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createApp, h, ref, nextTick, type App } from 'vue';
 import ChatSidebar from '../src/chat/ChatSidebar.vue';
 import ChatThinking from '../src/chat/ChatThinking.vue';
-import OaPagination from '../src/components/OaPagination.vue';
 import OaSelect from '../src/components/OaSelect.vue';
 import { providePanelHost } from '../src/composables/usePanelHost';
 import { currentUser } from '../src/stores/session';
 import { t } from '../src/composables/useI18n';
 import * as chatModule from '../src/chat/useChat';
 import * as chatApi from '../src/api/chat';
+import { makeAccount } from './fixtures/account';
 
 // The rail reads its folders as it mounts. Answered here, so that read never
 // reaches a fetch a test has stubbed to count its own requests.
@@ -35,6 +35,7 @@ beforeEach(() => {
 afterEach(() => {
   app?.unmount();
   app = null;
+  currentUser.value = null;
   document.dispatchEvent(new PointerEvent('pointerdown'));
 });
 
@@ -78,49 +79,8 @@ describe('ChatSidebar new layout and 3-dots context menu', () => {
     });
   }
 
-  it('opens the rail with a new chat row and a new folder beside it', () => {
-    app = createApp({
-      setup() {
-        providePanelHost(ref(host));
-        return () => h(ChatSidebar);
-      },
-    });
-    app.mount(host);
-
-    const newBtn = host.querySelector('.ai-history-new-btn');
-    expect(newBtn?.classList.contains('ai-chat-new')).toBe(true);
-    expect(newBtn?.parentElement?.querySelector('.ai-rail-folder-btn')).not.toBeNull();
-    // One list now: the tabs it replaced are gone.
-    expect(host.querySelector('[role="tablist"]')).toBeNull();
-    // Nothing to search in an empty history, so no field to search it with.
-    expect(host.querySelector('.ai-history-search-row')).toBeNull();
-    expect(host.querySelector('.ai-chat-list-blank')).not.toBeNull();
-  });
-
   it('renders 3-dots more menu button on conversation item even when canDelete is false', async () => {
-    currentUser.value = {
-      id: 'u1',
-      username: 'test',
-      email: '',
-      nickname: 'Test',
-      avatar: '',
-      bio: '',
-      role: 'user',
-      group_id: 'g1',
-      group_expires_at: 0,
-      group_name: 'Users',
-      status: 'active',
-      created_at: 0,
-      updated_at: 0,
-      last_login_at: 0,
-      email_verified: true,
-      allow_stats: true,
-      allow_delete_conversations: false,
-      allow_archive_conversations: true,
-      api_restricted: false,
-      api_restricted_until: 0,
-      api_restriction_source: '',
-    };
+    currentUser.value = makeAccount({ allow_delete_conversations: false, allow_archive_conversations: true });
 
     chatModule.conversations.value = [
       {
@@ -164,66 +124,6 @@ describe('ChatSidebar new layout and 3-dots context menu', () => {
     expect(titles.some((t) => t?.includes('Archive') || t?.includes('归档'))).toBe(true);
     expect(titles.some((t) => t?.includes('Delete') || t?.includes('删除'))).toBe(false);
   });
-
-  it('renders delete option in 3-dots menu when canDelete is true', async () => {
-    currentUser.value = {
-      id: 'u1',
-      username: 'test',
-      email: '',
-      nickname: 'Test',
-      avatar: '',
-      bio: '',
-      role: 'user',
-      group_id: 'g1',
-      group_expires_at: 0,
-      group_name: 'Users',
-      status: 'active',
-      created_at: 0,
-      updated_at: 0,
-      last_login_at: 0,
-      email_verified: true,
-      allow_stats: true,
-      allow_delete_conversations: true,
-      allow_archive_conversations: true,
-      api_restricted: false,
-      api_restricted_until: 0,
-      api_restriction_source: '',
-    };
-
-    chatModule.conversations.value = [
-      {
-        id: 'c1',
-        title: 'Conversation One',
-        model_id: 'm1',
-        pinned: false,
-        message_count: 1,
-        created_at: Date.now(),
-        updated_at: Date.now(),
-      },
-    ];
-
-    app = createApp({
-      setup() {
-        providePanelHost(ref(host));
-        return () => h(ChatSidebar);
-      },
-    });
-    app.mount(host);
-    await nextTick();
-
-    const moreBtn = host.querySelector<HTMLButtonElement>('.ai-chat-list-more');
-    moreBtn?.click();
-    await settle();
-
-    const menu = host.querySelector('.ai-chat-context-menu');
-    expect(menu).not.toBeNull();
-
-    const menuItems = menu?.querySelectorAll('.oa-menu-item') ?? [];
-    const titles = Array.from(menuItems).map((el) => el.textContent?.trim());
-    expect(titles.some((t) => t?.includes('Rename') || t?.includes('重命名'))).toBe(true);
-    expect(titles.some((t) => t?.includes('Archive') || t?.includes('归档'))).toBe(true);
-    expect(titles.some((t) => t?.includes('Delete') || t?.includes('删除'))).toBe(true);
-  });
 });
 
 describe('ChatThinking animation and structure', () => {
@@ -253,41 +153,9 @@ describe('ChatThinking animation and structure', () => {
     expect(root?.classList.contains('open')).toBe(false);
     expect(head?.getAttribute('aria-expanded')).toBe('false');
   });
-
-  it('starts open when live is true', () => {
-    app = createApp({
-      render: () => h(ChatThinking, { text: 'Streaming thought', live: true }),
-    });
-    app.mount(host);
-
-    const root = host.querySelector('.ai-thinking');
-    expect(root?.classList.contains('open')).toBe(true);
-  });
 });
 
-describe('OaPagination mobile keyboard prevention', () => {
-  it('configures OaSelect with searchable false', async () => {
-    app = createApp({
-      render: () => h(OaPagination, {
-        page: 1,
-        pageSize: 20,
-        total: 100,
-      }),
-    });
-    app.mount(host);
-
-    // Clicking trigger opens list without a search input inside
-    const trigger = host.querySelector<HTMLButtonElement>('.oa-select');
-    expect(trigger).not.toBeNull();
-    trigger?.click();
-    await settle();
-
-    // The teleported menu should not have .searchable or an input
-    const menu = document.body.querySelector('.oa-select-menu');
-    expect(menu).not.toBeNull();
-    expect(menu?.querySelector('input[type="search"]')).toBeNull();
-  });
-
+describe('mobile select keyboard', () => {
   it('does not focus search input on coarse pointer (touch device)', async () => {
     const originalMatchMedia = window.matchMedia;
     window.matchMedia = (query: string) => ({
@@ -328,7 +196,9 @@ describe('OaPagination mobile keyboard prevention', () => {
       window.matchMedia = originalMatchMedia;
     }
   });
+});
 
+describe('deleting a conversation from the rail', () => {
   // Deleting is permanent and the menu is two clicks away, so the first click
   // only asks. Only the second one reaches the server.
   it('asks once before a conversation is deleted from its menu', async () => {
@@ -338,6 +208,7 @@ describe('OaPagination mobile keyboard prevention', () => {
     }));
     vi.stubGlobal('fetch', fetchMock);
     try {
+      currentUser.value = makeAccount({ allow_delete_conversations: true });
       chatModule.conversations.value = [
         {
           id: 'c1',

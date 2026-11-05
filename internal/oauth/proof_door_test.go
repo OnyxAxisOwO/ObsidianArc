@@ -215,29 +215,6 @@ func TestAProviderSignUpFromTheLoginPageIsRefusedWhileAProofIsRequired(t *testin
 	}
 }
 
-// Signing in to an account that already holds the provider asks nothing of it:
-// the login door has no proof, and the account opens nothing.
-func TestASignInToAnExistingAccountNeedsNoProofOfWork(t *testing.T) {
-	f := newFixture(t)
-	populate(t, f)
-	withProofOfWork(t, f)
-	if _, err := f.service.SignIn(t.Context(), identity("4218", "octocat", ""),
-		cleared, "203.0.113.5", "a browser"); err != nil {
-		t.Fatalf("open the account: %v", err)
-	}
-	f.configure(t, "github")
-	stubGitHubAs(t, "4218", "octocat")
-	_, mux := handlers(t, f)
-
-	back := returnFrom(t, mux, "/api/auth/oauth/start/github")
-	if location := back.Header().Get("Location"); location != "/" {
-		t.Fatalf("callback = %q, want the existing account signed in", location)
-	}
-	if total := accountCount(t, f); total != 2 {
-		t.Errorf("accounts = %d, want no new one", total)
-	}
-}
-
 // The details form a sign-up can stop at opens the account on the pass its start
 // recorded, so the form asks for no second proof.
 func TestAPendingSignUpFromTheRegisterPageIsOpenedWithoutASecondProof(t *testing.T) {
@@ -264,6 +241,29 @@ func TestAPendingSignUpFromTheRegisterPageIsOpenedWithoutASecondProof(t *testing
 	}
 	if total := accountCount(t, f); total != 2 {
 		t.Errorf("accounts = %d, want the new one opened from the form", total)
+	}
+}
+
+// Signing in to an account that already holds the provider asks nothing of it:
+// the login door has no proof, and the account opens nothing.
+func TestASignInToAnExistingAccountNeedsNoProofOfWork(t *testing.T) {
+	f := newFixture(t)
+	populate(t, f)
+	withProofOfWork(t, f)
+	if _, err := f.service.SignIn(t.Context(), identity("4218", "octocat", ""),
+		cleared, "203.0.113.5", "a browser"); err != nil {
+		t.Fatalf("open the account: %v", err)
+	}
+	f.configure(t, "github")
+	stubGitHubAs(t, "4218", "octocat")
+	_, mux := handlers(t, f)
+
+	back := returnFrom(t, mux, "/api/auth/oauth/start/github")
+	if location := back.Header().Get("Location"); location != "/" {
+		t.Fatalf("callback = %q, want the existing account signed in", location)
+	}
+	if total := accountCount(t, f); total != 2 {
+		t.Errorf("accounts = %d, want no new one", total)
 	}
 }
 

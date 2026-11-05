@@ -6,7 +6,9 @@
 // move.
 
 import { t } from '@/composables/useI18n';
-import { SESSION_ENDED } from './session-ended';
+import { sessionRevision, SESSION_ENDED } from './session-ended';
+
+const responseSessions = new WeakMap<Response, number>();
 
 export class ApiError extends Error {
   readonly status: number;
@@ -66,7 +68,7 @@ async function request<T>(method: string, path: string, options: RequestOptions 
   if (!response.ok) {
     const { code, message, details } = await readOrLost(() => readErrorBody(response), init.signal);
     noteBackofficeRefusal(code);
-    noteSessionEnded(code);
+    noteSessionEnded(code, response);
     throw new ApiError(
       response.status,
       code ?? 'error',
@@ -139,7 +141,9 @@ export function noteBackofficeRefusal(code: string | undefined): void {
  * The other 401s — a wrong password, a second factor still due — have codes of
  * their own, and must not sign the tab out.
  */
-export function noteSessionEnded(code: string | undefined): void {
+export function noteSessionEnded(code: string | undefined, source?: Response | number): void {
+  const requestSession = typeof source === 'number' ? source : source ? responseSessions.get(source) : undefined;
+  if (requestSession !== undefined && requestSession !== sessionRevision()) return;
   if (code === 'session_required' && typeof window !== 'undefined') {
     window.dispatchEvent(new Event(SESSION_ENDED));
   }
@@ -153,8 +157,11 @@ export function noteSessionEnded(code: string | undefined): void {
  * caller's own doing and passes through unchanged.
  */
 export async function fetchApi(path: string, init: RequestInit): Promise<Response> {
+  const session = sessionRevision();
   try {
-    return await fetch(path, init);
+    const response = await fetch(path, init);
+    responseSessions.set(response, session);
+    return response;
   } catch (error) {
     if (init.signal?.aborted) throw error;
     // The browser's own wording is engine text, not a sentence for a reader,

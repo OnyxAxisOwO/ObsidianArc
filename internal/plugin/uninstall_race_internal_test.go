@@ -48,7 +48,7 @@ func purgingPackage(t *testing.T, name, purgeSQL string) []byte {
 // it takes the lock would purge the version the update replaced, and leave the new
 // one's data behind. The test holds the lock the way an update does, lets the
 // uninstall queue behind it, swaps the new version in, and releases.
-func TestAnUninstallQueuedBehindAnUpdatePurgesTheVersionThatIsInstalled(t *testing.T) {
+func TestConcurrentAnUninstallQueuedBehindAnUpdatePurgesTheVersionThatIsInstalled(t *testing.T) {
 	r := newRig(t)
 	ctx := context.Background()
 	if _, err := r.manager.InstallPackage(ctx, someone,

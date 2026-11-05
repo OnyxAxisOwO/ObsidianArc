@@ -34,6 +34,9 @@ func TestARouteCannotTakeTheSlotsAGuardNeeds(t *testing.T) {
 // An unbounded engine admits every call, and a call that is refused takes
 // nothing with it.
 func TestAnUnboundedEngineAdmitsEverything(t *testing.T) {
+	if got := NewEngine(Limits{}).limits.MaxConcurrent; got != 32 {
+		t.Fatalf("default MaxConcurrent = %d", got)
+	}
 	e := NewEngine(Limits{MaxConcurrent: -1})
 	for i := 0; i < 100; i++ {
 		if _, ok := e.admit("http"); !ok {

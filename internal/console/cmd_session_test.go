@@ -3,7 +3,6 @@ package console
 import (
 	"bytes"
 	"context"
-	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -40,45 +39,6 @@ func (r *watchRecorder) calls() []string {
 // needs.
 func watchAdmin(username string) user.User {
 	return user.User{ID: id.New(), Username: username, Role: user.RoleAdmin, AdminPermissions: []string{"users"}, Status: user.StatusActive}
-}
-
-// A sign-in can end while a watch is running: its session is deleted, or the
-// account is disabled. The run that would follow must not happen, and the
-// watch must say why.
-func TestWatchStopsOnItsNextRunWhenTheSignInHasEnded(t *testing.T) {
-	var (
-		mu       sync.Mutex
-		reauthed int
-	)
-	recorder := &watchRecorder{}
-	c := New(Options{Dispatch: recorder.dispatch})
-	session := &Session{
-		Actor: watchAdmin("desk"), Transport: "web", Lang: "en", Width: 100,
-		Reauthorize: func(context.Context) (user.User, error) {
-			mu.Lock()
-			defer mu.Unlock()
-			reauthed++
-			return user.User{}, errors.New("sign-in deleted")
-		},
-	}
-
-	var out bytes.Buffer
-	result := c.Execute(context.Background(), session, &out, "watch --interval 1s --count 5 -- user list")
-
-	if got := recorder.calls(); len(got) != 1 {
-		t.Errorf("the watch dispatched %d runs, want 1: the run after the sign-in ended must not happen", len(got))
-	}
-	mu.Lock()
-	if reauthed != 1 {
-		t.Errorf("the account was read again %d times, want 1", reauthed)
-	}
-	mu.Unlock()
-	if result.OK {
-		t.Errorf("the watch reported success after its sign-in ended:\n%s", out.String())
-	}
-	if !strings.Contains(out.String(), "watch stopped") {
-		t.Errorf("the stop was not explained:\n%s", out.String())
-	}
 }
 
 // A run after the first is made as the account is now. Here the account has

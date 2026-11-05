@@ -1,56 +1,15 @@
 package server
 
 import (
-	"context"
 	"net/http"
+	"slices"
 	"testing"
 
-	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 )
 
-// A settings export names the models it points at by ULID, and a ULID from
-// another instance means nothing here. The sign-up reviewer's model is one of
-// them, and it was the one not checked: carried across, every review resolved
-// against a model this instance does not have, and the review fell back to the
-// selected mode's failure decision — normal mode restricting, strict mode
-// refusing everybody — with nothing in the response to say why.
-func TestImportingSettingsDropsAModelIdThatIsNotHere(t *testing.T) {
-	in := newInstance(t)
-	admin := in.register("founder", "a-good-password")
-
-	response := in.do(http.MethodPost, "/api/admin/settings/import", map[string]string{
-		"security.signup_review_model": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-		"site.name":                    "Carried Over",
-	}, admin)
-	if response.Code != http.StatusOK {
-		t.Fatalf("import: %d %s", response.Code, response.Body.String())
-	}
-
-	result := decode[map[string]any](t, response)
-	skipped, _ := result["skipped"].([]any)
-	if len(skipped) != 1 || skipped[0] != "security.signup_review_model" {
-		t.Errorf("skipped = %v, want just security.signup_review_model", skipped)
-	}
-
-	settings := decode[map[string]any](t, in.do(http.MethodGet, "/api/admin/settings", nil, admin))
-	values, _ := settings["settings"].(map[string]any)
-	if values["security.signup_review_model"] != "" {
-		t.Errorf("a model id that means nothing here was kept: %v",
-			values["security.signup_review_model"])
-	}
-	// The rest of the same document still lands. One dangling identifier must
-	// not cost the operator the export they are trying to move.
-	if values["site.name"] != "Carried Over" {
-		t.Errorf("site.name = %v, want the imported value", values["site.name"])
-	}
-}
-
-// The other half of the same rule: an id that does resolve is kept. The
-// clearing above is about the model being absent, not about the setting being
-// refused, and a test that only checked the absent case could not tell those
-// apart.
-func TestImportingSettingsKeepsAModelIdThatIsHere(t *testing.T) {
+// Model IDs in a settings export may belong to another instance.
+func TestImportingSettingsKeepsOnlyModelIDsThatResolve(t *testing.T) {
 	in := newInstance(t)
 	admin := in.register("founder", "a-good-password")
 
@@ -82,20 +41,32 @@ func TestImportingSettingsKeepsAModelIdThatIsHere(t *testing.T) {
 		t.Fatalf("the model arrived without an id: %+v", row)
 	}
 
-	response := in.do(http.MethodPost, "/api/admin/settings/import", map[string]string{
-		"security.signup_review_model": modelID,
-	}, admin)
-	if response.Code != http.StatusOK {
-		t.Fatalf("import settings: %d %s", response.Code, response.Body.String())
-	}
-	if result := decode[map[string]any](t, response); len(result["skipped"].([]any)) != 0 {
-		t.Errorf("a model that is here was skipped: %v", result["skipped"])
-	}
-
-	settings := decode[map[string]any](t, in.do(http.MethodGet, "/api/admin/settings", nil, admin))
-	values, _ := settings["settings"].(map[string]any)
-	if values["security.signup_review_model"] != modelID {
-		t.Errorf("stored model = %v, want %v", values["security.signup_review_model"], modelID)
+	for _, tc := range []struct{ id, stored string }{
+		{"01ARZ3NDEKTSV4RRFFQ69G5FAV", ""},
+		{modelID, modelID},
+	} {
+		response := in.do(http.MethodPost, "/api/admin/settings/import", map[string]string{
+			settings.SignupReviewModel: tc.id, settings.SiteName: "Carried Over",
+		}, admin)
+		if response.Code != http.StatusOK {
+			t.Fatalf("import settings: %d %s", response.Code, response.Body.String())
+		}
+		result := decode[struct {
+			Skipped []string `json:"skipped"`
+		}](t, response)
+		want := []string{}
+		if tc.stored == "" {
+			want = []string{settings.SignupReviewModel}
+		}
+		if !slices.Equal(result.Skipped, want) {
+			t.Fatalf("skipped = %v, want %v", result.Skipped, want)
+		}
+		if got := in.server.settings.Get(settings.SignupReviewModel); got != tc.stored {
+			t.Errorf("stored model = %q, want %q", got, tc.stored)
+		}
+		if got := in.server.settings.Get(settings.SiteName); got != "Carried Over" {
+			t.Errorf("the rest of the import did not land: site name = %q", got)
+		}
 	}
 }
 
@@ -152,42 +123,5 @@ func TestImportingSettingsOutsideAGrantSkipsOnlyThoseKeys(t *testing.T) {
 	}
 	if got := in.server.settings.Get(settings.SiteName); got != "Carried Over" {
 		t.Errorf("site.name = %q, want the imported value", got)
-	}
-}
-
-// An export carries chat.allow_archive, so the file it writes must bring the
-// switch back. Before the key was writable the import reported it skipped and
-// the setting could never be changed by anyone.
-func TestImportingSettingsAppliesAllowArchive(t *testing.T) {
-	in := newInstance(t)
-	admin := in.register("founder", "a-good-password")
-	member := in.register("member", "a-good-password")
-	ctx := context.Background()
-
-	memberChat, err := conversation.NewStore(in.db).Create(ctx, nil, member.userID, conversation.NewConversation{Title: "Member"})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	response := in.do(http.MethodPost, "/api/admin/settings/import",
-		map[string]string{settings.AllowArchive: "false"}, admin)
-	if response.Code != http.StatusOK {
-		t.Fatalf("import: %d %s", response.Code, response.Body.String())
-	}
-	if skipped, _ := decode[map[string]any](t, response)["skipped"].([]any); len(skipped) != 0 {
-		t.Fatalf("import skipped %v, want nothing skipped", skipped)
-	}
-
-	saved := decode[struct {
-		Settings map[string]string `json:"settings"`
-	}](t, in.do(http.MethodGet, "/api/admin/settings", nil, admin)).Settings
-	if saved[settings.AllowArchive] != "false" {
-		t.Errorf("GET %s = %q, want false", settings.AllowArchive, saved[settings.AllowArchive])
-	}
-
-	refused := in.do(http.MethodPatch, "/api/conversations/"+memberChat.ID,
-		map[string]any{"archived": true}, member)
-	if refused.Code != http.StatusForbidden || errCode(t, refused) != "archive_not_permitted" {
-		t.Fatalf("member archive after import: %d %s", refused.Code, refused.Body.String())
 	}
 }

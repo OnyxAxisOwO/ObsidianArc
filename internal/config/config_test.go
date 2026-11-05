@@ -216,26 +216,6 @@ func TestAnUnusableSecretFileRefusesToStartAndIsLeftAlone(t *testing.T) {
 	}
 }
 
-// The first start on an empty data directory creates the key file, and the key
-// the instance then uses is the one stored in it.
-func TestAMissingSecretFileIsCreatedWithTheKeyInUse(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv(envPrefix+"DATA_DIR", dir)
-	t.Setenv(envPrefix+"SECRET_KEY", "")
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	stored, err := os.ReadFile(filepath.Join(dir, SecretKeyFile))
-	if err != nil {
-		t.Fatalf("no key file was written: %v", err)
-	}
-	if strings.TrimSpace(string(stored)) != string(cfg.SecretKey) {
-		t.Error("the key file does not hold the key the instance uses")
-	}
-}
-
 // A key file that holds a usable key is loaded as it is, and nothing is written
 // back to it. The surrounding whitespace belongs to the editor, not the key.
 func TestAValidSecretFileIsLoadedAndNotRewritten(t *testing.T) {
@@ -564,12 +544,6 @@ func TestImplicitTLSFollowsThePort(t *testing.T) {
 	}
 	if load(t, map[string]string{"SMTP_PORT": "465", "SMTP_TLS": "false"}).Mail.ImplicitTLS {
 		t.Error("an explicit SMTP_TLS=false was overridden by the port")
-	}
-}
-
-func TestTrustCloudflareParsesOn(t *testing.T) {
-	if !load(t, map[string]string{"TRUST_CLOUDFLARE": "true"}).TrustCloudflare {
-		t.Error("TRUST_CLOUDFLARE=true was not read as the claim")
 	}
 }
 

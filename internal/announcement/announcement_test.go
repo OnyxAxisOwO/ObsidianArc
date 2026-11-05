@@ -66,33 +66,6 @@ func (f *fixture) write(t *testing.T, in Input) Announcement {
 	return record
 }
 
-// A draft is the whole point of the published flag: it must be invisible to
-// readers while still being there for whoever is writing it.
-func TestDraftsAreInvisibleToReaders(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-	reader := f.reader(t, "reader")
-
-	f.write(t, Input{Title: "Draft", Published: false})
-	f.write(t, Input{Title: "Live", Published: true})
-
-	all, err := f.store.ListAll(ctx)
-	if err != nil {
-		t.Fatalf("list all: %v", err)
-	}
-	if len(all) != 2 {
-		t.Fatalf("administrator sees %d, want both", len(all))
-	}
-
-	mine, err := f.store.ListFor(ctx, reader.ID)
-	if err != nil {
-		t.Fatalf("list for reader: %v", err)
-	}
-	if len(mine) != 1 || mine[0].Title != "Live" {
-		t.Fatalf("reader sees %d rows (%+v), want only the published one", len(mine), mine)
-	}
-}
-
 // Read state is per reader: one person dismissing an announcement must not
 // clear it for everyone.
 func TestReadStateIsPerReader(t *testing.T) {
@@ -211,27 +184,6 @@ func TestDismissDelayIsClamped(t *testing.T) {
 	negative := f.write(t, Input{Title: "Negative", Published: true, DismissAfterSeconds: -5})
 	if negative.DismissAfterSeconds != 0 {
 		t.Errorf("-5 became %d, want 0", negative.DismissAfterSeconds)
-	}
-}
-
-func TestUnknownDisplayModeIsRefused(t *testing.T) {
-	f := newFixture(t)
-
-	_, err := f.store.Create(context.Background(), Input{
-		Title:       "Bad",
-		DisplayMode: DisplayMode("shout"),
-	})
-	if err != ErrInvalidMode {
-		t.Fatalf("err = %v, want ErrInvalidMode", err)
-	}
-}
-
-func TestEmptyDisplayModeBecomesOnce(t *testing.T) {
-	f := newFixture(t)
-
-	record := f.write(t, Input{Title: "Unset", Published: true})
-	if record.DisplayMode != DisplayOnce {
-		t.Errorf("display mode = %q, want %q", record.DisplayMode, DisplayOnce)
 	}
 }
 

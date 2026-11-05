@@ -121,38 +121,6 @@ func TestTheTwoStepHoldReachesATokenIssuedBeforeThePolicy(t *testing.T) {
 	}
 }
 
-func TestTheOIDCBindingHoldReachesATokenIssuedBeforeThePolicy(t *testing.T) {
-	in := newInstance(t)
-	founder := in.register("founder", "a-good-password")
-	member := in.register("member", "another-password")
-	clientID := in.publicApplication(founder)
-
-	refresh, access := in.signInThrough(clientID, member)
-	code, verifier := in.authorisationCode(clientID, member)
-
-	stub := stubOIDCProvider(t)
-	configure := map[string]string{
-		"oauth.oidc_enabled":       "true",
-		"oauth.oidc_client_id":     "a-client-id",
-		"oauth.oidc_client_secret": "a-client-secret",
-		"oauth.oidc_auth_url":      stub.URL + "/authorize",
-		"oauth.oidc_token_url":     stub.URL + "/token",
-		"oauth.oidc_userinfo_url":  stub.URL + "/userinfo",
-	}
-	if response := in.do(http.MethodPut, "/api/admin/settings", configure, founder); response.Code != http.StatusOK {
-		t.Fatalf("configure: %d %s", response.Code, response.Body.String())
-	}
-	policy := map[string]string{"oauth.oidc_require_for_all": "true"}
-	if response := in.do(http.MethodPut, "/api/admin/settings", policy, founder); response.Code != http.StatusOK {
-		t.Fatalf("policy: %d %s", response.Code, response.Body.String())
-	}
-	if held := in.do(http.MethodGet, "/api/conversations", nil, member); held.Code != http.StatusForbidden {
-		t.Fatalf("the web is not holding the member: %d %s", held.Code, held.Body.String())
-	}
-
-	in.assertHeldAtTheProvider(clientID, refresh, access, code, verifier, "the OIDC binding policy")
-}
-
 // A hold applies to the account it names and to nothing else. An account that is
 // not held keeps consent, the code exchange, renewal, the identity endpoint and
 // revocation exactly as they were, so the provider's new checks cannot be the
@@ -211,6 +179,13 @@ func TestTheOIDCBindingHoldLiftsOnceTheAccountConnects(t *testing.T) {
 	founder := in.register("founder", "a-good-password")
 	member := in.register("member", "another-password")
 	clientID := in.publicApplication(founder)
+	refresh, access := in.signInThrough(clientID, member)
+	pendingCode, pendingVerifier := in.authorisationCode(clientID, member)
+	in.enableAPI(founder)
+	key := in.mintKey(member)
+	if res := in.doWithKey(http.MethodGet, "/v1/models", key); res.Code != http.StatusOK {
+		t.Fatalf("key before the policy: %d %s", res.Code, res.Body.String())
+	}
 
 	stub := stubOIDCProvider(t)
 	configure := map[string]string{
@@ -228,8 +203,24 @@ func TestTheOIDCBindingHoldLiftsOnceTheAccountConnects(t *testing.T) {
 	if response := in.do(http.MethodPut, "/api/admin/settings", policy, founder); response.Code != http.StatusOK {
 		t.Fatalf("policy: %d %s", response.Code, response.Body.String())
 	}
-	if held := in.do(http.MethodGet, "/api/conversations", nil, member); held.Code != http.StatusForbidden {
+	if held := in.do(http.MethodGet, "/api/conversations", nil, member); held.Code != http.StatusForbidden || errCode(t, held) != "oidc_binding_required" {
 		t.Fatalf("the member is not held: %d %s", held.Code, held.Body.String())
+	}
+	if res := in.doWithKey(http.MethodGet, "/v1/models", key); res.Code != http.StatusForbidden || errCode(t, res) != "oidc_binding_required" {
+		t.Fatalf("key issued before the policy: %d %s", res.Code, res.Body.String())
+	}
+	in.assertHeldAtTheProvider(clientID, refresh, access, pendingCode, pendingVerifier, "the OIDC binding policy")
+	if me := in.do(http.MethodGet, "/api/auth/me", nil, member); !strings.Contains(me.Body.String(), `"oidc_binding_required":true`) {
+		t.Fatalf("the account payload does not show the hold: %s", me.Body.String())
+	}
+	for _, endpoint := range []string{"/api/site", "/api/auth/oauth/connections"} {
+		if res := in.do(http.MethodGet, endpoint, nil, member); res.Code != http.StatusOK {
+			t.Fatalf("the binding screen cannot read %s: %d %s", endpoint, res.Code, res.Body.String())
+		}
+	}
+	if res := in.do(http.MethodPost, "/api/auth/oauth/connections/github",
+		map[string]string{"password": "another-password"}, member); res.Code != http.StatusForbidden {
+		t.Fatalf("a non-OIDC connection reached past the gate: %d %s", res.Code, res.Body.String())
 	}
 
 	stateCookie, state := in.startConnect("oidc", member, "another-password", "")
@@ -240,6 +231,15 @@ func TestTheOIDCBindingHoldLiftsOnceTheAccountConnects(t *testing.T) {
 	}
 	if held := in.do(http.MethodGet, "/api/conversations", nil, member); held.Code != http.StatusOK {
 		t.Fatalf("still held after connecting: %d %s", held.Code, held.Body.String())
+	}
+	if res := in.doWithKey(http.MethodGet, "/v1/models", key); res.Code != http.StatusOK {
+		t.Fatalf("key after connecting: %d %s", res.Code, res.Body.String())
+	}
+	if me := in.do(http.MethodGet, "/api/auth/me", nil, member); strings.Contains(me.Body.String(), `"oidc_binding_required":true`) {
+		t.Fatalf("the account payload still shows a hold: %s", me.Body.String())
+	}
+	if res := in.do(http.MethodGet, "/api/conversations", nil, founder); res.Code != http.StatusForbidden {
+		t.Fatalf("a different unconnected account is no longer held: %d %s", res.Code, res.Body.String())
 	}
 
 	code, verifier := in.authorisationCode(clientID, member)
@@ -253,7 +253,7 @@ func TestTheOIDCBindingHoldLiftsOnceTheAccountConnects(t *testing.T) {
 	if exchanged.Code != http.StatusOK {
 		t.Fatalf("a sign-in after connecting = %d %s, want the code exchanged", exchanged.Code, exchanged.Body.String())
 	}
-	access := decode[struct {
+	access = decode[struct {
 		AccessToken string `json:"access_token"`
 	}](t, exchanged).AccessToken
 	if info := in.userinfo(access); info.Code != http.StatusOK {

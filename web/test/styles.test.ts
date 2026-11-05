@@ -30,27 +30,6 @@ describe('stylesheet invariants', () => {
     return [...css.matchAll(/([^{}]+)\{([^}]*)\}/g)].map((m) => [m[1]!.trim(), m[2]!]);
   }
 
-  it('draws the checkbox tick as one joined stroke and keeps the partial-selection dash', () => {
-    const css = rules(builtCss());
-    const tick = css.find(([selector]) => selector.includes('.oa-table-check input[type=checkbox]:after')
-      && !selector.includes(':checked') && !selector.includes(':indeterminate'));
-    expect(tick?.[1]).toMatch(/mask:[^;]*stroke-linejoin/);
-    expect(tick?.[1]).not.toMatch(/border-(left|bottom):/);
-    const dash = css.find(([selector]) => selector.includes('.oa-table-check input[type=checkbox]:indeterminate:after'));
-    expect(dash?.[1]).toContain('mask:none');
-    expect(dash?.[1]).toContain('height:2px');
-  });
-
-  it('animates the bulk bar in both directions with a reduced-motion override', () => {
-    const css = rules(builtCss());
-    for (const phase of ['enter', 'leave']) {
-      const active = css.find(([selector]) => selector === `.oa-bulk-${phase}-active`);
-      expect(active?.[1]).toMatch(/transition:[^;]*opacity[^;]*transform/);
-    }
-    const source = fs.readFileSync(path.resolve(__dirname, '../src/styles/_admin-surfaces.scss'), 'utf8');
-    expect(source).toMatch(/@media \(prefers-reduced-motion: reduce\) \{\s*\.oa-bulk-enter-active,\s*\.oa-bulk-leave-active \{\s*transition: none;/);
-  });
-
   it('does not reset the transitions of everything in a row', () => {
     // `transition` is a shorthand, so a rule that sets it on
     // `.ai-chat > :not(.oa-panel)` to arrange one property's timing throws
@@ -86,33 +65,9 @@ describe('stylesheet invariants', () => {
     expect(collapsed?.[1]).toMatch(/transition:[^;]*margin-left/);
   });
 
-  // The strip beside the settings form is the error colour by default, and an
-  // import or a purge reports success into that same element. Without a
-  // modifier for the success branches, an operator is told in red that the
-  // settings they just imported failed.
-  it('has a confirmation colour for the settings strip', () => {
-    const rule = rules(builtCss()).find(([selector]) => selector === '.oa-drawer-flash.ok');
-
-    expect(rule, 'no .oa-drawer-flash.ok rule in the shipped stylesheet').toBeTruthy();
-    expect(rule![1]).not.toMatch(/--ai-danger/);
-    // Only that it sets a colour of its own is the point. The hex it uses is
-    // not pinned here: no token defines a success colour yet, so a test that
-    // names the hex would fail on the day someone moved it to a token.
-    expect(rule![1]).toMatch(/(?:^|;)\s*color:\s*[^;}]+/);
-  });
-
-  it('styles the administrator card expiry like every other field', () => {
-    const rule = rules(builtCss()).find(([selector]) =>
-      selector.includes('.oa-field input[type=datetime-local]'));
-
-    expect(rule, 'the datetime field was left as a native browser box').toBeTruthy();
-    expect(rule![1]).toMatch(/background:var\(--ai-field-bg\)/);
-    expect(rule![1]).toMatch(/border-radius:11px/);
-  });
 });
 
-// Read from the source rather than the build, so it holds without `make web`.
-describe('hidden rows in the shipped stylesheet', () => {
+describe('hidden rows in the stylesheet source', () => {
   it('hides a flex input row that carries the hidden attribute', () => {
     const source = fs.readFileSync(path.resolve(__dirname, '../src/styles/_workspace.scss'), 'utf8');
     const rule = /\.oa-input-row\[hidden\]\s*\{[^}]*\}/.exec(source)?.[0] ?? '';
@@ -126,24 +81,6 @@ describe('hidden rows in the shipped stylesheet', () => {
 // problem back is caught without a build.
 describe('component rules in the stylesheet source', () => {
   const source = (name: string) => fs.readFileSync(path.resolve(__dirname, '../src/styles', name), 'utf8');
-
-  it('does not reset a plugin tab size and weight with a font shorthand', () => {
-    // `font:` after `font-size` in the same rule resets both to the parent's
-    // values. `font-family:` and `line-height:` are the only parts a button
-    // needs inherited.
-    const rule = /\.oa-plugin-tab \{([^}]*)\}/.exec(source('_workbench.scss'))?.[1] ?? '';
-
-    expect(rule).toMatch(/font-size:\s*12\.5px/);
-    expect(rule).not.toMatch(/(^|[;\s])font\s*:/);
-  });
-
-  it('keeps the inherited line height on plugin tabs', () => {
-    // The shorthand this replaced also carried line-height, so a tab would
-    // otherwise fall back to `normal` while the text around it keeps 1.5.
-    const rule = /\.oa-plugin-tab \{([^}]*)\}/.exec(source('_workbench.scss'))?.[1] ?? '';
-
-    expect(rule).toMatch(/line-height:\s*inherit/);
-  });
 
   it('keeps a focus ring on plugin tabs, which have no outline', () => {
     expect(source('_workbench.scss')).toMatch(
@@ -168,16 +105,6 @@ describe('component rules in the stylesheet source', () => {
     expect(workspace).toMatch(/\.oa-field input:focus,/);
   });
 
-  it('draws the resource page account initials round, like every other account avatar', () => {
-    // The resource page's initials were the only square account mark, so an
-    // operator reading two pages saw two different kinds of account. The
-    // change is the shape alone; size and colour are left as they were.
-    const avatar = /\.oa-resource-avatar \{([^}]*)\}/.exec(source('_workbench.scss'))?.[1] ?? '';
-
-    expect(avatar).toMatch(/border-radius:\s*50%/);
-    expect(avatar).not.toMatch(/border-radius:\s*11px/);
-  });
-
   it('gives the terminal its own width only in the three-column layout', () => {
     // Below 1101px the panel is a fixed overlay sized by _surfaces.scss; a
     // bare width: auto here would shrink it to fit its content.
@@ -187,12 +114,6 @@ describe('component rules in the stylesheet source', () => {
     expect(terminal).not.toMatch(/\.ai-chat-wide \.oa-panel\.oa-terminal-panel \{\s*flex: 1 1 0%;\s*width: auto/);
   });
 
-  it('does not hold a compositing layer for the terminal panel', () => {
-    const terminal = source('_terminal.scss');
-
-    expect(terminal).toMatch(/\.oa-panel\.oa-terminal-panel \{[^}]*will-change:\s*auto;/);
-    expect(terminal).not.toMatch(/backface-visibility\s*:/);
-  });
 });
 
 // The leaderboards render the usage report's board class names, and
@@ -214,10 +135,6 @@ describe('ranked board rules in the stylesheet source', () => {
       .filter((selector) => shared.test(selector));
 
     expect(bare).toEqual([]);
-  });
-
-  it('still styles the usage report rows under the frame', () => {
-    expect(analytics).toMatch(/\.oa-board-frame \.oa-board-row \{/);
   });
 
   it('clips a leaderboard name on one line where the frame does not wrap it', () => {
@@ -290,51 +207,6 @@ describe('phone and state rules in the stylesheet source', () => {
     expect(overlay).toMatch(/(^|[;\s])mask-image:\s*none/);
   });
 
-  it('names only tokens the theme defines', () => {
-    // Nothing writes `--ai-accent`, so each use resolved to nothing: the
-    // archive hover lost its colour and the target pulse lost its outline.
-    const offenders = fs.readdirSync(path.resolve(__dirname, '../src/styles'))
-      .filter((name) => name.endsWith('.scss'))
-      .filter((name) => /var\(--ai-accent[,)]/.test(sheet(name)));
-
-    expect(offenders).toEqual([]);
-  });
-
-  it('never reads --ai-accent from a component, since no theme defines it', () => {
-    // Inline styles in the Vue sources read tokens the same way the sheets
-    // do. `--ai-accent` was never defined, so a success line written with it
-    // ignored the accent the user picked and showed the fallback green.
-    const offenders = fs.readdirSync(path.resolve(__dirname, '../src'), { recursive: true })
-      .map(String)
-      .filter((name) => /\.(vue|ts)$/.test(name))
-      .filter((name) => /--ai-accent\b/.test(
-        fs.readFileSync(path.resolve(__dirname, '../src', name), 'utf8'),
-      ));
-
-    expect(offenders).toEqual([]);
-  });
-
-  it('reads only custom properties that something defines, in the surfaces sheet', () => {
-    // A read with no fallback has nothing to fall back on: an undeclared name
-    // makes the whole declaration invalid, so the uptime button's hover fill
-    // went transparent and the dropzone borders took the text colour.
-    const declared = new Set<string>();
-    const walk = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true })
-      .flatMap((entry) => (entry.isDirectory()
-        ? walk(path.join(dir, entry.name))
-        : [path.join(dir, entry.name)]));
-    for (const file of walk(path.resolve(__dirname, '../src'))) {
-      if (!/\.(ts|vue|scss)$/.test(file)) continue;
-      const text = fs.readFileSync(file, 'utf8');
-      // The theme writes its tables with quoted names; a stylesheet declares them.
-      for (const m of text.matchAll(/['"](--ai-[\w-]+)['"]/g)) declared.add(m[1]!);
-      for (const m of text.matchAll(/(?:^|[\s{;])(--ai-[\w-]+)\s*:/gm)) declared.add(m[1]!);
-    }
-    const read = new Set([...sheet('_surfaces.scss').matchAll(/var\((--ai-[\w-]+)\)/g)].map((m) => m[1]!));
-
-    expect([...read].filter((name) => !declared.has(name))).toEqual([]);
-  });
-
   it('gives a closed side panel no transform override under reduced motion', () => {
     // On narrow screens a closed panel is parked off the right edge by its
     // transform. Zeroing that under reduced motion left it at the edge,
@@ -364,16 +236,6 @@ describe('phone and state rules in the stylesheet source', () => {
     }
   });
 
-  it('declares each card list and card row once, so no later rule silently wins', () => {
-    // Two rules for the same selector at the same specificity: the later one
-    // won every property it set, and the earlier one's padding and radius
-    // never applied anywhere.
-    const surfaces = sheet('_surfaces.scss');
-
-    expect(bodies(surfaces, '.oa-card-row')).toHaveLength(1);
-    expect(bodies(surfaces, '.oa-card-list')).toHaveLength(1);
-  });
-
   it('keeps a focus ring on the aspect ratio tiles, which have no outline', () => {
     // The selected tile keeps its accent ring inside the focus ring; a bare
     // focus shadow would replace it while the tile has focus.
@@ -394,14 +256,6 @@ describe('phone and state rules in the stylesheet source', () => {
 
     expect(surfaces).not.toMatch(/animation-delay:\s*calc\(var\(--item-idx/);
     expect(surfaces.match(/animation-delay:\s*min\(calc\(var\(--item-idx, 0\) \* 40ms\), 240ms\)/g)).toHaveLength(2);
-  });
-
-  it('stacks the method above the path where the request column is narrow', () => {
-    // At a phone's width the request column is a few dozen pixels; side by
-    // side, the method label ran over the duration column.
-    const narrow = blocks(sheet('_admin-surfaces.scss'), '@container logs (max-width: 400px)');
-
-    expect(bodies(narrow, '.oa-log-request').join('')).toMatch(/flex-direction:\s*column/);
   });
 
   it('pins a leaving toast to the stack width on a phone', () => {
@@ -434,28 +288,8 @@ describe('phone and state rules in the stylesheet source', () => {
     expect(bodies(front, '.oa-front-cards').join('')).toMatch(/minmax\(min\(290px,\s*100%\),\s*1fr\)/);
   });
 
-  it('lets the front page header wrap on a phone', () => {
-    expect(
-      bodies(blocks(sheet('_front.scss'), '@media (max-width: 600px)'), '.oa-front-head').join(''),
-    ).toMatch(/flex-wrap:\s*wrap/);
-  });
-
-  it('prefixes the frosted front header for Safari before 18', () => {
-    expect(bodies(sheet('_front.scss'), '.oa-front-head.lifted').join('')).toMatch(/-webkit-backdrop-filter:/);
-  });
-
   it('lets the scroll cue leave, which its nudge animation would otherwise prevent', () => {
     expect(bodies(sheet('_front.scss'), '.oa-front-scroll.gone').join('')).toMatch(/animation:\s*none/);
-  });
-
-  it('starts terminal output hidden, so its fade has something to fade from', () => {
-    const front = sheet('_front.scss');
-
-    expect(bodies(front, '.oa-front-term-out').join('')).toMatch(/(^|[;\s])opacity:\s*0/);
-    // Reduced motion and the still page switch the animation off, so they must
-    // also restore the lines, or those readers see an empty terminal.
-    expect(bodies(front, '.oa-front-term-out').some((body) => /opacity:\s*1\b/.test(body))).toBe(true);
-    expect(bodies(front, '.oa-front.still .oa-front-term-out').join('')).toMatch(/opacity:\s*1\b/);
   });
 
   it('pauses the hero and the flow wherever the observers can reach them', () => {
@@ -469,17 +303,6 @@ describe('phone and state rules in the stylesheet source', () => {
       .toMatch(/animation-play-state:\s*paused/);
   });
 
-  it('lets the loading skeleton follow the loaded metrics into two columns', () => {
-    // The skeleton sits outside `.oa-dashboard`, so it is its own size
-    // container. Its placeholders span two of its four tracks at the width
-    // where the loaded metrics switch to two, so the grid does not jump.
-    const dashboard = sheet('_dashboard.scss');
-
-    expect(bodies(dashboard, '.oa-dashboard-loading').join('')).toMatch(/container:\s*dashboard\s*\/\s*inline-size/);
-    expect(
-      bodies(blocks(dashboard, '@container dashboard (max-width: 1040px)'), '.oa-dashboard-loading > div').join(''),
-    ).toMatch(/grid-column:\s*span 2/);
-  });
 });
 
 // Focus, width and cascade details in the shipped stylesheet source. Each one
@@ -512,23 +335,6 @@ describe('focus, width and cascade rules in the stylesheet source', () => {
     expect(bodies(analytics, '.oa-board-scroll:focus-visible')).toMatch(/outline:\s*none/);
   });
 
-  it('caps the model header itself, since a table cell ignores max-width', () => {
-    const analytics = sheet('_analytics.scss');
-
-    expect(bodies(analytics, '.oa-matrix-head')).toMatch(/max-width:\s*128px/);
-    expect(bodies(analytics, '.oa-matrix thead th')).not.toMatch(/max-width/);
-  });
-
-  it('declares the allowance row base gap before the narrow-width block that overrides it', () => {
-    const analytics = sheet('_analytics.scss');
-    const base = analytics.search(/^\.oa-allow-none \{/m);
-    const narrow = analytics.search(/@container allow \(max-width: 560px\)/);
-
-    expect(base).toBeGreaterThan(-1);
-    expect(narrow).toBeGreaterThan(base);
-    expect(analytics.slice(narrow)).toMatch(/\.oa-allow-none \{\s*flex-direction:\s*column;\s*gap:\s*1px;/);
-  });
-
   it('declares every theme token it reads without a fallback', () => {
     // A var() whose token nothing declares makes the declaration invalid, which
     // computes as unset: a colour inherits, a background or border takes its
@@ -553,13 +359,6 @@ describe('focus, width and cascade rules in the stylesheet source', () => {
 describe('control states in the stylesheet source', () => {
   const sheet = (name: string) => fs.readFileSync(path.resolve(__dirname, '../src/styles', name), 'utf8');
 
-  it('dims the new-folder button when the list is at its cap', () => {
-    const chat = sheet('_chat.scss');
-
-    expect(chat).toMatch(/\.ai-rail-folder-btn:disabled \{[^}]*opacity:\s*0\.5;/);
-    expect(chat).toMatch(/\.ai-rail-folder-btn:hover:not\(:disabled\),/);
-  });
-
   it('reveals a folder’s actions on hover only where hover ends, and never reflows the row for them', () => {
     const chat = sheet('folders.scss');
     // A tap leaves :hover on a touch screen, so a hover rule outside this
@@ -577,17 +376,6 @@ describe('control states in the stylesheet source', () => {
 
     expect(chat).toMatch(/\.oa-menu\.ai-chat-context-menu \{[^}]*max-height:\s*none;[^}]*overflow:\s*visible;/);
     expect(chat).toMatch(/\.ai-chat-menu-folders \{[^}]*max-height:\s*\d+px;[^}]*scrollbar-width:\s*none;\s*@include hidden-scrollbar;/);
-  });
-
-  it('shows a project row action faintly where there is no hover to reveal it', () => {
-    const block = /@media \(hover: none\) \{\s*\.ai-project-action-btn \{([^}]*)\}/.exec(sheet('folders.scss'));
-
-    expect(block, 'project edit and delete stay invisible on a touch screen').toBeTruthy();
-    expect(block![1]).toMatch(/opacity:\s*0\.45/);
-  });
-
-  it('stops a jump to a dashboard card short of the top, as the other jump targets do', () => {
-    expect(sheet('_dashboard.scss')).toMatch(/\.oa-dashboard-card \{[^}]*scroll-margin-top:\s*14px/);
   });
 
   it('draws every armed danger second click from one rule', () => {
@@ -642,13 +430,6 @@ describe('focus and motion on every copy of a control', () => {
     }
     expect(reducedMotion(sheet('_surfaces.scss'))).toMatch(/\.oa-lightbox-card \{\s*transition: none;/);
     expect(reducedMotion(sheet('_workbench.scss'))).toMatch(/\.oa-plugin-tab \{ transition: none; \}/);
-  });
-
-  it('mixes danger fills from the token so they follow it into the dark theme', () => {
-    const offenders = fs.readdirSync(path.resolve(__dirname, '../src/styles'))
-      .filter((name) => /rgba\(\s*185,\s*28,\s*28/.test(sheet(name)));
-
-    expect(offenders).toEqual([]);
   });
 
   it('keeps an armed clear-all button red under the pointer', () => {

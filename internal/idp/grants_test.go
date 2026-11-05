@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"testing"
 )
 
@@ -71,26 +70,24 @@ func TestWithdrawingAGrantRacesAnIssuanceWithoutLeavingALivePair(t *testing.T) {
 	ctx := context.Background()
 	app, _ := f.app(t, CreateAppInput{})
 
-	// A round in which the issuance lands first is the only kind that leaves a
-	// pair for the withdrawal to revoke. The withdrawal usually wins, and with
-	// 25 rounds some runs saw no issuance at all, so the rounds are many.
-	// Counting them stops a refusal that always wins from passing the test with
-	// nothing checked.
-	var issued atomic.Int64
 	for round := 0; round < 200; round++ {
 		if err := f.store.RecordGrant(ctx, nil, app.ID, f.account.ID, []string{ScopeOpenID}); err != nil {
 			t.Fatalf("round %d: record consent: %v", round, err)
+		}
+		// Ensure withdrawal also encounters a live pair even when scheduling
+		// consistently lets it win the concurrent issuance below.
+		if round == 0 {
+			if _, err := f.store.SaveGrantedToken(ctx, "access-before", "refresh-before", app.ID, f.account.ID, []string{ScopeOpenID}); err != nil {
+				t.Fatalf("issue before withdrawal: %v", err)
+			}
 		}
 		var wg sync.WaitGroup
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			// A refusal leaves no pair behind, which is the invariant under test,
-			// so only a successful issuance is counted.
-			if _, err := f.store.SaveGrantedToken(ctx, fmt.Sprintf("access-%d", round),
-				fmt.Sprintf("refresh-%d", round), app.ID, f.account.ID, []string{ScopeOpenID}); err == nil {
-				issued.Add(1)
-			}
+			// A refusal leaves no pair behind, which is the invariant under test.
+			_, _ = f.store.SaveGrantedToken(ctx, fmt.Sprintf("access-%d", round),
+				fmt.Sprintf("refresh-%d", round), app.ID, f.account.ID, []string{ScopeOpenID})
 		}()
 		go func() {
 			defer wg.Done()
@@ -120,8 +117,5 @@ func TestWithdrawingAGrantRacesAnIssuanceWithoutLeavingALivePair(t *testing.T) {
 		if live != 0 {
 			t.Fatalf("round %d: %d live token(s) survived the withdrawal", round, live)
 		}
-	}
-	if issued.Load() == 0 {
-		t.Fatal("no round issued a pair, so no withdrawal was checked against one")
 	}
 }

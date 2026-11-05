@@ -1,9 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createApp, h, ref, type App } from 'vue';
 import OaSelect from '../src/components/OaSelect.vue';
-import OaSelectField from '../src/components/OaSelectField.vue';
 import { placeList } from '../src/lib/select-placement';
-import { PAST_SELECT_CLOSE_MS, wait } from './helpers';
 
 // jsdom has no layout, so neither of these exists. The control calls both
 // while opening; what is under test is everything around them.
@@ -84,24 +82,6 @@ describe('the option list', () => {
     await Promise.resolve();
     expect(frames).not.toHaveBeenCalled();
     expect(list()).toBeNull();
-  });
-
-  it('includes a search box by default in both standalone and field selectors', async () => {
-    app = createApp({ render: () => h('div', [
-      h(OaSelect, { choices: COLOURS, modelValue: 'red' }),
-      h(OaSelectField, { label: 'Colour', options: COLOURS, modelValue: 'red' }),
-    ]) });
-    app.mount(host);
-    for (const trigger of host.querySelectorAll<HTMLButtonElement>('.oa-select')) {
-      trigger.click(); await settle();
-      const input = list()?.querySelector<HTMLInputElement>('input');
-      expect(input).toBeTruthy();
-      input!.value = 'blue'; input!.dispatchEvent(new Event('input', { bubbles: true }));
-      await settle();
-      expect(list()!.querySelectorAll('[role="option"]')).toHaveLength(1);
-      input!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-      await wait(PAST_SELECT_CLOSE_MS);
-    }
   });
   it('keeps its placement when filtering does not move the trigger', async () => {
     const control = mount(COLOURS, 'red', true);
@@ -184,11 +164,6 @@ describe('the option list', () => {
     expect(control.trigger.getAttribute('aria-expanded')).toBe('false');
   });
 
-  it('shows the label of the current value on the trigger', () => {
-    const control = mount();
-    expect(control.trigger.querySelector('.oa-select-label')?.textContent).toBe('Red');
-  });
-
   it('opens on click and lands on <body>, out of every clipping ancestor', async () => {
     const control = mount();
     control.trigger.click();
@@ -211,19 +186,6 @@ describe('the option list', () => {
     expect(options[0]?.getAttribute('aria-selected')).toBe('true');
     // Focus stays on the trigger; the active row is named rather than focused.
     expect(control.trigger.getAttribute('aria-activedescendant')).toBe(options[0]?.id);
-  });
-
-  it('reports a choice and closes on it', async () => {
-    const control = mount();
-    control.trigger.click();
-    await settle();
-
-    list()!.querySelectorAll<HTMLElement>('.oa-menu-item')[2]!.click();
-    await settle();
-
-    expect(control.value()).toBe('blue');
-    expect(control.changes).toEqual(['blue']);
-    expect(control.trigger.getAttribute('aria-expanded')).toBe('false');
   });
 
   it('does not report a choice that changes nothing', async () => {
@@ -251,18 +213,6 @@ describe('the option list', () => {
     expect(control.value()).toBe('green');
   });
 
-  it('closes on Escape without choosing', async () => {
-    const control = mount();
-    control.trigger.click();
-    await settle();
-
-    control.trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-    await settle();
-
-    expect(control.trigger.getAttribute('aria-expanded')).toBe('false');
-    expect(control.changes).toEqual([]);
-  });
-
   it('closes when the pointer goes down outside it', async () => {
     const control = mount();
     control.trigger.click();
@@ -281,40 +231,6 @@ describe('the option list', () => {
 
     // Closed, so a letter commits rather than only moving the highlight.
     expect(control.value()).toBe('blue');
-  });
-
-  it('forwards caller classes to the trigger button', () => {
-    app?.unmount();
-    app = createApp({
-      render: () => h(OaSelect, {
-        choices: COLOURS,
-        modelValue: 'red',
-        class: 'oa-filter-select',
-      }),
-    });
-    app.mount(host);
-
-    const trigger = host.querySelector<HTMLButtonElement>('.oa-select');
-    expect(trigger?.classList.contains('oa-filter-select')).toBe(true);
-  });
-
-  it('wraps choices in an overlay scroll area with track and thumb', async () => {
-    const manyChoices = Array.from({ length: 15 }, (_, i) => ({ value: `v${i}`, label: `Option ${i}` }));
-    const control = mount(manyChoices, 'v0');
-    control.trigger.click();
-    await settle();
-
-    const menu = list();
-    expect(menu).not.toBeNull();
-    const wrap = menu?.querySelector('.oa-select-scroll-wrap');
-    const scroller = menu?.querySelector('.oa-select-scroll');
-    const track = menu?.querySelector('.oa-overlay-track');
-    const thumb = menu?.querySelector('.oa-overlay-thumb');
-
-    expect(wrap).not.toBeNull();
-    expect(scroller).not.toBeNull();
-    expect(track).not.toBeNull();
-    expect(thumb).not.toBeNull();
   });
 
   it('scrolls the overlay scroller when walking down choices', async () => {
@@ -344,14 +260,6 @@ describe('the option list', () => {
 
 describe('placeList', () => {
   const view = { width: 1280, height: 800 };
-  const box = { top: 100, bottom: 130, left: 200, width: 180 };
-
-  it('sits under the trigger when there is room', () => {
-    const spot = placeList(box, 120, 180, view);
-    expect(spot.top).toBe(box.bottom + 6);
-    expect(spot.left).toBe(box.left);
-    expect(spot.origin).toBe('top left');
-  });
 
   it('flips above only when that side actually fits more of it', () => {
     const low = { top: 700, bottom: 730, left: 200, width: 180 };

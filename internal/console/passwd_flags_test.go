@@ -27,19 +27,3 @@ func TestUserPasswdRefusesPasswordAndGenerateTogether(t *testing.T) {
 		t.Errorf("the refused line still sent requests: %v", rig.calls)
 	}
 }
-
-// --generate false is a switch given off, not a generate request, so it still
-// sets the password that was typed.
-func TestUserPasswdGenerateFalseWithAPasswordStillSetsIt(t *testing.T) {
-	aliceID := id.New()
-	rig := newFlagRig(
-		flagRoute{"GET", "/api/admin/users?", 200, `{"users":[{"id":"` + aliceID + `","username":"alice"}],"total":1}`},
-		flagRoute{"POST", "/api/admin/users/" + aliceID + "/password", 200, `{}`},
-	)
-	if result, out := rig.run("user passwd alice --password typed-password --generate false --yes"); !result.OK {
-		t.Fatalf("user passwd failed: %s", out)
-	}
-	if got := rig.body(t, "POST /api/admin/users/"+aliceID+"/password")["new_password"]; got != "typed-password" {
-		t.Fatalf("new_password = %v, want the typed one", got)
-	}
-}

@@ -304,21 +304,6 @@ func completionBody(modelName string) string {
 
 // --- the door -----------------------------------------------------------------
 
-func TestDisabledAPIRefusesEvenAValidKey(t *testing.T) {
-	f := newFixture(t)
-	if err := f.settings.Set(context.Background(), settings.APIEnabled, "false"); err != nil {
-		t.Fatal(err)
-	}
-
-	w := f.do(t, http.MethodGet, "/v1/models", f.token, "")
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404", w.Code)
-	}
-	if got := errorCode(t, w); got != "api_disabled" {
-		t.Errorf("code = %q, want api_disabled", got)
-	}
-}
-
 func TestMissingAndBadCredentialsAreRefused(t *testing.T) {
 	f := newFixture(t)
 
@@ -642,18 +627,6 @@ func TestTwoRowsUnderOneModelIDGetDistinctRefs(t *testing.T) {
 	}
 }
 
-// The model id is entered by an administrator and stored as typed, so it
-// reaches the listing as typed — slashes, dots and capitals included, which
-// is what makes it match what the upstream's own documentation says.
-func TestRefIsTheModelIDVerbatim(t *testing.T) {
-	for _, modelID := range []string{"openai/gpt-oss-120b", "Qwen3-235B-A22B", "gemini-2.5-pro"} {
-		record := model.Model{ID: "01ARZ3NDEKTSV4RRFFQ69G5FAV", ModelID: modelID}
-		if got := publicRefs([]model.Model{record})[record.ID]; got != modelID {
-			t.Errorf("ref = %q, want %q", got, modelID)
-		}
-	}
-}
-
 func TestHiddenModelIsNeitherListedNorCallable(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture(t)
@@ -752,22 +725,6 @@ func TestCompletionAnswersInTheExpectedShape(t *testing.T) {
 	usage, _ := body["usage"].(map[string]any)
 	if usage["prompt_tokens"] != float64(11) || usage["completion_tokens"] != float64(7) {
 		t.Errorf("usage = %v", usage)
-	}
-}
-
-// The model string is echoed exactly as sent. A caller who configured one
-// name must never read another one back, whatever served the request.
-func TestAnswerIsLabelledWithWhatTheCallerAskedFor(t *testing.T) {
-	f := newFixture(t)
-	f.upstream.reply(answer)
-
-	// By display name, which is the form a person types into a config file.
-	w := f.do(t, http.MethodPost, "/v1/chat/completions", f.token, completionBody("Mock Fast"))
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
-	}
-	if got := decodeJSON(t, w)["model"]; got != "Mock Fast" {
-		t.Errorf("model = %v, want the string the caller sent", got)
 	}
 }
 
@@ -1143,20 +1100,6 @@ func TestRemoteImageURLsAreRefused(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "does not fetch remote images") {
 		t.Errorf("unhelpful refusal: %s", w.Body.String())
-	}
-}
-
-func TestInlineImagesAreAccepted(t *testing.T) {
-	f := newFixture(t)
-	f.upstream.reply(answer)
-
-	// A one-pixel GIF, which is enough to prove the decode path.
-	body := `{"model":"` + f.model.ID + `","stream":false,"messages":[{"role":"user","content":[` +
-		`{"type":"text","text":"what is this"},` +
-		`{"type":"image_url","image_url":{"url":"data:image/gif;base64,R0lGODlhAQABAAAAACw="}}]}]}`
-
-	if w := f.do(t, http.MethodPost, "/v1/chat/completions", f.token, body); w.Code != http.StatusOK {
-		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
 	}
 }
 

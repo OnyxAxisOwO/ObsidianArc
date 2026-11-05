@@ -371,7 +371,7 @@ func TestAnAccountChangeInABackendsTransactionIsPartOfIt(t *testing.T) {
 // The backoffice promotes and demotes under a lock on the administrators; an
 // account a package is about to end may be being made one at that moment. The
 // package's change waits for that, and then sees an administrator.
-func TestAnAccountChangeWaitsForWhoeverIsChangingTheAdministrators(t *testing.T) {
+func TestConcurrentAnAccountChangeWaitsForWhoeverIsChangingTheAdministrators(t *testing.T) {
 	r := newRig(t)
 	ctx := context.Background()
 	target := accountOf(t, r, "target", user.RoleUser)
@@ -453,7 +453,7 @@ func TestPlainTextKeepsLayoutAndDropsWhatATerminalObeys(t *testing.T) {
 // A flood at a public route or a sign-up form must not make as many instances
 // as it has requests. The call past the bound is turned away, and a guard that
 // is turned away refuses: a check that did not run is not a check that passed.
-func TestAGuardTheEngineHasNoRoomForRefusesAndARouteSaysBusy(t *testing.T) {
+func TestConcurrentAGuardTheEngineHasNoRoomForRefusesAndARouteSaysBusy(t *testing.T) {
 	wasm.ShareCompiledCode()
 	held := make(chan struct{})
 	arrived := make(chan struct{}, 1)

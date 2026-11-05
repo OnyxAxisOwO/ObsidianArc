@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -69,37 +68,6 @@ func TestChoosePopup(t *testing.T) {
 	}
 }
 
-// A draft's id is never listed to a reader, but a read row written for it now
-// would stop its popup for good once it is published.
-func TestMarkReadRefusesADraft(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-	reader := f.reader(t, "reader")
-	draft := f.write(t, Input{Title: "Draft", DisplayMode: DisplayOnce})
-
-	h := NewHandlers(f.store)
-	request := httptest.NewRequest(http.MethodPost, "/api/announcements/"+draft.ID+"/read", nil)
-	request.SetPathValue("id", draft.ID)
-	request = request.WithContext(auth.WithUser(request.Context(), reader))
-
-	err := h.markRead(httptest.NewRecorder(), request)
-	var apiErr *httpx.Error
-	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusNotFound {
-		t.Fatalf("marking a draft read = %v, want a 404", err)
-	}
-
-	if _, err := f.store.Update(ctx, draft.ID, Input{Title: "Draft", DisplayMode: DisplayOnce, Published: true}); err != nil {
-		t.Fatalf("publish draft: %v", err)
-	}
-	mine, err := f.store.ListFor(ctx, reader.ID)
-	if err != nil {
-		t.Fatalf("list for reader: %v", err)
-	}
-	if len(mine) != 1 || mine[0].Read {
-		t.Fatalf("the draft was marked read before it was published: %+v", mine)
-	}
-}
-
 // The list is fetched on every page load, so it carries titles and flags and
 // no bodies. The popup is the exception: its body comes with the list, since
 // the reader is about to read it.
@@ -108,6 +76,7 @@ func TestListCarriesNoBodiesExceptThePopup(t *testing.T) {
 	reader := f.reader(t, "reader")
 	f.write(t, Input{Title: "Quiet", Body: "quiet body", Published: true, DisplayMode: DisplaySilent})
 	f.write(t, Input{Title: "Popup", Body: "popup body", Published: true, DisplayMode: DisplayOnce})
+	f.write(t, Input{Title: "Draft", Body: "private body", DisplayMode: DisplayOnce})
 
 	h := NewHandlers(f.store)
 	request := httptest.NewRequest(http.MethodGet, "/api/announcements", nil)

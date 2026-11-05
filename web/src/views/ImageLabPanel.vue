@@ -43,7 +43,7 @@ import { relativeTime } from '@/lib/format';
 import { solvePoW } from '@/lib/pow';
 import { challengeText } from '@/lib/refusal';
 import { guards } from '@/plugins/registry';
-import { siteInfo } from '@/stores/session';
+import { isCurrentSession, sessionStamp, siteInfo } from '@/stores/session';
 
 const panels = usePanelExit();
 const panel = ref<InstanceType<typeof OaPanel> | null>(null);
@@ -421,6 +421,7 @@ async function generate(): Promise<void> {
   // Read before the first await: a solve or a guard can take seconds, and closing
   // the panel meanwhile clears the references. The request carries what was on
   // screen when Generate was pressed, not what is left of it afterwards.
+  const session = sessionStamp();
   const modelID = selectedModelID.value;
   const style = selectedStyle.value;
   const size = selectedSize.value;
@@ -438,15 +439,19 @@ async function generate(): Promise<void> {
       // Not cancelled if the panel closes, and neither is the request after it:
       // the reader already pressed Generate, and the picture is kept in the
       // gallery either way.
-      pow = await solvePoW(await fetchPoWChallenge()).promise;
+      const challenge = await fetchPoWChallenge();
+      if (!isCurrentSession(session)) return;
+      pow = await solvePoW(challenge).promise;
+      if (!isCurrentSession(session)) return;
     }
     const guardTokens: Record<string, string> = {};
     for (const { guard, config } of activeGuards.value) {
       statusText.value = guard.checking();
       try {
         guardTokens[guard.name] = await withDeadline(guard.token('images', config), GUARD_DEADLINE_MS);
+        if (!isCurrentSession(session)) return;
       } catch (failure: unknown) {
-        error.value = failure instanceof GuardTimeout ? t('guardTimeout') : guard.failed(failure);
+        if (isCurrentSession(session)) error.value = failure instanceof GuardTimeout ? t('guardTimeout') : guard.failed(failure);
         return;
       }
     }
@@ -464,6 +469,7 @@ async function generate(): Promise<void> {
       ...(Object.keys(guardTokens).length ? { guards: guardTokens } : {}),
     });
 
+    if (!isCurrentSession(session)) return;
     if (res.images && res.images.length) {
       const arrived = Date.now();
       // The gallery URL is the copy the screen reads; a data URI stands in only
@@ -480,8 +486,9 @@ async function generate(): Promise<void> {
       void loadGallery();
     }
   } catch (err) {
-    error.value = challengeText(err) ?? (err instanceof ApiError ? apiErrorText(err) : t('failed'));
+    if (isCurrentSession(session)) error.value = challengeText(err) ?? (err instanceof ApiError ? apiErrorText(err) : t('failed'));
   } finally {
+    if (!isCurrentSession(session)) return;
     statusText.value = '';
     busy.value = false;
     // Spent whether or not it passed.

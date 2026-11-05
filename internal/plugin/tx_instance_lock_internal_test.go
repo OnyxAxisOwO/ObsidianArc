@@ -38,7 +38,7 @@ func rigOn(t *testing.T, cfg config.Database) *rig {
 // for its first write, a read-only transaction would hold nothing. On SQLite the
 // immediate transaction already holds the file's write lock, so this passes
 // there either way; on PostgreSQL the row is what another change waits on.
-func TestABackendTransactionHoldsTheInstanceLockFromItsStart(t *testing.T) {
+func TestConcurrentABackendTransactionHoldsTheInstanceLockFromItsStart(t *testing.T) {
 	r := rigOn(t, dbtest.Either(t, filepath.Join(t.TempDir(), "plugins.db")))
 	man := &arcx.Manifest{Permissions: []string{arcx.PermDB}}
 	host := r.manager.hostFunc(&loaded{name: "ledger", pkg: &arcx.Package{Manifest: man}})
@@ -70,7 +70,7 @@ func TestABackendTransactionHoldsTheInstanceLockFromItsStart(t *testing.T) {
 // side takes the instance row and then an account; the backend's side takes an
 // account and then needs the instance row. Taken in opposite orders, each waits
 // for the other, and the server aborts one of them.
-func TestAPluginTransactionAndAnAdministratorsChangeDoNotDeadlock(t *testing.T) {
+func TestConcurrentAPluginTransactionAndAnAdministratorsChangeDoNotDeadlock(t *testing.T) {
 	r := rigOn(t, dbtest.Postgres(t, "a plugin transaction and an administrator's change deadlock only on PostgreSQL"))
 	ctx := context.Background()
 	first := accountOf(t, r, "first", user.RoleUser)

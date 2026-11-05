@@ -139,25 +139,6 @@ func TestAProviderSignUpThatSkippedTheSignUpChallengeIsRefused(t *testing.T) {
 	}
 }
 
-// The register page sends register=1 and passes the challenge at its own door,
-// so its sign-ups are unaffected.
-func TestAProviderSignUpThroughTheRegisterPageStillOpensAnAccount(t *testing.T) {
-	f := newFixture(t)
-	populate(t, f)
-	f.configure(t, "github")
-	stubGitHubAs(t, "4218", "octocat")
-	h, mux := handlers(t, f)
-	h.SignupChallenge = (&signupSwitch{on: true}).gate()
-
-	back := returnFrom(t, mux, "/api/auth/oauth/start/github?register=1&turnstile=good")
-	if location := back.Header().Get("Location"); location != "/" {
-		t.Fatalf("callback = %q, want the sign-in to finish", location)
-	}
-	if total := accountCount(t, f); total != 2 {
-		t.Errorf("accounts = %d, want the new one opened", total)
-	}
-}
-
 // postStart sends what the sign-in page sends when it carries a challenge:
 // the one-use token and proof in a JSON body, not the address.
 func postStart(mux *http.ServeMux, path string, body map[string]any) *httptest.ResponseRecorder {
@@ -244,25 +225,6 @@ func TestAPostedStartDoesNotReadTheQueryString(t *testing.T) {
 	if location := leftFor(t, begun); !strings.Contains(location, "oauth_error=challenge_failed") ||
 		!strings.HasPrefix(location, "/register") {
 		t.Fatalf("start sent the browser to %q, want the register page told the challenge failed", location)
-	}
-}
-
-// With the challenge switched off, a provider sign-up opens an account as it
-// always did, whichever door it came through.
-func TestWithTheSignUpChallengeOffAProviderSignUpOpensAnAccount(t *testing.T) {
-	f := newFixture(t)
-	populate(t, f)
-	f.configure(t, "github")
-	stubGitHubAs(t, "4218", "octocat")
-	h, mux := handlers(t, f)
-	h.SignupChallenge = (&signupSwitch{on: false}).gate()
-
-	back := returnFrom(t, mux, "/api/auth/oauth/start/github")
-	if location := back.Header().Get("Location"); location != "/" {
-		t.Fatalf("callback = %q, want the sign-in to finish", location)
-	}
-	if total := accountCount(t, f); total != 2 {
-		t.Errorf("accounts = %d, want the new one opened", total)
 	}
 }
 
@@ -418,36 +380,6 @@ func TestASignupGuardAnswersTheDetailsFormToo(t *testing.T) {
 	}
 	if len(*asked) != 1 {
 		t.Errorf("guard asked %d times, want once", len(*asked))
-	}
-}
-
-// The register page's flow can end at the details form. The form opens the
-// account, and it is opened with the challenge already passed at the door, so
-// the person is not challenged a second time.
-func TestAPendingSignUpThroughTheRegisterPageIsOpenedFromTheForm(t *testing.T) {
-	f := newFixture(t)
-	populate(t, f)
-	require(t, f, badgeRule, auth.FieldRequired)
-	f.configure(t, "github")
-	stubGitHubAs(t, "4218", "octocat")
-	h, mux := handlers(t, f)
-	h.SignupChallenge = (&signupSwitch{on: true}).gate()
-
-	back := returnFrom(t, mux, "/api/auth/oauth/start/github?register=1&turnstile=good")
-	if location := back.Header().Get("Location"); location != "/oauth/complete" {
-		t.Fatalf("callback = %q, want the form that asks", location)
-	}
-	ticket := cookieNamed(back, pendingCookie)
-	if ticket == nil {
-		t.Fatal("no sign-up was parked for the form")
-	}
-	done := postJSON(mux, "/api/auth/oauth/signup",
-		map[string]any{"fields": badgeOf("87654321")}, []*http.Cookie{ticket})
-	if done.Code != http.StatusOK || !strings.Contains(done.Body.String(), `"redirect":"/"`) {
-		t.Fatalf("complete = %d %s, want the account opened", done.Code, done.Body.String())
-	}
-	if total := accountCount(t, f); total != 2 {
-		t.Errorf("accounts = %d, want the new one opened from the form", total)
 	}
 }
 

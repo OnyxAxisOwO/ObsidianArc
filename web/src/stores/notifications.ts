@@ -19,10 +19,6 @@ import { refreshFeedbackUnread } from '@/stores/feedback';
 import { onSignOut } from '@/stores/session';
 
 const POLL_MS = 30_000;
-// Mirrors internal/notify's pollGraceMillis and pollLimit. The grace window
-// is reached back from `after`, so asking again from a page's last row sends
-// that row plus the grace.
-const POLL_GRACE_MS = 10_000;
 const POLL_PAGE = 200;
 // A request that is accepted and never answered (a half-open connection after
 // a laptop wakes) would hold the in-flight gate below, and with it every later
@@ -131,7 +127,11 @@ async function pollAfter(after: number, signal: AbortSignal): Promise<Notificati
     // check has to sit beside the read it guards.
     const tail = feed.notifications[feed.notifications.length - 1];
     if (!tail) break;
-    feed = await pollNotifications(tail.created_at + POLL_GRACE_MS, signal);
+    feed = await pollNotifications(tail.created_at, signal, tail.id);
+    const nextTail = feed.notifications[feed.notifications.length - 1];
+    // Older servers may ignore after_id; never spin on their repeated page.
+    if (nextTail && (nextTail.created_at < tail.created_at ||
+        (nextTail.created_at === tail.created_at && nextTail.id <= tail.id))) break;
     rows.push(...feed.notifications);
   }
   return { ...feed, notifications: rows };

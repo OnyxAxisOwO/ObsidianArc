@@ -63,6 +63,16 @@ func (c *collected) sink(event Event) error {
 
 func sseServer(t *testing.T, frames []string, capture *map[string]any) *httptest.Server {
 	t.Helper()
+	// Successful Chat Completions fixtures end with the protocol terminator.
+	// Tests of premature EOF construct the raw response explicitly.
+	var opening map[string]json.RawMessage
+	if len(frames) > 0 {
+		_ = json.Unmarshal([]byte(frames[0]), &opening)
+	}
+	_, anthropic := opening["type"]
+	if len(frames) > 0 && !anthropic {
+		frames = append(append([]string(nil), frames...), "[DONE]")
+	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if capture != nil {
 			body, _ := io.ReadAll(r.Body)
@@ -73,6 +83,7 @@ func sseServer(t *testing.T, frames []string, capture *map[string]any) *httptest
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		flusher, _ := w.(http.Flusher)
+
 		for _, frame := range frames {
 			fmt.Fprintf(w, "data: %s\n\n", frame)
 			if flusher != nil {
@@ -428,31 +439,20 @@ func TestClampThinkingBudgetKeepsTheRaiseUnderTheCeiling(t *testing.T) {
 // this server takes. It is an upstream fault, and reporting it as a network
 // error would say the provider was unreachable, which is untrue and retryable.
 func TestAnOversizedStreamFrameIsAnUpstreamError(t *testing.T) {
-	server := sseServer(t, []string{strings.Repeat("x", 1500<<10)}, nil)
+	for _, kind := range []Kind{KindOpenAI, KindAnthropic} {
+		t.Run(string(kind), func(t *testing.T) {
+			server := sseServer(t, []string{strings.Repeat("x", 1500<<10)}, nil)
 
-	var out collected
-	_, err := testRegistry().Chat(context.Background(),
-		Provider{Kind: KindOpenAI, BaseURL: server.URL, APIKey: "k"},
-		ChatRequest{Model: testModel(), Stream: true, Messages: []Message{{Role: RoleUser, Parts: []Part{{Kind: PartText, Text: "hi"}}}}},
-		out.sink)
-	var upstream *Error
-	if !errors.As(err, &upstream) || upstream.Kind != ErrorUpstream {
-		t.Fatalf("err = %v, want an upstream error for the oversized frame", err)
-	}
-}
-
-// The same frame on the Anthropic protocol, which reads its stream the same way.
-func TestAnAnthropicOversizedStreamFrameIsAnUpstreamError(t *testing.T) {
-	server := sseServer(t, []string{strings.Repeat("x", 1500<<10)}, nil)
-
-	var out collected
-	_, err := testRegistry().Chat(context.Background(),
-		Provider{Kind: KindAnthropic, BaseURL: server.URL, APIKey: "k"},
-		ChatRequest{Model: testModel(), Stream: true, Messages: []Message{{Role: RoleUser, Parts: []Part{{Kind: PartText, Text: "hi"}}}}},
-		out.sink)
-	var upstream *Error
-	if !errors.As(err, &upstream) || upstream.Kind != ErrorUpstream {
-		t.Fatalf("err = %v, want an upstream error for the oversized frame", err)
+			var out collected
+			_, err := testRegistry().Chat(context.Background(),
+				Provider{Kind: kind, BaseURL: server.URL, APIKey: "k"},
+				ChatRequest{Model: testModel(), Stream: true, Messages: []Message{{Role: RoleUser, Parts: []Part{{Kind: PartText, Text: "hi"}}}}},
+				out.sink)
+			var upstream *Error
+			if !errors.As(err, &upstream) || upstream.Kind != ErrorUpstream {
+				t.Fatalf("err = %v, want an upstream error for the oversized frame", err)
+			}
+		})
 	}
 }
 
@@ -483,8 +483,8 @@ func TestAnthropicThinkingBudgetAndTemperature(t *testing.T) {
 	if !ok || thinking["type"] != "enabled" {
 		t.Fatalf("thinking = %v", body["thinking"])
 	}
-	if budget, _ := thinking["budget_tokens"].(float64); int(budget) != budgetHigh {
-		t.Errorf("budget_tokens = %v, want %d", thinking["budget_tokens"], budgetHigh)
+	if budget, _ := thinking["budget_tokens"].(float64); int(budget) != testModel().MaxOutputTokens-budgetHeadroom {
+		t.Errorf("budget_tokens = %v, want %d", thinking["budget_tokens"], testModel().MaxOutputTokens-budgetHeadroom)
 	}
 	// The API rejects a temperature other than 1 while thinking is on, so the
 	// user's value has to be dropped rather than passed through.
@@ -492,8 +492,8 @@ func TestAnthropicThinkingBudgetAndTemperature(t *testing.T) {
 		t.Error("temperature was sent alongside extended thinking")
 	}
 	// max_tokens has to leave room for an answer after the reasoning.
-	if maxTokens, _ := body["max_tokens"].(float64); int(maxTokens) < budgetHigh+budgetHeadroom {
-		t.Errorf("max_tokens = %v, want at least %d", body["max_tokens"], budgetHigh+budgetHeadroom)
+	if maxTokens, _ := body["max_tokens"].(float64); int(maxTokens) != testModel().MaxOutputTokens {
+		t.Errorf("max_tokens = %v, want at least %d", body["max_tokens"], testModel().MaxOutputTokens)
 	}
 	// Anthropic carries the system prompt beside the messages, not as one.
 	if body["system"] != "be brief" {

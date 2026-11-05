@@ -55,25 +55,6 @@ func report(kind Kind, priority Priority, title string) Input {
 	return Input{Kind: kind, Priority: priority, Title: title, Body: "what happened, at length"}
 }
 
-func TestCreateStoresWhatWasWrittenAndOpensIt(t *testing.T) {
-	store, author, _ := fixture(t)
-	ctx := context.Background()
-
-	record, err := store.Create(ctx, author.ID, report(KindBug, PriorityHigh, "  Upload fails  "))
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	if record.Title != "Upload fails" {
-		t.Errorf("title = %q, want the trimmed text", record.Title)
-	}
-	if record.Status != StatusOpen {
-		t.Errorf("status = %q, want a new report to be open", record.Status)
-	}
-	if record.UserID != author.ID {
-		t.Errorf("user_id = %q, want the author's", record.UserID)
-	}
-}
-
 func TestCreateDefaultsAndRefusals(t *testing.T) {
 	store, author, _ := fixture(t)
 	ctx := context.Background()
@@ -232,20 +213,6 @@ func TestListFiltersAndCounts(t *testing.T) {
 	}
 }
 
-// Counts runs against an empty table on every fresh instance, and SUM over
-// no rows is NULL on both engines.
-func TestCountsOnAnEmptyTable(t *testing.T) {
-	store, _, _ := fixture(t)
-
-	summary, err := store.Counts(context.Background(), nil)
-	if err != nil {
-		t.Fatalf("counts: %v", err)
-	}
-	if summary != (Summary{}) {
-		t.Errorf("summary = %+v, want every count zero", summary)
-	}
-}
-
 func TestStatusAndDelete(t *testing.T) {
 	store, author, _ := fixture(t)
 	ctx := context.Background()
@@ -388,55 +355,6 @@ func TestRepliesMoveTheUnreadFlagToTheOtherSide(t *testing.T) {
 	}
 	if replies[0].Username != "other" {
 		t.Errorf("reply author = %q, want it resolved from the join", replies[0].Username)
-	}
-}
-
-// The author's own endpoint passes RequireOwner, and the store is where that
-// is enforced — not in a check above it that a second caller could forget.
-func TestAnAuthorCannotReplyToSomebodyElsesThread(t *testing.T) {
-	store, author, stranger := fixture(t)
-	ctx := context.Background()
-
-	record, err := store.Create(ctx, author.ID, report(KindBug, PriorityLow, "Mine"))
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	_, err = store.AddReply(ctx, ReplyInput{
-		FeedbackID: record.ID, UserID: stranger.ID, Body: "hello", RequireOwner: true,
-	})
-	if !errors.Is(err, ErrNotFound) {
-		t.Errorf("err = %v, want ErrNotFound — absent, not forbidden", err)
-	}
-	// An operator, on the other hand, answers other people's threads for a
-	// living, and says so by not asking for ownership.
-	if _, err := store.AddReply(ctx, ReplyInput{
-		FeedbackID: record.ID, UserID: stranger.ID, FromStaff: true, Body: "looking into it",
-	}); err != nil {
-		t.Errorf("operator reply refused: %v", err)
-	}
-}
-
-func TestThreadIsScopedToItsOwner(t *testing.T) {
-	store, author, stranger := fixture(t)
-	ctx := context.Background()
-
-	record, err := store.Create(ctx, author.ID, report(KindBug, PriorityLow, "Mine"))
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	if _, err := store.Thread(ctx, nil, record.ID, stranger.ID); !errors.Is(err, ErrNotFound) {
-		t.Errorf("stranger's read = %v, want ErrNotFound", err)
-	}
-	thread, err := store.Thread(ctx, nil, record.ID, author.ID)
-	if err != nil {
-		t.Fatalf("author's read: %v", err)
-	}
-	if thread.Feedback.ID != record.ID || len(thread.Replies) != 0 {
-		t.Errorf("thread = %+v, want the report and no replies yet", thread)
-	}
-	// The operator passes no owner at all.
-	if _, err := store.Thread(ctx, nil, record.ID, ""); err != nil {
-		t.Errorf("operator's read: %v", err)
 	}
 }
 

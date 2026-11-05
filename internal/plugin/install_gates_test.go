@@ -23,6 +23,7 @@ func TestEveryPluginChangeNeedsTheSecondStepWhenThePolicyAsksForIt(t *testing.T)
 		path string
 		body map[string]any
 	}{
+		{"/api/admin/plugins/demo/install", map[string]any{"enable": true}},
 		{"/api/admin/plugins/demo/disable", map[string]any{}},
 		{"/api/admin/plugins/demo/uninstall", map[string]any{}},
 		{"/api/admin/plugins/install-package", map[string]any{"token": "not-previewed"}},

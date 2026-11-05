@@ -166,8 +166,7 @@ func (s *Service) Release(ctx context.Context, userID string, reserved Reservati
 			}
 		}
 		if reserved.covered > 0 {
-			if _, err := bump(ctx, tx, key, WindowTPM, bucketStart(WindowTPM, reserved.at, 0),
-				0, -reserved.covered, 0); err != nil {
+			if err := refundCounter(ctx, tx, key, WindowTPM, bucketStart(WindowTPM, reserved.at, 0), reserved.covered, 0, reserved.generations); err != nil {
 				return err
 			}
 		}
@@ -176,8 +175,7 @@ func (s *Service) Release(ctx context.Context, userID string, reserved Reservati
 		}
 		// The minute, then the windows: the order the lock order in service.go gives them.
 		for _, window := range tokenWindows {
-			if _, err := bump(ctx, tx, key, window, bucketStart(window, reserved.at, reserved.anchor),
-				0, -reserved.estimate.Tokens, -reserved.estimate.Credits); err != nil {
+			if err := refundCounter(ctx, tx, key, window, bucketStart(window, reserved.at, reserved.anchor), reserved.estimate.Tokens, reserved.estimate.Credits, reserved.generations); err != nil {
 				return err
 			}
 		}
@@ -191,6 +189,25 @@ func (s *Service) Release(ctx context.Context, userID string, reserved Reservati
 	if err == nil && reserved.guard != nil {
 		reserved.guard.released = true
 	}
+	return err
+}
+
+// refundCounter only adjusts the row originally charged. A reset that removed
+// it makes the old reservation irrelevant even if a new row has the same key.
+func refundCounter(ctx context.Context, q database.Queryer, key string, window Window, start, tokens int64, credits float64, generations map[Window]string) error {
+	if generations == nil {
+		_, err := bump(ctx, q, key, window, start, 0, -tokens, -credits)
+		return err
+	}
+	generation, ok := generations[window]
+	if !ok {
+		return nil
+	}
+	_, err := q.Exec(ctx, `UPDATE usage_counters SET
+	  tokens = CASE WHEN tokens - ? < 0 THEN 0 ELSE tokens - ? END,
+	  credits = CASE WHEN credits - ? < 0 THEN 0 ELSE credits - ? END
+	  WHERE scope_key = ? AND window_kind = ? AND window_start = ? AND generation = ?`,
+		tokens, tokens, credits, credits, key, window, start, generation)
 	return err
 }
 

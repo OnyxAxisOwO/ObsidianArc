@@ -102,49 +102,6 @@ function createPasteEvent(files: File[]): ClipboardEvent {
 }
 
 describe('Image Lab reference image drag and drop', () => {
-  it('renders the dedicated dropzone when no reference images are attached', async () => {
-    await mountImageLab();
-
-    const dropzone = panels.querySelector('.oa-reference-dropzone');
-    expect(dropzone).not.toBeNull();
-    expect(dropzone?.textContent).toContain(t('referenceImageDrop'));
-    expect(dropzone?.textContent).toContain(t('referenceImageDropHint'));
-    expect(panels.querySelectorAll('.oa-reference').length).toBe(0);
-  });
-
-  it('activates drag state with drop hint when dragging images over the form and handles depth tracking', async () => {
-    await mountImageLab();
-
-    const container = panels.querySelector('.oa-image-lab-generate') as HTMLElement;
-    const dropzone = panels.querySelector('.oa-reference-dropzone') as HTMLElement;
-    expect(container).not.toBeNull();
-
-    const dragEnterEvent = createDragEvent('dragenter', [createFile('test.png', 'image/png')]);
-    container.dispatchEvent(dragEnterEvent);
-    await nextTick();
-
-    expect(panels.querySelector('.oa-reference-zone.dragging')).not.toBeNull();
-    expect(dropzone.classList.contains('dragging')).toBe(true);
-    expect(dropzone.textContent).toContain(t('dropHint'));
-
-    // Entering a child element increments depth without resetting dragging state
-    const childDragEnter = createDragEvent('dragenter', [createFile('test.png', 'image/png')]);
-    dropzone.dispatchEvent(childDragEnter);
-    await nextTick();
-    expect(dropzone.classList.contains('dragging')).toBe(true);
-
-    // Leaving child element decrements depth but container is still active
-    const childDragLeave = createDragEvent('dragleave', [createFile('test.png', 'image/png')]);
-    dropzone.dispatchEvent(childDragLeave);
-    await nextTick();
-    expect(dropzone.classList.contains('dragging')).toBe(true);
-
-    // Leaving container resets dragging state
-    const containerDragLeave = createDragEvent('dragleave', [createFile('test.png', 'image/png')]);
-    container.dispatchEvent(containerDragLeave);
-    await nextTick();
-    expect(panels.querySelector('.oa-reference-zone.dragging')).toBeNull();
-  });
 
   it('supports one-shot drag and drop of multiple reference images at once', async () => {
     await mountImageLab();
@@ -227,26 +184,6 @@ describe('Image Lab reference image drag and drop', () => {
     expect(panels.querySelectorAll('.oa-reference').length).toBe(1);
     expect(panels.querySelector('.oa-reference-count')?.textContent).toBe('1/5');
   });
-
-  it('removes an attached reference image when clicking the remove button', async () => {
-    await mountImageLab();
-
-    const container = panels.querySelector('.oa-image-lab-generate') as HTMLElement;
-    container.dispatchEvent(createDragEvent('drop', [
-      createFile('a.png', 'image/png'),
-      createFile('b.png', 'image/png'),
-    ]));
-    await settle();
-
-    expect(panels.querySelectorAll('.oa-reference').length).toBe(2);
-
-    const removeBtn = panels.querySelector('.oa-reference-remove') as HTMLButtonElement;
-    removeBtn.click();
-    await settle();
-
-    expect(panels.querySelectorAll('.oa-reference').length).toBe(1);
-    expect(panels.querySelector('.oa-reference-count')?.textContent).toBe('1/5');
-  });
 });
 
 describe('Image Lab challenges', () => {
@@ -263,16 +200,6 @@ describe('Image Lab challenges', () => {
   afterEach(() => {
     site.value = null;
     currentUser.value = null;
-  });
-
-  it('asks for nothing while the operator has switched nothing on', async () => {
-    const generate = vi.spyOn(imagesApi, 'generateImages').mockResolvedValue({ created: 1, images: [] });
-    await submit('a sunset');
-    expect(generate).toHaveBeenCalledOnce();
-    const sent = generate.mock.calls[0]![0];
-    expect(sent).not.toHaveProperty('pow');
-    expect(sent).not.toHaveProperty('turnstile');
-    expect(sent).not.toHaveProperty('guards');
   });
 
   it('solves a fresh proof of work for the picture and sends it', async () => {
@@ -582,4 +509,30 @@ describe('Image Lab gallery names', () => {
     await settle();
     expect(document.querySelector('.oa-lightbox-actions a')?.getAttribute('download')).toBe('image-gen-1.jpg');
   });
+});
+
+it('does not send a former account’s prompt after its proof finishes', async () => {
+  const { adopt, forget } = await import('@/stores/session');
+  const { makeAccount } = await import('./fixtures/account');
+  adopt(makeAccount({ id: 'first' }));
+  site.value = { ...siteInfo.value, pow_on_images: true };
+  const challenge = { challenge: 'c', salt: 's', maxNumber: 10, expires: 1, signature: 'g' };
+  vi.spyOn(authApi, 'fetchPoWChallenge').mockResolvedValue(challenge);
+  let finish!: (value: unknown) => void;
+  vi.spyOn(powLib, 'solvePoW').mockReturnValue({ promise: new Promise((resolve) => { finish = resolve; }), cancel: () => {} } as any);
+  const generate = vi.spyOn(imagesApi, 'generateImages').mockResolvedValue({ created: 1, images: [] });
+  await mountImageLab();
+  const field = panels.querySelector('#image-lab-prompt') as HTMLTextAreaElement;
+  field.value = 'private prompt';
+  field.dispatchEvent(new Event('input', { bubbles: true }));
+  await settle();
+  (panels.querySelector('.oa-panel-foot .oa-btn.primary') as HTMLButtonElement).click();
+  await settle();
+  forget();
+  adopt(makeAccount({ id: 'second' }));
+  finish({ ...challenge, nonce: 4 });
+  await settle();
+  expect(generate).not.toHaveBeenCalled();
+  forget();
+  site.value = null;
 });

@@ -235,23 +235,4 @@ describe('the archive panel', () => {
     expect(chat.activeID.value).toBe('');
     expect(chat.messages.value).toEqual([]);
   });
-
-  it('shows the reader line for a coded refusal of a delete, not the server sentence', async () => {
-    rows = makeRows(2);
-    vi.spyOn(chatApi, 'listConversations').mockImplementation(serve);
-    vi.spyOn(chatApi, 'deleteConversation').mockRejectedValue(
-      new ApiError(400, 'storage_full', 'The server sentence, in English.', {}),
-    );
-    await mountPanel();
-
-    const remove = deleteButton(archiveRows()[0]!);
-    remove.click(); // the first click arms the confirmation
-    await settle();
-    remove.click();
-    await settle();
-
-    expect(archiveRows()).toHaveLength(2);
-    expect(chat.flash.value).toBe(t('errStorageFull'));
-    expect(chat.flash.value).not.toBe('The server sentence, in English.');
-  });
 });

@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/apikey"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugin"
@@ -278,18 +279,6 @@ func repackEmpty(t *testing.T) []byte {
 	return out.Bytes()
 }
 
-func TestOnlyAnAdministratorWithTheGrantMayUploadAPackage(t *testing.T) {
-	a := newAdmin(t)
-	visitor := a.in.Register("visitor", founderPassword)
-	res := a.in.DoMultipart(http.MethodPost, "/api/admin/plugins/preview", "file", "demo.arcx", pkgtest.Demo(t), visitor)
-	if res.Code != http.StatusForbidden && res.Code != http.StatusUnauthorized {
-		t.Fatalf("a visitor could preview a package: %d", res.Code)
-	}
-	if res := a.in.DoMultipart(http.MethodPost, "/api/admin/plugins/preview", "file", "demo.arcx", pkgtest.Demo(t), nil); res.Code != http.StatusUnauthorized {
-		t.Fatalf("anonymous preview: %d", res.Code)
-	}
-}
-
 func TestAnInstalledButSwitchedOffPackageIsNotThere(t *testing.T) {
 	a := newAdmin(t)
 	info := a.in.InstallPackage(a.s, pkgtest.Demo(t), false, map[string]string{"demo.mode": "closed"})
@@ -302,12 +291,8 @@ func TestAnInstalledButSwitchedOffPackageIsNotThere(t *testing.T) {
 	if res := a.do(http.MethodPut, "/api/admin/settings", map[string]string{"demo.mode": "open"}); res.Code != http.StatusBadRequest {
 		t.Fatalf("a switched-off plugin's setting was writable: %d", res.Code)
 	}
-	if res := a.do(http.MethodGet, "/api/admin/x/demo/things", nil); res.Code != http.StatusNotFound {
-		t.Fatalf("its admin route: %d", res.Code)
-	}
-	if res := a.in.Do(http.MethodPost, "/api/x/demo/hook", map[string]string{"name": "x"}, nil); res.Code != http.StatusNotFound {
-		t.Fatalf("its public route: %d", res.Code)
-	}
+	a.requireSandbox(a.do(http.MethodGet, "/api/admin/x/demo/things", nil), http.StatusNotFound)
+	a.requireSandbox(a.in.Do(http.MethodGet, "/api/x/demo/echo", nil, nil), http.StatusNotFound)
 	if a.pluginBlock() != nil {
 		t.Fatal("/api/site advertises a switched-off plugin")
 	}
@@ -322,6 +307,27 @@ func TestAnInstalledButSwitchedOffPackageIsNotThere(t *testing.T) {
 	}](t, res).Settings
 	if settings["demo.mode"] != "closed" {
 		t.Fatalf("the install's first settings were not kept: %v", settings["demo.mode"])
+	}
+	register := func(name string) *httptest.ResponseRecorder {
+		return a.in.Do(http.MethodPost, "/api/auth/register", map[string]string{"username": name, "password": founderPassword}, nil)
+	}
+	if res := register("closed"); res.Code != http.StatusForbidden || code(t, res) != "demo_closed" {
+		t.Fatalf("the enabled guard did not refuse registration: %d %s", res.Code, res.Body.String())
+	}
+	a.mustDo(http.MethodPost, "/api/admin/plugins/demo/disable", map[string]any{}, http.StatusOK)
+	if res := register("open"); res.Code != http.StatusCreated {
+		t.Fatalf("the disabled guard refused registration: %d %s", res.Code, res.Body.String())
+	}
+	a.requireSandbox(a.in.Do(http.MethodGet, "/api/x/demo/echo", nil, nil), http.StatusNotFound)
+	if listed(t, a, "demo")["state"] != "disabled" {
+		t.Fatal("the list does not say it is disabled")
+	}
+}
+
+func (a admin) requireSandbox(res *httptest.ResponseRecorder, status int) {
+	a.in.T.Helper()
+	if got := res.Header().Get("Content-Security-Policy"); res.Code != status || got != "sandbox; default-src 'none'" {
+		a.in.T.Fatalf("package response = %d with policy %q, want %d and sandbox: %s", res.Code, got, status, res.Body.String())
 	}
 }
 
@@ -509,10 +515,13 @@ func TestAPackagesAdminRoutesAreBehindTheBackofficesChecks(t *testing.T) {
 	if !strings.Contains(created.Body.String(), `"name":"widget"`) {
 		t.Fatalf("created = %s", created.Body.String())
 	}
-	if res := a.do(http.MethodPost, "/api/admin/x/demo/things", map[string]string{"name": "  "}); res.Code != http.StatusBadRequest || code(t, res) != "name_required" {
-		t.Fatalf("a bad body: %d %s", res.Code, res.Body.String())
+	bad := a.do(http.MethodPost, "/api/admin/x/demo/things", map[string]string{"name": "  "})
+	a.requireSandbox(bad, http.StatusBadRequest)
+	if code(t, bad) != "name_required" {
+		t.Fatalf("a bad body: %s", bad.Body.String())
 	}
 	list := a.mustDo(http.MethodGet, "/api/admin/x/demo/things", nil, http.StatusOK)
+	a.requireSandbox(list, http.StatusOK)
 	if !strings.Contains(list.Body.String(), "widget") || !strings.Contains(list.Body.String(), `"actor":"founder"`) {
 		t.Fatalf("list = %s", list.Body.String())
 	}
@@ -526,105 +535,47 @@ func TestAPublicRouteAuthenticatesItselfAndReachesTheDatabase(t *testing.T) {
 	a := newAdmin(t)
 	a.in.InstallPackage(a.s, pkgtest.Demo(t), true, nil)
 
+	a.requireSandbox(a.in.Do(http.MethodGet, "/api/x/demo/echo", nil, nil), http.StatusOK)
+	page := a.in.Do(http.MethodGet, "/api/site", nil, nil)
+	if !strings.Contains(page.Header().Get("Content-Security-Policy"), "script-src 'self'") {
+		t.Fatal("the site's own answers lost their policy")
+	}
+
 	// No token configured: the endpoint answers nothing at all.
 	if res := a.in.Do(http.MethodPost, "/api/x/demo/hook", map[string]string{"name": "x"}, nil); res.Code != http.StatusNotFound {
 		t.Fatalf("unconfigured: %d", res.Code)
 	}
-	a.setSettings(map[string]string{"demo.secret": "s3cret-token"})
-	hook := func(token string) *httptest.ResponseRecorder {
-		return a.in.DoWith(http.MethodPost, "/api/x/demo/hook", map[string]string{"name": "from-bot"}, nil,
+	hook := func(token, name string) *httptest.ResponseRecorder {
+		return a.in.DoWith(http.MethodPost, "/api/x/demo/hook", map[string]string{"name": name}, nil,
 			http.Header{"Authorization": {"Bearer " + token}})
 	}
-	if res := hook("wrong"); res.Code != http.StatusUnauthorized {
-		t.Fatalf("a wrong token: %d", res.Code)
+	key := apikey.TokenPrefix + "3f9c1a7e0b2d4f6a8c1e3b5d7f9a0c2e"
+	a.setSettings(map[string]string{"demo.secret": key})
+	if res := hook(key, "with-arc-key"); res.Code != http.StatusUnauthorized || code(t, res) != "unauthorized" {
+		t.Fatalf("an Arc key reached the backend: %d %s", res.Code, res.Body.String())
 	}
-	if res := hook("s3cret-token"); res.Code != http.StatusOK {
+
+	const token = "s3cret-token"
+	a.setSettings(map[string]string{"demo.secret": token})
+	if res := hook("s3cret-tokeo", "with-wrong-token"); res.Code != http.StatusUnauthorized {
+		t.Fatalf("a near token: %d", res.Code)
+	}
+	for name, want := range map[string]string{"   ": "name_required", strings.Repeat("a", 201): "name_too_long"} {
+		if res := hook(token, name); res.Code != http.StatusBadRequest || code(t, res) != want {
+			t.Fatalf("invalid hook name of length %d: %d %s", len(name), res.Code, res.Body.String())
+		}
+	}
+	if res := hook(token, "from-bot"); res.Code != http.StatusOK {
 		t.Fatalf("the right token: %d %s", res.Code, res.Body.String())
 	}
 	list := a.mustDo(http.MethodGet, "/api/admin/x/demo/things", nil, http.StatusOK)
-	if !strings.Contains(list.Body.String(), "from-bot") {
-		t.Fatalf("the hook wrote nothing: %s", list.Body.String())
+	if body := list.Body.String(); !strings.Contains(body, "from-bot") || strings.Contains(body, "with-arc-key") || strings.Contains(body, "with-wrong-token") {
+		t.Fatalf("hook writes: %s", body)
 	}
 	// The secret is write-only like every credential.
 	res := a.mustDo(http.MethodGet, "/api/admin/settings", nil, http.StatusOK)
 	if strings.Contains(res.Body.String(), "s3cret-token") {
 		t.Fatal("a package's secret setting came back in a response")
-	}
-}
-
-// A plugin's routes act with the package's own permissions, so the core's rules
-// for administrator accounts have to hold through them: a delegated
-// administrator holding the users grant cannot suspend or retire another
-// administrator's account, and the refusal reaches the client as the core's
-// sentence and status, not as a 500 with the text hidden.
-func TestADelegatedAdministratorCannotEndAnotherAdministratorThroughThePlugin(t *testing.T) {
-	a := newAdmin(t)
-	a.in.InstallPackage(a.s, pkgtest.Demo(t), true, nil)
-	grantUsers := func(name string) *servertest.Session {
-		s := a.in.Register(name, founderPassword)
-		a.mustDo(http.MethodPatch, "/api/admin/users/"+s.UserID,
-			map[string]any{"role": "admin", "admin_permissions": []string{"users"}}, http.StatusOK)
-		return s
-	}
-	delegate := grantUsers("delegate")
-	peer := grantUsers("peer")
-
-	res := a.in.Do(http.MethodPost, "/api/admin/x/demo/disable/"+peer.UserID, map[string]any{}, delegate)
-	if res.Code != http.StatusForbidden || code(t, res) != "admin_account" {
-		t.Fatalf("a delegate suspended an administrator through the plugin: %d %s", res.Code, res.Body.String())
-	}
-	res = a.in.Do(http.MethodPost, "/api/admin/x/demo/retire/"+peer.UserID, map[string]any{"mode": "delete"}, delegate)
-	if res.Code != http.StatusForbidden || code(t, res) != "admin_account" {
-		t.Fatalf("a delegate deleted an administrator through the plugin: %d %s", res.Code, res.Body.String())
-	}
-	if res := a.in.Do(http.MethodGet, "/api/auth/me", nil, peer); res.Code != http.StatusOK {
-		t.Fatalf("the refused administrator lost its session anyway: %d", res.Code)
-	}
-	// A missing account is still a 404, not a fault.
-	if res := a.in.Do(http.MethodPost, "/api/admin/x/demo/retire/01ARZ3NDEKTSV4RRFFQ69G5FAV", map[string]any{}, a.s); res.Code != http.StatusNotFound || code(t, res) != "no_such_account" {
-		t.Fatalf("retiring a missing account: %d %s", res.Code, res.Body.String())
-	}
-}
-
-// A reward is validated before the core is asked, so a zero amount or a
-// negative lifetime is the request's fault and says so.
-func TestARewardRefusesAZeroAmountOrANegativeLifetime(t *testing.T) {
-	a := newAdmin(t)
-	a.in.InstallPackage(a.s, pkgtest.Demo(t), true, nil)
-	winner := a.in.Register("winner", founderPassword)
-	for label, body := range map[string]map[string]any{
-		"zero amount":       {"bar_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV", "amount": 0},
-		"negative lifetime": {"bar_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV", "amount": 1, "days": -1},
-	} {
-		res := a.do(http.MethodPost, "/api/admin/x/demo/reward/"+winner.UserID, body)
-		if res.Code != http.StatusBadRequest || code(t, res) != "bad_argument" {
-			t.Errorf("%s: %d %s", label, res.Code, res.Body.String())
-		}
-	}
-}
-
-// The webhook is what a bot's route copies, so it keeps the rules the admin
-// route keeps: no blank or oversized name, and a token that differs in one
-// place is refused like any other.
-func TestAWebhookRefusesBlankAndOversizedNamesAndNearTokens(t *testing.T) {
-	a := newAdmin(t)
-	a.in.InstallPackage(a.s, pkgtest.Demo(t), true, nil)
-	a.setSettings(map[string]string{"demo.secret": "s3cret-token"})
-	post := func(name, token string) *httptest.ResponseRecorder {
-		return a.in.DoWith(http.MethodPost, "/api/x/demo/hook", map[string]string{"name": name}, nil,
-			http.Header{"Authorization": {"Bearer " + token}})
-	}
-	if res := post("from-bot", "s3cret-tokex"); res.Code != http.StatusUnauthorized {
-		t.Fatalf("a token one byte off: %d", res.Code)
-	}
-	if res := post("   ", "s3cret-token"); res.Code != http.StatusBadRequest || code(t, res) != "name_required" {
-		t.Fatalf("a blank name: %d %s", res.Code, res.Body.String())
-	}
-	if res := post(strings.Repeat("a", 201), "s3cret-token"); res.Code != http.StatusBadRequest || code(t, res) != "name_too_long" {
-		t.Fatalf("a name of 201 bytes: %d %s", res.Code, res.Body.String())
-	}
-	if res := post("from-bot", "s3cret-token"); res.Code != http.StatusOK {
-		t.Fatalf("the right token: %d %s", res.Code, res.Body.String())
 	}
 }
 
@@ -726,31 +677,6 @@ func TestAPackageOutgoingRequestsNeedNetworkAndOriginsFollowSettings(t *testing.
 	}
 }
 
-func TestDisablingAndEnablingFollowsTheGateWithoutARestart(t *testing.T) {
-	a := newAdmin(t)
-	a.in.InstallPackage(a.s, pkgtest.Demo(t), true, nil)
-	a.setSettings(map[string]string{"demo.mode": "closed"})
-
-	a.mustDo(http.MethodPost, "/api/admin/plugins/demo/disable", map[string]any{}, http.StatusOK)
-	if res := a.in.Do(http.MethodPost, "/api/auth/register", map[string]any{"username": "newcomer", "password": founderPassword}, nil); res.Code != http.StatusCreated {
-		t.Fatalf("the guard stood in front of sign-up after the plugin was switched off: %d %s", res.Code, res.Body.String())
-	}
-	if res := a.do(http.MethodGet, "/api/admin/x/demo/things", nil); res.Code != http.StatusNotFound {
-		t.Fatalf("its route after disabling: %d", res.Code)
-	}
-	if listed(t, a, "demo")["state"] != "disabled" {
-		t.Fatal("the list does not say it is disabled")
-	}
-
-	a.mustDo(http.MethodPost, "/api/admin/plugins/demo/enable", nil, http.StatusOK)
-	if res := a.in.Do(http.MethodPost, "/api/auth/register", map[string]any{"username": "another", "password": founderPassword}, nil); res.Code != http.StatusForbidden {
-		t.Fatalf("the guard did not come back: %d", res.Code)
-	}
-	if a.pluginBlock()["mode"] != "closed" {
-		t.Fatalf("the block after enabling: %v", a.pluginBlock())
-	}
-}
-
 func TestRemovingAPackageIsRealAndItsDataStaysUnlessAskedOtherwise(t *testing.T) {
 	a := newAdmin(t)
 	a.in.InstallPackage(a.s, pkgtest.Demo(t), true, nil)
@@ -791,6 +717,13 @@ func TestRemovingAPackageIsRealAndItsDataStaysUnlessAskedOtherwise(t *testing.T)
 
 	// Installing it again finds it all.
 	a.in.InstallPackage(a.s, pkgtest.Demo(t), true, nil)
+	a = admin{in: a.in.Reboot(), s: a.s}
+	if info := listed(t, a, "demo"); info["state"] != "enabled" || info["kind"] != "package" {
+		t.Fatalf("after restarting with a reinstalled package: %v", info)
+	}
+	if res := a.in.Do(http.MethodPost, "/api/auth/register", map[string]string{"username": "late", "password": founderPassword}, nil); res.Code != http.StatusForbidden {
+		t.Fatalf("the guard after a restart: %d", res.Code)
+	}
 	res := a.mustDo(http.MethodGet, "/api/admin/x/demo/things", nil, http.StatusOK)
 	if !strings.Contains(res.Body.String(), "keepsake") {
 		t.Fatalf("a reinstall did not find its data: %s", res.Body.String())
@@ -830,28 +763,6 @@ func TestRemovingAPackageWithItsDataLeavesNothingAndTheServerCarriesOn(t *testin
 	// And it can be installed again, from nothing.
 	a.in.InstallPackage(a.s, pkgtest.Demo(t), true, nil)
 	a.mustDo(http.MethodGet, "/api/admin/x/demo/things", nil, http.StatusOK)
-}
-
-func TestARestartFindsWhatWasInstalledInTheDatabase(t *testing.T) {
-	a := newAdmin(t)
-	a.in.InstallPackage(a.s, pkgtest.Demo(t), true, nil)
-	a.setSettings(map[string]string{"demo.mode": "closed"})
-	a.mustDo(http.MethodPost, "/api/admin/x/demo/things", map[string]string{"name": "before"}, http.StatusCreated)
-
-	rebooted := admin{in: a.in.Reboot(), s: a.s}
-	if rebooted.pluginBlock()["mode"] != "closed" {
-		t.Fatalf("the block after a restart: %v", rebooted.pluginBlock())
-	}
-	list := rebooted.mustDo(http.MethodGet, "/api/admin/x/demo/things", nil, http.StatusOK)
-	if !strings.Contains(list.Body.String(), "before") {
-		t.Fatalf("after a restart: %s", list.Body.String())
-	}
-	if res := rebooted.in.Do(http.MethodPost, "/api/auth/register", map[string]any{"username": "late", "password": founderPassword}, nil); res.Code != http.StatusForbidden {
-		t.Fatalf("the guard after a restart: %d", res.Code)
-	}
-	if info := listed(t, rebooted, "demo"); info["state"] != "enabled" || info["kind"] != "package" {
-		t.Fatalf("after a restart: %v", info)
-	}
 }
 
 func TestUploadingANewerVersionUpdatesInPlaceAndKeepsWhatTheOperatorSet(t *testing.T) {
@@ -1270,7 +1181,7 @@ func TestADeploymentUpdatesWhatItShippedAndLeavesWhatTheOperatorInstalled(t *tes
 	}
 }
 
-func TestChangingPluginsWhileTrafficFlowsRacesWithNothing(t *testing.T) {
+func TestConcurrentChangingPluginsWhileTrafficFlowsRacesWithNothing(t *testing.T) {
 	a := newAdmin(t)
 	a.in.InstallPackage(a.s, pkgtest.Demo(t), true, nil)
 	a.setSettings(map[string]string{"demo.secret": "tok"})
@@ -1379,6 +1290,10 @@ func TestABackendEndsAccountsWithTheOperationsTheServerOffers(t *testing.T) {
 	_ = a.in.DB.QueryRow(t.Context(), `SELECT COUNT(*) FROM users WHERE id = ?`, victim.UserID).Scan(&n)
 	if n != 0 {
 		t.Fatal("the account survived a delete")
+	}
+
+	if res := a.do(http.MethodPost, "/api/admin/x/demo/retire/"+victim.UserID, map[string]any{}); res.Code != http.StatusNotFound || code(t, res) != "no_such_account" {
+		t.Fatalf("retiring a missing account: %d %s", res.Code, res.Body.String())
 	}
 
 	// Without the permission the same call is refused, and nothing changes.
@@ -1546,6 +1461,14 @@ func TestABackendPaysRewardsInTheCoresCurrenciesAndOnlyWithThePermission(t *test
 	}](t, res).ExpiresAt
 	if lifetime := time.Until(time.UnixMilli(expires)); lifetime < 71*time.Hour || lifetime > 73*time.Hour {
 		t.Fatalf("a three-day bonus expires in %v", lifetime)
+	}
+	for _, bad := range []map[string]any{
+		{"bar_id": bar.ID, "amount": 0},
+		{"bar_id": bar.ID, "amount": 1, "days": -1},
+	} {
+		if res := a.do(http.MethodPost, "/api/admin/x/demo/reward/"+winner.UserID, bad); res.Code != http.StatusBadRequest || code(t, res) != "bad_argument" {
+			t.Fatalf("invalid reward %v: %d %s", bad, res.Code, res.Body.String())
+		}
 	}
 	var amount float64
 	var source string

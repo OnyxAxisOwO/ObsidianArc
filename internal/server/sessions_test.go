@@ -33,65 +33,6 @@ func (in *instance) login(identifier, password string) *session {
 	return nil
 }
 
-func TestProfileSessionsListsBothAndMarksTheCurrentOne(t *testing.T) {
-	in := newInstance(t)
-	registered := in.register("ada", "a-good-password")
-	loggedIn := in.login("ada", "a-good-password")
-
-	response := in.do(http.MethodGet, "/api/profile/sessions", nil, loggedIn)
-	if response.Code != http.StatusOK {
-		t.Fatalf("list sessions: %d %s", response.Code, response.Body.String())
-	}
-	body := decode[struct {
-		Sessions []sessionRow `json:"sessions"`
-	}](t, response)
-	if len(body.Sessions) != 2 {
-		t.Fatalf("got %d sessions, want 2 (register + login)", len(body.Sessions))
-	}
-
-	current := 0
-	for _, row := range body.Sessions {
-		if row.Current {
-			current++
-		}
-		if row.ID == "" {
-			t.Error("a session row has no id")
-		}
-	}
-	if current != 1 {
-		t.Fatalf("%d rows marked current, want exactly 1", current)
-	}
-
-	// The other session — the one register issued — is a real other row and
-	// not this one, whatever order the list came back in.
-	_ = registered
-}
-
-func TestRevokeSessionCannotTakeTheCurrentOne(t *testing.T) {
-	in := newInstance(t)
-	registered := in.register("ada", "a-good-password")
-	in.login("ada", "a-good-password")
-
-	list := decode[struct {
-		Sessions []sessionRow `json:"sessions"`
-	}](t, in.do(http.MethodGet, "/api/profile/sessions", nil, registered))
-
-	var currentID string
-	for _, row := range list.Sessions {
-		if row.Current {
-			currentID = row.ID
-		}
-	}
-	if currentID == "" {
-		t.Fatal("no session marked current")
-	}
-
-	response := in.do(http.MethodDelete, "/api/profile/sessions/"+currentID, nil, registered)
-	if response.Code != http.StatusConflict {
-		t.Fatalf("revoke the current session: %d %s, want 409", response.Code, response.Body.String())
-	}
-}
-
 func TestRevokeSessionEndsAnotherOne(t *testing.T) {
 	in := newInstance(t)
 	registered := in.register("ada", "a-good-password")
@@ -104,14 +45,19 @@ func TestRevokeSessionEndsAnotherOne(t *testing.T) {
 		t.Fatalf("got %d sessions, want 2", len(list.Sessions))
 	}
 
-	var other string
+	var current, other string
 	for _, row := range list.Sessions {
-		if !row.Current {
+		if row.Current {
+			current = row.ID
+		} else {
 			other = row.ID
 		}
 	}
-	if other == "" {
-		t.Fatal("no non-current session to revoke")
+	if current == "" || other == "" {
+		t.Fatalf("expected a current and a non-current session, got %+v", list.Sessions)
+	}
+	if response := in.do(http.MethodDelete, "/api/profile/sessions/"+current, nil, registered); response.Code != http.StatusConflict {
+		t.Fatalf("revoke current session: %d %s", response.Code, response.Body.String())
 	}
 
 	if response := in.do(http.MethodDelete, "/api/profile/sessions/"+other, nil, registered); response.Code != http.StatusNoContent {

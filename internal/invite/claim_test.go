@@ -27,49 +27,6 @@ func (f *fixture) partnerCode(t *testing.T, code, groupID string, groupDays, gro
 	return created[0]
 }
 
-// TestClaimJoinsFromDefaultGroup covers the first branch of Claim's group
-// decision: an account sitting in the default registration group (or, as
-// here, in no group at all — account() in store_test.go leaves GroupID
-// empty) joins the code's group fresh, for exactly the days it grants.
-func TestClaimJoinsFromDefaultGroup(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-	target, err := f.groups.Create(ctx, nil, group.CreateInput{Name: "Fresh Join"})
-	if err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	code := f.partnerCode(t, "JOINCODE", target.ID, 5, 0, 0)
-	account := f.account(t, "join-claimer")
-
-	before := time.Now().UnixMilli()
-	result, err := f.store.Claim(ctx, account.ID, code.Code)
-	if err != nil {
-		t.Fatalf("claim: %v", err)
-	}
-	if result.GroupID != target.ID || result.GroupName != target.Name || result.Days != 5 {
-		t.Fatalf("result = %+v, want group %s (%s) / 5 days", result, target.ID, target.Name)
-	}
-	if result.ExpiresAt < before+5*86400000 {
-		t.Fatalf("expires_at = %d, want at least %d", result.ExpiresAt, before+5*86400000)
-	}
-
-	updated, err := f.users.ByID(ctx, nil, account.ID)
-	if err != nil {
-		t.Fatalf("read account: %v", err)
-	}
-	if updated.GroupID != target.ID || updated.GroupExpiresAt != result.ExpiresAt {
-		t.Fatalf("account after claim = %+v, want group %s expiring %d", updated, target.ID, result.ExpiresAt)
-	}
-
-	got, err := f.store.ByID(ctx, code.ID)
-	if err != nil {
-		t.Fatalf("read code: %v", err)
-	}
-	if got.Uses != 1 {
-		t.Fatalf("code uses = %d, want 1", got.Uses)
-	}
-}
-
 // TestClaimExtendsExistingExpiry covers the second branch: an account
 // already sitting in the code's own group, on a trial, has the new days
 // added on top of whichever is later — now or its current expiry — never
@@ -114,7 +71,6 @@ func TestClaimRefusesPermanentMembershipInSameGroup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create group: %v", err)
 	}
-	code := f.partnerCode(t, "PERMCODE", target.ID, 5, 0, 0)
 	account := f.account(t, "permanent-member")
 	groupID := target.ID
 	var noExpiry int64
@@ -124,18 +80,22 @@ func TestClaimRefusesPermanentMembershipInSameGroup(t *testing.T) {
 		t.Fatalf("seat account permanently: %v", err)
 	}
 
-	_, err = f.store.Claim(ctx, account.ID, code.Code)
-	if !errors.Is(err, ErrGroupConflict) {
-		t.Fatalf("claim while permanently in the code's group: %v, want ErrGroupConflict", err)
+	for _, tc := range []struct {
+		code string
+		days int
+	}{{"PERMCODE", 5}, {"PERMPERM", 0}} {
+		code := f.partnerCode(t, tc.code, target.ID, tc.days, 0, 0)
+		if _, err := f.store.Claim(ctx, account.ID, code.Code); !errors.Is(err, ErrGroupConflict) {
+			t.Fatalf("claim with %d days while a permanent member: %v, want ErrGroupConflict", tc.days, err)
+		}
+		got, err := f.store.ByID(ctx, code.ID)
+		if err != nil || got.Uses != 0 {
+			t.Fatalf("code uses = %d, err = %v, want no use spent", got.Uses, err)
+		}
 	}
-	// Refused for free: no use spent, and no throttle failure recorded —
-	// see refuse() in Claim.
-	got, err := f.store.ByID(ctx, code.ID)
-	if err != nil {
-		t.Fatalf("read code: %v", err)
-	}
-	if got.Uses != 0 {
-		t.Fatalf("code uses = %d after a refused claim, want 0", got.Uses)
+	updated, err := f.users.ByID(ctx, nil, account.ID)
+	if err != nil || updated.GroupID != target.ID || updated.GroupExpiresAt != 0 {
+		t.Fatalf("membership after refused claims = %q until %d, err = %v", updated.GroupID, updated.GroupExpiresAt, err)
 	}
 }
 
@@ -610,40 +570,5 @@ func TestClaimTopsUpATrialInTheDefaultGroup(t *testing.T) {
 	}
 	if want := trialEnd + 5*86400000; result.ExpiresAt != want {
 		t.Fatalf("topped-up expiry = %d, want %d (trial end plus 5 days)", result.ExpiresAt, want)
-	}
-}
-
-// The case TestClaimRefusesPermanentMembershipInSameGroup does not reach: the
-// code itself is permanent (no days), and the account is already permanent in
-// the code's group. The refusal is the same whatever the code grants, because a
-// claim never changes a permanent membership in its own group. Pinned here so
-// the refusal is a decision a reader can see, not something the timed-code test
-// happens to cover.
-func TestClaimRefusesPermanentCodeForAPermanentMemberOfTheSameGroup(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-	target, err := f.groups.Create(ctx, nil, group.CreateInput{Name: "Permanent Pair"})
-	if err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	code := f.partnerCode(t, "PERMPERM", target.ID, 0, 0, 0)
-	account := f.account(t, "permanent-pair")
-	groupID := target.ID
-	var noExpiry int64
-	if _, err := f.users.UpdateAdminFields(ctx, nil, account.ID, user.AdminUpdate{
-		GroupID: &groupID, GroupExpiresAt: &noExpiry,
-	}); err != nil {
-		t.Fatalf("seat account permanently: %v", err)
-	}
-
-	if _, err := f.store.Claim(ctx, account.ID, code.Code); !errors.Is(err, ErrGroupConflict) {
-		t.Fatalf("permanent code for a permanent member of its group: %v, want ErrGroupConflict", err)
-	}
-	updated, err := f.users.ByID(ctx, nil, account.ID)
-	if err != nil {
-		t.Fatalf("read account: %v", err)
-	}
-	if updated.GroupID != target.ID || updated.GroupExpiresAt != 0 {
-		t.Fatalf("membership changed to group %q expiring %d, want the permanent %q unchanged", updated.GroupID, updated.GroupExpiresAt, target.ID)
 	}
 }

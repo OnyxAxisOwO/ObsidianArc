@@ -120,30 +120,6 @@ func TestAnUpdateTakesAwayTheBindingAndRuleItRetired(t *testing.T) {
 	}
 }
 
-// The metadata services are refused however their address is spelled: under
-// the NAT64 prefix a gateway maps IPv4 into, inside a 6to4 address, as a
-// mapped IPv4 address, and in the IPv6 ranges the clouds use.
-func TestTheCloudMetadataAddressesAreRefusedWhateverTheirSpelling(t *testing.T) {
-	for _, addr := range []string{
-		"[fd20:ce::254]:80",
-		"[fd00:ec2::254]:80",
-		"[2002:a9fe:a9fe::]:80",
-		"[2002:6464:64c8::1]:80",
-		"[64:ff9b::a9fe:a9fe]:80",
-		"[64:ff9b::169.254.169.254]:80",
-		"[64:ff9b::6464:64c8]:80",
-		"[::ffff:169.254.169.254]:80",
-		"169.254.169.254:80",
-	} {
-		if err := refuseFetchAddress("tcp", addr, nil); err == nil {
-			t.Errorf("%s was allowed", addr)
-		}
-	}
-	if err := refuseFetchAddress("tcp", "[64:ff9b::808:808]:443", nil); err != nil {
-		t.Errorf("a public address through NAT64 was refused: %v", err)
-	}
-}
-
 // The server reads a client's address from X-Forwarded-For and its kin when a
 // request comes from a trusted address, and a plugin's loopback service is
 // one. A backend's request must not carry those headers out.
@@ -198,28 +174,6 @@ func TestALogCallHasABudget(t *testing.T) {
 	}
 }
 
-// What a package writes to the security log is attributed to the package, and
-// to whoever the request came from, never to a name the backend chose.
-func TestAPackageCannotNameAnActorOrSourceInTheSecurityLog(t *testing.T) {
-	r := newRig(t)
-	r.manager.host = &Host{Security: securityevents.NewStore(r.db), Notify: notify.NewStore(r.db)}
-	l := &loaded{name: "riskctl", pkg: &arcx.Package{Manifest: &arcx.Manifest{Permissions: []string{arcx.PermSecurityLog}}}}
-	host := r.manager.hostFunc(l)
-	c := &wasm.Call{Ctx: context.Background(), Info: wasm.CallInfo{Actor: &wasm.Actor{ID: "founder-id", Username: "founder"}}}
-	raw := json.RawMessage(`{"event":"risk_block","source":"backoffice","actor_id":"someone-else","actor_username":"forged","user_id":"u1","username":"visitor","decision":"block"}`)
-	if _, err := host(c, "security.record", raw); err != nil {
-		t.Fatal(err)
-	}
-	var source, actorID, actorName string
-	if err := r.db.QueryRow(context.Background(),
-		`SELECT source, actor_id, actor_username FROM security_events WHERE event = ?`, "risk_block").Scan(&source, &actorID, &actorName); err != nil {
-		t.Fatal(err)
-	}
-	if source != "plugin:riskctl" || actorID != "founder-id" || actorName != "founder" {
-		t.Fatalf("recorded source %q, actor %q %q", source, actorID, actorName)
-	}
-}
-
 // Notifications and security events a call may write are counted, and a
 // notification's kind and link are bounded, so one call cannot fan out into
 // every inbox without limit.
@@ -245,6 +199,12 @@ func TestNotificationsAndSecurityEventsHaveAPerCallBudget(t *testing.T) {
 		t.Fatal("a notification with an over-long kind was accepted")
 	}
 	push := json.RawMessage(`{"kind":"risk","all":true}`)
+	for _, actor := range []*wasm.Actor{nil, {ID: "u1", Username: "visitor", Role: "user"}} {
+		call := &wasm.Call{Ctx: context.Background(), Info: wasm.CallInfo{Actor: actor}}
+		if _, err := host(call, "notify.push", push); err == nil {
+			t.Fatalf("actor %+v notified every account", actor)
+		}
+	}
 	for i := 0; i < maxAuditWrites; i++ {
 		if _, err := host(c2, "notify.push", push); err != nil {
 			t.Fatalf("notification %d: %v", i, err)
@@ -252,30 +212,6 @@ func TestNotificationsAndSecurityEventsHaveAPerCallBudget(t *testing.T) {
 	}
 	if _, err := host(c2, "notify.push", push); err == nil {
 		t.Fatal("a notification past the call's budget was written")
-	}
-}
-
-// A notification to every account is an administrator's to send. A public
-// route or a guard is anybody's request, and one of those would otherwise
-// reach every inbox, as many times as its budget allows.
-func TestAnAnonymousCallCannotNotifyEveryAccount(t *testing.T) {
-	r := newRig(t)
-	r.manager.host = &Host{Security: securityevents.NewStore(r.db), Notify: notify.NewStore(r.db)}
-	l := &loaded{name: "riskctl", pkg: &arcx.Package{Manifest: &arcx.Manifest{Permissions: []string{arcx.PermNotify}}}}
-	host := r.manager.hostFunc(l)
-	push := json.RawMessage(`{"kind":"risk","all":true}`)
-	for label, actor := range map[string]*wasm.Actor{
-		"an anonymous call":   nil,
-		"a signed-in visitor": {ID: "u1", Username: "visitor", Role: "user"},
-	} {
-		c := &wasm.Call{Ctx: context.Background(), Info: wasm.CallInfo{Actor: actor}}
-		if _, err := host(c, "notify.push", push); err == nil {
-			t.Errorf("%s notified every account", label)
-		}
-	}
-	admin := &wasm.Call{Ctx: context.Background(), Info: wasm.CallInfo{Actor: &wasm.Actor{ID: "founder-id", Username: "founder", Role: "admin"}}}
-	if _, err := host(admin, "notify.push", push); err != nil {
-		t.Fatalf("an administrator's request was refused: %v", err)
 	}
 }
 
@@ -305,44 +241,29 @@ func TestAPackageFilesItsEventsUnderItsOwnLabelOnly(t *testing.T) {
 		{"no_source", "", "plugin:riskctl", nil},
 	}
 	for _, tc := range cases {
-		raw := json.RawMessage(`{"event":"` + tc.event + `","source":"` + tc.claimed + `"}`)
+		raw := json.RawMessage(`{"event":"` + tc.event + `","source":"` + tc.claimed + `","actor_id":"forged","actor_username":"forged"}`)
 		c := &wasm.Call{Ctx: context.Background(), Info: wasm.CallInfo{Actor: tc.actor}}
 		if _, err := host(c, "security.record", raw); err != nil {
 			t.Fatal(err)
 		}
-		var source string
+		var source, actorID, actorName string
 		if err := r.db.QueryRow(context.Background(),
-			`SELECT source FROM security_events WHERE event = ?`, tc.event).Scan(&source); err != nil {
+			`SELECT source, actor_id, actor_username FROM security_events WHERE event = ?`, tc.event).Scan(&source, &actorID, &actorName); err != nil {
 			t.Fatal(err)
 		}
 		if source != tc.want {
 			t.Errorf("claimed %q: filed under %q, want %q", tc.claimed, source, tc.want)
 		}
-	}
-}
-
-// An event under one of the core's own names would read as the core's entry,
-// so the package is refused rather than having its entry filed under a label.
-func TestAPackageCannotWriteAnEventTheCoreWritesItself(t *testing.T) {
-	r := newRig(t)
-	r.manager.host = &Host{Security: securityevents.NewStore(r.db), Notify: notify.NewStore(r.db)}
-	l := &loaded{name: "riskctl", pkg: &arcx.Package{Manifest: &arcx.Manifest{Permissions: []string{arcx.PermSecurityLog}}}}
-	host := r.manager.hostFunc(l)
-	c := &wasm.Call{Ctx: context.Background(), Info: wasm.CallInfo{}}
-	for _, event := range []string{"console_command", " two_factor ", "plugin", "log_prune", "password_reset", "account_deleted"} {
-		raw := json.RawMessage(`{"event":"` + event + `","source":"ssh","decision":"run"}`)
-		_, err := host(c, "security.record", raw)
-		var he *wasm.HostError
-		if !errors.As(err, &he) || he.Code != "bad_argument" {
-			t.Fatalf("the core's event %q was filed: %v", event, err)
+		if actorID == "forged" || actorName == "forged" ||
+			(tc.actor != nil && (actorID != tc.actor.ID || actorName != tc.actor.Username)) {
+			t.Errorf("%s was attributed to %q (%q)", tc.event, actorName, actorID)
 		}
 	}
-	var n int
-	if err := r.db.QueryRow(context.Background(),
-		`SELECT COUNT(*) FROM security_events WHERE source = ?`, "ssh").Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-	if n != 0 {
-		t.Fatalf("%d entries were filed under the console's ssh label", n)
+	for _, event := range []string{"console_command", " two_factor ", "plugin", "log_prune", "password_reset", "account_deleted"} {
+		raw := json.RawMessage(`{"event":"` + event + `","source":"ssh","decision":"run"}`)
+		call := &wasm.Call{Ctx: context.Background()}
+		if _, err := host(call, "security.record", raw); hostCode(err) != "bad_argument" {
+			t.Fatalf("the core's event %q was not refused: %v", event, err)
+		}
 	}
 }

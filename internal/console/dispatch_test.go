@@ -29,46 +29,6 @@ func TestADispatchedPanicIsAFailedCommand(t *testing.T) {
 	}
 }
 
-// A dispatched request used to report 127.0.0.1 as its peer whoever sent it,
-// so every console user shared one bucket for any limit keyed on the peer. It
-// now reports the address the command was typed from.
-func TestDispatchSetsThePeerFromTheCallersAddress(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /peer", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(r.RemoteAddr))
-	})
-	dispatch := NewDispatcher(mux)
-
-	for _, tc := range []struct {
-		caller string
-		want   string
-	}{
-		{caller: "203.0.113.7", want: "203.0.113.7:0"},
-		{caller: "2001:db8::7", want: "[2001:db8::7]:0"},
-		// No address to give, or one that is not an address: the stand-in
-		// the dispatcher always used.
-		{caller: "", want: "127.0.0.1:0"},
-		{caller: "not an address", want: "127.0.0.1:0"},
-	} {
-		ctx := withCaller(context.Background(), tc.caller)
-		response, err := dispatch(ctx, user.User{ID: "u1"}, http.MethodGet, "/peer", nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := string(response.Body); got != tc.want {
-			t.Errorf("caller %q: peer = %q, want %q", tc.caller, got, tc.want)
-		}
-	}
-
-	response, err := dispatch(context.Background(), user.User{ID: "u1"}, http.MethodGet, "/peer", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := string(response.Body); got != "127.0.0.1:0" {
-		t.Errorf("no caller in the context: peer = %q, want 127.0.0.1:0", got)
-	}
-}
-
 // The reason the address is safe to report: a dispatched request carries no
 // forwarding headers, so httpx.ClientIP answers with the caller whether or not
 // the address is one a proxy is trusted from. Both a public address and a

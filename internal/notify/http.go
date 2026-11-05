@@ -10,6 +10,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
@@ -85,7 +86,11 @@ func (h *Handlers) list(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
-	records, err := h.store.List(r.Context(), account, limit, before)
+	beforeID := r.URL.Query().Get("before_id")
+	if beforeID != "" && (before <= 0 || !id.Valid(beforeID)) {
+		return httpx.BadRequest("Invalid notification cursor.")
+	}
+	records, err := h.store.ListPage(r.Context(), account, limit, before, beforeID)
 	if err != nil {
 		return httpx.Internal(err)
 	}
@@ -109,7 +114,11 @@ func (h *Handlers) poll(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
-	records, err := h.store.Poll(r.Context(), account, after)
+	afterID := r.URL.Query().Get("after_id")
+	if afterID != "" && (after <= 0 || !id.Valid(afterID)) {
+		return httpx.BadRequest("Invalid notification cursor.")
+	}
+	records, err := h.store.PollPage(r.Context(), account, after, afterID)
 	if err != nil {
 		return httpx.Internal(err)
 	}

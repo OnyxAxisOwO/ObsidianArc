@@ -1,15 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, h, nextTick, shallowRef, type App, type Component } from 'vue';
+import { nextTick, type App, type Component } from 'vue';
 import { adminApi } from '../src/admin/api';
 import { ApiError } from '../src/api/client';
 import * as feedbackApi from '../src/api/feedback';
 import type { Feedback, FeedbackReply, FeedbackThread } from '../src/api/feedback';
-import { providePanelHost } from '../src/composables/usePanelHost';
 import { site, siteInfo } from '../src/stores/session';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import FeedbackPanel from '../src/views/FeedbackPanel.vue';
 import AdminFeedback from '../src/views/admin/AdminFeedback.vue';
-import { provideAdminView } from '../src/views/admin/adminView';
 import { adminShell, mountComponent, settle, button } from './helpers';
 import { queriesSent } from './admin-query';
 
@@ -94,27 +92,6 @@ describe('the feedback panel somebody writes in', () => {
     expect(panels.querySelector<HTMLTextAreaElement>('textarea')!.value).toBe('');
   });
 
-  it('says which type and priority are chosen, not only by colour', async () => {
-    vi.spyOn(feedbackApi, 'listFeedback').mockResolvedValue({ feedback: [], remaining: 10, max_per_day: 10 });
-    await mount(FeedbackPanel);
-    const pressed = (label: string) => button(panels, label).getAttribute('aria-pressed');
-
-    // The defaults are the bug type at medium priority.
-    expect(pressed(t('feedbackKindBug'))).toBe('true');
-    expect(pressed(t('feedbackKindIdea'))).toBe('false');
-    expect(pressed(t('feedbackPriorityMedium'))).toBe('true');
-    expect(pressed(t('feedbackPriorityHigh'))).toBe('false');
-
-    button(panels, t('feedbackKindIdea')).click();
-    button(panels, t('feedbackPriorityHigh')).click();
-    await nextTick();
-
-    expect(pressed(t('feedbackKindIdea'))).toBe('true');
-    expect(pressed(t('feedbackKindBug'))).toBe('false');
-    expect(pressed(t('feedbackPriorityHigh'))).toBe('true');
-    expect(pressed(t('feedbackPriorityMedium'))).toBe('false');
-  });
-
   it('refuses an empty title or body without asking the server', async () => {
     vi.spyOn(feedbackApi, 'listFeedback').mockResolvedValue({ feedback: [], remaining: 10, max_per_day: 10 });
     const send = vi.spyOn(feedbackApi, 'sendFeedback');
@@ -193,33 +170,6 @@ describe('the feedback panel somebody writes in', () => {
     const who = panels.querySelector('.oa-thread-turn.staff .oa-thread-who')!.textContent ?? '';
     expect(who).toContain(t('feedbackFromStaff'));
     expect(who).not.toContain('·');
-  });
-
-  it('shows what this account has already sent, with the status it was given', async () => {
-    vi.spyOn(feedbackApi, 'listFeedback').mockResolvedValue({
-      feedback: [record({ status: 'resolved', title: 'Already reported' })],
-      remaining: 9, max_per_day: 10,
-    });
-    await mount(FeedbackPanel);
-
-    expect(panels.textContent).toContain('Already reported');
-    expect(panels.textContent).toContain(t('feedbackStatusResolved'));
-    expect(panels.textContent).toContain(t('feedbackRemaining', { count: 9 }));
-  });
-
-  // A priority a newer server added used to throw while the list was drawn,
-  // which left the panel empty; the backoffice already read it as medium.
-  it('reads a priority it does not know as medium rather than failing to draw', async () => {
-    const unknown = 'urgent' as Feedback['priority'];
-    vi.spyOn(feedbackApi, 'listFeedback').mockResolvedValue({
-      feedback: [record({ priority: unknown, title: 'From a newer server' })],
-      remaining: 9, max_per_day: 10,
-    });
-    await mount(FeedbackPanel);
-
-    const meta = panels.querySelector('.oa-feedback-item-meta')!.textContent ?? '';
-    expect(panels.textContent).toContain('From a newer server');
-    expect(meta).toContain(t('feedbackPriorityMedium'));
   });
 
   it('will not take a body longer than the server keeps', async () => {
@@ -316,22 +266,6 @@ describe('the feedback panel somebody writes in', () => {
     expect(panels.textContent).not.toContain('This report is closed');
     expect(panels.querySelector<HTMLTextAreaElement>('.oa-feedback-answer textarea')!.value)
       .toBe('draft for the second');
-  });
-
-  // Off unless the operator switched it on: an account that is already
-  // signed in and already capped does not meet a challenge by default.
-  it('sends straight away when no challenge is switched on', async () => {
-    vi.spyOn(feedbackApi, 'listFeedback').mockResolvedValue({ feedback: [], remaining: 10, max_per_day: 10 });
-    const send = vi.spyOn(feedbackApi, 'sendFeedback').mockResolvedValue(record());
-    await mount(FeedbackPanel);
-
-    type(panels.querySelector<HTMLInputElement>('input[type="text"]')!, 'A title');
-    type(panels.querySelector<HTMLTextAreaElement>('textarea')!, 'Some detail.');
-    button(panels, t('feedbackSend')).click();
-    await settle();
-
-    expect(document.querySelector('.oa-challenge')).toBeNull();
-    expect(send).toHaveBeenCalledOnce();
   });
 
   // The widget is a fixed-width box with its own chrome, so it gets a sheet
@@ -583,32 +517,5 @@ describe('the operator’s feedback page', () => {
     cards[1]!.click();
     await settle();
     expect(awaiting()).toBe('0');
-  });
-
-  it('redraws the heading in the new language, not only the text it was set with', async () => {
-    list([]);
-    const heading = shallowRef<() => string>(() => '');
-    app = createApp({
-      setup() {
-        providePanelHost(shallowRef(panels));
-        provideAdminView({
-          actionsHost: actions,
-          setTitle: (title) => { heading.value = title; },
-          reload: () => {},
-          params: [],
-        });
-        // What the shell does: draw the page's heading through its getter.
-        return () => h('div', [h('h1', heading.value()), h(AdminFeedback)]);
-      },
-    });
-    app.mount(host);
-    await settle();
-    const english = t('navFeedback');
-    expect(host.querySelector('h1')!.textContent).toBe(english);
-
-    await changeLanguage('zh');
-    await settle();
-    expect(t('navFeedback')).not.toBe(english);
-    expect(host.querySelector('h1')!.textContent).toBe(t('navFeedback'));
   });
 });

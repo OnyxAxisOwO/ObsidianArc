@@ -225,16 +225,26 @@ func visibility(account user.User) (string, []any) {
 // before a moment already shown. limit is clamped the way every other list
 // in this project is, so a malformed value cannot ask for the whole table.
 func (s *Store) List(ctx context.Context, account user.User, limit int, before int64) ([]Notification, error) {
+	return s.ListPage(ctx, account, limit, before, "")
+}
+
+// ListPage accepts the last row's timestamp and ID to include ties on the next page.
+func (s *Store) ListPage(ctx context.Context, account user.User, limit int, before int64, beforeID string) ([]Notification, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 30
 	}
 	where, args := visibility(account)
 	query := `SELECT id, kind, params, link, created_at FROM notifications WHERE ` + where
 	if before > 0 {
-		query += ` AND created_at < ?`
-		args = append(args, before)
+		if beforeID != "" {
+			query += ` AND (created_at < ? OR (created_at = ? AND id < ?))`
+			args = append(args, before, before, beforeID)
+		} else {
+			query += ` AND created_at < ?`
+			args = append(args, before)
+		}
 	}
-	query += ` ORDER BY created_at DESC LIMIT ?`
+	query += ` ORDER BY created_at DESC, id DESC LIMIT ?`
 	args = append(args, limit)
 
 	rows, err := s.db.Query(ctx, query, args...)
@@ -265,11 +275,22 @@ const (
 // row wants to raise them in the order they happened, and a page has to be
 // cut at a reproducible point to be a page at all.
 func (s *Store) Poll(ctx context.Context, account user.User, after int64) ([]Notification, error) {
+	return s.PollPage(ctx, account, after, "")
+}
+
+// PollPage uses the overlap on the first page, then an exact composite cursor.
+func (s *Store) PollPage(ctx context.Context, account user.User, after int64, afterID string) ([]Notification, error) {
 	where, args := visibility(account)
-	args = append(args, after-pollGraceMillis, pollLimit)
+	if afterID == "" {
+		where += ` AND created_at > ?`
+		args = append(args, after-pollGraceMillis)
+	} else {
+		where += ` AND (created_at > ? OR (created_at = ? AND id > ?))`
+		args = append(args, after, after, afterID)
+	}
+	args = append(args, pollLimit)
 	rows, err := s.db.Query(ctx,
-		`SELECT id, kind, params, link, created_at FROM notifications
-		 WHERE `+where+` AND created_at > ? ORDER BY created_at ASC, id ASC LIMIT ?`, args...)
+		`SELECT id, kind, params, link, created_at FROM notifications WHERE `+where+` ORDER BY created_at ASC, id ASC LIMIT ?`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("notify: poll: %w", err)
 	}

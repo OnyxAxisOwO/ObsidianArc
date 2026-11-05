@@ -40,8 +40,8 @@ export function fetchNotifications(before?: number, signal?: AbortSignal): Promi
 /** after is the last moment already seen — a millisecond timestamp, or 0 for
  *  the beginning of time. The server re-returns anything within a 10s grace
  *  window of it, so the caller must de-duplicate by id. */
-export function pollNotifications(after: number, signal?: AbortSignal): Promise<NotificationPoll> {
-  const path = `/api/notifications/poll?after=${after}`;
+export function pollNotifications(after: number, signal?: AbortSignal, afterID?: string): Promise<NotificationPoll> {
+  const path = `/api/notifications/poll?after=${after}${afterID ? `&after_id=${encodeURIComponent(afterID)}` : ''}`;
   return signal ? api.get<NotificationPoll>(path, { signal }) : api.get<NotificationPoll>(path);
 }
 

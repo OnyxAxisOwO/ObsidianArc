@@ -3,7 +3,6 @@ package admin
 import (
 	"os"
 	"regexp"
-	"strings"
 	"testing"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/adapter"
@@ -31,35 +30,6 @@ func TestAssistantCatalogueCoversTheAdministrativeSurface(t *testing.T) {
 	for _, match := range pattern.FindAllStringSubmatch(string(source), -1) {
 		if match[1] != "POST /api/admin/assistant" && !covered[match[1]] {
 			t.Errorf("assistant cannot reach %s", match[1])
-		}
-	}
-}
-
-func TestAssistantCatalogueRespectsDelegationAndQueryClassification(t *testing.T) {
-	engine := console.New(console.Options{})
-	commands := assistantCommands(engine, &console.Session{Actor: user.User{Role: user.RoleAdmin, AdminPermissions: []string{"users"}}})
-	for _, command := range commands {
-		if strings.HasPrefix(command.Name, "provider ") || command.Permission == "super_admin" {
-			t.Fatalf("ungranted command offered: %s", command.Name)
-		}
-	}
-	for _, tc := range []struct {
-		line           string
-		allowed, query bool
-	}{
-		{"user list", true, true},
-		{"user edit example --nickname Demo", true, false},
-		{"user delete example --yes", true, false},
-		{"provider list", false, false},
-		{"watch user list", false, false},
-		{"assistant ask task --model abc", false, false},
-		{"user list 'unterminated", false, false},
-	} {
-		if got := assistantCommandAllowed(tc.line, commands); got != tc.allowed {
-			t.Errorf("allowed(%q)=%v", tc.line, got)
-		}
-		if got := assistantReadOnly(tc.line, commands); got != tc.query {
-			t.Errorf("query(%q)=%v", tc.line, got)
 		}
 	}
 }

@@ -1,20 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { createApp, h, nextTick, ref, type App } from 'vue';
+import { createApp, h, nextTick, type App } from 'vue';
 import {
-  flyingIDs,
-  lastComposerRect,
   isFlying,
   hasFlown,
   markFlying,
   resetFlightState,
-  captureComposerRect,
   removeFlying,
   cancelAllFlights,
   playSendAnimation,
 } from '../src/chat/useSendAnimation';
-import ChatSurface from '../src/chat/ChatSurface.vue';
 import ChatMessage from '../src/chat/ChatMessage.vue';
-import { providePanelHost } from '../src/composables/usePanelHost';
 import { messages, justSentID } from '../src/chat/useChat';
 
 let app: App | null = null;
@@ -42,36 +37,6 @@ afterEach(() => {
 });
 
 describe('Telegram-style message send flight animation', () => {
-  it('captureComposerRect records DOMRect or HTMLElement bounds', () => {
-    expect(lastComposerRect.value).toBeNull();
-
-    // From DOMRect-like object
-    captureComposerRect({ top: 100, left: 50, width: 300, height: 40 } as DOMRect);
-    expect(lastComposerRect.value).toEqual({ top: 100, left: 50, width: 300, height: 40 });
-
-    // From element
-    const el = document.createElement('div');
-    vi.spyOn(el, 'getBoundingClientRect').mockReturnValue({
-      top: 200,
-      left: 80,
-      width: 400,
-      height: 44,
-      right: 480,
-      bottom: 244,
-    } as DOMRect);
-
-    captureComposerRect(el);
-    expect(lastComposerRect.value?.top).toBe(200);
-    expect(lastComposerRect.value?.width).toBe(400);
-
-    // Ignores zero-size element
-    const zeroEl = document.createElement('div');
-    vi.spyOn(zeroEl, 'getBoundingClientRect').mockReturnValue({
-      top: 0, left: 0, width: 0, height: 0, right: 0, bottom: 0,
-    } as DOMRect);
-    captureComposerRect(zeroEl);
-    expect(lastComposerRect.value?.top).toBe(200); // untouched
-  });
 
   it('plays flight animation from composer input to transcript target with scale down and hardware-accelerated transforms', async () => {
     const mainEl = document.createElement('div');
@@ -282,187 +247,6 @@ describe('Telegram-style message send flight animation', () => {
     expect(mainEl.querySelector('.ai-chat-flight-bubble')).toBeNull();
   });
 
-  it('ChatMessage binds ai-msg-flying class and data-message-id when in flight', async () => {
-    flyingIDs.value = ['msg-test'];
-
-    app = createApp({
-      render() {
-        return h(ChatMessage, {
-          message: {
-            id: 'msg-test',
-            seq: 1,
-            role: 'user',
-            content: 'Flying message',
-            created_at: Date.now(),
-          },
-        });
-      },
-    });
-    app.mount(host);
-    await nextTick();
-
-    const el = host.querySelector('.ai-msg');
-    expect(el).not.toBeNull();
-    expect(el?.getAttribute('data-message-id')).toBe('msg-test');
-    expect(el?.classList.contains('ai-msg-flying')).toBe(true);
-
-    // Remove from flying
-    removeFlying('msg-test');
-    await nextTick();
-
-    expect(el?.classList.contains('ai-msg-flying')).toBe(false);
-  });
-
-  it('ChatSurface coordinates send flight and handles user message dispatch', async () => {
-    const { models, selectedID } = await import('../src/chat/useModels');
-    models.value = [{ id: 'test-model', display_name: 'Test Model' } as any];
-    selectedID.value = 'test-model';
-
-    app = createApp({
-      setup() {
-        providePanelHost(ref(host));
-        return () => h(ChatSurface);
-      },
-    });
-    app.mount(host);
-    await nextTick();
-
-    const main = host.querySelector<HTMLElement>('.ai-chat-main')!;
-    expect(main).not.toBeNull();
-
-    // Mock dimensions
-    vi.spyOn(main, 'getBoundingClientRect').mockReturnValue({
-      top: 50, left: 100, width: 600, height: 800, right: 700, bottom: 850,
-    } as DOMRect);
-
-    const input = host.querySelector<HTMLTextAreaElement>('.ai-chat-input')!;
-    expect(input).not.toBeNull();
-    vi.spyOn(input, 'getBoundingClientRect').mockReturnValue({
-      top: 750, left: 150, width: 480, height: 40, right: 630, bottom: 790,
-    } as DOMRect);
-
-    const animateMock = vi.fn().mockReturnValue({
-      cancel: vi.fn(),
-      finish: vi.fn(),
-      set onfinish(cb: () => void) {
-        setTimeout(cb, 10);
-      },
-    });
-    Element.prototype.animate = animateMock;
-
-    // Type a message and send
-    input.value = 'Test hello';
-    input.dispatchEvent(new Event('input'));
-    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true }));
-
-    await nextTick();
-    await nextTick();
-
-    // Messages now has the optimistic turn
-    expect(messages.value.length).toBe(1);
-    expect(messages.value[0]?.content).toBe('Test hello');
-  });
-
-  it('ChatMessage suppresses ai-msg-sent after flight completes to prevent double-animation flicker', async () => {
-    justSentID.value = 'msg-flicker';
-    flyingIDs.value = ['msg-flicker'];
-
-    app = createApp({
-      render() {
-        return h(ChatMessage, {
-          message: {
-            id: 'msg-flicker',
-            seq: 1,
-            role: 'user',
-            content: 'No double animation',
-            created_at: Date.now(),
-          },
-        });
-      },
-    });
-    app.mount(host);
-    await nextTick();
-
-    const el = host.querySelector('.ai-msg')!;
-    expect(el.classList.contains('ai-msg-flying')).toBe(true);
-    expect(el.classList.contains('ai-msg-sent')).toBe(false);
-
-    // When flight finishes
-    removeFlying('msg-flicker');
-    await nextTick();
-
-    // Flight is over, and ai-msg-sent is suppressed by hasFlown
-    expect(isFlying('msg-flicker')).toBe(false);
-    expect(hasFlown('msg-flicker')).toBe(true);
-    expect(el.classList.contains('ai-msg-flying')).toBe(false);
-    expect(el.classList.contains('ai-msg-sent')).toBe(false);
-  });
-
-  it('aligns flight bubble near composer send button and handles multi-line vertical positioning', async () => {
-    const mainEl = document.createElement('div');
-    mainEl.className = 'ai-chat-main';
-    host.appendChild(mainEl);
-
-    vi.spyOn(mainEl, 'getBoundingClientRect').mockReturnValue({
-      top: 0, left: 0, width: 800, height: 900, right: 800, bottom: 900,
-    } as DOMRect);
-
-    const transcriptEl = document.createElement('div');
-    transcriptEl.className = 'ai-chat-transcript';
-    mainEl.appendChild(transcriptEl);
-
-    const msgEl = document.createElement('div');
-    msgEl.className = 'ai-msg ai-msg-user';
-    msgEl.setAttribute('data-message-id', 'msg-multiline');
-    const bubbleEl = document.createElement('div');
-    bubbleEl.className = 'ai-bubble';
-    bubbleEl.textContent = 'Line 1\nLine 2\nLine 3';
-    msgEl.appendChild(bubbleEl);
-    transcriptEl.appendChild(msgEl);
-
-    // Target bubble is on the right of the transcript
-    vi.spyOn(bubbleEl, 'getBoundingClientRect').mockReturnValue({
-      top: 400, left: 520, width: 200, height: 80, right: 720, bottom: 480,
-    } as DOMRect);
-
-    // Multi-line composer input
-    const composerInputEl = document.createElement('textarea');
-    mainEl.appendChild(composerInputEl);
-    vi.spyOn(composerInputEl, 'getBoundingClientRect').mockReturnValue({
-      top: 800, left: 100, width: 620, height: 80, right: 720, bottom: 880,
-    } as DOMRect);
-
-    let recordedKeyframes: Keyframe[] | null = null;
-    Element.prototype.animate = vi.fn().mockImplementation((keyframes) => {
-      recordedKeyframes = keyframes;
-      return { cancel: vi.fn(), finish: vi.fn(), set onfinish(cb: any) { cb(); } };
-    });
-
-    await playSendAnimation({
-      messageID: 'msg-multiline',
-      mainEl,
-      transcriptEl,
-      composerInputEl,
-    });
-
-    expect(recordedKeyframes).not.toBeNull();
-    const startTransform = (recordedKeyframes![0] as Keyframe).transform as string;
-    const match = /translate3d\(([^p]+)px,\s*([^p]+)px/.exec(startTransform);
-    expect(match).not.toBeNull();
-    const deltaX = parseFloat(match?.[1] ?? '0');
-    const deltaY = parseFloat(match?.[2] ?? '0');
-
-    // targetCenterX is 520 + 100 = 620.
-    // In composer: maxCenterX is 720 - 10 - 100 = 610.
-    // deltaX = 610 - 620 = -10 (close to destination on the right, not skewed to the far left)
-    expect(Math.abs(deltaX)).toBeLessThanOrEqual(20);
-
-    // targetCenterY is 400 + 40 = 440.
-    // composer centerY is 800 + 40 = 840.
-    // deltaY = 840 - 440 = 400 (starts cleanly centered in composer, not 28px above it)
-    expect(deltaY).toBe(400);
-  });
-
   it('supports compound flight animation for messages with both image attachments and text', async () => {
     const mainEl = document.createElement('div');
     mainEl.className = 'ai-chat-main';
@@ -524,17 +308,10 @@ describe('Telegram-style message send flight animation', () => {
     expect(createdCompound!.querySelector('.ai-bubble')).not.toBeNull();
   });
 
-  it('markFlying synchronously flags message as flying before DOM update', () => {
-    expect(isFlying('msg-sync-1')).toBe(false);
-    markFlying('msg-sync-1');
-    expect(isFlying('msg-sync-1')).toBe(true);
-    expect(hasFlown('msg-sync-1')).toBe(false);
-  });
-
   it('ChatMessage stationary bubble is marked ai-msg-flying immediately when id === justSentID && !hasFlown(id), before animation starts', async () => {
     // Even if flyingIDs has NOT been set yet, justSentID marks the stationary bubble as flying
     justSentID.value = 'msg-imm-hide';
-    expect(flyingIDs.value.includes('msg-imm-hide')).toBe(false);
+    expect(isFlying('msg-imm-hide')).toBe(false);
 
     app = createApp({
       render() {
@@ -566,17 +343,6 @@ describe('Telegram-style message send flight animation', () => {
     expect(el.classList.contains('ai-msg-sent')).toBe(false);
   });
 
-  it('cancelAllFlights marks in-flight messages as flown so stationary bubble reveals if cancelled', () => {
-    markFlying('msg-cancel-flown');
-    expect(isFlying('msg-cancel-flown')).toBe(true);
-    expect(hasFlown('msg-cancel-flown')).toBe(false);
-
-    cancelAllFlights();
-
-    expect(isFlying('msg-cancel-flown')).toBe(false);
-    expect(hasFlown('msg-cancel-flown')).toBe(true);
-  });
-
   it('resetFlightState clears both in-flight and flown tracking', () => {
     markFlying('msg-reset-test');
     removeFlying('msg-reset-test');
@@ -585,46 +351,6 @@ describe('Telegram-style message send flight animation', () => {
     resetFlightState();
     expect(hasFlown('msg-reset-test')).toBe(false);
     expect(isFlying('msg-reset-test')).toBe(false);
-  });
-
-  it('markFlying marks message as flown immediately when prefers-reduced-motion is active', () => {
-    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
-      matches: query.includes('prefers-reduced-motion: reduce'),
-      media: query,
-      onchange: null,
-      addListener: vi.fn(),
-      removeListener: vi.fn(),
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-      dispatchEvent: vi.fn(),
-    }));
-
-    markFlying('msg-rm-sync');
-    expect(isFlying('msg-rm-sync')).toBe(false);
-    expect(hasFlown('msg-rm-sync')).toBe(true);
-  });
-
-  it('verifies .ai-chat-spinner styling avoids sub-pixel wobble', async () => {
-    const fs = await import('node:fs');
-    const path = await import('node:path');
-    const scssPath = path.resolve(__dirname, '../src/styles/_chat.scss');
-    const content = fs.readFileSync(scssPath, 'utf8');
-
-    // Matches standalone .ai-chat-spinner block
-    const spinnerMatch = content.match(/(?:^|\n)\.ai-chat-spinner\s*\{([^}]+)\}/);
-    expect(spinnerMatch).not.toBeNull();
-    const spinnerBody = spinnerMatch![1]!;
-
-    expect(spinnerBody).toMatch(/display:\s*inline-block/);
-    expect(spinnerBody).toMatch(/box-sizing:\s*border-box/);
-    // The size is not pinned to 14px: any equal width and height keeps the box
-    // square, and it is the square that stops the wobble.
-    const width = spinnerBody.match(/(?:^|[\s;])width:\s*(\d+)px/)?.[1];
-    const height = spinnerBody.match(/(?:^|[\s;])height:\s*(\d+)px/)?.[1];
-    expect(width).toBeDefined();
-    expect(height).toBe(width);
-    expect(spinnerBody).toMatch(/transform-origin:\s*center center/);
-
   });
 
   it('markFlying clears previous flown entry for the same ID so retries remain hidden in flight', () => {

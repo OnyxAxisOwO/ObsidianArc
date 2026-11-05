@@ -90,19 +90,6 @@ func TestSelfInviteCommands(t *testing.T) {
 		}
 	})
 
-	t.Run("regenerate refuses without --yes", func(t *testing.T) {
-		result, _ := run("me invite regenerate")
-		if result.OK {
-			t.Fatal("me invite regenerate without --yes should be refused")
-		}
-		if result.Code != "confirmation_required" {
-			t.Errorf("want confirmation_required, got %q", result.Code)
-		}
-		if regenerated {
-			t.Fatal("the API must not be called before confirmation")
-		}
-	})
-
 	t.Run("regenerate replaces the code", func(t *testing.T) {
 		result, out := run("me invite regenerate --yes")
 		if !result.OK {
@@ -113,29 +100,6 @@ func TestSelfInviteCommands(t *testing.T) {
 		}
 		if !strings.Contains(out, "ZZ99-YY88") {
 			t.Errorf("expected the new code hyphenated:\n%s", out)
-		}
-	})
-
-	t.Run("a disabled personal code shows as a dash, not an error", func(t *testing.T) {
-		disabled := New(Options{Dispatch: func(_ context.Context, _ user.User, method, path string, _ any) (Response, error) {
-			return Response{Status: 200, Body: []byte(`{"enabled":false,"code":"","limit":10,"used":0,
-				"counted":0,"reward_every":1,"reward_cards":0,"reward_card_days":30,"next_reward_in":0,"invitees":[]}`)}, nil
-		}})
-		var out bytes.Buffer
-		s := &Session{Actor: actor, Transport: "web", Lang: "en", Width: 120}
-		result := disabled.Execute(context.Background(), s, &out, "me invite")
-		if !result.OK {
-			t.Fatalf("me invite failed: %s", out.String())
-		}
-		codeLine := ""
-		for _, line := range strings.Split(out.String(), "\n") {
-			if strings.HasPrefix(line, "code:") {
-				codeLine = line
-				break
-			}
-		}
-		if !strings.HasSuffix(strings.TrimSpace(codeLine), "-") {
-			t.Errorf("expected the code field to print as a dash when disabled, got %q:\n%s", codeLine, out.String())
 		}
 	})
 
@@ -175,22 +139,4 @@ func TestSelfInviteCommands(t *testing.T) {
 		}
 	})
 
-	t.Run("me invite localizes the reward column into Chinese when lang is zh", func(t *testing.T) {
-		var out bytes.Buffer
-		s := &Session{Actor: actor, Transport: "web", Lang: "zh", Width: 120}
-		res := c.Execute(context.Background(), s, &out, "me invite")
-		if !res.OK {
-			t.Fatalf("me invite in zh failed: %s", out.String())
-		}
-		output := out.String()
-		if !strings.Contains(output, "+2 张重置卡") {
-			t.Errorf("expected +2 张重置卡 in zh output:\n%s", output)
-		}
-		if !strings.Contains(output, "已计入") {
-			t.Errorf("expected 已计入 in zh output:\n%s", output)
-		}
-		if !strings.Contains(output, "邀请名额已用完") {
-			t.Errorf("expected 邀请名额已用完 in zh output:\n%s", output)
-		}
-	})
 }

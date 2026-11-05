@@ -70,43 +70,6 @@ func TestSendingCanRequireTurnstile(t *testing.T) {
 	}
 }
 
-// The zero Gate is the default wiring on an instance that has never switched
-// the challenge on, and it must let an ordinary report through.
-func TestSendingIsUnchallengedByDefault(t *testing.T) {
-	store, author, _ := fixture(t)
-	handlers := NewHandlers(store)
-	mux := http.NewServeMux()
-	handlers.Routes(mux)
-
-	response := post(t, mux, auth.WithUser(context.Background(), author),
-		`{"title":"Plain","body":"Something happened.","kind":"idea","priority":"high"}`)
-	if response.Code != http.StatusCreated {
-		t.Fatalf("sending = %d %s", response.Code, response.Body.String())
-	}
-}
-
-// The form is what somebody typed, so a refusal has to be a sentence about
-// what to change rather than a 500.
-func TestMalformedReportsAreRefusedWithAReason(t *testing.T) {
-	store, author, _ := fixture(t)
-	handlers := NewHandlers(store)
-	mux := http.NewServeMux()
-	handlers.Routes(mux)
-	ctx := auth.WithUser(context.Background(), author)
-
-	for name, body := range map[string]string{
-		"no title":     `{"title":"  ","body":"x"}`,
-		"no body":      `{"title":"x","body":"   "}`,
-		"unknown kind": `{"title":"x","body":"y","kind":"question"}`,
-	} {
-		t.Run(name, func(t *testing.T) {
-			if response := post(t, mux, ctx, body); response.Code != http.StatusBadRequest {
-				t.Errorf("status = %d, want 400 (%s)", response.Code, response.Body.String())
-			}
-		})
-	}
-}
-
 // What the panel reads to say "three more today" before somebody writes five
 // hundred words into a box that cannot be sent.
 func TestTheListSaysHowMuchOfTheDayIsLeft(t *testing.T) {

@@ -758,10 +758,39 @@ func (s *Service) CompleteSignIn(ctx context.Context, token, code, ip, ua string
 		return user.User{}, "", err
 	}
 
-	if err := s.sessions.DeleteByID(ctx, session.ID); err != nil {
-		return user.User{}, "", err
+	if s.hooks.beforePendingIssue != nil {
+		s.hooks.beforePendingIssue()
 	}
-	full, _, err := s.sessions.Create(ctx, account.ID, s.cfg.TTL, ip, ua)
+	var full string
+	err = s.db.Tx(ctx, func(tx *database.Tx) error {
+		if err := lockAccount(ctx, tx, account.ID); err != nil {
+			return err
+		}
+		fresh, err := s.users.ByID(ctx, tx, account.ID)
+		if err != nil {
+			return err
+		}
+		if !fresh.IsActive() {
+			return &AccountDisabledError{Reason: fresh.BanReason}
+		}
+		if !fresh.TwoFactorEnabled() || fresh.TwoFactorAt != account.TwoFactorAt {
+			return ErrNoPendingSignIn
+		}
+		result, err := tx.Exec(ctx, `DELETE FROM sessions WHERE id = ? AND user_id = ? AND two_factor_pending = ? AND expires_at > ?`, session.ID, account.ID, true, time.Now().UnixMilli())
+		if err != nil {
+			return err
+		}
+		n, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n != 1 {
+			return ErrNoPendingSignIn
+		}
+		full, _, err = s.sessions.create(ctx, tx, account.ID, s.cfg.TTL, ip, ua, false)
+		account = fresh
+		return err
+	})
 	if err != nil {
 		return user.User{}, "", err
 	}
@@ -791,16 +820,47 @@ func spentOne(result interface{ RowsAffected() (int64, error) }) error {
 // secondStep decides what a proven first factor buys: the whole session, or
 // the pending half and a request for the code.
 func (s *Service) secondStep(ctx context.Context, account user.User, remembered, ip, ua string) (string, error) {
-	if account.TwoFactorEnabled() && !s.rememberedBrowser(ctx, remembered, account) {
-		token, _, err := s.sessions.CreatePending(ctx, account.ID, pendingSignInTTL, ip, ua)
-		if err != nil {
-			return "", err
-		}
-		return "", &SecondFactorRequired{Token: token}
-	}
-	token, _, err := s.sessions.Create(ctx, account.ID, s.cfg.TTL, ip, ua)
+	// The external identity was checked before this call. The account and its
+	// factor policy may have changed since then, so issue under the same lock
+	// as enrollment and revocation.
+	checkedHash, err := s.users.PasswordHash(ctx, nil, account.ID)
 	if err != nil {
 		return "", err
+	}
+	rememberedOK := s.rememberedBrowserWithHash(remembered, account, checkedHash)
+	var token string
+	var pending bool
+	err = s.db.Tx(ctx, func(tx *database.Tx) error {
+		if err := lockAccount(ctx, tx, account.ID); err != nil {
+			return err
+		}
+		fresh, err := s.users.ByID(ctx, tx, account.ID)
+		if err != nil {
+			return err
+		}
+		if !fresh.IsActive() {
+			return &AccountDisabledError{Reason: fresh.BanReason}
+		}
+		if rememberedOK {
+			current, err := s.users.PasswordHash(ctx, tx, account.ID)
+			if err != nil {
+				return err
+			}
+			rememberedOK = current == checkedHash && fresh.TwoFactorAt == account.TwoFactorAt
+		}
+		pending = fresh.TwoFactorEnabled() && !rememberedOK
+		ttl := s.cfg.TTL
+		if pending {
+			ttl = pendingSignInTTL
+		}
+		token, _, err = s.sessions.create(ctx, tx, account.ID, ttl, ip, ua, pending)
+		return err
+	})
+	if err != nil {
+		return "", err
+	}
+	if pending {
+		return "", &SecondFactorRequired{Token: token}
 	}
 	if err := s.users.MarkLogin(ctx, account.ID, time.Now().UnixMilli()); err != nil {
 		slog.WarnContext(ctx, "could not record the sign-in", "user", account.ID, "error", err)
@@ -1059,6 +1119,14 @@ func (s *Service) RememberedFrom(r *http.Request) string {
 }
 
 func (s *Service) rememberedBrowser(ctx context.Context, value string, account user.User) bool {
+	credential, err := s.users.PasswordHash(ctx, nil, account.ID)
+	if err != nil {
+		return false
+	}
+	return s.rememberedBrowserWithHash(value, account, credential)
+}
+
+func (s *Service) rememberedBrowserWithHash(value string, account user.User, credential string) bool {
 	days := s.RememberDays()
 	if value == "" || days <= 0 || !s.TwoFactorAvailable() || !account.TwoFactorEnabled() {
 		return false
@@ -1068,10 +1136,6 @@ func (s *Service) rememberedBrowser(ctx context.Context, value string, account u
 		return false
 	}
 	issuedAt, err := strconv.ParseInt(parts[1], 10, 64)
-	if err != nil {
-		return false
-	}
-	credential, err := s.users.PasswordHash(ctx, nil, account.ID)
 	if err != nil {
 		return false
 	}

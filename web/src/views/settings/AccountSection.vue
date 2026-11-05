@@ -32,7 +32,7 @@ import { absoluteTime } from '@/lib/format';
 import { connectCallbackText, connectRefusalText, refusalText } from '@/lib/refusal';
 import { providerMark } from '@/lib/provider-marks';
 import { pinnedProvider, pluginRefusal } from '@/plugins/registry';
-import { adopt, currentPreferences, currentUser, requireUser, siteInfo } from '@/stores/session';
+import { adopt, currentPreferences, currentUser, isCurrentSession, requireUser, sessionStamp, siteInfo } from '@/stores/session';
 import { matchesSettings } from './search';
 
 // `active` is whether the section is on screen (absent reads as false, as a
@@ -320,6 +320,7 @@ async function saveProfile(): Promise<void> {
     return;
   }
 
+  const session = sessionStamp();
   profileBusy.value = true;
   profileFlash.value = '';
   try {
@@ -331,11 +332,13 @@ async function saveProfile(): Promise<void> {
       avatar: avatar.value.trim(),
       ...(askForPassword.value ? { current_password: profilePassword.value } : {}),
     });
+    if (!isCurrentSession(session)) return;
     adopt(user, currentPreferences.value);
     profilePassword.value = '';
     profileLabel.value = t('saved');
     profileLabelLater(() => { profileLabel.value = ''; }, LABEL_FLASH_MS);
   } catch (error) {
+    if (!isCurrentSession(session)) return;
     if (error instanceof ApiError && error.code === 'current_password_wrong') {
       profileFlash.value = t('currentPasswordWrong');
       profilePassword.value = '';
@@ -353,7 +356,7 @@ async function saveProfile(): Promise<void> {
       profileFlash.value = apiErrorText(error);
     }
   } finally {
-    profileBusy.value = false;
+    if (isCurrentSession(session)) profileBusy.value = false;
   }
 }
 

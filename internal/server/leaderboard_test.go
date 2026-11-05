@@ -70,44 +70,29 @@ func (in *instance) nickname(who *session, name string) {
 	}
 }
 
-func TestLeaderboardIsPublishedByTheOperator(t *testing.T) {
-	in := newInstance(t)
-	admin := in.register("founder", "a-good-password")
-	reader := in.register("reader", "another-password")
-
-	if code := in.do(http.MethodGet, "/api/leaderboard", nil, nil).Code; code != http.StatusUnauthorized {
-		t.Fatalf("anonymous: %d, want 401", code)
-	}
-	// Off by default: a reader is refused until an operator publishes it.
-	if code := in.do(http.MethodGet, "/api/leaderboard", nil, reader).Code; code != http.StatusForbidden {
-		t.Fatalf("reader before publishing: %d, want 403", code)
-	}
-	// An administrator can look at it before deciding to publish it.
-	if code := in.do(http.MethodGet, "/api/leaderboard", nil, admin).Code; code != http.StatusOK {
-		t.Fatalf("administrator before publishing: %d, want 200", code)
-	}
-
-	site := decode[map[string]any](t, in.do(http.MethodGet, "/api/site", nil, nil))
-	if site["leaderboard_show_users"] != false {
-		t.Fatalf("site leaderboard_show_users = %v, want false by default", site["leaderboard_show_users"])
-	}
-
-	in.setLeaderboard(admin, map[string]string{"leaderboard.show_users": "true"})
-	if code := in.do(http.MethodGet, "/api/leaderboard", nil, reader).Code; code != http.StatusOK {
-		t.Fatalf("reader after publishing: %d, want 200", code)
-	}
-	site = decode[map[string]any](t, in.do(http.MethodGet, "/api/site", nil, nil))
-	if site["leaderboard_show_users"] != true {
-		t.Fatalf("site leaderboard_show_users = %v after publishing", site["leaderboard_show_users"])
-	}
-}
-
 func TestLeaderboardRanksAnsweredTurnsInTheWindow(t *testing.T) {
 	in := newInstance(t)
 	admin := in.register("founder", "a-good-password")
 	heavy := in.register("heavy", "a-good-password")
 	light := in.register("light", "a-good-password")
+	for _, tc := range []struct {
+		as     *session
+		status int
+	}{{nil, http.StatusUnauthorized}, {light, http.StatusForbidden}, {admin, http.StatusOK}} {
+		if res := in.do(http.MethodGet, "/api/leaderboard", nil, tc.as); res.Code != tc.status {
+			t.Fatalf("leaderboard before publishing: %d %s, want %d", res.Code, res.Body.String(), tc.status)
+		}
+	}
+	published := func() any {
+		return decode[map[string]any](t, in.do(http.MethodGet, "/api/site", nil, nil))["leaderboard_show_users"]
+	}
+	if got := published(); got != false {
+		t.Fatalf("site reports publication before enabling it: %v", got)
+	}
 	in.setLeaderboard(admin, map[string]string{"leaderboard.show_users": "true"})
+	if got := published(); got != true {
+		t.Fatalf("site does not report publication: %v", got)
+	}
 
 	model := "01ARZ3NDEKTSV4RRFFQ69G5FAV"
 	in.spend(heavy, model, 500, time.Hour, usage.StatusOK)

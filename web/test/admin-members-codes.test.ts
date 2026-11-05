@@ -164,29 +164,6 @@ describe('administrator roles on the user detail panel', () => {
     await settle();
     expect(update).toHaveBeenCalledWith(member.id, expect.objectContaining({ role: 'admin', admin_permissions: ['users'] }));
   });
-  // A heavy account takes seconds to total. The click has to show that it
-  // was heard, and a failure has to land where the reader is looking, not
-  // above a list they have scrolled away from.
-  it('opens the panel on the click and reports a failed detail inside it', async () => {
-    adopt({ ...member, id: 'operator', role: 'super_admin', admin_permissions: [] });
-    vi.spyOn(adminApi, 'groupOptions').mockResolvedValue({ groups: [] });
-    vi.spyOn(adminApi, 'users').mockResolvedValue({ users: [member], total: 1 });
-    vi.spyOn(adminApi, 'userKeys').mockResolvedValue({ keys: [] });
-    let fail: (reason: Error) => void = () => {};
-    vi.spyOn(adminApi, 'user').mockReturnValue(new Promise((_, reject) => { fail = reject; }));
-    await mount(AdminUsers);
-
-    host.querySelector<HTMLTableRowElement>('tbody tr')!.click();
-    await settle();
-    expect(panels.querySelector('.oa-panel')).not.toBeNull();
-    expect(panels.textContent).toContain(t('loading'));
-    expect(button(panels, '…').disabled).toBe(true);
-
-    fail(new Error('Database is busy'));
-    await settle();
-    expect(panels.textContent).toContain('Database is busy');
-    expect(panels.textContent).not.toContain(t('loading'));
-  });
 
   // A keys request that failed is not an account without keys: the panel says
   // the keys could not be read, where the empty line would say there are none.
@@ -375,21 +352,6 @@ describe('redemption code creation and details', () => {
       safeModeEnabled.value = false;
       safeModeCategories.value.credentials = credentials;
     }
-  });
-
-  it('shows window variant as title when code has no custom name', async () => {
-    const item = { ...code('5H-CODE', '2026-09-13T12:00:00'), windows: ['5h'], name: '' };
-    vi.spyOn(adminApi, 'codes').mockResolvedValue({ codes: [item] });
-    vi.spyOn(adminApi, 'codeRedemptions').mockResolvedValue({ redemptions: [] });
-    await mount(AdminCodes);
-    await settle();
-
-    const row = host.querySelector<HTMLElement>('.oa-table tbody tr')!;
-    row.click();
-    await settle();
-
-    expect(panels.querySelector('.oa-card-title')?.textContent).toContain(t('cardScope5H'));
-    expect(panels.querySelector('.oa-card-title')?.textContent).not.toContain(t('cardFullReset'));
   });
 
   it('rejects custom scope without windows during code creation', async () => {

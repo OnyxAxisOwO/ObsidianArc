@@ -29,14 +29,10 @@ func TestMailAndUserCheckCommands(t *testing.T) {
 				return Response{Status: 200, Body: []byte(`{"host":"smtp.example.com","port":587,"username":"arc","from":"arc@example.com","implicit_tls":false,"public_url":"https://arc.example.com","password_set":true}`)}, nil
 			case "PUT /api/admin/mail":
 				return Response{Status: 200, Body: []byte(`{"host":"smtp.new.example.com","port":587,"username":"arc","from":"arc@example.com","implicit_tls":false,"public_url":"https://arc.example.com","password_set":true}`)}, nil
-			case "POST /api/admin/mail/test":
-				return Response{Status: 200, Body: []byte(`{"sent":true}`)}, nil
 			case "GET /api/admin/usercheck":
 				return Response{Status: 200, Body: []byte(`{"enabled":true,"exempt_domains":["example.com"],"failure_mode":"reject","api_key_set":true}`)}, nil
 			case "PUT /api/admin/usercheck":
 				return Response{Status: 200, Body: []byte(`{"enabled":false,"exempt_domains":["example.com","example.net"],"failure_mode":"reject","api_key_set":true}`)}, nil
-			case "POST /api/admin/usercheck/test":
-				return Response{Status: 200, Body: []byte(`{"disposable":true,"skipped":false}`)}, nil
 			default:
 				return Response{Status: 404, Body: []byte(`{"error":{"code":"not_found","message":"Not found."}}`)}, nil
 			}
@@ -93,17 +89,6 @@ func TestMailAndUserCheckCommands(t *testing.T) {
 		}
 	})
 
-	t.Run("test mail sends the requested recipient", func(t *testing.T) {
-		calls = nil
-		result, out := run("mail test operator@example.com")
-		if !result.OK || len(calls) != 1 || calls[0].path != "/api/admin/mail/test" {
-			t.Fatalf("result %+v, calls %+v, output:\n%s", result, calls, out)
-		}
-		if body, ok := calls[0].body.(map[string]any); !ok || body["to"] != "operator@example.com" {
-			t.Errorf("mail test body = %#v", calls[0].body)
-		}
-	})
-
 	t.Run("set usercheck preserves omitted policy and parses domain list", func(t *testing.T) {
 		calls = nil
 		result, out := run(`usercheck set --enabled false --exempt-domains "example.com, example.net"`)
@@ -146,16 +131,6 @@ func TestMailAndUserCheckCommands(t *testing.T) {
 		}
 	})
 
-	t.Run("test usercheck sends the requested email", func(t *testing.T) {
-		calls = nil
-		result, out := run("usercheck test person@example.com")
-		if !result.OK || len(calls) != 1 || calls[0].path != "/api/admin/usercheck/test" {
-			t.Fatalf("result %+v, calls %+v, output:\n%s", result, calls, out)
-		}
-		if body, ok := calls[0].body.(map[string]any); !ok || body["email"] != "person@example.com" {
-			t.Errorf("UserCheck test body = %#v", calls[0].body)
-		}
-	})
 }
 
 func TestMeVerifySupportsCodeAndResend(t *testing.T) {

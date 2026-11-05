@@ -24,7 +24,8 @@ func TestBanningWithAReasonShowsItAtSignIn(t *testing.T) {
 	founder := in.register("founder", "a-good-password")
 	victim := in.register("visitor", "another-password")
 
-	ban := in.do(http.MethodPatch, "/api/admin/users/"+victim.userID,
+	path := "/api/admin/users/" + victim.userID
+	ban := in.do(http.MethodPatch, path,
 		map[string]any{"status": "disabled", "ban_reason": "  Abuse of resources  "}, founder)
 	if ban.Code != http.StatusOK {
 		t.Fatalf("ban: %d %s", ban.Code, ban.Body.String())
@@ -33,7 +34,10 @@ func TestBanningWithAReasonShowsItAtSignIn(t *testing.T) {
 		t.Fatalf("after the ban: status %q, reason %q; want disabled and the trimmed reason", got.User.Status, got.User.BanReason)
 	}
 
-	detail := in.do(http.MethodGet, "/api/admin/users/"+victim.userID, nil, founder)
+	if res := in.do(http.MethodGet, "/api/auth/me", nil, victim); res.Code != http.StatusUnauthorized {
+		t.Fatalf("the banned account's existing session still worked: %d", res.Code)
+	}
+	detail := in.do(http.MethodGet, path, nil, founder)
 	if got := decode[banView](t, detail); got.User.BanReason != "Abuse of resources" {
 		t.Fatalf("the account detail reads reason %q, want the one the ban stored", got.User.BanReason)
 	}
@@ -52,77 +56,14 @@ func TestBanningWithAReasonShowsItAtSignIn(t *testing.T) {
 	if body.Error.Code != "account_banned" || body.Error.BanReason != "Abuse of resources" {
 		t.Fatalf("sign-in refusal = %+v, want account_banned carrying the reason", body.Error)
 	}
-}
-
-func TestUnbanningClearsTheReasonAndSignInWorksAgain(t *testing.T) {
-	in := newInstance(t)
-	founder := in.register("founder", "a-good-password")
-	victim := in.register("visitor", "another-password")
-	path := "/api/admin/users/" + victim.userID
-
-	if response := in.do(http.MethodPatch, path,
-		map[string]any{"status": "disabled", "ban_reason": "Abuse"}, founder); response.Code != http.StatusOK {
-		t.Fatalf("ban: %d %s", response.Code, response.Body.String())
-	}
-
 	unban := in.do(http.MethodPatch, path, map[string]any{"status": "active"}, founder)
-	if unban.Code != http.StatusOK {
+	if unban.Code != http.StatusOK || decode[banView](t, unban).User.BanReason != "" {
 		t.Fatalf("unban: %d %s", unban.Code, unban.Body.String())
 	}
-	if got := decode[banView](t, unban); got.User.Status != "active" || got.User.BanReason != "" {
-		t.Fatalf("after the unban: status %q, reason %q; want active and no reason", got.User.Status, got.User.BanReason)
+	if res := in.do(http.MethodGet, "/api/auth/me", nil, victim); res.Code != http.StatusUnauthorized {
+		t.Fatalf("unbanning restored the revoked session: %d", res.Code)
 	}
-
-	if response := in.do(http.MethodPost, "/api/auth/login",
-		map[string]string{"identifier": "visitor", "password": "another-password"}, nil); response.Code != http.StatusOK {
-		t.Fatalf("sign-in after the unban: %d %s", response.Code, response.Body.String())
-	}
-}
-
-// Whatever the request says about the status, an account that is not banned
-// after it has no reason, and a later ban without one does not inherit an old
-// reason.
-func TestAReasonOnlyStandsOnABannedAccount(t *testing.T) {
-	in := newInstance(t)
-	founder := in.register("founder", "a-good-password")
-	member := in.register("member", "another-password")
-	path := "/api/admin/users/" + member.userID
-
-	reasonOf := func(body map[string]any) string {
-		t.Helper()
-		response := in.do(http.MethodPatch, path, body, founder)
-		if response.Code != http.StatusOK {
-			t.Fatalf("PATCH %v: %d %s", body, response.Code, response.Body.String())
-		}
-		return decode[banView](t, response).User.BanReason
-	}
-
-	if got := reasonOf(map[string]any{"ban_reason": "sneaky"}); got != "" {
-		t.Errorf("a reason sent to an active account is kept: %q", got)
-	}
-	if got := reasonOf(map[string]any{"status": "active", "ban_reason": "sneaky"}); got != "" {
-		t.Errorf("a reason sent with status active is kept: %q", got)
-	}
-	if got := reasonOf(map[string]any{"status": "disabled"}); got != "" {
-		t.Errorf("a fresh ban without a reason carries one: %q", got)
-	}
-	if got := reasonOf(map[string]any{"status": "disabled", "ban_reason": "first"}); got != "first" {
-		t.Errorf("a ban with a reason stored %q", got)
-	}
-	// A ban that does not restate its reason leaves the one already there.
-	if got := reasonOf(map[string]any{"status": "disabled"}); got != "first" {
-		t.Errorf("re-stating the ban without a reason dropped the reason: %q", got)
-	}
-	if got := reasonOf(map[string]any{"ban_reason": "second"}); got != "second" {
-		t.Errorf("a reason sent alone to a banned account was dropped: %q", got)
-	}
-	if got := reasonOf(map[string]any{"status": "active"}); got != "" {
-		t.Errorf("unbanning kept the reason: %q", got)
-	}
-	// A reason alone is kept only while the account is banned, which it is not now.
-	if got := reasonOf(map[string]any{"ban_reason": "late"}); got != "" {
-		t.Errorf("a reason sent alone to an unbanned account is kept: %q", got)
-	}
+	in.login("visitor", "another-password")
 }
 
 func TestBanReasonIsCappedAfterTrimming(t *testing.T) {

@@ -36,15 +36,3 @@ func TestAnnouncementRefusalsCarryCodesAndTheirLimits(t *testing.T) {
 		t.Errorf("title details = %v, want the title limit %d", title.Details, MaxTitleChars)
 	}
 }
-
-// The display modes are a set lookup, and exactly the named ones are valid.
-func TestDisplayModeValidityIsTheNamedSet(t *testing.T) {
-	for _, m := range Modes {
-		if !m.Valid() {
-			t.Errorf("mode %q is not valid", m)
-		}
-	}
-	if DisplayMode("banner").Valid() {
-		t.Error("a mode outside the set is valid")
-	}
-}

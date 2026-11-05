@@ -67,45 +67,6 @@ func (h *hookedWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// The file is what json.Marshal writes for the same Document, byte for byte.
-// Import reads it through the Document's tags, so a streamed file that differs
-// from Marshal in spacing, escaping or field order is a different format.
-func TestStreamedExportIsWhatMarshalWouldWrite(t *testing.T) {
-	ctx := context.Background()
-	f := newFixture(t)
-
-	id := f.write(t, f.account, `Lamps <and> "quotes" & more`, "what is a lamp?")
-	if _, err := f.conversations.Append(ctx, nil, conversation.AppendInput{
-		ConversationID: id, UserID: f.account.ID, Role: conversation.RoleAssistant,
-		Content: "a source of light < > & heat", Reasoning: "the question is about lamps",
-		ModelName: "Test <Model>",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.preferences.Merge(ctx, f.account.ID, map[string]json.RawMessage{
-		"accent": json.RawMessage(`"violet"`),
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	encoded, document := f.export(t, f.account)
-	want, err := json.Marshal(document)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(encoded, want) {
-		t.Errorf("streamed export differs from json.Marshal of the same document\nstreamed: %s\nmarshal:  %s", encoded, want)
-	}
-
-	// An account with nothing in it. Decoding turns "conversations":null into
-	// nil, which Marshal writes back as null, so the comparison alone would
-	// pass a file that should carry an empty array. Check the array directly.
-	empty, _ := f.export(t, f.stranger)
-	if !bytes.Contains(empty, []byte(`"conversations":[]}`)) {
-		t.Errorf("an empty account's export has no empty conversations array: %s", empty)
-	}
-}
-
 // What a person exports and then imports is what they had: the title, the
 // pinned flag, and every field a turn carries.
 func TestExportedDocumentImportsBackUnchanged(t *testing.T) {
@@ -130,7 +91,13 @@ func TestExportedDocumentImportsBackUnchanged(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if _, err := f.preferences.Merge(ctx, f.account.ID, map[string]json.RawMessage{"accent": json.RawMessage(`"violet"`)}); err != nil {
+		t.Fatal(err)
+	}
 	_, document := f.export(t, f.account)
+	if document.Format != Format || !strings.Contains(string(document.Preferences), `"violet"`) {
+		t.Fatalf("export format = %d, preferences = %s", document.Format, document.Preferences)
+	}
 	if _, err := f.service.Import(ctx, f.stranger, document); err != nil {
 		t.Fatalf("import of the export: %v", err)
 	}
@@ -244,7 +211,10 @@ func TestExportCarriesEveryConversationAcrossPages(t *testing.T) {
 				f.write(t, f.account, fmt.Sprintf("Thread %d", i), "hello")
 			}
 
-			_, document := f.export(t, f.account)
+			encoded, document := f.export(t, f.account)
+			if total == 0 && document.Conversations == nil {
+				t.Fatalf("empty export must contain a conversation array: %s", encoded)
+			}
 			if len(document.Conversations) != total {
 				t.Fatalf("exported %d conversations, want %d", len(document.Conversations), total)
 			}

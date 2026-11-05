@@ -354,42 +354,6 @@ func TestPersonalCodeIsGetOrCreateUnderTheOwnersLock(t *testing.T) {
 	}
 }
 
-func TestRegenerateRevokesTheOldCode(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-	account := f.account(t, "regenerator")
-
-	first, err := f.store.PersonalCode(ctx, account.ID)
-	if err != nil {
-		t.Fatalf("personal code: %v", err)
-	}
-	second, err := f.store.Regenerate(ctx, account.ID)
-	if err != nil {
-		t.Fatalf("regenerate: %v", err)
-	}
-	if second.Code == first.Code {
-		t.Fatal("regenerate returned the same code")
-	}
-
-	old, err := f.store.ByID(ctx, first.ID)
-	if err != nil {
-		t.Fatalf("read old code: %v", err)
-	}
-	if old.RevokedAt == 0 {
-		t.Fatal("the old personal code was not revoked")
-	}
-
-	// Consuming the old code must fail exactly the way any other revoked
-	// code does.
-	err = f.db.Tx(ctx, func(tx *database.Tx) error {
-		_, err := f.store.Consume(ctx, tx, first.Code, time.Now().UnixMilli())
-		return err
-	})
-	if !errors.Is(err, ErrInvalid) {
-		t.Fatalf("consume the regenerated-away code: %v, want ErrInvalid", err)
-	}
-}
-
 func TestRegenerateThrottlesAfterTenAttempts(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()

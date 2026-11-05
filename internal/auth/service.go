@@ -229,7 +229,9 @@ type testHooks struct {
 	// Called between a sign-in computing its upgraded hash and writing it: the
 	// window a password change has to be able to land in. A test sets it to make
 	// that change at exactly that point.
-	beforeRehashWrite func()
+	beforeRehashWrite  func()
+	beforeLoginIssue   func()
+	beforePendingIssue func()
 	// Called by VerifyCredential between reading the stored hash and checking the
 	// password against it. A change landing there is the case the fingerprint it
 	// returns must survive: the check passes against the hash that was read, and
@@ -1254,15 +1256,54 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (user.User, string, 
 
 	attempt.finish(attemptSucceeded)
 
-	if needsRehash {
-		s.rehash(ctx, account.ID, hash, in.Password)
+	if s.hooks.beforeLoginIssue != nil {
+		s.hooks.beforeLoginIssue()
 	}
-
-	token, err := s.secondStep(ctx, account, in.Remembered, in.IP, in.UA)
+	// Check the remembered cookie outside the transaction; its signature is
+	// bound to both the credential and the two-factor enrollment below.
+	remembered := s.rememberedBrowser(ctx, in.Remembered, account)
+	var token string
+	var pending bool
+	err = s.db.Tx(ctx, func(tx *database.Tx) error {
+		if err := lockAccount(ctx, tx, account.ID); err != nil {
+			return err
+		}
+		fresh, err := s.users.ByID(ctx, tx, account.ID)
+		if err != nil {
+			return err
+		}
+		current, err := s.users.PasswordHash(ctx, tx, account.ID)
+		if err != nil {
+			return err
+		}
+		if current != hash {
+			return ErrInvalidCredentials
+		}
+		if !fresh.IsActive() {
+			return &AccountDisabledError{Reason: fresh.BanReason}
+		}
+		pending = fresh.TwoFactorEnabled() && !(remembered && fresh.TwoFactorAt == account.TwoFactorAt)
+		ttl := s.cfg.TTL
+		if pending {
+			ttl = pendingSignInTTL
+		}
+		token, _, err = s.sessions.create(ctx, tx, fresh.ID, ttl, in.IP, in.UA, pending)
+		account = fresh
+		return err
+	})
 	if err != nil {
 		return user.User{}, "", err
 	}
+	if needsRehash {
+		s.rehash(ctx, account.ID, hash, in.Password)
+	}
+	if pending {
+		return user.User{}, "", &SecondFactorRequired{Token: token}
+	}
 	account.LastLoginAt = time.Now().UnixMilli()
+	if err := s.users.MarkLogin(ctx, account.ID, account.LastLoginAt); err != nil {
+		slog.WarnContext(ctx, "could not record the sign-in", "user", account.ID, "error", err)
+	}
 	return account, token, nil
 }
 

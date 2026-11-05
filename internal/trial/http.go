@@ -144,8 +144,12 @@ func (h *Handlers) chat(w http.ResponseWriter, r *http.Request) error {
 		return httpx.Internal(err)
 	}
 
+	streamedText := false
 	sink := func(event adapter.Event) error {
 		if event.Type == adapter.EventDelta {
+			if event.Text != "" {
+				streamedText = true
+			}
 			return sse.Event("delta", map[string]any{"text": event.Text})
 		}
 		// Everything else is dropped, reasoning included: a trial is a sample of
@@ -189,6 +193,11 @@ func (h *Handlers) chat(w http.ResponseWriter, r *http.Request) error {
 		})
 		return nil
 	}
+	if err := emitFallbackText(result.Text, streamedText, func(text string) error {
+		return sse.Event("delta", map[string]any{"text": text})
+	}); err != nil {
+		return err
+	}
 	// The count goes back signed, and comes back with the next question. It
 	// is the only reason the turn limit means anything: the exchange itself
 	// is written by the client, so a client that simply forgets the earlier
@@ -197,6 +206,13 @@ func (h *Handlers) chat(w http.ResponseWriter, r *http.Request) error {
 		"turns_left":   h.remaining(turns),
 		"continuation": h.signer.issue(turns, time.Now()),
 	})
+}
+
+func emitFallbackText(text string, streamed bool, emit func(string) error) error {
+	if !streamed && text != "" {
+		return emit(text)
+	}
+	return nil
 }
 
 func trialMaxTokens(modelCeiling int) int {

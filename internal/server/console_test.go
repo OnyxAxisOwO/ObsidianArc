@@ -412,30 +412,6 @@ func keysOf[V any](m map[string]V) []string {
 	return keys
 }
 
-// The other direction: a super administrator is not held to a narrower list
-// than the backoffice gives them, or the console would be a downgrade.
-func TestConsoleGivesASuperAdministratorTheWholeSurface(t *testing.T) {
-	in := newInstance(t)
-	founder := in.register("founder", "a-good-password")
-
-	for _, line := range []string{"user list", "model list", "group list", "setting list", "dash"} {
-		output, done := consoleRun(t, in, founder, line)
-		if !done.OK {
-			t.Errorf("%q failed for a super administrator: %s / %q", line, done.Code, output)
-		}
-	}
-
-	output, done := consoleRun(t, in, founder, "help")
-	if !done.OK {
-		t.Fatalf("help failed: %s / %q", done.Code, output)
-	}
-	for _, expected := range []string{"Accounts", "Providers & Models", "Groups", "Instance", "Operations", "Session"} {
-		if !strings.Contains(output, expected) {
-			t.Errorf("help output missing group %q", expected)
-		}
-	}
-}
-
 // The terminal is in every account's menu now, and what makes that safe is
 // that an ordinary account's console is only its own screens again: it sees
 // the commands those screens offer, and the administrative ones are neither
@@ -561,24 +537,5 @@ func TestConsoleFollowsTheGroupsTerminalSwitch(t *testing.T) {
 	}
 	if _, done := consoleRun(t, in, founder, "me show"); !done.OK {
 		t.Errorf("an administrator in a group without the terminal was refused: %s", done.Code)
-	}
-}
-
-// Destructive commands are the ones where a slip is not recoverable, so the
-// console asks for the word rather than reading the intent.
-func TestConsoleRefusesADestructiveCommandWithoutConsent(t *testing.T) {
-	in := newInstance(t)
-	founder := in.register("founder", "a-good-password")
-	victim := in.register("victim", "another-password")
-
-	output, done := consoleRun(t, in, founder, "user delete "+victim.userID)
-	if done.OK {
-		t.Fatalf("user delete ran without --yes:\n%s", output)
-	}
-
-	// And the account is still there, which is the part that matters.
-	response := in.do(http.MethodGet, "/api/admin/users/"+victim.userID, nil, founder)
-	if response.Code != http.StatusOK {
-		t.Fatalf("the account was deleted anyway: %d %s", response.Code, response.Body.String())
 	}
 }

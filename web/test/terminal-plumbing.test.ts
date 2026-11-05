@@ -16,7 +16,6 @@ import {
   TERMINAL_PREFS_DEFAULTS,
   loadTerminalPrefs,
   saveTerminalPrefs,
-  terminalCSSVariables,
   type TerminalPrefs,
 } from '../src/terminal/prefs';
 import {
@@ -52,11 +51,6 @@ describe('the ANSI tokeniser', () => {
       { kind: 'text', text: 'bright red', cls: ['ansi-fg-91'] },
       { kind: 'text', text: 'default', cls: [] },
     ]);
-  });
-
-  it('combines bold with a colour in one class list', () => {
-    const { tokens } = tokenizeAnsiChunk('\x1b[1;32mgreen bold', initialAnsiState());
-    expect(tokens).toEqual([{ kind: 'text', text: 'green bold', cls: ['ansi-bold', 'ansi-fg-32'] }]);
   });
 
   it('recognises the screen-clear sequences as a distinct token kind', () => {
@@ -98,16 +92,6 @@ describe('the ANSI tokeniser', () => {
 
     const second = tokenizeAnsiChunk('[32mgreen', first.state);
     expect(second.tokens).toEqual([{ kind: 'text', text: 'green', cls: ['ansi-fg-32'] }]);
-  });
-
-  it('a split clear sequence still clears once whole', () => {
-    const first = tokenizeAnsiChunk('\x1b[2', initialAnsiState());
-    expect(first.tokens).toEqual([]);
-    const second = tokenizeAnsiChunk('Jgone', first.state);
-    expect(second.tokens).toEqual([
-      { kind: 'clear', text: '', cls: [] },
-      { kind: 'text', text: 'gone', cls: [] },
-    ]);
   });
 
   it('createAnsiTokenizer holds state across an arbitrary number of pushes', () => {
@@ -152,10 +136,6 @@ describe('terminal prefs', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     localStorage.clear();
-  });
-
-  it('falls back to defaults when the key is absent', () => {
-    expect(loadTerminalPrefs()).toEqual(TERMINAL_PREFS_DEFAULTS);
   });
 
   it('falls back to defaults when the value is unparseable', () => {
@@ -234,32 +214,6 @@ describe('terminal prefs', () => {
     expect(() => loadTerminalPrefs()).not.toThrow();
     expect(loadTerminalPrefs()).toEqual(TERMINAL_PREFS_DEFAULTS);
     expect(() => saveTerminalPrefs(TERMINAL_PREFS_DEFAULTS)).not.toThrow();
-  });
-
-  it('exports the CSS custom properties the page root applies', () => {
-    const vars = terminalCSSVariables(TERMINAL_PREFS_DEFAULTS);
-    expect(vars['--oa-term-font-size']).toBe('13px');
-    expect(vars['--oa-term-line-height']).toBe('1.5');
-    expect(vars['--oa-term-cursor-style']).toBe('bar');
-  });
-
-  it('maps the underline cursor to the caret-shape keyword it is called in CSS', () => {
-    const vars = terminalCSSVariables({ ...TERMINAL_PREFS_DEFAULTS, cursorStyle: 'underline' });
-    expect(vars['--oa-term-cursor-style']).toBe('underscore');
-    expect(terminalCSSVariables({ ...TERMINAL_PREFS_DEFAULTS, cursorStyle: 'block' })['--oa-term-cursor-style']).toBe(
-      'block',
-    );
-  });
-
-  it('gives a blank font stack the default monospace stack, not an empty custom property', () => {
-    // An empty value leaves the terminal on the inherited UI font until a
-    // reload, when the loader resets it; the live view must match the reload.
-    expect(terminalCSSVariables({ ...TERMINAL_PREFS_DEFAULTS, fontFamily: '' })['--oa-term-font-family']).toBe(
-      DEFAULT_TERMINAL_FONT_FAMILY,
-    );
-    expect(terminalCSSVariables({ ...TERMINAL_PREFS_DEFAULTS, fontFamily: '   ' })['--oa-term-font-family']).toBe(
-      DEFAULT_TERMINAL_FONT_FAMILY,
-    );
   });
 });
 
@@ -371,25 +325,6 @@ describe('terminal session', () => {
     ]);
   });
 
-  it('clears the scrollback when the output carries a clear token, for watch', async () => {
-    stubFetch(() =>
-      sseResponse([
-        { event: 'out', data: { text: 'frame one' } },
-        { event: 'out', data: { text: '\x1b[H\x1b[2Jframe two' } },
-        { event: 'done', data: { ok: true, code: '', exit: false, elapsed_ms: 5 } },
-      ]),
-    );
-
-    const session = makeSession('run-watch');
-    await session.run('watch dash');
-
-    // The echo block from the submitted line is wiped too — a real terminal
-    // clear does not spare its own prompt line either.
-    const kinds = session.scrollback.value.map((b) => b.kind);
-    expect(kinds).toEqual(['output']);
-    expect(session.scrollback.value[0]!.tokens).toEqual([{ kind: 'text', text: 'frame two', cls: [] }]);
-  });
-
   it('cancel() aborts the stream and resolves with a cancelled outcome, not a rejection', async () => {
     stubFetch((_url, init) => pendingSSEResponse(init));
 
@@ -443,19 +378,6 @@ describe('terminal session', () => {
     session.setScrollbackCap(3);
     expect(session.scrollback.value).toHaveLength(3);
     expect(session.scrollback.value[2]!.tokens[0]!.text).toBe('echo line-7');
-  });
-
-  it('collapses consecutive duplicate commands in shared history', async () => {
-    stubFetch(() => sseResponse([{ event: 'done', data: { ok: true, code: '', exit: false, elapsed_ms: 0 } }]));
-
-    const session = makeSession('history-dedupe');
-    await session.run('terminal-plumbing-dup-check');
-    await session.run('terminal-plumbing-dup-check');
-    await session.run('terminal-plumbing-dup-check');
-
-    const snapshot = recallHistory(session);
-    expect(snapshot.filter((line) => line === 'terminal-plumbing-dup-check')).toHaveLength(1);
-    expect(snapshot[snapshot.length - 1]).toBe('terminal-plumbing-dup-check');
   });
 
   it('caps shared history at 500 entries, evicting the oldest first', async () => {

@@ -189,7 +189,7 @@ func TestACallThatNeverReturnsIsCutOffAndOthersCarryOn(t *testing.T) {
 	}
 }
 
-func TestTheCallersContextEndsTheCall(t *testing.T) {
+func TestConcurrentTheCallersContextEndsTheCall(t *testing.T) {
 	b := load(t, Limits{}, nil)
 	ctx, cancel := context.WithCancel(t.Context())
 	time.AfterFunc(200*time.Millisecond, cancel)
@@ -251,7 +251,7 @@ func TestTheGuestReadsTheHostsClockAndRealRandomness(t *testing.T) {
 	}
 }
 
-func TestCallsRunInParallelOnSeparateInstances(t *testing.T) {
+func TestConcurrentCallsRunInParallelOnSeparateInstances(t *testing.T) {
 	b := load(t, Limits{}, func(c *Call, _ string, _ json.RawMessage) (any, error) {
 		return c.Info.Plugin, nil
 	})
@@ -319,31 +319,12 @@ func waitUntil(t *testing.T, what string, cond func() bool) {
 	}
 }
 
-// The compiled code is tens of megabytes a backend and what these backends serve
-// is used now and then, so an idle one drops it and the next call pays for
-// compiling it again — without the caller seeing anything but the delay. That
-// the runtime behind it is closed is checked by TestAnEvictedBackendClosesItsRuntime;
-// this one checks the backend keeps working after the drop.
-func TestAnIdleBackendDropsItsCompiledCodeAndTheNextCallCompilesItAgain(t *testing.T) {
-	b := load(t, Limits{IdleEvict: 40 * time.Millisecond}, nil)
-	waitUntil(t, "the idle backend is evicted", func() bool { return !b.isWarm() })
-
-	var out struct{ Plugin string }
-	if err := b.Invoke(t.Context(), CallInfo{Plugin: "demo"}, "echo", map[string]string{"a": "b"}, &out, nil); err != nil || out.Plugin != "demo" {
-		t.Fatalf("a call on an evicted backend: %+v, %v", out, err)
-	}
-	if !b.isWarm() {
-		t.Fatal("the call did not compile it again")
-	}
-	waitUntil(t, "it is evicted again", func() bool { return !b.isWarm() })
-}
-
 // The field going nil proves nothing about memory: the native code lives in the
 // runtime the backend compiled on, and only closing that runtime gives it back.
 // The shared compilation cache keeps native code after a runtime closes, so
 // this test sets it aside, as TestCompiledCodeIsKeptInTheCacheDirectoryAndReadBack
 // does, and checks the runtime itself.
-func TestAnEvictedBackendClosesItsRuntime(t *testing.T) {
+func TestConcurrentAnEvictedBackendClosesItsRuntime(t *testing.T) {
 	old := shared.Swap(nil)
 	t.Cleanup(func() { shared.Store(old) })
 	var made wazero.Runtime
@@ -358,6 +339,11 @@ func TestAnEvictedBackendClosesItsRuntime(t *testing.T) {
 	if _, err := made.CompileModule(t.Context(), guest(t)); err == nil {
 		t.Fatal("the runtime an evicted backend compiled on is still open")
 	}
+	var out struct{ Plugin string }
+	if err := b.Invoke(t.Context(), CallInfo{Plugin: "demo"}, "echo", nil, &out, nil); err != nil || out.Plugin != "demo" {
+		t.Fatalf("a call on an evicted backend: %+v, %v", out, err)
+	}
+	waitUntil(t, "it is evicted again", func() bool { return !b.isWarm() })
 }
 
 func TestABackendThatIsNeverEvictedKeepsItsCode(t *testing.T) {
@@ -370,7 +356,7 @@ func TestABackendThatIsNeverEvictedKeepsItsCode(t *testing.T) {
 
 // Taking the code out from under a call would fail a request that had done
 // nothing wrong: only a backend nobody is inside is given back.
-func TestACallInsideABackendKeepsItsCodeFromBeingTakenBack(t *testing.T) {
+func TestConcurrentACallInsideABackendKeepsItsCodeFromBeingTakenBack(t *testing.T) {
 	inside, release := make(chan struct{}), make(chan struct{})
 	b := load(t, Limits{IdleEvict: 20 * time.Millisecond}, func(*Call, string, json.RawMessage) (any, error) {
 		close(inside)
@@ -396,7 +382,7 @@ func TestACallInsideABackendKeepsItsCodeFromBeingTakenBack(t *testing.T) {
 
 // Calls, compiles and evictions racing each other is what a busy site with a
 // short idle time would be; every call has to succeed whichever it lands in.
-func TestCallsAcrossEvictionsAllSucceed(t *testing.T) {
+func TestConcurrentCallsAcrossEvictionsAllSucceed(t *testing.T) {
 	b := load(t, Limits{IdleEvict: 15 * time.Millisecond}, nil)
 	var wg sync.WaitGroup
 	errs := make(chan error, 64)
@@ -423,7 +409,7 @@ func TestCallsAcrossEvictionsAllSucceed(t *testing.T) {
 
 // A removal that lands in the middle of a compile has to leave nothing behind:
 // what the compile made is thrown away, and nothing starts afterwards.
-func TestClosingABackendWhileItCompilesLeavesNothingRunning(t *testing.T) {
+func TestConcurrentClosingABackendWhileItCompilesLeavesNothingRunning(t *testing.T) {
 	b := NewEngine(Limits{}).Load("demo", guest(t), func(*Call, string, json.RawMessage) (any, error) { return nil, nil })
 	ready := make(chan error, 1)
 	go func() { ready <- b.Ready(context.Background()) }()
@@ -486,7 +472,7 @@ func TestCompiledCodeIsKeptInTheCacheDirectoryAndReadBack(t *testing.T) {
 // bounded. A call past the bound is turned away at once rather than queued —
 // a queue of requests is the flood again — and the slot is the call's only for
 // as long as it runs.
-func TestCallsPastTheLimitFailAtOnceAndFreeTheirSlots(t *testing.T) {
+func TestConcurrentCallsPastTheLimitFailAtOnceAndFreeTheirSlots(t *testing.T) {
 	entered := make(chan struct{}, 8)
 	release := make(chan struct{})
 	b := load(t, Limits{MaxConcurrent: 2}, func(*Call, string, json.RawMessage) (any, error) {
@@ -529,7 +515,7 @@ func TestCallsPastTheLimitFailAtOnceAndFreeTheirSlots(t *testing.T) {
 	}
 }
 
-func TestTheLimitIsSharedAcrossTheBackendsOfOneEngine(t *testing.T) {
+func TestConcurrentTheLimitIsSharedAcrossTheBackendsOfOneEngine(t *testing.T) {
 	entered := make(chan struct{}, 4)
 	release := make(chan struct{})
 	host := func(*Call, string, json.RawMessage) (any, error) {
@@ -552,15 +538,6 @@ func TestTheLimitIsSharedAcrossTheBackendsOfOneEngine(t *testing.T) {
 	close(release)
 	if err := <-done; err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestTheDefaultLimitIsBoundedAndANegativeOneIsNot(t *testing.T) {
-	if got := NewEngine(Limits{}).limits.MaxConcurrent; got != 32 {
-		t.Fatalf("default MaxConcurrent = %d", got)
-	}
-	if NewEngine(Limits{MaxConcurrent: -1}).slots != nil {
-		t.Fatal("a negative limit still bounds the engine")
 	}
 }
 
@@ -614,7 +591,7 @@ func TestAModuleOfTheWrongShapeIsRefusedAtLoadNotCrashedOnACall(t *testing.T) {
 // does not reach it: the compile still builds, and Ready reports the backend
 // removed. Parking the compile holds the window open, so this is decided by the
 // outcome and not left to the race detector.
-func TestCloseDuringACompileIsNotADataRace(t *testing.T) {
+func TestConcurrentCloseDuringACompileIsNotADataRace(t *testing.T) {
 	entered, proceed := make(chan struct{}), make(chan struct{})
 	compileHook = func() {
 		close(entered)

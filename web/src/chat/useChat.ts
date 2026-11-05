@@ -524,6 +524,7 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
       },
       {
         onStart: (payload) => {
+          if (account !== generation) return;
           accepted = true;
           turnID = payload.conversation_id;
           pendingID.value = turnID;
@@ -533,9 +534,10 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
           if (!activeID.value && watching()) activeID.value = turnID;
           upsertConversationStub(payload.conversation_id, payload.title, openingProject);
         },
-        onDelta: (text) => bufferDelta(text),
-        onReasoning: (text) => bufferDelta('', text),
+        onDelta: (text) => { if (account === generation) bufferDelta(text); },
+        onReasoning: (text) => { if (account === generation) bufferDelta('', text); },
         onDone: (payload) => {
+          if (account !== generation) return;
           // A notice about this turn is only readable where the turn is. Said
           // over a conversation the reader switched to, it would be about
           // something they cannot see.
@@ -545,6 +547,7 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
           else if (payload.stopped) setFlash(t('stopped'));
         },
         onError: (payload) => {
+          if (account !== generation) return;
           // An error before `start` can only be the server rolling back its own
           // opening transaction, so nothing was saved and the text can go back
           // to the composer, as a refused request does.
@@ -559,7 +562,7 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
       turnController.signal,
     );
   } catch (error) {
-    if (!turnController.signal.aborted) {
+    if (account === generation && !turnController.signal.aborted) {
       if (error instanceof ApiError &&
           (error.code === 'chat_challenge_required' || error.code === 'challenge_failed' ||
            error.code === 'challenge_unavailable')) {
@@ -581,7 +584,7 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
       }
     }
   } finally {
-    settleDeltas();
+    if (account === generation) settleDeltas();
     if (controller.value === turnController) controller.value = null;
   }
   // What the reader was looking at when the stream ended. Read after
@@ -603,13 +606,16 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
     if (activeID.value === turnID) {
       if (stoppedWithText) await reloadUntilSaved(turnID);
       else await reloadActive();
-      scrollToEnd();
+      if (account === generation) scrollToEnd();
     }
   } finally {
-    busy.value = false;
-    pending.value = null;
-    pendingID.value = '';
+    if (account === generation) {
+      busy.value = false;
+      pending.value = null;
+      pendingID.value = '';
+    }
   }
+  if (account !== generation) return 'done';
   void refreshList();
   if (chatChallenge.value) return 'challenge';
   if (unsent) {
@@ -639,7 +645,9 @@ export async function submit(): Promise<void> {
   if (!text && !ids.length) return;
 
   draft.value = '';
+  const account = generation;
   const result = await runTurn({ content: text, attachmentIDs: ids, sentAttachments: staged });
+  if (account !== generation) return;
 
   // A challenge keeps the text and the pictures for when it is solved, and a
   // refused turn keeps them in the composer for another try.
@@ -652,7 +660,9 @@ export async function completeChatChallenge(token: string): Promise<void> {
   if (!turn || !token) return;
   chatChallenge.value = null;
   chatChallengeError.value = '';
+  const account = generation;
   const result = await runTurn(turn, token);
+  if (account !== generation) return;
   if (result !== 'done') return;
   releaseAttachments(turn.attachmentIDs ?? []);
 }
@@ -744,6 +754,7 @@ export async function refreshList(): Promise<void> {
 }
 
 async function reloadActive(): Promise<void> {
+  const account = generation;
   const id = activeID.value;
   if (!id) {
     messages.value = [];
@@ -754,13 +765,14 @@ async function reloadActive(): Promise<void> {
     // Switching no longer waits for a turn, so a reload can land after the
     // reader has moved on. Rows belong to the conversation they were read
     // from, never to whatever happens to be on screen when they arrive.
-    if (activeID.value !== id) return;
+    if (account !== generation || activeID.value !== id) return;
     messages.value = list;
     // Mirrored so the project rail marks the project the open thread lives
     // in. It cannot move the thread: runTurn sends it only on the turn that
     // opens a conversation, and leaving this screen for a new chat resets it.
     if (conversation) pendingProjectID.value = conversation.project_id || '';
   } catch (error) {
+    if (account !== generation) return;
     if (error instanceof ApiError && error.status === 404) {
       if (activeID.value === id) dropActive();
       return;
@@ -779,11 +791,12 @@ async function reloadActive(): Promise<void> {
  * composer is released anyway, rather than held on a save that never comes.
  */
 async function reloadUntilSaved(id: string): Promise<void> {
+  const account = generation;
   for (const delay of [0, 150, 300, 600, 1200]) {
     if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
-    if (activeID.value !== id) return;
+    if (account !== generation || activeID.value !== id) return;
     await reloadActive();
-    if (activeID.value !== id) return;
+    if (account !== generation || activeID.value !== id) return;
     if (messages.value[messages.value.length - 1]?.role === 'assistant') return;
   }
 }

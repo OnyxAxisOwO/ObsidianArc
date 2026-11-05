@@ -2,7 +2,6 @@ package backup
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -94,37 +93,6 @@ func (f *fixture) write(t *testing.T, owner user.User, title string, texts ...st
 	return created.ID
 }
 
-func TestExportCarriesConversationsAndPreferences(t *testing.T) {
-	ctx := context.Background()
-	f := newFixture(t)
-
-	f.write(t, f.account, "About lamps", "what is a lamp", "a source of light")
-	if _, err := f.preferences.Merge(ctx, f.account.ID, map[string]json.RawMessage{
-		"accent": json.RawMessage(`"violet"`),
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	_, document := f.export(t, f.account)
-
-	if document.Format != Format {
-		t.Errorf("format = %d, want %d", document.Format, Format)
-	}
-	if len(document.Conversations) != 1 {
-		t.Fatalf("exported %d conversations, want 1", len(document.Conversations))
-	}
-	thread := document.Conversations[0]
-	if thread.Title != "About lamps" || len(thread.Messages) != 2 {
-		t.Errorf("thread = %+v", thread)
-	}
-	if thread.Messages[0].Role != "user" || thread.Messages[0].Content != "what is a lamp" {
-		t.Errorf("first turn = %+v", thread.Messages[0])
-	}
-	if !strings.Contains(string(document.Preferences), "violet") {
-		t.Errorf("preferences = %s", document.Preferences)
-	}
-}
-
 // The one property that makes this safe to expose: an export is the caller's
 // own data and nobody else's.
 func TestExportIsScopedToOneAccount(t *testing.T) {
@@ -136,38 +104,6 @@ func TestExportIsScopedToOneAccount(t *testing.T) {
 	encoded, _ := f.export(t, f.account)
 	if strings.Contains(string(encoded), "Theirs") || strings.Contains(string(encoded), "theirs") {
 		t.Errorf("the export carried another account's conversation: %s", encoded)
-	}
-}
-
-func TestRoundTripRestoresTheConversation(t *testing.T) {
-	ctx := context.Background()
-	f := newFixture(t)
-
-	f.write(t, f.account, "About lamps", "what is a lamp", "a source of light")
-	_, document := f.export(t, f.account)
-
-	result, err := f.service.Import(ctx, f.stranger, document)
-	if err != nil {
-		t.Fatalf("import: %v", err)
-	}
-	if result.Conversations != 1 || result.Messages != 2 {
-		t.Fatalf("result = %+v", result)
-	}
-
-	archived := false
-	threads, err := f.conversations.ListWithFilter(ctx, f.stranger.ID, conversation.ListFilter{Limit: 50, Archived: &archived})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(threads) != 1 || threads[0].Title != "About lamps" {
-		t.Fatalf("restored %+v", threads)
-	}
-	messages, err := f.conversations.Messages(ctx, nil, f.stranger.ID, threads[0].ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(messages) != 2 || messages[0].Content != "what is a lamp" {
-		t.Errorf("messages = %+v", messages)
 	}
 }
 
@@ -259,22 +195,6 @@ func TestImportSkipsWhatItCannotUse(t *testing.T) {
 	threads, _ := f.conversations.ListWithFilter(ctx, f.account.ID, conversation.ListFilter{Limit: 50, Archived: &archived})
 	if len(threads) != 1 || threads[0].Title != "real" {
 		t.Errorf("wrote %+v", threads)
-	}
-}
-
-func TestOversizedImportIsRefusedBeforeWriting(t *testing.T) {
-	ctx := context.Background()
-	f := newFixture(t)
-
-	document := Document{Format: Format, Conversations: make([]Thread, MaxConversations+1)}
-	if _, err := f.service.Import(ctx, f.account, document); err == nil {
-		t.Fatal("accepted more conversations than the limit")
-	}
-
-	archived := false
-	threads, _ := f.conversations.ListWithFilter(ctx, f.account.ID, conversation.ListFilter{Limit: 50, Archived: &archived})
-	if len(threads) != 0 {
-		t.Errorf("a refused import still wrote %d conversations", len(threads))
 	}
 }
 
@@ -404,47 +324,19 @@ func TestConcurrentImportsCannotPassTheStorageCeilingTogether(t *testing.T) {
 	}
 }
 
-// Export asked conversation.List for two thousand conversations, and List is
-// the interface's page: it clamps anything above MaxListLimit back to
-// DefaultListLimit. An account with more than sixty threads was handed the
-// sixty most recent ones as its complete history, with nothing in the document
-// to say the rest existed — the one place the loss is least recoverable.
-func TestExportCarriesEveryConversationNotJustOnePage(t *testing.T) {
+func TestOversizedImportIsRefusedBeforeWriting(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture(t)
 
-	total := conversation.DefaultListLimit + 5
-	for i := 0; i < total; i++ {
-		f.write(t, f.account, fmt.Sprintf("Thread %02d", i), "hello")
+	document := Document{Format: Format, Conversations: make([]Thread, MaxConversations+1)}
+	if _, err := f.service.Import(ctx, f.account, document); err == nil {
+		t.Fatal("accepted more conversations than the limit")
 	}
 
-	_, document := f.export(t, f.account)
-	if len(document.Conversations) != total {
-		t.Fatalf("exported %d conversations, want all %d",
-			len(document.Conversations), total)
-	}
-
-	// And the interface still clamps, so this is a second reading of the same
-	// query rather than the cap having been lifted for everybody. The clamp
-	// catches a request above MaxListLimit, which is exactly the one the
-	// export used to make.
 	archived := false
-	page, err := f.conversations.ListWithFilter(ctx, f.account.ID, conversation.ListFilter{Limit: 500, Archived: &archived})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(page) != conversation.DefaultListLimit {
-		t.Errorf("List returned %d for a request of 500, want the page cap of %d",
-			len(page), conversation.DefaultListLimit)
-	}
-
-	// The export's own reader returns every one of them at that same request.
-	every, err := f.conversations.ListForExport(ctx, f.account.ID, "", 500)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(every) != total {
-		t.Errorf("ListForExport returned %d, want all %d", len(every), total)
+	threads, _ := f.conversations.ListWithFilter(ctx, f.account.ID, conversation.ListFilter{Limit: 50, Archived: &archived})
+	if len(threads) != 0 {
+		t.Errorf("a refused import still wrote %d conversations", len(threads))
 	}
 }
 

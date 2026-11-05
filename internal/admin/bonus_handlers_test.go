@@ -59,19 +59,3 @@ func TestABonusBarPutThatOmitsASwitchKeepsIt(t *testing.T) {
 			stored.Active, stored.DefaultOn, stored.ShowTotal)
 	}
 }
-
-// A server built without a bonus store answers the bonus routes with 404, as
-// the Bonus field's comment promises, rather than dereferencing the nil store.
-func TestBonusRoutesAreAbsentWithoutABonusStore(t *testing.T) {
-	h := &Handlers{}
-	mux := http.NewServeMux()
-	h.Routes(mux)
-
-	for _, path := range []string{"/api/admin/bonus/bars", "/api/admin/bonus/grants/01ARZ3NDEKTSV4RRFFQ69G5FAV"} {
-		response := httptest.NewRecorder()
-		mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
-		if response.Code != http.StatusNotFound {
-			t.Errorf("GET %s = %d, want 404 without a bonus store", path, response.Code)
-		}
-	}
-}

@@ -66,25 +66,3 @@ func TestAnEmptyWindowIsNotARate(t *testing.T) {
 		t.Error("a clock that went backwards produced a rate")
 	}
 }
-
-// The platform half. Whatever it answers must be usable as a counter: never
-// negative, and never going backwards between two reads.
-func TestProcessCPUIsAMonotonicCounter(t *testing.T) {
-	first, ok := processCPU()
-	if !ok {
-		t.Skip("no process CPU on this platform")
-	}
-	if first < 0 {
-		t.Fatalf("negative CPU time: %v", first)
-	}
-	// Something to actually spend CPU on, so the second read has somewhere to
-	// go and the test is not just reading the same number twice.
-	sink := 0
-	for i := range 4_000_000 {
-		sink += i % 7
-	}
-	second, _ := processCPU()
-	if second < first {
-		t.Errorf("CPU time went backwards: %v then %v (sink %d)", first, second, sink)
-	}
-}

@@ -72,7 +72,7 @@ func EstimatePrompt(request ChatRequest) int {
 // estimating it beside a reported output would count the same text twice.
 func fillUsage(request ChatRequest, result Result, reported Usage) Usage {
 	out := reported
-	if out.InputTokens == 0 {
+	if out.InputTokens == 0 && !out.inputReported {
 		out.InputTokens = EstimatePrompt(request)
 		out.Estimated = true
 	}
@@ -82,7 +82,7 @@ func fillUsage(request ChatRequest, result Result, reported Usage) Usage {
 	// output count is for. The output estimate counts only the text and
 	// the calls, so it cannot repeat the reasoning the provider reported.
 	produced := result.Text != "" || result.Reasoning != "" || len(result.ToolCalls) > 0
-	if out.OutputTokens == 0 && produced {
+	if out.OutputTokens == 0 && !out.outputReported && produced {
 		output := len(result.Text) / bytesPerToken
 		for _, call := range result.ToolCalls {
 			output += perToolCallTax + (len(call.Name)+len(call.Arguments))/bytesPerToken
@@ -114,11 +114,14 @@ type written struct {
 // reasoning are compared as a sum for the reason fillUsage gives: several
 // providers count thinking inside the output figure.
 func fillStopped(request ChatRequest, streamed written, reported Usage) Usage {
+	if reported.complete {
+		return reported
+	}
 	if streamed.text == 0 && streamed.reasoning == 0 && streamed.calls == 0 {
 		return reported
 	}
 	out := reported
-	if out.InputTokens == 0 {
+	if out.InputTokens == 0 && !out.inputReported {
 		out.InputTokens = EstimatePrompt(request)
 		out.Estimated = true
 	}

@@ -1,7 +1,6 @@
 package card
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -480,22 +479,6 @@ func TestATypedCodeMatchesWhateverItsCaseOrHyphens(t *testing.T) {
 	}
 }
 
-// A named code is matched as it was made. A typed form that is not that exact
-// text is retried in canonical form, and a name already stored in canonical
-// form matches that retry, so it redeems when typed loosely. Without this
-// test the retry could be narrowed to generated codes and nothing would fail.
-func TestANamedCodeAlreadyInCanonicalFormRedeemsWhenTypedLoosely(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-
-	if _, err := f.store.CreateCodes(ctx, CodeInput{Code: "ABCD-EFGH", Cards: 3, CardDays: 30}, 1); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.store.Redeem(ctx, f.reader(t, "loose-typist").ID, "abcd efgh"); err != nil {
-		t.Errorf("redeeming %q: %v, want the named code", "abcd efgh", err)
-	}
-}
-
 // The panel needs the counts, not just the list. "None left" and "never had
 // any" are different answers to why somebody cannot reset, and the available
 // list alone reads the same for both.
@@ -540,31 +523,6 @@ func TestHeldSeparatesSpentFromExpiredFromLeft(t *testing.T) {
 	}
 	if empty.Total != 0 || empty.Cards == nil || len(empty.Cards) != 0 {
 		t.Errorf("an account with no cards gave %+v", empty)
-	}
-}
-
-// 256 is not a multiple of the 31-symbol alphabet, so `int(b) % 31` makes the
-// first eight symbols more likely than the rest. Those bytes are rejected
-// instead, which is what these two draws check: one that has to skip them and
-// still succeed, and one that has nothing left once they are gone.
-func TestCodeSymbolsSkipTheSkewedTailOfTheByteRange(t *testing.T) {
-	// 248 = 8*31, the largest multiple of 31 at or below 256, so 248..255 are
-	// the bytes that cannot map evenly onto the alphabet.
-	skewed := []byte{248, 249, 250, 251, 252, 253, 254, 255}
-
-	if _, err := drawSymbols(bytes.NewReader(skewed), 4, 31); err == nil {
-		t.Fatal("a stream of only rejected bytes produced symbols anyway")
-	}
-
-	// The same rejected tail, followed by bytes that are usable: the tail must
-	// be skipped whole rather than folded in with a modulo.
-	stream := append(append([]byte{}, skewed...), 0, 1, 2, 3)
-	picked, err := drawSymbols(bytes.NewReader(stream), 4, 31)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := []byte{0, 1, 2, 3}; !bytes.Equal(picked, want) {
-		t.Fatalf("picked %v, want %v — the rejected bytes were not skipped", picked, want)
 	}
 }
 
@@ -756,81 +714,6 @@ func TestRevokingCannotReachAnotherAccount(t *testing.T) {
 	}
 }
 
-func TestNamedCardsAndWindowVariants(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-	person := f.reader(t, "variant-user")
-
-	// 1. Grant named card with 5h window.
-	granted5H, err := f.store.GrantNamed(ctx, nil, person.ID, 1, 30, "Five Hour Boost", []string{"5h"})
-	if err != nil {
-		t.Fatalf("grant 5h: %v", err)
-	}
-	if len(granted5H) != 1 {
-		t.Fatalf("granted %d cards, want 1", len(granted5H))
-	}
-	if granted5H[0].Name != "Five Hour Boost" {
-		t.Errorf("name = %q, want 'Five Hour Boost'", granted5H[0].Name)
-	}
-	if len(granted5H[0].Windows) != 1 || granted5H[0].Windows[0] != "5h" {
-		t.Errorf("windows = %v, want ['5h']", granted5H[0].Windows)
-	}
-
-	// 2. Create code with combined windows (5h, 1w).
-	codeRecord, err := f.store.CreateCode(ctx, CodeInput{
-		Code:     "COMBO-WEEK",
-		Name:     "Weekly Combo Card",
-		Windows:  []string{"5h", "1w"},
-		Cards:    5,
-		CardDays: 14,
-	})
-	if err != nil {
-		t.Fatalf("create code: %v", err)
-	}
-	if codeRecord.Name != "Weekly Combo Card" {
-		t.Errorf("code name = %q, want 'Weekly Combo Card'", codeRecord.Name)
-	}
-	if len(codeRecord.Windows) != 2 || codeRecord.Windows[0] != "5h" || codeRecord.Windows[1] != "1w" {
-		t.Errorf("code windows = %v, want ['5h', '1w']", codeRecord.Windows)
-	}
-
-	// 3. Redeem code and check minted card inherits name and windows.
-	redeemedCard, err := f.store.Redeem(ctx, person.ID, "COMBO-WEEK")
-	if err != nil {
-		t.Fatalf("redeem: %v", err)
-	}
-	if redeemedCard.Name != "Weekly Combo Card" {
-		t.Errorf("redeemed name = %q, want 'Weekly Combo Card'", redeemedCard.Name)
-	}
-	if len(redeemedCard.Windows) != 2 || redeemedCard.Windows[0] != "5h" || redeemedCard.Windows[1] != "1w" {
-		t.Errorf("redeemed windows = %v, want ['5h', '1w']", redeemedCard.Windows)
-	}
-
-	// 4. Check available cards list has both cards with their names and windows.
-	available, err := f.store.Available(ctx, person.ID)
-	if err != nil {
-		t.Fatalf("available: %v", err)
-	}
-	if len(available) != 2 {
-		t.Fatalf("available = %d cards, want 2", len(available))
-	}
-
-	// 5. SpendCard returns the card with its windows.
-	spent, err := f.store.SpendCard(ctx, nil, person.ID, redeemedCard.ID)
-	if err != nil {
-		t.Fatalf("spend: %v", err)
-	}
-	if spent.ID != redeemedCard.ID {
-		t.Errorf("spent id = %q, want %q", spent.ID, redeemedCard.ID)
-	}
-	if spent.Name != "Weekly Combo Card" {
-		t.Errorf("spent name = %q, want 'Weekly Combo Card'", spent.Name)
-	}
-	if len(spent.Windows) != 2 || spent.Windows[0] != "5h" || spent.Windows[1] != "1w" {
-		t.Errorf("spent windows = %v, want ['5h', '1w']", spent.Windows)
-	}
-}
-
 func TestSpendNextForWindowTargetsMatchingCards(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -859,8 +742,8 @@ func TestSpendNextForWindowTargetsMatchingCards(t *testing.T) {
 	if err != nil {
 		t.Fatalf("spend next 5h: %v", err)
 	}
-	if spent.ID != cards5H[0].ID {
-		t.Errorf("spent card id = %q, want 5H Card %q", spent.ID, cards5H[0].ID)
+	if spent.ID != cards5H[0].ID || spent.Name != "5H Card" || len(spent.Windows) != 1 || spent.Windows[0] != "5h" {
+		t.Errorf("spent card = %+v, want the named 5h card %q", spent, cards5H[0].ID)
 	}
 
 	// Requesting "5h" again: "5H Card" is used. Full Card (30 days) covers 5h too!

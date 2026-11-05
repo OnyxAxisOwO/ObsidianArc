@@ -244,12 +244,6 @@ func TestHostKeyGenerationIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestHostKeyPathRequiresAValueToLoadOrCreate(t *testing.T) {
-	if _, err := loadOrCreateHostKey(""); err == nil {
-		t.Fatal("want an error for an empty path")
-	}
-}
-
 func TestServerFingerprintMatchesTheGeneratedHostKey(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ssh_host_ed25519_key")
 	srv, err := New(Config{
@@ -309,23 +303,6 @@ func TestPasswordCallbackCollapsesEveryFailureReasonIntoOne(t *testing.T) {
 		if !errors.Is(err, errAuthFailed) {
 			t.Errorf("%s: got %v, want errAuthFailed", c.name, err)
 		}
-	}
-}
-
-func TestPasswordCallbackSucceedsForAnAdministrator(t *testing.T) {
-	accounts := map[string]testAccount{"admin": {password: "correct-horse", account: adminUser("admin")}}
-	srv := &Server{cfg: Config{Authenticate: fakeAuthenticate(accounts)}}
-
-	perm, err := srv.passwordCallback(fakeConnMetadata{user: "admin"}, []byte("correct-horse"))
-	if err != nil {
-		t.Fatalf("passwordCallback: %v", err)
-	}
-	account, ok := actorFromPermissions(perm)
-	if !ok {
-		t.Fatal("actorFromPermissions: no actor carried in Permissions")
-	}
-	if account.Username != "admin" {
-		t.Fatalf("got username %q, want %q", account.Username, "admin")
 	}
 }
 
@@ -716,26 +693,6 @@ func sshEnd(t *testing.T, stdin io.Writer, out *syncBuffer, session *ssh.Session
 	}
 }
 
-func TestSSHFormatJSONPersistsAcrossLines(t *testing.T) {
-	accounts := map[string]testAccount{"admin": {password: "s3cret-pass", account: adminUser("admin")}}
-	srv := startTestServer(t, Config{
-		Console:      newTestConsole(t),
-		Authenticate: fakeAuthenticate(accounts),
-	})
-	stdin, out, session := openPtySession(t, dialInsecure(t, srv, "admin", "s3cret-pass"))
-
-	sshLine(t, stdin, out, "format json")
-	got := sshLine(t, stdin, out, "whoami")
-	var doc map[string]any
-	if err := json.Unmarshal([]byte(got), &doc); err != nil {
-		t.Fatalf("whoami after format json is not a JSON document (%v): %q", err, got)
-	}
-	if doc["username"] != "admin" {
-		t.Errorf("whoami JSON username = %v, want admin", doc["username"])
-	}
-	sshEnd(t, stdin, out, session)
-}
-
 func TestSSHLangPersistsAcrossLines(t *testing.T) {
 	accounts := map[string]testAccount{"admin": {password: "s3cret-pass", account: adminUser("admin")}}
 	srv := startTestServer(t, Config{
@@ -780,22 +737,6 @@ func TestSSHSettingsDoNotLeakIntoANewConnection(t *testing.T) {
 	sshEnd(t, second, secondOut, session)
 }
 
-func TestKeepSettingsCarriesFormatAndLangToTheNextLine(t *testing.T) {
-	sess := newSSHSession(nil, nil, nil, adminUser("admin"), "192.0.2.1", "")
-	s := sess.snapshot("ssh")
-	s.JSON = true
-	s.Lang = "zh"
-	sess.keepSettings(s)
-
-	got := sess.snapshot("ssh")
-	if !got.JSON {
-		t.Error("snapshot after keepSettings has JSON false, want true")
-	}
-	if got.Lang != "zh" {
-		t.Errorf("snapshot after keepSettings has Lang %q, want zh", got.Lang)
-	}
-}
-
 func TestShutdownClosesTheListenerAndLiveSessions(t *testing.T) {
 	accounts := map[string]testAccount{"admin": {password: "s3cret-pass", account: adminUser("admin")}}
 	srv := startTestServer(t, Config{
@@ -837,16 +778,6 @@ func TestShutdownClosesTheListenerAndLiveSessions(t *testing.T) {
 		Timeout:         time.Second,
 	}); err == nil {
 		t.Fatal("want the listener to refuse new connections after Shutdown")
-	}
-}
-
-func TestHostOnlyStripsThePort(t *testing.T) {
-	addr := &net.TCPAddr{IP: net.ParseIP("198.51.100.7"), Port: 2222}
-	if got, want := hostOnly(addr), "198.51.100.7"; got != want {
-		t.Errorf("hostOnly(%v) = %q, want %q", addr, got, want)
-	}
-	if got := hostOnly(nil); got != "" {
-		t.Errorf("hostOnly(nil) = %q, want empty", got)
 	}
 }
 

@@ -153,9 +153,10 @@ type Upstream struct {
 	ResponseHeaderTimeout time.Duration
 	// Overall ceiling on one upstream call. Zero means no ceiling beyond the
 	// request context, which is what a long generation needs.
-	RequestTimeout  time.Duration
-	MaxIdleConns    int
-	IdleConnTimeout time.Duration
+	StreamIdleTimeout time.Duration
+	RequestTimeout    time.Duration
+	MaxIdleConns      int
+	IdleConnTimeout   time.Duration
 }
 
 // Bootstrap is the first administrator, created only when the users table is
@@ -282,6 +283,7 @@ func Load() (Config, error) {
 			DialTimeout:           envDuration("UPSTREAM_DIAL_TIMEOUT", 10*time.Second),
 			ResponseHeaderTimeout: envDuration("UPSTREAM_HEADER_TIMEOUT", 90*time.Second),
 			RequestTimeout:        envDuration("UPSTREAM_REQUEST_TIMEOUT", 0),
+			StreamIdleTimeout:     envDuration("UPSTREAM_STREAM_IDLE_TIMEOUT", 0),
 			MaxIdleConns:          envInt("UPSTREAM_MAX_IDLE_CONNS", 32),
 			IdleConnTimeout:       envDuration("UPSTREAM_IDLE_TIMEOUT", 90*time.Second),
 		},

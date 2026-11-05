@@ -2,8 +2,6 @@ package server
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -48,40 +46,11 @@ func (in *instance) formPost(path string, form url.Values) *httptest.ResponseRec
 // returns the refresh token and access token the application was given.
 func (in *instance) signInThrough(clientID string, as *session) (refresh, access string) {
 	in.t.Helper()
-	const verifier = "idp-password-verifier-0123456789-abcdefghijklmnopqrstuvwxyz"
-	sum := sha256.Sum256([]byte(verifier))
-	query := url.Values{
-		"client_id":             {clientID},
-		"redirect_uri":          {idpCallback},
-		"response_type":         {"code"},
-		"scope":                 {"openid profile email"},
-		"state":                 {"s"},
-		"nonce":                 {"n"},
-		"code_challenge":        {base64.RawURLEncoding.EncodeToString(sum[:])},
-		"code_challenge_method": {"S256"},
-	}.Encode()
-	authorize := "/oauth/authorize?" + query
-
-	asked := in.do(http.MethodGet, authorize, nil, as)
-	screen, err := url.Parse(asked.Header().Get("Location"))
-	if err != nil || screen.Query().Get("request") == "" {
-		in.t.Fatalf("the sign-in did not reach consent: %d %q", asked.Code, asked.Header().Get("Location"))
-	}
-	if agreed := in.do(http.MethodPost, "/api/oauth/consent", map[string]any{
-		"request": screen.Query().Get("request"), "approve": true,
-	}, as); agreed.Code != http.StatusOK {
-		in.t.Fatalf("consent: %d %s", agreed.Code, agreed.Body.String())
-	}
-
-	granted := in.do(http.MethodGet, authorize, nil, as)
-	landed, err := url.Parse(granted.Header().Get("Location"))
-	if err != nil || landed.Query().Get("code") == "" {
-		in.t.Fatalf("no code after consent: %d %q", granted.Code, granted.Header().Get("Location"))
-	}
+	code, verifier := in.authorisationCode(clientID, as)
 	exchanged := in.formPost("/oauth/token", url.Values{
 		"grant_type":    {"authorization_code"},
 		"client_id":     {clientID},
-		"code":          {landed.Query().Get("code")},
+		"code":          {code},
 		"redirect_uri":  {idpCallback},
 		"code_verifier": {verifier},
 	})

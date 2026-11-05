@@ -11,3 +11,9 @@ export const SESSION_ENDED = 'oa-session-ended';
  *  it, so the router can send a reader off a protected page without touching
  *  a visitor who was never on one. */
 export const SESSION_LOST = 'oa-session-lost';
+
+// A response can arrive after sign-out and a new sign-in. Associate it with
+// the session that sent it before acting on its expiry.
+let revision = 0;
+export function sessionRevision(): number { return revision; }
+export function advanceSessionRevision(): void { revision += 1; }

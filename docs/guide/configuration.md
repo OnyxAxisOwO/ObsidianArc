@@ -103,6 +103,7 @@
 | `OBSIDIAN_UPSTREAM_DIAL_TIMEOUT` | `10s` | 建立连接超时 |
 | `OBSIDIAN_UPSTREAM_HEADER_TIMEOUT` | `90s` | 等待 HTTP 响应头超时 |
 | `OBSIDIAN_UPSTREAM_REQUEST_TIMEOUT` | `0` | 整次上游请求时限；0 表示不额外设置总时限 |
+| `OBSIDIAN_UPSTREAM_STREAM_IDLE_TIMEOUT` | `0` | 上游 SSE 等待下一批字节的时限；0 关闭。上游心跳算活动，下游背压不消耗该时限 |
 | `OBSIDIAN_UPSTREAM_MAX_IDLE_CONNS` | `32` | 最大空闲连接数 |
 | `OBSIDIAN_UPSTREAM_IDLE_TIMEOUT` | `90s` | 空闲连接保留时间 |
 

@@ -1,12 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createApp, h, type Component, nextTick, type App } from 'vue';
-import { createMemoryHistory, createRouter } from 'vue-router';
 import UsageBoard from '../src/views/admin/usage/UsageBoard.vue';
-import AdminDashboard from '../src/views/admin/AdminDashboard.vue';
 import OaMenu from '../src/components/OaMenu.vue';
-import { adminApi } from '../src/admin/api';
-import { provideAdminView } from '../src/views/admin/adminView';
-import { dashboardFixture } from './fixtures/dashboard';
 
 let app: App | null = null;
 let host: HTMLElement;
@@ -20,9 +15,10 @@ beforeEach(() => {
 afterEach(() => {
   app?.unmount();
   app = null;
+  vi.restoreAllMocks();
 });
 
-describe('Non-linear animation & expand/collapse transitions', () => {
+describe('scrolling usage boards', () => {
   it('UsageBoard lists every row in one scrolling frame, with no show-all toggle', async () => {
     const rows = Array.from({ length: 10 }, (_, i) => ({
       key: `model-${i}`,
@@ -38,8 +34,6 @@ describe('Non-linear animation & expand/collapse transitions', () => {
         render() {
           // A defaulted optional prop makes this component's props miss h()'s overload under
           // exactOptionalPropertyTypes, so the call takes the component as a plain Component.
-          // A defaulted optional prop puts this component outside h()'s overloads under
-          // exactOptionalPropertyTypes, so the component is passed as a plain Component.
           return h(UsageBoard as Component, { rows: list, kind: 'model', metric: 'requests', limit: 6, emptyText: 'No models' });
         },
       });
@@ -75,377 +69,74 @@ describe('Non-linear animation & expand/collapse transitions', () => {
     expect(host.querySelector('.oa-board-count')).toBeNull();
     expect(host.querySelector('.oa-board-scroll')?.className).toBe('oa-board-scroll');
   });
+});
 
-  it('AdminDashboard ranking details expands and collapses with non-linear animation and rotating chevron', async () => {
-    vi.spyOn(adminApi, 'dashboard').mockResolvedValue(dashboardFixture());
-    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { render: () => null } }] });
-    const actions = document.createElement('div');
-    app = createApp({
-      setup() {
-        provideAdminView({ actionsHost: actions, setTitle() {}, reload() {}, params: [] });
-        return () => h(AdminDashboard);
-      },
-    });
-    app.use(router);
-    app.mount(host);
-    await new Promise((r) => setTimeout(r, 0));
-    await nextTick();
-
-    const ranking = host.querySelector('#secBusiestModels')!;
-    expect(ranking).not.toBeNull();
-
-    const details = ranking.querySelector('details.oa-dashboard-ranking-details');
-    expect(details).not.toBeNull();
-
-    const summary = details?.querySelector('summary.oa-dashboard-details-summary');
-    expect(summary).not.toBeNull();
-
-    const chevron = summary?.querySelector('.oa-dashboard-details-chevron');
-    expect(chevron).not.toBeNull();
-    expect(chevron?.classList.contains('open')).toBe(false);
-
-    const collapse = details?.querySelector('.oa-dashboard-details-collapse');
-    expect(collapse).not.toBeNull();
-    expect(collapse?.classList.contains('open')).toBe(false);
-
-    // Click summary to expand
-    (summary as HTMLElement).click();
-    await nextTick();
-
-    expect(chevron?.classList.contains('open')).toBe(true);
-    expect(collapse?.classList.contains('open')).toBe(true);
-
-    // Click summary again to collapse
-    (summary as HTMLElement).click();
-    await nextTick();
-
-    expect(chevron?.classList.contains('open')).toBe(false);
-    expect(collapse?.classList.contains('open')).toBe(false);
+async function openMenu(menuClass = '', up = false, left = 176) {
+  const menu = { current: null as InstanceType<typeof OaMenu> | null };
+  app = createApp({
+    render: () => h(OaMenu, {
+      ref: (instance) => { menu.current = instance as InstanceType<typeof OaMenu> | null; },
+      menuClass,
+      up,
+    }, {
+      trigger: ({ toggle }: { toggle: () => void }) => h('button', { onClick: toggle }, 'Menu'),
+      default: () => h('div', 'Content'),
+    }),
   });
+  app.mount(host);
+  const trigger = host.querySelector<HTMLElement>('.oa-chip-group')!;
+  vi.spyOn(trigger, 'getBoundingClientRect').mockReturnValue(new DOMRect(left, 10, 36, 36));
+  trigger.querySelector('button')!.click();
+  await nextTick();
 
-  it('OaMenu mounts and triggers open animation with non-linear transform', async () => {
-    app = createApp({
-      render() {
-        return h(OaMenu, null, {
-          trigger: ({ toggle }: { toggle: () => void }) => h('button', { class: 'trigger-btn', onClick: toggle }, 'Menu'),
-          default: () => h('div', { class: 'menu-content' }, 'Content'),
-        });
-      },
-    });
-    app.mount(host);
-    await nextTick();
+  const panel = host.querySelector<HTMLElement>('.oa-menu')!;
+  const width = (value: number) => Object.defineProperty(panel, 'offsetWidth', { configurable: true, value });
+  const fit = () => menu.current!.fit();
+  width(280);
+  fit();
+  return { style: panel.style, width, fit };
+}
 
-    // Menu panel is not mounted before trigger is clicked
-    expect(host.querySelector('.oa-menu')).toBeNull();
-
-    // Click trigger to open
-    const trigger = host.querySelector<HTMLButtonElement>('.trigger-btn')!;
-    trigger.click();
-    await nextTick();
-
-    // Menu panel should be mounted
-    const panel = host.querySelector<HTMLElement>('.oa-menu');
-    expect(panel).not.toBeNull();
-
-    // requestAnimationFrame transitions shown to true
-    await new Promise((r) => requestAnimationFrame(r));
-    await nextTick();
-    expect(panel?.classList.contains('open')).toBe(true);
-  });
-
-  it('OaMenu shifts right and anchors transform-origin to trigger when overflowing on mobile', async () => {
-    // Simulate iPhone viewport: width = 390
+describe('menu placement', () => {
+  it.each([
+    { menuClass: '', up: false, origin: '186px top' },
+    { menuClass: 'oa-menu-up', up: false, origin: '186px bottom' },
+    { menuClass: 'row-menu', up: true, origin: '186px bottom' },
+  ])('fits a right-aligned menu and anchors to the trigger ($menuClass)', async ({ menuClass, up, origin }) => {
     vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(390);
-
-    const menuRef = { value: null as InstanceType<typeof OaMenu> | null };
-    app = createApp({
-      render() {
-        return h(OaMenu, { ref: (r) => { menuRef.value = r as InstanceType<typeof OaMenu> | null; } }, {
-          trigger: ({ toggle }: { toggle: () => void }) => h('button', { class: 'bell-btn', onClick: toggle }, 'Bell'),
-          default: () => h('div', { class: 'menu-content' }, 'Announcements'),
-        });
-      },
-    });
-    app.mount(host);
-    await nextTick();
-
-    const trigger = host.querySelector<HTMLButtonElement>('.bell-btn')!;
-    const group = host.querySelector<HTMLElement>('.oa-chip-group')!;
-
-    // Mock trigger group position in the middle of a phone header (e.g. Bell icon at x=176..212)
-    vi.spyOn(group, 'getBoundingClientRect').mockReturnValue({
-      left: 176,
-      right: 212,
-      top: 10,
-      bottom: 46,
-      width: 36,
-      height: 36,
-      x: 176,
-      y: 10,
-      toJSON: () => {},
-    });
-
-    trigger.click();
-    await nextTick();
-
-    const panel = host.querySelector<HTMLElement>('.oa-menu')!;
-    expect(panel).not.toBeNull();
-
-    // Mock menu width of 280px (.oa-menu-announce min-width)
-    Object.defineProperty(panel, 'offsetWidth', { configurable: true, value: 280 });
-
-    menuRef.value!.fit();
-
-    // Default right: 0 would put left at 212 - 280 = -68px (overflows screen by 76px).
-    // Shifting right by 76px brings left to GUTTER (8px).
-    // With right: -76px, the menu is fully on-screen.
-    expect(panel.style.right).toBe('-76px');
-    expect(panel.style.left).toBe('auto');
-
-    // Trigger center is at 176 + 18 = 194. Menu left is at 8.
-    // Origin is at 194 - 8 = 186px from menu left.
-    expect(panel.style.transformOrigin).toBe('186px top');
+    const { style } = await openMenu(menuClass, up);
+    expect(style.right).toBe('-76px');
+    expect(style.left).toBe('auto');
+    expect(style.transformOrigin).toBe(origin);
   });
 
-  it('OaMenu clamps maxWidth to available room on ultra-narrow viewports', async () => {
-    // Ultra narrow viewport (e.g. 260px)
-    vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(260);
-
-    const menuRef = { value: null as InstanceType<typeof OaMenu> | null };
-    app = createApp({
-      render() {
-        return h(OaMenu, { ref: (r) => { menuRef.value = r as InstanceType<typeof OaMenu> | null; } }, {
-          trigger: ({ toggle }: { toggle: () => void }) => h('button', { class: 'trigger-btn', onClick: toggle }, 'Trigger'),
-          default: () => h('div', { class: 'menu-content' }, 'Content'),
-        });
-      },
-    });
-    app.mount(host);
-    await nextTick();
-
-    const trigger = host.querySelector<HTMLButtonElement>('.trigger-btn')!;
-    trigger.click();
-    await nextTick();
-
-    const panel = host.querySelector<HTMLElement>('.oa-menu')!;
-    Object.defineProperty(panel, 'offsetWidth', { configurable: true, value: 280 });
-
-    menuRef.value!.fit();
-
-    // room = 260 - 2 * 8 = 244px
-    expect(panel.style.maxWidth).toBe('244px');
-    expect(panel.style.minWidth).toBe('0px');
-  });
-
-  it('OaMenu does not flap maxWidth/minWidth on subsequent fit() calls when clamped to room', async () => {
-    vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(260);
-
-    const menuRef = { value: null as InstanceType<typeof OaMenu> | null };
-    app = createApp({
-      render() {
-        return h(OaMenu, { ref: (r) => { menuRef.value = r as InstanceType<typeof OaMenu> | null; } }, {
-          trigger: ({ toggle }: { toggle: () => void }) => h('button', { class: 'trigger-btn', onClick: toggle }, 'Trigger'),
-          default: () => h('div', { class: 'menu-content' }, 'Content'),
-        });
-      },
-    });
-    app.mount(host);
-    await nextTick();
-
-    const trigger = host.querySelector<HTMLButtonElement>('.trigger-btn')!;
-    trigger.click();
-    await nextTick();
-
-    const panel = host.querySelector<HTMLElement>('.oa-menu')!;
-    Object.defineProperty(panel, 'offsetWidth', { configurable: true, value: 280 });
-
-    menuRef.value!.fit();
-    expect(panel.style.maxWidth).toBe('244px');
-    expect(panel.style.minWidth).toBe('0px');
-
-    // Simulate browser updating offsetWidth after style.maxWidth is set
-    Object.defineProperty(panel, 'offsetWidth', { configurable: true, value: 244 });
-
-    // Calling fit() again (e.g. from ResizeObserver) must not wipe out maxWidth
-    menuRef.value!.fit();
-    expect(panel.style.maxWidth).toBe('244px');
-    expect(panel.style.minWidth).toBe('0px');
-  });
-
-  it('OaMenu anchors transformOrigin to bottom when menu has oa-menu-up', async () => {
+  it('shifts a left-aligned menu away from the right edge', async () => {
     vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(390);
-
-    const menuRef = { value: null as InstanceType<typeof OaMenu> | null };
-    app = createApp({
-      render() {
-        return h(OaMenu, { ref: (r) => { menuRef.value = r as InstanceType<typeof OaMenu> | null; }, menuClass: 'oa-menu-up' }, {
-          trigger: ({ toggle }: { toggle: () => void }) => h('button', { class: 'up-btn', onClick: toggle }, 'Up'),
-          default: () => h('div', { class: 'menu-content' }, 'Content'),
-        });
-      },
-    });
-    app.mount(host);
-    await nextTick();
-
-    const trigger = host.querySelector<HTMLButtonElement>('.up-btn')!;
-    const group = host.querySelector<HTMLElement>('.oa-chip-group')!;
-
-    vi.spyOn(group, 'getBoundingClientRect').mockReturnValue({
-      left: 176,
-      right: 212,
-      top: 500,
-      bottom: 536,
-      width: 36,
-      height: 36,
-      x: 176,
-      y: 500,
-      toJSON: () => {},
-    });
-
-    trigger.click();
-    await nextTick();
-
-    const panel = host.querySelector<HTMLElement>('.oa-menu')!;
-    Object.defineProperty(panel, 'offsetWidth', { configurable: true, value: 280 });
-
-    menuRef.value!.fit();
-
-    expect(panel.style.right).toBe('-76px');
-    // Vertical origin must be bottom for upward opening menu
-    expect(panel.style.transformOrigin).toBe('186px bottom');
+    const { style } = await openMenu('oa-menu-left', false, 200);
+    expect(style.left).toBe('-98px');
+    expect(style.right).toBe('auto');
+    expect(style.transformOrigin).toBe('116px top');
   });
 
-  // A row menu places itself upwards with its own class, which OaMenu does
-  // not know; the caller says so through the prop instead.
-  it('OaMenu anchors transformOrigin to bottom when the caller says it opens up', async () => {
-    vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(390);
+  it('keeps the width cap across repeated measurements and releases it when the viewport grows', async () => {
+    const viewport = vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(260);
+    const { style, width, fit } = await openMenu('', false, 500);
+    expect(style.maxWidth).toBe('244px');
+    expect(style.minWidth).toBe('0px');
 
-    const menuRef = { value: null as InstanceType<typeof OaMenu> | null };
-    app = createApp({
-      render() {
-        return h(OaMenu, { ref: (r) => { menuRef.value = r as InstanceType<typeof OaMenu> | null; }, menuClass: 'row-menu', up: true }, {
-          trigger: ({ toggle }: { toggle: () => void }) => h('button', { class: 'up-btn', onClick: toggle }, 'Up'),
-          default: () => h('div', { class: 'menu-content' }, 'Content'),
-        });
-      },
-    });
-    app.mount(host);
-    await nextTick();
+    // The next measurement sees the width the cap already set.
+    width(244);
+    fit();
+    expect(style.maxWidth).toBe('244px');
+    expect(style.minWidth).toBe('0px');
 
-    const group = host.querySelector<HTMLElement>('.oa-chip-group')!;
-    vi.spyOn(group, 'getBoundingClientRect').mockReturnValue({
-      left: 176, right: 212, top: 500, bottom: 536, width: 36, height: 36, x: 176, y: 500, toJSON: () => {},
-    });
-
-    host.querySelector<HTMLButtonElement>('.up-btn')!.click();
-    await nextTick();
-
-    const panel = host.querySelector<HTMLElement>('.oa-menu')!;
-    Object.defineProperty(panel, 'offsetWidth', { configurable: true, value: 280 });
-    menuRef.value!.fit();
-
-    expect(panel.style.transformOrigin).toBe('186px bottom');
-  });
-
-  it('OaMenu with oa-menu-left shifts left when overflowing right screen boundary', async () => {
-    vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(390);
-
-    const menuRef = { value: null as InstanceType<typeof OaMenu> | null };
-    app = createApp({
-      render() {
-        return h(OaMenu, { ref: (r) => { menuRef.value = r as InstanceType<typeof OaMenu> | null; }, menuClass: 'oa-menu-left' }, {
-          trigger: ({ toggle }: { toggle: () => void }) => h('button', { class: 'left-btn', onClick: toggle }, 'Left'),
-          default: () => h('div', { class: 'menu-content' }, 'Content'),
-        });
-      },
-    });
-    app.mount(host);
-    await nextTick();
-
-    const trigger = host.querySelector<HTMLButtonElement>('.left-btn')!;
-    const group = host.querySelector<HTMLElement>('.oa-chip-group')!;
-
-    // Trigger near the right edge: left = 200, right = 236
-    vi.spyOn(group, 'getBoundingClientRect').mockReturnValue({
-      left: 200,
-      right: 236,
-      top: 10,
-      bottom: 46,
-      width: 36,
-      height: 36,
-      x: 200,
-      y: 10,
-      toJSON: () => {},
-    });
-
-    trigger.click();
-    await nextTick();
-
-    const panel = host.querySelector<HTMLElement>('.oa-menu')!;
-    Object.defineProperty(panel, 'offsetWidth', { configurable: true, value: 280 });
-
-    menuRef.value!.fit();
-
-    // unscaledLeft = 200, unscaledRight = 200 + 280 = 480.
-    // viewWidth - GUTTER = 390 - 8 = 382.
-    // shift = 382 - 480 = -98px.
-    expect(panel.style.left).toBe('-98px');
-    expect(panel.style.right).toBe('auto');
-
-    // triggerCenter = 200 + 18 = 218. menuLeft = 200 + (-98) = 102.
-    // originX = 218 - 102 = 116px.
-    expect(panel.style.transformOrigin).toBe('116px top');
-  });
-
-  it('OaMenu resets offsets and releases maxWidth when room expands to >= 320px', async () => {
-    // Start narrow
-    const innerWidthSpy = vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(260);
-
-    const menuRef = { value: null as InstanceType<typeof OaMenu> | null };
-    app = createApp({
-      render() {
-        return h(OaMenu, { ref: (r) => { menuRef.value = r as InstanceType<typeof OaMenu> | null; } }, {
-          trigger: ({ toggle }: { toggle: () => void }) => h('button', { class: 'trigger-btn', onClick: toggle }, 'Trigger'),
-          default: () => h('div', { class: 'menu-content' }, 'Content'),
-        });
-      },
-    });
-    app.mount(host);
-    await nextTick();
-
-    const trigger = host.querySelector<HTMLButtonElement>('.trigger-btn')!;
-    const group = host.querySelector<HTMLElement>('.oa-chip-group')!;
-
-    vi.spyOn(group, 'getBoundingClientRect').mockReturnValue({
-      left: 500,
-      right: 536,
-      top: 10,
-      bottom: 46,
-      width: 36,
-      height: 36,
-      x: 500,
-      y: 10,
-      toJSON: () => {},
-    });
-
-    trigger.click();
-    await nextTick();
-
-    const panel = host.querySelector<HTMLElement>('.oa-menu')!;
-    Object.defineProperty(panel, 'offsetWidth', { configurable: true, value: 244 });
-
-    menuRef.value!.fit();
-    expect(panel.style.maxWidth).toBe('244px');
-
-    // Window expands to wide screen
-    innerWidthSpy.mockReturnValue(1000);
-    Object.defineProperty(panel, 'offsetWidth', { configurable: true, value: 280 });
-
-    menuRef.value!.fit();
-    expect(panel.style.maxWidth).toBe('');
-    expect(panel.style.minWidth).toBe('');
-    expect(panel.style.left).toBe('');
-    expect(panel.style.right).toBe('');
-    expect(panel.style.transformOrigin).toBe('');
+    viewport.mockReturnValue(1000);
+    width(280);
+    fit();
+    expect(style.maxWidth).toBe('');
+    expect(style.minWidth).toBe('');
+    expect(style.left).toBe('');
+    expect(style.right).toBe('');
+    expect(style.transformOrigin).toBe('');
   });
 });

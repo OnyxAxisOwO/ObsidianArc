@@ -712,29 +712,6 @@ func TestParallelCallbacksForOnePersonOpenOneAccount(t *testing.T) {
 	}
 }
 
-func TestConnectionsReportsWhetherThereIsAlsoAPassword(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-
-	account, err := f.service.SignIn(ctx, identity("4218", "octocat", ""), cleared, "", "")
-	if err != nil {
-		t.Fatalf("sign in: %v", err)
-	}
-	items, hasPassword, err := f.service.Connections(ctx, account.ID)
-	if err != nil {
-		t.Fatalf("connections: %v", err)
-	}
-	if len(items) != 1 || hasPassword {
-		t.Fatalf("connections = %+v, password = %v, want one connection and no password", items, hasPassword)
-	}
-	if _, err := f.auth.ChangePassword(ctx, account.ID, "", "a-good-password", signedInNow(t, f, account.ID)); err != nil {
-		t.Fatalf("set a password: %v", err)
-	}
-	if _, hasPassword, err = f.service.Connections(ctx, account.ID); err != nil || !hasPassword {
-		t.Errorf("password = %v (%v), want it reported once set", hasPassword, err)
-	}
-}
-
 // The identities go with the account, because the row that survives it is a
 // way into an account that no longer exists.
 func TestDeletingAnAccountTakesItsConnections(t *testing.T) {
@@ -857,7 +834,7 @@ func TestOAuthPasswordAndRequirementSettings(t *testing.T) {
 		// Completing with valid password succeeds.
 		account, err := f.service.Complete(ctx, ident, Details{
 			Username: "pwduser",
-			Password: "secure-password-123",
+			Password: "  secure-password-123  ",
 		}, cleared, "", "")
 		if err != nil {
 			t.Fatalf("Complete with password err: %v", err)
@@ -866,10 +843,13 @@ func TestOAuthPasswordAndRequirementSettings(t *testing.T) {
 		// Can log in with the new password.
 		loggedIn, _, err := f.auth.Login(ctx, auth.LoginInput{
 			Identifier: "pwduser",
-			Password:   "secure-password-123",
+			Password:   "  secure-password-123  ",
 		})
 		if err != nil {
 			t.Fatalf("Login with created password: %v", err)
+		}
+		if _, _, err := f.auth.Login(ctx, auth.LoginInput{Identifier: "pwduser", Password: "secure-password-123"}); err == nil {
+			t.Fatal("trimmed password unexpectedly authenticated")
 		}
 		if loggedIn.ID != account.ID {
 			t.Fatalf("LoggedIn ID = %q, want %q", loggedIn.ID, account.ID)

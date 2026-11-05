@@ -10,7 +10,7 @@
 
 import { computed, ref, type ComputedRef, type Ref } from 'vue';
 import { ApiError } from '@/api/client';
-import { SESSION_ENDED, SESSION_LOST } from '@/api/session-ended';
+import { advanceSessionRevision, sessionRevision, SESSION_ENDED, SESSION_LOST } from '@/api/session-ended';
 import { fetchMe, fetchSite, savePreferences, type Account, type Preferences, type SiteInfo } from '@/api/auth';
 import { loadPlugins } from '@/plugins/registry';
 import { changeLanguage, currentLanguage } from '@/composables/useI18n';
@@ -28,6 +28,14 @@ import {
 import { isAccentName } from '@/theme/color-utils';
 
 const account = ref<Account | null>(null);
+
+/** A token for work that must not cross a sign-out or account switch. */
+export function sessionStamp(): { generation: number; accountID: string | undefined } {
+  return { generation: sessionRevision(), accountID: account.value?.id };
+}
+export function isCurrentSession(stamp: ReturnType<typeof sessionStamp>): boolean {
+  return stamp.generation === sessionRevision() && stamp.accountID === account.value?.id;
+}
 const preferences = ref<Preferences>({});
 /**
  * The instance's public settings, as the server described them.
@@ -98,6 +106,7 @@ export function requireUser(): Account {
 // Called after a successful sign-in or sign-up.
 export function adopt(next: Account, prefs: Preferences = {}): void {
   pendingSecondFactor.value = false;
+  if (account.value?.id !== next.id) advanceSessionRevision();
   account.value = next;
   preferences.value = prefs;
   setSignedIn(true);
@@ -134,6 +143,7 @@ if (typeof window !== 'undefined') {
 }
 
 export function forget(): void {
+  advanceSessionRevision();
   pendingSecondFactor.value = false;
   account.value = null;
   preferences.value = {};
@@ -192,6 +202,7 @@ export async function startSession(): Promise<void> {
   let languageReady: Promise<void> = Promise.resolve();
 
   if (me.status === 'fulfilled') {
+    if (account.value?.id !== me.value.user.id) advanceSessionRevision();
     account.value = me.value.user;
     preferences.value = me.value.preferences ?? {};
     setSignedIn(true);

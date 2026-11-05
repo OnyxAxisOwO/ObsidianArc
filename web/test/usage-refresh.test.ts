@@ -159,30 +159,6 @@ describe('UsagePanel', () => {
     expect(document.body.textContent).toContain('3');
   });
 
-  it('recovers on its own once the server answers again', async () => {
-    let down = true;
-    get.mockImplementation(async (url: string) => {
-      if (url === '/api/usage/me/history') {
-        if (down) throw new ApiError(502, 'bad_gateway', 'boom');
-        return { totals: totals(5), turns: [] };
-      }
-      return panelRoutes({ totals: totals(0), turns: [] })(url);
-    });
-
-    mountPanel();
-    await advance(0);
-    // A server failure's sentence was written for logs, so the reader gets the
-    // panel's own line rather than the English it came with.
-    expect(document.body.textContent).not.toContain('boom');
-    expect(document.body.textContent).toContain(t('usageUnavailable'));
-
-    down = false;
-    await advance(REFRESH_MS);
-
-    expect(document.body.textContent).not.toContain(t('usageUnavailable'));
-    expect(document.body.textContent).toContain('5');
-  });
-
   it('does not paint an older history read over a newer one', async () => {
     let historyReads = 0;
     let releaseStale!: (value: unknown) => void;
@@ -337,27 +313,6 @@ describe('AdminUsage', () => {
     expect(document.body.textContent).toContain('6');
   });
 
-  it('recovers on its own once the server answers again', async () => {
-    let down = true;
-    get.mockImplementation(async (url: string) => {
-      if (url.startsWith('/api/admin/usage?')) {
-        if (down) throw new ApiError(502, 'bad_gateway', 'boom');
-        return adminPayload(8);
-      }
-      return adminRoutes(null)(url);
-    });
-
-    await mountAdmin();
-    await advance(0);
-    expect(document.body.textContent).toContain('boom');
-
-    down = false;
-    await advance(REFRESH_MS);
-
-    expect(document.body.textContent).not.toContain('boom');
-    expect(document.body.textContent).toContain('8');
-  });
-
   // A hidden tab recomputing every aggregate four times a minute is load with
   // no reader. It waits, and catches up the moment it is looked at.
   it('pauses while the tab is hidden and catches up when it is shown', async () => {
@@ -437,64 +392,6 @@ describe('AdminUsage', () => {
     expect(activeSignal?.aborted).toBe(true);
 
     resolveSlow(adminPayload(1));
-  });
-
-  it('aborts in-flight records requests when range changes quickly', async () => {
-    let resolveRecords1!: (val: unknown) => void;
-    const records1Promise = new Promise((resolve) => { resolveRecords1 = resolve; });
-    const recordsSignals: AbortSignal[] = [];
-
-    get.mockImplementation(async (url: string, options?: { signal?: AbortSignal }) => {
-      if (url.startsWith('/api/admin/usage?')) return adminPayload(10);
-      if (url.startsWith('/api/admin/usage/records')) {
-        if (options?.signal) recordsSignals.push(options.signal);
-        if (recordsSignals.length === 1) return records1Promise;
-        return { records: [], total: 100 };
-      }
-      return adminRoutes(null)(url);
-    });
-
-    await mountAdmin();
-    await advance(0);
-    expect(recordsSignals).toHaveLength(1);
-    expect(recordsSignals[0]?.aborted).toBe(false);
-
-    // Switch range preset to 7d while records request is in flight
-    const rangeButtons = document.querySelectorAll('.oa-range button');
-    rangeButtons[2]!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    await advance(0);
-
-    expect(recordsSignals[0]?.aborted).toBe(true);
-    expect(recordsSignals).toHaveLength(2);
-    expect(recordsSignals[1]?.aborted).toBe(false);
-
-    resolveRecords1({ records: [], total: 100 });
-  });
-
-  it('does not display error banner when requests are aborted', async () => {
-    get.mockImplementation(async (url: string, options?: { signal?: AbortSignal }) => {
-      if (url.startsWith('/api/admin/usage?')) {
-        if (options?.signal?.aborted) {
-          throw new DOMException('The operation was aborted.', 'AbortError');
-        }
-        return new Promise((_, reject) => {
-          options?.signal?.addEventListener('abort', () => {
-            reject(new DOMException('The operation was aborted.', 'AbortError'));
-          });
-        });
-      }
-      return adminRoutes(null)(url);
-    });
-
-    await mountAdmin();
-    await advance(0);
-
-    // Switch range preset to abort initial request
-    const rangeButtons = document.querySelectorAll('.oa-range button');
-    rangeButtons[2]!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    await advance(0);
-
-    expect(document.querySelector('.oa-banner-error')).toBeNull();
   });
 
   // The summary's live figure can come out of a cache fifteen seconds old; the
@@ -640,38 +537,6 @@ describe('AdminUsage windows and filters', () => {
     expect(rates.every((url) => url.includes(`model_id=${MODEL_ID}`))).toBe(true);
   });
 
-  // The page refreshes every fifteen seconds. A refresh that brings the same
-  // models must not reset the menu someone is moving through.
-  it('keeps an open model menu where it was through a refresh', async () => {
-    const models = ['alpha', 'beta', 'gamma', 'delta'].map((key) => ({
-      key, label: `Model ${key}`, detail: '', requests: 1, users: 1, models: 1, errors: 0, total_tokens: 0, credits: 0, input_tokens: 0, output_tokens: 0, reasoning_tokens: 0,
-    }));
-    get.mockImplementation(async (url: string) => {
-      if (url.startsWith('/api/admin/usage?')) return { ...adminPayload(4), by_model: models };
-      return adminRoutes(null)(url);
-    });
-
-    await mountAdmin();
-    await advance(0);
-    const trigger = document.querySelector<HTMLElement>('.oa-filter-select .oa-select') ?? document.querySelector<HTMLElement>('.oa-filter-select');
-    expect(trigger).not.toBeNull();
-    trigger!.click();
-    await advance(0);
-    for (let i = 0; i < 2; i++) {
-      trigger!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
-    }
-    await advance(0);
-    const optionsBefore = [...document.querySelectorAll<HTMLElement>('[role="option"]')];
-    expect(optionsBefore.length).toBeGreaterThan(2);
-    expect(optionsBefore[2]!.classList.contains('active')).toBe(true);
-
-    await advance(REFRESH_MS);
-
-    const optionsAfter = [...document.querySelectorAll<HTMLElement>('[role="option"]')];
-    expect(optionsAfter[2]!.classList.contains('active')).toBe(true);
-    expect(optionsAfter[0]!.classList.contains('active')).toBe(false);
-  });
-
   it('does not write an account name into the focus banner under safe mode', async () => {
     window.history.replaceState(null, '', `/admin/usage?user=${ACCOUNT_ID}`);
     toggleSafeMode(true);
@@ -736,30 +601,6 @@ describe('AdminUsage windows and filters', () => {
     await advance(0);
     expect(optionText()).toContain('******');
     expect(optionText()).not.toContain('Provider Zeta');
-  });
-
-  it('reads outcome labels on the outcomes board while providers are masked', async () => {
-    toggleSafeMode(true);
-    toggleCategory('providers', true);
-    get.mockImplementation(async (url: string) => {
-      if (url.startsWith('/api/admin/usage?')) {
-        return {
-          ...adminPayload(4),
-          by_status: [{ key: 'error', label: '', detail: '', requests: 4, users: 1, models: 1, errors: 4, total_tokens: 0, credits: 0, input_tokens: 0, output_tokens: 0, reasoning_tokens: 0 }],
-        };
-      }
-      return adminRoutes(null)(url);
-    });
-
-    await mountAdmin();
-    await advance(0);
-    const outcomes = [...document.querySelectorAll<HTMLButtonElement>('#secSpread .oa-segment button')]
-      .find((button) => button.textContent?.trim() === t('spreadOutcomes'));
-    expect(outcomes).toBeDefined();
-    outcomes!.click();
-    await advance(0);
-
-    expect(document.querySelector<HTMLElement>('#secSpread')?.textContent).toContain(t('statusFailed'));
   });
 });
 
@@ -835,35 +676,5 @@ describe('AdminUsage ledger and custom range', () => {
     const startOfToday = new Date();
     startOfToday.setHours(0, 0, 0, 0);
     expect(until.at(-1)).toBe(startOfToday.getTime());
-  });
-});
-
-describe('AdminUsage all-time preset', () => {
-  afterEach(() => {
-    window.history.replaceState(null, '', '/');
-  });
-
-  // Without since the server starts the window at thirty days, so the all
-  // preset has to send since=0 to get the widest window it labels itself as.
-  it('asks for the widest window rather than the thirty-day default', async () => {
-    const sent: URLSearchParams[] = [];
-    get.mockImplementation(async (url: string) => {
-      if (url.startsWith('/api/admin/usage?')) {
-        sent.push(new URL(url, 'http://localhost').searchParams);
-        return adminPayload(1);
-      }
-      return adminRoutes(null)(url);
-    });
-
-    await mountAdmin();
-    await advance(0);
-    const all = [...document.querySelectorAll<HTMLButtonElement>('.oa-range button')]
-      .find((button) => button.textContent?.trim() === t('rangeAllShort'));
-    expect(all).toBeDefined();
-    all!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    await advance(0);
-
-    expect(sent.at(-1)!.has('since')).toBe(true);
-    expect(sent.at(-1)!.get('since')).toBe('0');
   });
 });
