@@ -4,24 +4,30 @@ Obsidian Arc 是一个自托管的 AI 工作空间和 API 网关。前端随 Go 
 
 ## 使用 Docker
 
-需要安装 Git 和 Docker。以下命令在 Bash 中执行，从仓库源码构建镜像：
+需要安装 Docker。正式版镜像支持 Linux amd64 和 arm64，Docker 会自动选择当前架构：
 
 ```bash
-git clone https://github.com/OnyxAxisOwO/ObsidianArc.git
-cd ObsidianArc
-docker build -t obsidian-arc:latest .
+docker pull ghcr.io/onyxaxisowo/obsidianarc:latest
 docker volume create obsidian-arc-data
 docker run -d --name obsidian-arc \
   --restart unless-stopped \
   -p 127.0.0.1:8080:8080 \
   -e OBSIDIAN_COOKIE_SECURE=false \
   -v obsidian-arc-data:/data \
-  obsidian-arc:latest
+  ghcr.io/onyxaxisowo/obsidianarc:latest
 ```
 
 打开 `http://localhost:8080`。这个示例供本机通过 HTTP 使用，因此只绑定本机地址，并关闭 Secure Cookie。对外提供服务时，先配置 HTTPS，再启用 Secure Cookie，见[部署与升级](./deployment)。
 
 数据卷保存数据库和自动生成的实例密钥。重新创建容器时继续挂载这个卷，已有数据就会保留。
+
+`latest` 指向最新正式版。需要固定版本时，换成对应的 `vMAJOR.MINOR.PATCH` 标签；候选版使用 `vMAJOR.MINOR.PATCH-rc.N`，不会覆盖 `latest`。
+
+## 下载二进制
+
+[GitHub Releases](https://github.com/OnyxAxisOwO/ObsidianArc/releases) 提供 Linux、macOS、Windows 的 amd64 和 arm64 压缩包，前端已内嵌，无需安装 Go 或 Node.js。下载匹配操作系统与架构的文件，解压后运行 `obsidian-arc`（Windows 为 `obsidian-arc.exe`）。
+
+每个版本附带 `SHA256SUMS`；在下载目录执行 `sha256sum --ignore-missing -c SHA256SUMS` 可核对已有文件。macOS 可用 `shasum -a 256 文件名` 与清单比对，Windows PowerShell 可用 `Get-FileHash 文件名 -Algorithm SHA256`。
 
 ## 从源码构建
 

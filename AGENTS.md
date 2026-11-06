@@ -568,10 +568,15 @@ Cutting a release is a decision, never a side effect of deploying:
 3. Tag that commit — `git tag -a v1.2.3 -m v1.2.3` — and `git push origin
    v1.2.3`. A pushed tag is never moved or reused; a mistake is fixed by the
    next patch.
-4. Create a GitHub Release from that tag, its body the version's section of
-   `CHANGELOG.md`: `gh release create v1.2.3 --title v1.2.3 --notes-file <file>`.
-   The backoffice's update notice reads `releases/latest` and shows this body,
-   so a tag without a release is a version no administrator is told about.
+4. Wait for the `Release` workflow triggered by that tag. It requires a green
+   main-branch CI run for the tagged commit, builds the release downloads and
+   GHCR images, then creates a GitHub Release from the version's section of
+   `CHANGELOG.md`. If CI was still running, rerun Release after it passes.
+   Existing tags can be backfilled with `gh workflow run release.yml -f tag=v1.2.3`;
+   this does not move the tag. See `docs/guide/releases.md` for downloads,
+   image tags and the one-time GHCR visibility setting. The backoffice's
+   update notice reads `releases/latest` and shows the release body, so a tag
+   without a release is a version no administrator is told about.
 5. Deploy from the tag with a clean tree. What the server reports must be
    exactly `v1.2.3`.
 

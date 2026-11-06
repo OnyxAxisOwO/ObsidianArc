@@ -19,7 +19,7 @@ services:
         # Left empty when nothing is passed: the Dockerfile then stamps the
         # moment of the build, which is more use than the word "compose".
         VERSION: ${VERSION:-}
-    image: obsidian-arc:latest
+    image: ${OBSIDIAN_IMAGE:-obsidian-arc:latest}
     restart: unless-stopped
     # Loopback on purpose. This file expects a TLS terminator in front, and
     # the environment below tells the server to believe forwarded addresses —

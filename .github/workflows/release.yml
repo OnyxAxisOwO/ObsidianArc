@@ -1,0 +1,190 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing annotated release tag (for example v0.12.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  # Serializing versions keeps an older build from overwriting latest.
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Binaries, GHCR and GitHub Release
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+      packages: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      # Keep the release machinery available when backfilling an older tag.
+      - uses: actions/checkout@v4
+      - name: Validate the version
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.[1-9][0-9]*)?$ ]]
+
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          path: source
+          fetch-depth: 0
+
+      - name: Require a tagged main commit with green CI
+        id: version
+        working-directory: source
+        run: |
+          test "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag
+          sha=$(git rev-parse HEAD)
+          git merge-base --is-ancestor "$sha" origin/main
+          runs=$(gh api --method GET "repos/$GH_REPO/actions/workflows/ci.yml/runs" \
+            -f head_sha="$sha" -f branch=main -f event=push -f status=success \
+            -f per_page=1 --jq .total_count)
+          if [ "$runs" -eq 0 ]; then
+            echo "The tag's main-branch CI must pass before publishing. Rerun Release afterwards." >&2
+            exit 1
+          fi
+          awk -v tag="$RELEASE_TAG" '
+            /^## / { if (found) exit; if ($2 == tag) found = 1; next }
+            found { print }
+          ' CHANGELOG.md > ../release-notes.md
+          test -n "$(tr -d '[:space:]' < ../release-notes.md)"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${GH_REPO,,}" >> "$GITHUB_OUTPUT"
+          latest=$(gh release list --exclude-drafts --exclude-pre-releases --limit 1 \
+            --json tagName --jq '.[0].tagName // ""')
+          # A backfill must not move latest behind a newer stable release.
+          if [[ "$RELEASE_TAG" != *-* ]] && \
+            [ "$(printf '%s\n' "$latest" "$RELEASE_TAG" | sort -V | tail -n 1)" = "$RELEASE_TAG" ]; then
+            echo 'latest=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'latest=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: source/go.mod
+          cache-dependency-path: source/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: source/web/package-lock.json
+      - run: make -C source web-ci
+
+      - name: Build release downloads
+        working-directory: source
+        run: |
+          mkdir -p ../release-assets ../images
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
+            os=${target%/*}
+            arch=${target#*/}
+            name="obsidian-arc_${RELEASE_TAG}_${os}_${arch}"
+            stage="$RUNNER_TEMP/$name"
+            mkdir -p "$stage"
+            binary=obsidian-arc
+            if [ "$os" = windows ]; then binary=obsidian-arc.exe; fi
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath \
+              -ldflags "-s -w -X main.version=$RELEASE_TAG" -o "$stage/$binary" ./cmd/server
+            cp LICENSE README.md "$stage/"
+            printf '%s\n' "$RELEASE_TAG" > "$stage/VERSION"
+            if [ "$os" = windows ]; then
+              (cd "$stage" && zip "$GITHUB_WORKSPACE/release-assets/$name.zip" ./*)
+            else
+              tar -czf "../release-assets/$name.tar.gz" -C "$stage" .
+            fi
+            if [ "$os" = linux ]; then
+              mkdir -p "../images/$arch/plugins"
+              cp "$stage/$binary" "../images/$arch/obsidian-arc"
+              touch "../images/$arch/plugins/.keep"
+            fi
+          done
+          (cd ../release-assets && sha256sum ./*.tar.gz ./*.zip > SHA256SUMS)
+
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build the images from the release binaries
+        env:
+          IMAGE: ${{ steps.version.outputs.image }}
+          REVISION: ${{ steps.version.outputs.sha }}
+        run: |
+          for arch in amd64 arm64; do
+            docker buildx build --platform "linux/$arch" --load \
+              --file Dockerfile.release --tag "$IMAGE:$RELEASE_TAG-$arch" \
+              --label "org.opencontainers.image.source=https://github.com/$GH_REPO" \
+              --label "org.opencontainers.image.version=$RELEASE_TAG" \
+              --label "org.opencontainers.image.revision=$REVISION" \
+              "images/$arch"
+          done
+
+      - name: Check the packaged server and version
+        env:
+          IMAGE: ${{ steps.version.outputs.image }}
+        run: |
+          docker run -d --name arc-release -p 127.0.0.1:8080:8080 \
+            -e "OBSIDIAN_SECRET_KEY=$(openssl rand -hex 32)" "$IMAGE:$RELEASE_TAG-amd64"
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8080/api/health > "$RUNNER_TEMP/health.json"; then
+              jq -e --arg version "$RELEASE_TAG" '.status == "ok" and .version == $version' \
+                "$RUNNER_TEMP/health.json"
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs arc-release
+          exit 1
+
+      - name: Publish GHCR images
+        env:
+          IMAGE: ${{ steps.version.outputs.image }}
+          PUBLISH_LATEST: ${{ steps.version.outputs.latest }}
+        run: |
+          docker push "$IMAGE:$RELEASE_TAG-amd64"
+          docker push "$IMAGE:$RELEASE_TAG-arm64"
+          tags=(--tag "$IMAGE:$RELEASE_TAG")
+          if [ "$PUBLISH_LATEST" = true ]; then tags+=(--tag "$IMAGE:latest"); fi
+          docker buildx imagetools create "${tags[@]}" \
+            "$IMAGE:$RELEASE_TAG-amd64" "$IMAGE:$RELEASE_TAG-arm64"
+          docker buildx imagetools inspect "$IMAGE:$RELEASE_TAG"
+
+      - name: Publish GitHub Release and downloads
+        env:
+          IMAGE: ${{ steps.version.outputs.image }}
+          PUBLISH_LATEST: ${{ steps.version.outputs.latest }}
+        run: |
+          if ! gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
+            flags=(--latest="$PUBLISH_LATEST")
+            if [[ "$RELEASE_TAG" == *-* ]]; then flags+=(--prerelease); fi
+            gh release create "$RELEASE_TAG" --verify-tag --title "$RELEASE_TAG" \
+              --notes-file release-notes.md "${flags[@]}" release-assets/*
+          else
+            gh release upload "$RELEASE_TAG" release-assets/* --clobber
+          fi
+          {
+            echo "### $RELEASE_TAG"
+            echo "- [GitHub Release](https://github.com/$GH_REPO/releases/tag/$RELEASE_TAG)"
+            echo "- Image: \`$IMAGE:$RELEASE_TAG\` (linux/amd64, linux/arm64)"
+            echo "- Downloads: Linux, macOS, Windows; amd64 and arm64; SHA256SUMS"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Stop the packaged server
+        if: always()
+        run: docker rm -f arc-release || true
