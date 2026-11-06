@@ -8,6 +8,7 @@ const sidebar = [
     { text: '首次配置', link: '/guide/quick-start' },
     { text: '配置参考', link: '/guide/configuration' },
     { text: '部署与升级', link: '/guide/deployment' },
+    { text: '版本发布', link: '/guide/releases' },
     { text: '常见问题', link: '/guide/troubleshooting' },
   ] },
   { text: '功能指南', collapsed: false, items: [

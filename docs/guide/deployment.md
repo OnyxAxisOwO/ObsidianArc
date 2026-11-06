@@ -59,11 +59,10 @@ docker compose up -d --build
 
 ## 升级 Docker 实例
 
-先完成备份，并留存当前可运行版本。下面对应[安装页](./introduction)的本机 Docker 示例，在仓库根目录执行：
+先完成备份，并留存当前可运行版本。下面对应[安装页](./introduction)的本机 Docker 示例：
 
 ```bash
-git pull --ff-only
-docker build -t obsidian-arc:latest .
+docker pull ghcr.io/onyxaxisowo/obsidianarc:latest
 docker stop obsidian-arc
 docker rm obsidian-arc
 docker run -d --name obsidian-arc \
@@ -71,12 +70,20 @@ docker run -d --name obsidian-arc \
   -p 127.0.0.1:8080:8080 \
   -e OBSIDIAN_COOKIE_SECURE=false \
   -v obsidian-arc-data:/data \
-  obsidian-arc:latest
+  ghcr.io/onyxaxisowo/obsidianarc:latest
 ```
 
-对外部署时沿用原有的 HTTPS、密钥和代理配置，不要直接套用本机示例。镜像由源码本地构建，不需要从镜像仓库执行 `docker pull`。
+对外部署时沿用原有的 HTTPS、密钥和代理配置，不要直接套用本机示例。固定版本部署时，把 `latest` 换成相应的版本标签。GHCR 镜像是没有编译内置插件的核心版本；带有实例插件的部署继续从实例仓库构建。
 
-使用仓库的 PostgreSQL Compose 配置时：
+使用仓库的 PostgreSQL Compose 配置并希望拉取正式版镜像时，在 `.env` 中加入 `OBSIDIAN_IMAGE=ghcr.io/onyxaxisowo/obsidianarc:版本标签`，然后执行：
+
+```bash
+docker compose pull server
+docker compose up -d --no-build server
+docker compose logs --tail 100 server
+```
+
+继续使用本地源码构建时，保留默认的 `obsidian-arc:latest`：
 
 ```bash
 git pull --ff-only

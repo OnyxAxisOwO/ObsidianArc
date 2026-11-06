@@ -105,13 +105,17 @@ make docs
 
 #### Docker 部署
 
+正式版镜像发布在 GHCR，支持 Linux amd64 和 arm64；也可在 [GitHub Releases](https://github.com/OnyxAxisOwO/ObsidianArc/releases) 下载 Linux、macOS、Windows 的二进制包及 SHA256 校验值。
+
 ```bash
 # 使用 SQLite 运行
-docker build -t obsidian-arc .
+docker pull ghcr.io/onyxaxisowo/obsidianarc:latest
 docker run -d -p 8080:8080 -v arc-data:/data \
   -e OBSIDIAN_SECRET_KEY=$(openssl rand -hex 32) \
-  obsidian-arc
+  ghcr.io/onyxaxisowo/obsidianarc:latest
 ```
+
+需要固定版本时，将 `latest` 换成对应的 `vMAJOR.MINOR.PATCH` 标签；源码构建仍可使用 `make docker`。完整发版步骤见[版本发布](docs/guide/releases.md)。
 
 使用 PostgreSQL 运行（`docker-compose.yml`）前，需在与它同目录的 `.env` 中设置 `POSTGRES_PASSWORD`，它没有默认值，未设置时 `docker compose` 会拒绝启动，建议用 `openssl rand -hex 32` 生成，因为它会嵌入数据库连接串：
 
@@ -130,6 +134,8 @@ OBSIDIAN_SECRET_KEY=$(openssl rand -hex 32) docker compose up -d
 
 Online documentation is hosted on Cloudflare Pages:
 👉 **[obsidianarc.pages.dev](https://obsidianarc.pages.dev)**
+
+Release images are available at `ghcr.io/onyxaxisowo/obsidianarc:latest` for Linux amd64 and arm64. Use a version tag such as `vMAJOR.MINOR.PATCH` to pin a release. [GitHub Releases](https://github.com/OnyxAxisOwO/ObsidianArc/releases) also provides Linux, macOS and Windows binaries with SHA256 checksums. See the [release process](docs/guide/releases.md).
 
 ---
 
