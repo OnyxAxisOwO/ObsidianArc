@@ -696,6 +696,11 @@
   overflow-y: auto;
   overflow-x: hidden;
   overflow-wrap: anywhere;
+  /* The column changes width for the whole slide of a side panel. Lines and
+     images change height every frame of that, and scroll anchoring then
+     chases a new anchor, so the transcript jumps back and forth. Following
+     the bottom is done by the surface itself. */
+  overflow-anchor: none;
   scrollbar-width: none;
   -ms-overflow-style: none;
 }
