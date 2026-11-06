@@ -38,8 +38,13 @@ func NewS3Client(cfg Config) (*S3Client, error) {
 	if err != nil {
 		return nil, errors.New("backup endpoint is not a valid URL")
 	}
+	// Some storage endpoints complete TCP promptly but take longer than Go's
+	// default ten seconds to finish TLS; otherwise even a healthy upload fails.
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSHandshakeTimeout = 30 * time.Second
 	return &S3Client{
 		config: cfg, endpoint: endpoint, client: &http.Client{
+			Transport:     transport,
 			CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
 		},
 		now: time.Now,

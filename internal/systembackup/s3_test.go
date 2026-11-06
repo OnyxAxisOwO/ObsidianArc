@@ -2,6 +2,8 @@ package systembackup
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"io"
 	"net/http"
@@ -200,6 +202,30 @@ func TestNewS3ClientPutDoesNotFollowRedirect(t *testing.T) {
 	}
 	if got := targetRequests.Load(); got != 0 {
 		t.Errorf("redirect target received %d requests, want 0", got)
+	}
+}
+
+func TestS3UploadAllowsSlowTLSHandshake(t *testing.T) {
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	server.TLS = &tls.Config{GetConfigForClient: func(*tls.ClientHelloInfo) (*tls.Config, error) {
+		time.Sleep(11 * time.Second)
+		return nil, nil
+	}}
+	server.StartTLS()
+	defer server.Close()
+
+	client, err := NewS3Client(Config{Endpoint: server.URL, Bucket: "bucket", Region: "us-east-1", Prefix: "backups", AccessKeyID: "access", SecretKey: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(server.Certificate())
+	transport := client.client.(*http.Client).Transport.(*http.Transport)
+	transport.TLSClientConfig = &tls.Config{RootCAs: roots}
+	if err := client.PutObject(context.Background(), "backups/file", strings.NewReader(""), 0, emptySHA256); err != nil {
+		t.Fatalf("upload after slow TLS handshake: %v", err)
 	}
 }
 
