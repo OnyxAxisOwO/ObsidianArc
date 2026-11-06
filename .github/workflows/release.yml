@@ -64,8 +64,7 @@ jobs:
           test -n "$(tr -d '[:space:]' < ../release-notes.md)"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "image=ghcr.io/${GH_REPO,,}" >> "$GITHUB_OUTPUT"
-          latest=$(gh release list --exclude-drafts --exclude-pre-releases --limit 1 \
-            --json tagName --jq '.[0].tagName // ""')
+          latest=$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name)
           # A backfill must not move latest behind a newer stable release.
           if [[ "$RELEASE_TAG" != *-* ]] && \
             [ "$(printf '%s\n' "$latest" "$RELEASE_TAG" | sort -V | tail -n 1)" = "$RELEASE_TAG" ]; then
