@@ -217,6 +217,13 @@ func (h *Handlers) buildMessagesRequest(body messagesRequest, resolved model.Res
 			return adapter.ChatRequest{}, err
 		}
 	}
+	for _, message := range messages {
+		for _, part := range message.Parts {
+			if part.Kind == adapter.PartImage && !resolved.Upstream.SupportsImages {
+				return adapter.ChatRequest{}, anthropicBadRequest("This model does not accept images, including images returned by tools. Choose a model with image input support.")
+			}
+		}
+	}
 	return adapter.ChatRequest{
 		SystemParts: systemParts, CacheControl: body.CacheControl, OutputFormat: format, Stop: body.StopSequences,
 		Model:       resolved.Upstream.Spec(),
@@ -300,9 +307,9 @@ func readAnthropicSystem(raw json.RawMessage) (string, error) {
 }
 
 // readAnthropicContent reads a message's content, or a tool_result's when
-// inToolResult is set. A result holds text and nothing that nests, and an image
-// inside one is refused rather than read: the provider takes a result as text,
-// so a decoded picture would be checked and then never seen by the model.
+// inToolResult is set. Results accept text and images, but not other calls or
+// results. Images are lifted next to the result for the shared message model:
+// OpenAI tool messages hold text, while both providers accept user images.
 // Each level copies its children while the parent is still live, so a result
 // inside a result would hold its payload once per level, and a request a few
 // thousand levels deep would hold it thousands of times. Refusing the nesting
@@ -332,7 +339,7 @@ func readAnthropicContent(raw json.RawMessage, inToolResult bool, pictureLimit i
 			return nil, anthropicBadRequest("Put cache_control on the tool_result block; nested result cache breakpoints are not supported.")
 		}
 		if inToolResult && (block.Type == "tool_result" || block.Type == "tool_use") {
-			return nil, anthropicBadRequest("A tool_result may contain only text blocks.")
+			return nil, anthropicBadRequest("A tool_result may contain only text and image blocks, not nested tool calls or results.")
 		}
 		switch block.Type {
 		case "text", "":
@@ -340,9 +347,6 @@ func readAnthropicContent(raw json.RawMessage, inToolResult bool, pictureLimit i
 				out = append(out, adapter.Part{Kind: adapter.PartText, Text: block.Text, CacheControl: block.CacheControl})
 			}
 		case "image":
-			if inToolResult {
-				return nil, anthropicBadRequest("A tool_result may contain only text blocks: an image cannot travel inside one. Send the picture in a user message instead.")
-			}
 			part, err := readAnthropicImage(block, pictureLimit)
 			if err != nil {
 				return nil, err
@@ -374,6 +378,11 @@ func readAnthropicContent(raw json.RawMessage, inToolResult bool, pictureLimit i
 				Text:        joinText(nested),
 				ToolIsError: block.IsError, CacheControl: block.CacheControl,
 			})
+			for _, part := range nested {
+				if part.Kind == adapter.PartImage {
+					out = append(out, adapter.Part{Kind: adapter.PartText, Text: "Image returned by tool " + block.ToolUseID + ":"}, part)
+				}
+			}
 		case "thinking", "redacted_thinking":
 			// A model's own reasoning, replayed. It is dropped rather than
 			// forwarded: it arrives with a signature this instance cannot

@@ -253,11 +253,9 @@ func TestNestedToolResultsAreRefusedOnBothPaths(t *testing.T) {
 	}
 }
 
-// A picture cannot travel inside a tool result: the provider takes a result as
-// text. The picture used to be decoded, checked and then dropped, so the model
-// answered as if nothing had been attached. Each surface refuses it instead,
-// and the provider never sees the request. A text-only result still goes
-// through, so the refusal is about the picture and not the result.
+// The OpenAI surfaces require text tool results. Anthropic image results are
+// converted to a text result plus a user image by readAnthropicContent, and
+// their forwarding is covered in tool_result_images_test.go.
 func TestAPictureInsideAToolResultIsRefusedNotDropped(t *testing.T) {
 	anthropicResult := func(modelID, picture string) string {
 		return `{"model":"` + modelID + `","max_tokens":16,"messages":[` +
@@ -266,16 +264,11 @@ func TestAPictureInsideAToolResultIsRefusedNotDropped(t *testing.T) {
 			`{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_x","content":[` +
 			`{"type":"text","text":"screen captured"}` + picture + `]}]}]}`
 	}
-	anthropicPicture := `,{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + testPNG + `"}}`
-
 	cases := []struct {
 		name string
 		path string
 		body func(modelID string) string
 	}{
-		{"anthropic tool_result", "/v1/messages", func(id string) string {
-			return anthropicResult(id, anthropicPicture)
-		}},
 		{"chat tool message", "/v1/chat/completions", func(id string) string {
 			return `{"model":"` + id + `","stream":false,"messages":[` +
 				`{"role":"user","content":"what is on screen?"},` +

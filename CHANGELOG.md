@@ -5,6 +5,8 @@
 
 ## Unreleased
 
+- 修复 Anthropic `tool_result` 图片输入被一概拒绝的问题：将经过大小和格式校验的图片连同工具结果转发给支持图片输入的模型；文本模型返回明确的能力提示，避免静默丢图。
+
 - 新增完整发布工作流：已通过主分支 CI 的版本标签自动生成 Linux、macOS、Windows 的 amd64/arm64 二进制包与 SHA256 校验值，发布 GitHub Release，并推送 GHCR 的 Linux 双架构镜像；支持为已有标签补发。Compose 可用 `OBSIDIAN_IMAGE` 选择发布镜像，默认仍使用本地构建。
 
 ## v0.12.0 — 2026-11-05
