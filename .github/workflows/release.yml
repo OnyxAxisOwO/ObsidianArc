@@ -184,6 +184,9 @@ jobs:
             echo "- Downloads: Linux, macOS, Windows; amd64 and arm64; SHA256SUMS"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Remove older GHCR images
+        run: node scripts/ghcr-cleanup.cjs
+
       - name: Stop the packaged server
         if: always()
         run: docker rm -f arc-release || true

@@ -35,6 +35,12 @@
 
 发布使用仓库自己的 `GITHUB_TOKEN`，不需要另设发布密钥。写权限只授予发布任务：`contents: write` 用于 Release，`packages: write` 用于 GHCR。
 
+## GHCR 镜像保留
+
+每次成功发布后自动清理 GHCR：分别保留按版本号排序的最近 5 个正式版和最近 5 个候选版，以及本次刚发布的版本。`latest`、自定义标签指向的镜像及其关联版本始终保留。每个版本连同 amd64、arm64 镜像一起保留；多架构清单引用的无标签镜像也保留，其余无标签镜像会清理。GitHub Release 和下载附件不受影响。
+
+需要单独执行时，运行 Actions 中的 `GHCR cleanup`，或执行 `gh workflow run ghcr-cleanup.yml`。它与发布流程共用串行锁，避免在镜像发布过程中清理。沿用发布仓库对容器包的管理权限，无需新增密钥。
+
 ## 为已有标签补发
 
 在主分支上执行：

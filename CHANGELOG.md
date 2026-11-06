@@ -5,6 +5,8 @@
 
 ## Unreleased
 
+- GHCR 在成功发布后自动清理旧镜像，分别保留最近 5 个正式版和候选版，并保护 `latest`、本次发布、自定义标签与多架构依赖；支持手动单独运行清理。
+
 - 新增完整发布工作流：已通过主分支 CI 的版本标签自动生成 Linux、macOS、Windows 的 amd64/arm64 二进制包与 SHA256 校验值，发布 GitHub Release，并推送 GHCR 的 Linux 双架构镜像；支持为已有标签补发。Compose 可用 `OBSIDIAN_IMAGE` 选择发布镜像，默认仍使用本地构建。
 
 ## v0.12.0 — 2026-11-05
