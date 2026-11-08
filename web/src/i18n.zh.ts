@@ -276,6 +276,8 @@ export const zh: Record<CoreKey, string> = {
   keyMove: '移动',
   keyPick: '选择',
   keyClose: '关闭',
+  modelInfo: '模型信息',
+  modelInfoCopy: '复制全部信息',
   modelListLabel: '模型',
   apiNameLabel: 'API 名称',
   specContext: '上下文',

@@ -227,10 +227,21 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 28.15 MB (24.45 MB `-tags nosqlite`, Linux amd64, Go 1.27.3), 0.41 MB of it the frontend's brotli copies and 0.41 MB the embedded zone database; this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 174.57 kB to open the chat with brotli (153.94 JS + 20.62 CSS); 207.76 kB with gzip (183.60 JS + 24.16 CSS), which the budget holds; the brotli is a copy compressed at build time, the gzip is Go's, made as it goes out |
+| Binary (SQLite + embedded SPA) | < 30 MB | 28.30 MB (24.60 MB `-tags nosqlite`, Linux amd64, Go 1.27.3), 0.41 MB of it the frontend's brotli copies and 0.41 MB the embedded zone database; this repository ships no plugin |
+| Frontend, on the wire | < 135 kB | 174.63 kB to open the chat with brotli (154.02 JS + 20.62 CSS); 207.84 kB with gzip (183.59 JS + 24.25 CSS), which the budget holds; the brotli is a copy compressed at build time, the gzip is Go's, made as it goes out |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-11-08 after moving model information from the picker footer
+into a separate card and centering its copy icon alongside the API name. Its script and stylesheet load only after an information
+click: 1.29 kB JS + 0.54 kB CSS gzip, 1.17 kB JS + 0.43 kB CSS brotli.
+The build now has 21 core assets. First paint is 207.84 kB gzip
+(183.59 JS + 24.25 CSS) and 174.63 kB brotli (154.02 JS + 20.62 CSS), within
+the unchanged 208 kB budget. Chinese adds 20.97 kB gzip / 17.43 kB brotli.
+Linux amd64, Go 1.27.3, `-trimpath -ldflags="-s -w"`: 28,299,424 bytes
+(24,596,640 with `-tags nosqlite`).
+
+Remeasured on 2026-11-08 after placing chat notices on the chat surface: first paint is 207.83 kB gzip (183.62 JS + 24.20 CSS) and 174.82 kB brotli (154.22 JS + 20.60 CSS).
 
 Remeasured on 2026-11-06 after the transcript stopped anchoring while a side panel slides: first paint is 207.76 kB gzip (183.60 JS + 24.16 CSS) and 174.57 kB brotli (153.94 JS + 20.62 CSS).
 
@@ -272,7 +283,7 @@ instead of on every animation frame. Menu containment and select following
 use small native listeners and frame handles; the proof-of-work search is
 serialized once for both execution paths, so the bundler minifies both.
 Backoffice frame styles travel with the backoffice. First paint is 207.77 kB with Go's gzip
-(183.82 JS + 23.95 CSS), 174.46 kB with brotli (154.09 JS + 20.37 CSS).
+(183.82 JS + 23.95 CSS), 174.46 kB with brotli (154.22 JS + 20.37 CSS).
 The backoffice adds 178.99 kB JS + 15.79 kB CSS with gzip; its Chinese adds
 38.50 kB. Linux amd64, Go 1.27.3, `-trimpath -ldflags '-s -w'` produces
 28,131,488 bytes (24,428,704 without SQLite); the brotli copies total
@@ -1014,7 +1025,7 @@ renderer, the public front
 page, and the landing page (the intro or trial a signed-out visitor sees on an
 instance that chose one), each of those last two with its stylesheet. The vendors' model marks, the
 account menu's content and stylesheet, and the folder list's content and
-stylesheet are optional chunks too.
+stylesheet, and the model details and their stylesheet are optional chunks too.
 What each reader actually downloads, as the server sends it (2026-11-04):
 
 | | gzip | brotli |

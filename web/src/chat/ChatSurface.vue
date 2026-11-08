@@ -236,6 +236,9 @@ defineExpose({ focus: () => composer.value?.focus() });
     @drop="onDrop"
   >
     <AsciiField v-if="isEmpty && asciiFieldWanted" />
+    <div class="ai-chat-banners">
+      <slot name="banners" />
+    </div>
     <!-- The wide skin hides this bar in favour of the workspace header; it is
          the navigation on a narrow screen, where the rail is an overlay. -->
     <div class="ai-chat-bar">

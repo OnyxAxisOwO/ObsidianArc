@@ -4,6 +4,7 @@ import ModelControl from '../src/chat/ModelControl.vue';
 import { models, selectedID } from '../src/chat/useModels';
 import * as auth from '../src/api/auth';
 import { t } from '../src/composables/useI18n';
+import * as clipboard from '../src/lib/clipboard';
 
 // The model list is a palette: typing narrows it, the arrows move through
 // what is left without leaving the field, and Enter chooses.
@@ -85,40 +86,92 @@ it('chooses with the arrows and Enter, wrapping at the ends', async () => {
   expect(selectedID.value).toBe('c');
 });
 
-// The sheet under the list follows the pointer, and the popover hangs from its
-// bottom edge: a sheet that changed height as it followed moved the list under
-// the pointer, lit the next row, and changed again — the list shook.
-it('keeps the sheet one height whichever row the pointer is on', async () => {
-  models.value = [
-    { ...model('a', 'Alpha Mini'), context_window: 128_000, max_output_tokens: 8192, supports_images: true },
-    model('b', 'Beta Large'),
-    { ...model('c', 'Gamma'), context_window: 32_000 },
-  ];
+async function openInfo(index: number): Promise<void> {
+  host.querySelectorAll<HTMLButtonElement>('.ai-pop-model-info')[index]!.click();
+  await vi.waitFor(() => expect(host.querySelector('.ai-model-info-title')).not.toBeNull());
+  await nextTick();
+}
+
+it('keeps details and keyboard hints out of the list until information is requested', async () => {
   await openList();
-  const heights = new Set<number>();
   for (const row of host.querySelectorAll<HTMLElement>('.ai-pop-model-row')) {
     row.dispatchEvent(new Event('pointermove'));
     await nextTick();
-    heights.add(host.querySelectorAll('.ai-pop-spec > div').length);
+    expect(host.querySelector('.ai-model-info-pane')).toBeNull();
   }
-  expect([...heights]).toEqual([4]);
+  expect(host.querySelector('.ai-pop-spec')).toBeNull();
+  expect(host.querySelector('.ai-pop-keys')).toBeNull();
 });
 
+it('opens and switches information without selecting, and hides unknown fields', async () => {
+  models.value[0] = { ...models.value[0]!, api_name: 'alpha-api', context_window: 128_001, supports_images: true };
+  models.value[1]!.api_name = 'beta-api';
+  await openList();
+  await openInfo(0);
+  const sheet = () => host.querySelector('.ai-model-info-pane')!;
+  expect(sheet().textContent).toContain('128001');
+  expect(sheet().textContent).toContain(t('specVision'));
+  expect(sheet().textContent).not.toContain(t('specOutput'));
+  expect(sheet().textContent).not.toContain('—');
 
-it('shows the highlighted model’s API name alongside its token limits', async () => {
-  models.value[0]!.api_name = 'gpt-6-sol';
-  models.value[1]!.api_name = 'gpt-6-luna';
-  const search = await openList();
-  const apiName = () => [...host.querySelectorAll('.ai-pop-spec > div')]
-    .find((row) => row.querySelector('dt')?.textContent === t('apiNameLabel'))!
-    .querySelector('dd')!;
-  expect(apiName().textContent).toBe('gpt-6-sol');
+  await openInfo(1);
+  expect(sheet().textContent).toContain('Beta Large');
+  expect(sheet().textContent).toContain('long context');
+  expect(sheet().textContent).toContain('beta-api');
+  expect(sheet().textContent).not.toContain('alpha-api');
+  expect(sheet().textContent).not.toContain(t('specContext'));
+  expect(selectedID.value).toBe('a');
+  expect(host.querySelector('.ai-pop-search-input')).not.toBeNull();
+});
 
-  search.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+it('copies the API name or complete information and resets feedback on another model', async () => {
+  const copy = vi.spyOn(clipboard, 'copyToClipboard').mockResolvedValue(true);
+  models.value[1] = { ...models.value[1]!, api_name: 'beta-api', max_output_tokens: 8192 };
+  await openList();
+  await openInfo(1);
+  host.querySelector<HTMLButtonElement>('.ai-model-info-api-copy')!.click();
+  await vi.waitFor(() => expect(copy).toHaveBeenCalledWith('beta-api'));
+  await vi.waitFor(() => expect(host.querySelector('.ai-model-info-api-copy')!.getAttribute('aria-label')).toContain(t('copied')));
+
+  host.querySelector<HTMLButtonElement>('.ai-model-info-copy')!.click();
+  await vi.waitFor(() => expect(copy).toHaveBeenCalledWith(
+    `Beta Large\nlong context\n${t('specOutput')}: 8192\n${t('apiNameLabel')}: beta-api`,
+  ));
+  await vi.waitFor(() => expect(host.querySelector('.ai-model-info-copy')!.textContent).toContain(t('copied')));
+  await openInfo(0);
+  expect(host.querySelector('.ai-model-info-copy')!.textContent).toContain(t('modelInfoCopy'));
+});
+
+it('allows information for an unavailable model while preventing selection', async () => {
+  models.value[1]!.usable = false;
+  await openList();
+  expect(host.querySelectorAll<HTMLButtonElement>('.ai-pop-model-pick')[1]!.disabled).toBe(true);
+  await openInfo(1);
+  expect(host.querySelector('.ai-model-info-pane')!.textContent).toContain(t('modelNotAllowedGroup'));
+  expect(selectedID.value).toBe('a');
+});
+
+it('returns from details with Escape, restores focus, then closes the picker on a second Escape', async () => {
+  await openList();
+  const info = host.querySelector<HTMLButtonElement>('.ai-pop-model-info')!;
+  await openInfo(0);
+  const escape = () => document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  escape();
   await nextTick();
-  expect(apiName().textContent).toBe('gpt-6-luna');
-
-  host.querySelectorAll('.ai-pop-model-row')[2]!.dispatchEvent(new Event('pointermove'));
+  await vi.waitFor(() => expect(host.querySelector('.ai-model-pop')!.classList.contains('has-info')).toBe(false));
+  await vi.waitFor(() => expect(document.activeElement).toBe(info));
+  expect(host.querySelector('.ai-model-chip')!.getAttribute('aria-expanded')).toBe('true');
+  escape();
   await nextTick();
-  expect(apiName().textContent).toBe('—');
+  expect(host.querySelector('.ai-model-chip')!.getAttribute('aria-expanded')).toBe('false');
+});
+
+it('shows only the model entry when the model has no reasoning control', async () => {
+  app = createApp(ModelControl);
+  app.mount(host);
+  host.querySelector<HTMLButtonElement>('.ai-model-chip')!.click();
+  await nextTick();
+  expect(host.querySelector('.ai-pop-model')).not.toBeNull();
+  expect(host.querySelector('.ai-pop-note')).toBeNull();
+  expect(host.querySelector('.ai-effort-range')).toBeNull();
 });

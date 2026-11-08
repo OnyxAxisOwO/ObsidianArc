@@ -419,7 +419,9 @@ describe('focus and motion on every copy of a control', () => {
   });
 
   it('rings the model popover rows the way a menu item is ringed', () => {
-    expect(sheet('_chat.scss')).toMatch(/\.ai-pop-model-row:focus-visible \{[^}]*box-shadow:\s*inset 0 0 0 1px var\(--ai-primary\)/);
+    for (const control of ['pick', 'info']) {
+      expect(sheet('_chat.scss')).toMatch(new RegExp(`\\.ai-pop-model-${control}:focus-visible[^\\{]*\\{[^}]*box-shadow:\\s*inset 0 0 0 1px var\\(--ai-primary\\)`));
+    }
   });
 
   it('stills every scrim and the cards that rise in them', () => {

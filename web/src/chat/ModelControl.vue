@@ -11,7 +11,7 @@
 // hard should it think" and "should it think at all" are the same question
 // asked at different volumes.
 
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import { useEventListener } from '@vueuse/core';
 import { Search } from 'lucide-vue-next';
 import OaMarquee from '@/components/OaMarquee.vue';
@@ -19,12 +19,23 @@ import OaScrollArea from '@/components/OaScrollArea.vue';
 import ModelTile from './ModelTile.vue';
 import { t } from '@/composables/useI18n';
 import { useLatestTimeout } from '@/composables/useLatestTimeout';
-import { IconChevron, IconChevronRight, IconSpark } from '@/icons';
+import { IconChevron, IconChevronRight, IconInfo, IconSpark } from '@/icons';
 import { matchesSearch } from '@/lib/search';
 import {
   currentModel, models, reasoning, selectModel, setReasoning, stopFor, stopsFor,
   type AvailableModel,
 } from './useModels';
+
+const ModelInfo = defineAsyncComponent(() => import('./ModelInfo.vue'));
+const infoID = ref('');
+const infoModel = computed(() => models.value.find((model) => model.id === infoID.value));
+
+async function closeInfo(): Promise<void> {
+  const trigger = list.value?.querySelector<HTMLButtonElement>('.ai-pop-model-info[aria-expanded="true"]');
+  infoID.value = '';
+  await nextTick();
+  (trigger?.isConnected ? trigger : search.value)?.focus({ preventScroll: true });
+}
 
 /** How many cells the effort meter is drawn with. */
 const METER_CELLS = 32;
@@ -67,6 +78,7 @@ function toggle(next: boolean): void {
   open.value = next;
 
   if (next) {
+    infoID.value = '';
     view.value = 'effort';
     at.value = position.value;
     // Measured each time it opens: the composer sits mid-column in an empty
@@ -104,6 +116,7 @@ const room = ref(0);
 async function morph(to: 'effort' | 'models'): Promise<void> {
   const node = body.value;
   const from = node?.offsetHeight ?? 0;
+  infoID.value = '';
   view.value = to;
   if (to === 'models') {
     query.value = '';
@@ -137,6 +150,10 @@ useEventListener(document, 'click', () => {
 useEventListener(document, 'keydown', (event: KeyboardEvent) => {
   if (!open.value || event.key !== 'Escape') return;
   event.preventDefault();
+  if (infoModel.value) {
+    void closeInfo();
+    return;
+  }
   toggle(false);
   chip.value?.focus();
 }, { capture: true });
@@ -249,31 +266,6 @@ function tokens(count: number): string {
   return String(count);
 }
 
-/**
- * The highlighted model's sheet, under the list: what it can hold, how much it
- * can say, how the API names it, what it can do. Always the same four rows, a dash where the
- * operator left one blank: the sheet changes as the pointer moves down the
- * list, and a sheet that changed height with it moved the list under the
- * pointer — the popover hangs from its bottom edge — so the next row was
- * lit, the sheet changed again, and the list shook.
- */
-const specs = computed(() => {
-  const model = filtered.value[highlight.value];
-  if (!model) return [];
-  const can = [
-    model.supports_images && t('specVision'),
-    model.supports_reasoning && t('specReasoning'),
-    model.supports_tools && t('specTools'),
-    model.supports_chat_image_gen && t('canImageGen'),
-  ].filter(Boolean);
-  return [
-    { label: t('specContext'), value: model.context_window > 0 ? tokens(model.context_window) : '—' },
-    { label: t('specOutput'), value: model.max_output_tokens > 0 ? tokens(model.max_output_tokens) : '—' },
-    { label: t('apiNameLabel'), value: model.api_name || '—' },
-    { label: t('specCan'), value: can.length ? can.join(' · ') : '—' },
-  ];
-});
-
 function pick(model: AvailableModel): void {
   if (model.usable === false) return;
   selectModel(model.id);
@@ -329,6 +321,7 @@ onBeforeUnmount(() => {
       <!-- The effort rides on the chip so the state is legible without
            opening anything — which is the whole reason the two controls
            became one. -->
+      <ModelTile v-if="currentModel" :avatar="currentModel.avatar" :name="currentModel.display_name" />
       <IconSpark v-if="thinking" class="ai-model-chip-spark" :size="13" />
       <span class="ai-model-chip-name">
         <OaMarquee :text="currentModel ? currentModel.display_name : t('modelNone')" />
@@ -340,7 +333,7 @@ onBeforeUnmount(() => {
     <div
       v-if="mounted"
       class="ai-model-pop"
-      :class="{ open: shown }"
+      :class="{ open: shown, 'has-info': view === 'models' && !!infoModel }"
       :style="room ? { '--ai-pop-room': `${room}px` } : undefined"
     >
       <!-- The height is animated on this wrapper, so the content inside can be
@@ -363,12 +356,7 @@ onBeforeUnmount(() => {
                about. Saying "this model has no thinking steps" about a model
                nobody has chosen answers a question that was not asked. -->
           <p v-if="!currentModel" class="ai-pop-note">{{ t('reasoningPickFirst') }}</p>
-          <!-- Nothing to set: saying so beats a slider that would be ignored. -->
-          <p v-else-if="!currentModel.supports_reasoning" class="ai-pop-note">
-            {{ t('reasoningUnavailable') }}
-          </p>
-
-          <template v-else>
+          <template v-else-if="currentModel.supports_reasoning">
             <div class="ai-pop-effort-head">
               <span class="ai-pop-effort-title">{{ t('reasoningToggle') }}</span>
               <span class="oa-header-spacer" />
@@ -460,63 +448,62 @@ onBeforeUnmount(() => {
                right of every row and left the figures standing off the edge. -->
           <OaScrollArea v-else wrap-class="ai-pop-models-wrap" scroll-class="ai-pop-models">
             <div ref="list" class="ai-pop-models-inner">
-              <button
+              <div
                 v-for="(model, index) in filtered"
                 :key="model.id"
-                type="button"
                 class="ai-pop-model-row"
                 :class="{ highlight: index === highlight, current: model.id === currentModel?.id }"
-                :disabled="model.usable === false"
-                @click="pick(model)"
                 @pointermove="highlight = index"
               >
-                <ModelTile :avatar="model.avatar" :name="model.display_name" />
-                <span class="ai-pop-model-text">
-                  <span class="ai-pop-model-title-row">
-                    <span class="ai-pop-model-title">
-                      <OaMarquee :text="model.display_name" />
+                <button type="button" class="ai-pop-model-pick" :disabled="model.usable === false" @click="pick(model)">
+                  <ModelTile :avatar="model.avatar" :name="model.display_name" />
+                  <span class="ai-pop-model-text">
+                    <span class="ai-pop-model-title-row">
+                      <span class="ai-pop-model-title">
+                        <OaMarquee :text="model.display_name" />
+                      </span>
+                      <!-- Only when it draws in a conversation. A model that
+                           generates in the image lab and talks here is a chat
+                           model here, and a tag saying otherwise would promise
+                           the composer something it cannot do. -->
+                      <span
+                        v-if="model.supports_chat_image_gen"
+                        class="ai-pop-model-tag"
+                      >{{ t('canImageGen') }}</span>
+                      <span
+                        v-if="uptimeTag(model)"
+                        class="ai-pop-model-tag"
+                        :class="{ warn: uptimeTag(model)!.warn }"
+                        :title="uptimeTag(model)!.title"
+                      >{{ uptimeTag(model)!.text }}</span>
                     </span>
-                    <!-- Only when it draws in a conversation. A model that
-                         generates in the image lab and talks here is a chat
-                         model here, and a tag saying otherwise would promise
-                         the composer something it cannot do. -->
+                    <!-- No description means no description. Falling back to the
+                         provider's name answered a question nobody asked. -->
                     <span
-                      v-if="model.supports_chat_image_gen"
-                      class="ai-pop-model-tag"
-                    >{{ t('canImageGen') }}</span>
-                    <span
-                      v-if="uptimeTag(model)"
-                      class="ai-pop-model-tag"
-                      :class="{ warn: uptimeTag(model)!.warn }"
-                      :title="uptimeTag(model)!.title"
-                    >{{ uptimeTag(model)!.text }}</span>
+                      v-if="model.usable === false || model.description"
+                      class="ai-pop-model-sub"
+                    >{{ model.usable === false ? t('modelNotAllowedGroup') : model.description }}</span>
                   </span>
-                  <!-- No description means no description. Falling back to the
-                       provider's name answered a question nobody asked. -->
-                  <span
-                    v-if="model.usable === false || model.description"
-                    class="ai-pop-model-sub"
-                  >{{ model.usable === false ? t('modelNotAllowedGroup') : model.description }}</span>
-                </span>
-                <span v-if="model.context_window > 0" class="ai-pop-model-ctx">{{ tokens(model.context_window) }}</span>
-              </button>
+                  <span v-if="model.context_window > 0" class="ai-pop-model-ctx">{{ tokens(model.context_window) }}</span>
+                </button>
+                <button
+                  type="button"
+                  class="ai-pop-model-info"
+                  :aria-label="`${t('modelInfo')}: ${model.display_name}`"
+                  :title="t('modelInfo')"
+                  :aria-expanded="infoID === model.id"
+                  @click="infoID = infoID === model.id ? '' : model.id"
+                ><IconInfo :size="14" /></button>
+              </div>
             </div>
           </OaScrollArea>
-          <dl v-if="specs.length" class="ai-pop-spec">
-            <div v-for="row in specs" :key="row.label">
-              <dt>{{ row.label }}</dt>
-              <dd :title="row.value">{{ row.value }}</dd>
-            </div>
-          </dl>
-          <!-- What the keys do, said once at the foot rather than learnt by
-               accident. Only where there is a keyboard to press them. -->
-          <div v-if="filtered.length" class="ai-pop-keys" aria-hidden="true">
-            <span><kbd>↑</kbd><kbd>↓</kbd>{{ t('keyMove') }}</span>
-            <span><kbd>↵</kbd>{{ t('keyPick') }}</span>
-            <span><kbd>esc</kbd>{{ t('keyClose') }}</span>
-          </div>
         </div>
       </div>
+      <Transition name="ai-model-info">
+        <div v-if="view === 'models' && infoModel" class="ai-model-info-pane" role="region" :aria-label="t('modelInfo')">
+          <ModelInfo :model="infoModel" @close="closeInfo" />
+        </div>
+      </Transition>
     </div>
   </div>
 </template>

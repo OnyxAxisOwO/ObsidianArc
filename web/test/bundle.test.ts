@@ -73,7 +73,7 @@ describe('code splitting invariants in production bundle', () => {
     expect(pluginFiles, `plugin chunks: ${pluginFiles.join(', ')}`).toHaveLength(pluginNames.length);
     const core = files.filter((f) => !pluginFiles.includes(f));
 
-    // Exactly nineteen besides the plugins', and deliberately exact: the project ships no fonts, no
+    // Exactly twenty-one besides the plugins', and deliberately exact: the project ships no fonts, no
     // images and no other chunks, so an extra file is either a split that
     // was not meant to happen or an asset nobody decided to ship. Route-level
     // splitting in particular produces a dozen of these on its own and is
@@ -101,7 +101,11 @@ describe('code splitting invariants in production bundle', () => {
     // gained a script and stylesheet, fetched only when opened or needed.
     // Provider sign-up completion is fetched only when an identity needs it.
     expect(files.filter((f) => /^CompleteSignupView-[^.]+\.js$/.test(f))).toHaveLength(1);
-    expect(core, `unexpected build output: ${core.join(', ')}`).toHaveLength(19);
+    // Model details and their stylesheet arrive only after an information click.
+    for (const extension of ['js', 'css']) {
+      expect(files.filter((file) => new RegExp(`^ModelInfo-[^.]+\\.${extension}$`).test(file))).toHaveLength(1);
+    }
+    expect(core, `unexpected build output: ${core.join(', ')}`).toHaveLength(21);
 
     const indexJs = files.filter((f) => /^index-[^.]+\.js$/.test(f));
     const indexCss = files.filter((f) => /^index-[^.]+\.css$/.test(f));

@@ -124,6 +124,22 @@
   min-height: 0;
 }
 
+/* Keep notices on the chat card and in the layout so multiple notices do not
+   cover the first message or the verification controls. */
+.ai-chat-banners {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex-shrink: 0;
+  max-height: 40%;
+  overflow-y: auto;
+  margin: 12px 12px 0;
+}
+
+.ai-chat-banners:empty {
+  display: none;
+}
+
 /* --- top bar --------------------------------------------------------------- */
 
 .ai-chat-bar {
@@ -1782,10 +1798,12 @@
 
 .ai-chat-wide.is-empty .ai-chat-scroll-wrap {
   flex: 0 1 auto;
+  margin-top: auto;
 }
 
 .ai-chat-wide.is-empty .ai-chat-composer {
   margin-top: 18px;
+  margin-bottom: auto;
 }
 
 .ai-chat-wide .ai-chat-empty {
@@ -2083,30 +2101,65 @@
   right: 0;
   bottom: calc(100% + 8px);
   width: 288px;
-  max-width: min(288px, calc(100vw - 32px));
-  padding: 3px;
-  box-sizing: border-box;
-  border-radius: 18px;
-  background: var(--ai-surface-container);
-  /* The fill and shadow separate the picker without outlining its edge. */
-  box-shadow: var(--ai-shadow-md);
+  max-width: calc(100vw - 32px);
+  display: flex;
+  align-items: flex-end;
   /* Grows out of the chip it hangs from rather than appearing whole. The
      growth itself is the menus' own, declared once beside .oa-menu. */
   transform-origin: bottom right;
 }
 
-/* The height is animated here, so one face can be swapped for another without
-   the popover jumping to its new size. */
+/* Two cards share the row; the list yields room as the details slide in. */
+.ai-model-pop.has-info { width: 568px; }
+
+.ai-model-pop-body,
+.ai-model-info-pane {
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 3px;
+  border-radius: 18px;
+  background: var(--ai-surface-container);
+  box-shadow: var(--ai-shadow-md);
+}
+
 .ai-model-pop-body {
+  position: relative;
+  z-index: 1;
+  flex: 1;
   overflow: hidden;
   transition: height 0.28s var(--ai-ease-out);
 }
 
+.ai-model-info-pane {
+  flex: 0 0 272px;
+  margin-left: 8px;
+  overflow: hidden;
+}
+
+.ai-model-info-enter-active,
+.ai-model-info-leave-active {
+  transition: margin-left 0.28s var(--ai-ease-out), opacity 0.22s var(--ai-ease-out), transform 0.28s var(--ai-ease-out);
+}
+
+.ai-model-info-enter-from,
+.ai-model-info-leave-to {
+  margin-left: -272px;
+  opacity: 0;
+}
+
+/* A second column cannot fit on a phone; back returns to the same list. */
+@media (max-width: 600px) {
+  .ai-model-pop.has-info { width: 288px; }
+  .ai-model-pop.has-info .ai-model-pop-body { display: none; }
+  .ai-model-info-pane { flex: 1; margin-left: 0; }
+  /* The returning list must not share its width with the departing card. */
+  .ai-model-info-leave-active { display: none; }
+  .ai-model-info-enter-from,
+  .ai-model-info-leave-to { margin-left: 0; transform: translateX(16px); }
+}
+
 .ai-pop-face {
-  /* Where a row's figures end, which is its right padding — there is no
-     tick: the chosen row's inverted tile and bold name say it. The
-     list's header and the sheet under it end there too, so every number in
-     the popover stands in one column; their left edge is the rows' tiles'. */
+  /* Align the list count with the model rows' right edge. */
   --ai-pop-figure-edge: 8px;
   display: flex;
   flex-direction: column;
@@ -2180,6 +2233,15 @@
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+/* The composer chip is smaller than the picker rows that share this tile. */
+.ai-model-chip .ai-model-tile {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  background: transparent;
+  font-size: 8px;
 }
 
 .ai-pop-model-row.current .ai-model-tile {
@@ -2351,20 +2413,19 @@
   scrollbar-width: none;
   @include hidden-scrollbar;
   /* Bounded by the room above the chip, which ModelControl measures as it
-     opens, less what the rest of the face takes (search, header, sheet,
-     keys): the popover grows upwards from the composer, and a list of many
-     models ran off the top of the window. */
-  max-height: clamp(84px, var(--ai-pop-room, 600px) - 226px, 264px);
+     opens, less the search and header: removing the old sheet must leave
+     that room available to the list. */
+  max-height: clamp(84px, var(--ai-pop-room, 600px) - 82px, 264px);
   overflow-y: auto;
 }
 
 .ai-pop-model-row {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 0;
   width: 100%;
   box-sizing: border-box;
-  padding: 5px 8px 5px 6px;
+  padding: 0 4px 0 0;
   border: none;
   border-radius: 12px;
   background: transparent;
@@ -2378,7 +2439,7 @@
 /* One highlighted row, whichever moved last: the pointer sets it as it
    passes, the arrow keys from the search field set it too, so there are never
    two rows lit at once the way a :hover beside a keyboard cursor would give. */
-.ai-pop-model-row.highlight:not(:disabled) {
+.ai-pop-model-row.highlight {
   background: var(--ai-state-hover);
 }
 
@@ -2390,12 +2451,13 @@
    outline; this is the ring an .oa-menu-item draws, the menu they sit beside. */
 .ai-pop-model:focus-visible,
 .ai-pop-back:focus-visible,
-.ai-pop-model-row:focus-visible {
+.ai-pop-model-pick:focus-visible,
+.ai-pop-model-info:focus-visible {
   outline: none;
   box-shadow: inset 0 0 0 1px var(--ai-primary), 0 0 0 3px var(--ai-focus-shadow);
 }
 
-.ai-pop-model-row:disabled {
+.ai-pop-model-pick:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
@@ -2408,9 +2470,6 @@
   gap: 1px;
 }
 
-/* The list's header and its sheet are set the way a catalogue card is: a
-   small label and a monospace figure, divided by dashed hairlines rather
-   than boxes, so the popover is one sheet with sections, not cards in a card. */
 .ai-pop-section {
   display: flex;
   align-items: baseline;
@@ -2423,8 +2482,7 @@
 }
 
 .ai-pop-count,
-.ai-pop-model-ctx,
-.ai-pop-spec dd {
+.ai-pop-model-ctx {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-variant-numeric: tabular-nums;
 }
@@ -2440,83 +2498,42 @@
   color: var(--ai-text-secondary);
 }
 
-.ai-pop-spec {
-  margin: 0;
-  padding: 2px var(--ai-pop-figure-edge) 0 6px;
-  border-top: 1px dashed var(--ai-outline-variant);
-}
-
-.ai-pop-spec > div {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 5px 0;
-  font-size: 11px;
-}
-
-.ai-pop-spec > div + div {
-  border-top: 1px dashed var(--ai-border);
-}
-
-.ai-pop-spec dt {
-  color: var(--ai-text-secondary);
-}
-
-.ai-pop-spec dd {
-  margin: 0;
+/* Sibling buttons keep information available even for an unavailable model. */
+.ai-pop-model-pick {
+  flex: 1;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--ai-text);
-  font-size: 11px;
-}
-
-.ai-pop-keys {
   display: flex;
-  gap: 14px;
-  margin: 0 -6px -6px;
-  padding: 8px 12px;
-  border-top: 1px dashed var(--ai-outline-variant);
-  font-size: 11px;
-  color: var(--ai-text-secondary);
-}
-
-.ai-pop-keys > span {
-  display: inline-flex;
   align-items: center;
-  gap: 3px;
+  gap: 9px;
+  padding: 5px 4px 5px 6px;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }
 
-.ai-pop-keys kbd {
+.ai-pop-model-info {
+  flex: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 4px;
-  box-sizing: border-box;
-  border-radius: 5px;
-  background: var(--ai-surface-container-high);
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ai-text-secondary);
+  cursor: pointer;
+}
+
+.ai-pop-model-info:hover,
+.ai-pop-model-info[aria-expanded="true"] {
+  background: var(--ai-state-hover);
   color: var(--ai-text);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 10px;
-}
-
-.ai-pop-keys kbd + kbd {
-  margin-left: -1px;
-}
-
-.ai-pop-keys kbd:last-of-type {
-  margin-right: 3px;
-}
-
-/* No keyboard, nothing to press. */
-@media (hover: none) {
-  .ai-pop-keys {
-    display: none;
-  }
 }
 
 /* Quiet, and above the box it is about. A model that is shaky is worth a
@@ -2685,7 +2702,10 @@
 
   .ai-effort-track > i,
   .ai-effort-thumb,
-  .ai-model-pop-body {
+  .ai-model-pop-body,
+  .ai-model-pop,
+  .ai-model-info-enter-active,
+  .ai-model-info-leave-active {
     transition: none;
   }
 }

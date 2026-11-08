@@ -1143,10 +1143,8 @@ body.oa-resizing * {
   @include mixins.focus-ring;
 }
 
-/* An account that has not confirmed its address. Above the chat rather than
-   over it: this account can read and can change its address, it just cannot
-   send anything yet, and locking it out would leave nowhere to press resend
-   from. */
+/* An account that has not confirmed its address can still read and change its
+   address, so the verification controls stay available above the messages. */
 .oa-verify-banner {
   display: flex;
   align-items: center;

@@ -281,6 +281,8 @@ const en = {
   keyMove: 'Move',
   keyPick: 'Choose',
   keyClose: 'Close',
+  modelInfo: 'Model information',
+  modelInfoCopy: 'Copy all information',
   modelListLabel: 'Models',
   apiNameLabel: 'API name',
   specContext: 'Context',

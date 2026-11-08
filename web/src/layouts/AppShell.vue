@@ -97,8 +97,6 @@ defineExpose({ body });
       <AccountMenu v-if="currentUser" :account="currentUser" />
     </div>
 
-    <slot name="banners" />
-
     <div :ref="keepBody" class="oa-chat-root" :class="props.bodyClass">
       <slot />
     </div>

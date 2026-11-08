@@ -89,17 +89,12 @@ onMounted(() => {
       </OaIconButton>
     </template>
 
-    <template #banners>
-      <!-- Above the chat, not instead of it: this account can still read and
-           still change its address, it just cannot send anything yet. -->
-      <VerifyBanner />
-      <!-- Under the verification strip when both are up: that one is about
-           this account and is something to act on, this one is about the
-           instance and is something to know. -->
-      <HomeNotice />
-    </template>
-
-    <ChatSurface @open-setup="router.push('/admin/providers')" />
+    <ChatSurface @open-setup="router.push('/admin/providers')">
+      <template #banners>
+        <VerifyBanner />
+        <HomeNotice />
+      </template>
+    </ChatSurface>
     <RouterView />
   </AppShell>
 </template>
