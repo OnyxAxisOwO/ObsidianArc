@@ -167,7 +167,8 @@ const (
 	// How many days the administrators' audit trail is kept. The super
 	// administrator's alone: a delegated operator who could shorten it could
 	// erase their own last week.
-	AuditRetentionDays = "audit.retention_days"
+	AuditRetentionDays       = "audit.retention_days"
+	APIRequestContentEnabled = "api.request_content_enabled"
 
 	// Signing in with an account somebody already holds somewhere else. Each
 	// provider is a switch and a pair of credentials from its own console;
@@ -795,19 +796,20 @@ var Defaults = map[string]string{
 	// is configuring, not yet switching on, and a challenge that appeared the
 	// moment a key was saved would lock out the half-finished setup it was
 	// saved during.
-	TurnstileOnLogin:        "false",
-	TurnstileOnSignup:       "false",
-	TurnstileOnAPIKey:       "false",
-	TurnstileOnRedeem:       "false",
-	TurnstileOnFeedback:     "false",
-	TurnstileOnImages:       "false",
-	PoWOnImages:             "false",
-	RegistrationCaptchaMode: CaptchaModeTurnstile,
-	PoWBaseMaxNumber:        "50000",
-	PoWElevatedMaxNumber:    "500000",
-	PoWThreshold:            "10",
-	AuditRetentionDays:      "180",
-	FeedbackShowStaffName:   "true",
+	TurnstileOnLogin:         "false",
+	TurnstileOnSignup:        "false",
+	TurnstileOnAPIKey:        "false",
+	TurnstileOnRedeem:        "false",
+	TurnstileOnFeedback:      "false",
+	TurnstileOnImages:        "false",
+	PoWOnImages:              "false",
+	RegistrationCaptchaMode:  CaptchaModeTurnstile,
+	PoWBaseMaxNumber:         "50000",
+	PoWElevatedMaxNumber:     "500000",
+	PoWThreshold:             "10",
+	AuditRetentionDays:       "180",
+	APIRequestContentEnabled: "false",
+	FeedbackShowStaffName:    "true",
 	// Off, and off even once the credentials are filled in, for the reason
 	// the challenge switches above are: pasting a key is not the same as
 	// opening the door.

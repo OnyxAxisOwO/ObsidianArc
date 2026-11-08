@@ -34,6 +34,7 @@ const noteKey contextKey = iota
 type note struct {
 	mu sync.Mutex
 	Annotation
+	content *contentReader
 }
 
 // Annotate adds what an inner layer knows to the entry being built for its
@@ -163,6 +164,7 @@ func (s *Store) Middleware(clientIP func(*http.Request) string, skip func(*http.
 					ModelID:    annotated.ModelID,
 					ModelName:  annotated.ModelName,
 					ErrorCode:  annotated.ErrorCode,
+					Content:    capturedContent(current.content),
 				})
 				if panicked != nil {
 					panic(panicked)

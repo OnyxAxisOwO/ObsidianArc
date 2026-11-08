@@ -201,6 +201,12 @@ func (h *Handlers) serveAs(render func(http.ResponseWriter, error), next handler
 			Channel:  reqlog.ChannelAPI,
 		})
 
+		if h.settings.Bool(settings.APIRequestContentEnabled) && r.Method == http.MethodPost {
+			switch r.URL.Path {
+			case "/v1/chat/completions", "/v1/messages", "/v1/responses":
+				reqlog.CaptureRequest(r)
+			}
+		}
 		if err := next(w, r, who); err != nil {
 			annotateFailure(r, err)
 			logFailure(r, err)

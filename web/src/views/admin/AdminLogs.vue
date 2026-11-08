@@ -15,6 +15,8 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { BACKOFFICE_PANEL_PARAM } from '@/composables/usePanelExit';
 import { adminApi, type LogEntry, type LogFacets, type LogOption } from '@/admin/api';
+import OaConfirmButton from '@/components/OaConfirmButton.vue';
+import OaNumberField from '@/components/OaNumberField.vue';
 import OaPagination from '@/components/OaPagination.vue';
 import type { PageState } from '@/components/table-types';
 import OaBadge from '@/components/OaBadge.vue';
@@ -248,7 +250,59 @@ const facts = computed<Array<[string, string]>>(() => {
   ];
 });
 
-onMounted(reload);
+const contentEnabled = ref(false);
+const contentReady = ref(false);
+const contentBusy = ref(false);
+const contentError = ref('');
+const contentNotice = ref('');
+const pruneDays = ref<number | null>(7);
+const content = ref<{ body: string; truncated: boolean } | null>(null);
+const contentLoading = ref(false);
+const contentReadError = ref('');
+const contentRequest = useLatestRequest();
+
+async function loadContentSettings(): Promise<void> {
+  contentError.value = '';
+  try {
+    contentEnabled.value = (await adminApi.logContentSettings()).enabled;
+    contentReady.value = true;
+  } catch (error) { contentError.value = failureText(error); }
+}
+async function toggleContent(): Promise<void> {
+  contentBusy.value = true;
+  contentError.value = '';
+  try { contentEnabled.value = (await adminApi.setLogContentSettings(!contentEnabled.value)).enabled; }
+  catch (error) { contentError.value = failureText(error); }
+  finally { contentBusy.value = false; }
+}
+async function pruneContent(): Promise<void> {
+  if (pruneDays.value === null) return;
+  contentBusy.value = true;
+  contentError.value = '';
+  try {
+    const result = await adminApi.pruneLogContents(pruneDays.value);
+    contentNotice.value = t('logContentRemoved', { count: result.removed });
+    opened.value = null;
+  } catch (error) { contentError.value = failureText(error); }
+  finally { contentBusy.value = false; }
+}
+watch(opened, async (entry) => {
+  const ticket = contentRequest.begin();
+  content.value = null;
+  contentReadError.value = '';
+  contentLoading.value = false;
+  if (!entry || entry.channel !== 'api') return;
+  contentLoading.value = true;
+  try {
+    const next = await adminApi.logContent(entry.id);
+    if (contentRequest.isCurrent(ticket)) content.value = next;
+  } catch (error) {
+    if (contentRequest.isCurrent(ticket)) contentReadError.value = failureText(error);
+  } finally {
+    if (contentRequest.isCurrent(ticket)) contentLoading.value = false;
+  }
+});
+onMounted(() => { void reload(); void loadContentSettings(); });
 </script>
 
 <template>
@@ -261,6 +315,19 @@ onMounted(reload);
   </Teleport>
 
   <div class="oa-log-page">
+    <div class="oa-viz-card">
+      <h3>{{ t('logContentTitle') }}</h3>
+      <p>{{ t('logContentHint') }}</p>
+      <div class="oa-log-filter-actions">
+        <button type="button" class="oa-btn" :aria-pressed="contentEnabled" :disabled="!contentReady || contentBusy" @click="toggleContent">
+          {{ contentEnabled ? t('logContentOn') : t('logContentOff') }}
+        </button>
+        <OaNumberField v-model="pruneDays" :label="t('logContentDays')" :min="0" :max="3650" :step="1" />
+        <OaConfirmButton class="oa-btn" :label="t('logContentPrune')" :armed-title="t('logContentPruneConfirm')" :disabled="contentBusy || pruneDays === null || !Number.isInteger(pruneDays) || pruneDays < 0 || pruneDays > 3650" @confirm="pruneContent" />
+      </div>
+      <p v-if="contentNotice" role="status">{{ contentNotice }}</p>
+      <AdminFailure v-if="contentError" :message="contentError" @retry="loadContentSettings" />
+    </div>
     <div v-if="facets" id="logsFilter" class="oa-viz-card">
       <div class="oa-log-filter-grid">
         <OaSelectField
@@ -381,5 +448,15 @@ onMounted(reload);
         <dd>{{ value }}</dd>
       </template>
     </dl>
+    <template v-if="opened.channel === 'api'">
+      <h3>{{ t('logContentTitle') }}</h3>
+      <p v-if="contentLoading">{{ t('loading') }}</p>
+      <p v-else-if="contentReadError">{{ contentReadError }}</p>
+      <template v-else-if="content?.body">
+        <p v-if="content.truncated">{{ t('logContentTruncated') }}</p>
+        <pre class="oa-log-content">{{ maskLog(content.body) }}</pre>
+      </template>
+      <p v-else>{{ t('logContentEmpty') }}</p>
+    </template>
   </OaPanel>
 </template>

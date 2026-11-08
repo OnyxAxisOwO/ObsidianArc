@@ -2738,3 +2738,11 @@
   margin-top: 18px;
   gap: 8px;
 }
+
+/* Long API transcripts must wrap inside the existing details column. */
+.oa-log-content {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+  font-size: 12px;
+}

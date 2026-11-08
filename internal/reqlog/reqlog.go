@@ -33,13 +33,14 @@ import (
 
 // Entry is one answered request.
 type Entry struct {
-	ID         string `json:"id"`
-	At         int64  `json:"at"`
-	Method     string `json:"method"`
-	Path       string `json:"path"`
-	Status     int    `json:"status"`
-	DurationMS int64  `json:"duration_ms"`
-	Bytes      int64  `json:"bytes"`
+	Content    *Content `json:"-"`
+	ID         string   `json:"id"`
+	At         int64    `json:"at"`
+	Method     string   `json:"method"`
+	Path       string   `json:"path"`
+	Status     int      `json:"status"`
+	DurationMS int64    `json:"duration_ms"`
+	Bytes      int64    `json:"bytes"`
 
 	UserID   string `json:"user_id,omitempty"`
 	Username string `json:"username,omitempty"`
@@ -257,6 +258,13 @@ func (s *Store) write(ctx context.Context, batch []Entry) error {
 			return fmt.Errorf("reqlog: write %d entries: %w", len(batch), err)
 		}
 
+		for _, entry := range batch {
+			if entry.Content != nil {
+				if _, err := tx.Exec(ctx, `INSERT INTO request_contents (log_id, body, truncated) VALUES (?, ?, ?)`, entry.ID, entry.Content.Body, entry.Content.Truncated); err != nil {
+					return err
+				}
+			}
+		}
 		if !trim || s.maxEntries <= 0 {
 			return nil
 		}

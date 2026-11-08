@@ -1356,6 +1356,10 @@ export const adminApi = {
     api.get<{ entries: LogEntry[]; total: number; limit: number; offset: number }>(
       withQuery('/api/admin/logs', query),
     ),
+  logContentSettings: () => api.get<{ enabled: boolean }>('/api/admin/logs/content-settings'),
+  setLogContentSettings: (enabled: boolean) => api.put<{ enabled: boolean }>('/api/admin/logs/content-settings', { enabled }),
+  logContent: (id: string) => api.get<{ body: string; truncated: boolean }>(`/api/admin/logs/${encodeURIComponent(id)}/content`),
+  pruneLogContents: (days: number) => api.post<{ removed: number }>('/api/admin/logs/content/prune', { days }),
   logFacets: (query?: AdminQuery) => api.get<LogFacets>(withQuery('/api/admin/logs/facets', query)),
 
   audit: (query?: AdminQuery) =>

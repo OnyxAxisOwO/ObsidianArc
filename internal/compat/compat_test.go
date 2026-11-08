@@ -1586,3 +1586,46 @@ func TestRefusedRequestsAreLoggedAgainstTheirCaller(t *testing.T) {
 		}
 	}
 }
+
+func TestAPIContentRecordingIsOptInAndRequiresAuthentication(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	store := reqlog.NewStore(f.db)
+	logged := store.Middleware(nil, nil)(f.mux)
+	call := func(token string) {
+		r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(completionBody("upstream-real-name")))
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Authorization", "Bearer "+token)
+		logged.ServeHTTP(httptest.NewRecorder(), r)
+	}
+	flush := func() {
+		cancelled, cancel := context.WithCancel(ctx)
+		cancel()
+		store.Run(cancelled)
+	}
+	count := func(want int) {
+		t.Helper()
+		var got int
+		if err := f.db.QueryRow(ctx, `SELECT COUNT(*) FROM request_contents`).Scan(&got); err != nil || got != want {
+			t.Fatalf("contents=%d want=%d err=%v", got, want, err)
+		}
+	}
+	call(f.token)
+	flush()
+	count(0)
+	if err := f.settings.Set(ctx, settings.APIRequestContentEnabled, "true"); err != nil {
+		t.Fatal(err)
+	}
+	call("invalid")
+	flush()
+	count(0)
+	call(f.token)
+	flush()
+	count(1)
+	if err := f.settings.Set(ctx, settings.APIRequestContentEnabled, "false"); err != nil {
+		t.Fatal(err)
+	}
+	call(f.token)
+	flush()
+	count(1)
+}

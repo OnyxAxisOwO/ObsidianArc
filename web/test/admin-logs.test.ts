@@ -25,6 +25,7 @@ beforeEach(async () => {
   panels = document.createElement('div');
   actions = document.createElement('div');
   document.body.append(host, panels, actions);
+  vi.spyOn(adminApi, 'logContentSettings').mockResolvedValue({ enabled: false });
   vi.spyOn(adminApi, 'logFacets').mockResolvedValue(noFacets);
   vi.spyOn(adminApi, 'logs').mockResolvedValue({ entries: [], total: 0, limit: 20, offset: 0 });
 });
@@ -131,5 +132,40 @@ describe('AdminLogs, the facets and the list', () => {
     expect(host.querySelector('.oa-log-row')).not.toBeNull();
     expect(host.querySelector('#logsFilter')).toBeNull();
     expect(host.textContent).toContain(t('couldNotLoad'));
+  });
+});
+
+
+describe('API content recording', () => {
+  it('loads the switch and changes it only after the save succeeds', async () => {
+    const save = vi.spyOn(adminApi, 'setLogContentSettings').mockResolvedValue({ enabled: true });
+    await mountAt('/admin/logs');
+    const button = [...host.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent?.trim() === t('logContentOff'))!;
+    button.click();
+    await settle();
+    expect(save).toHaveBeenCalledWith(true);
+    expect(button.textContent).toContain(t('logContentOn'));
+  });
+  it('requires confirmation before clearing content', async () => {
+    const prune = vi.spyOn(adminApi, 'pruneLogContents').mockResolvedValue({ removed: 2 });
+    await mountAt('/admin/logs');
+    const button = [...host.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent?.trim() === t('logContentPrune'))!;
+    button.click();
+    expect(prune).not.toHaveBeenCalled();
+    button.click();
+    await settle();
+    expect(prune).toHaveBeenCalledWith(7);
+  });
+  it('loads body only when API details open and renders it as text', async () => {
+    vi.mocked(adminApi.logs).mockResolvedValue({ entries: [{ id: 'r1', at: Date.now(), method: 'POST', path: '/v1/responses', status: 200, duration_ms: 1, bytes: 1, channel: 'api' }], total: 1, limit: 20, offset: 0 });
+    const read = vi.spyOn(adminApi, 'logContent').mockResolvedValue({ body: '<script>secret</script>', truncated: true });
+    await mountAt('/admin/logs');
+    expect(read).not.toHaveBeenCalled();
+    host.querySelector<HTMLButtonElement>('.oa-log-row')!.click();
+    await settle();
+    expect(read).toHaveBeenCalledWith('r1');
+    expect(panels.querySelector('pre')?.textContent).toBe('<script>secret</script>');
+    expect(panels.querySelector('script')).toBeNull();
+    expect(panels.textContent).toContain(t('logContentTruncated'));
   });
 });

@@ -366,6 +366,10 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 
 	mux.Handle("GET /api/admin/logs", protected("logs", h.listLogs))
 	mux.Handle("GET /api/admin/logs/facets", protected("logs", h.logFacets))
+	mux.Handle("GET /api/admin/logs/content-settings", protected("logs", h.logContentSettings))
+	mux.Handle("PUT /api/admin/logs/content-settings", protected("logs", h.setLogContentSettings))
+	mux.Handle("GET /api/admin/logs/{id}/content", protected("logs", h.logContent))
+	mux.Handle("POST /api/admin/logs/content/prune", protected("logs", h.pruneLogContents))
 	mux.Handle("POST /api/admin/logs/prune", protected("logs", h.pruneLogs))
 
 	mux.Handle("GET /api/admin/usage", protected("usage", h.usageSummary))

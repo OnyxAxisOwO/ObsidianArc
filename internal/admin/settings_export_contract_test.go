@@ -17,6 +17,7 @@ import (
 // and the import refuses has to be listed here, or the export is not
 // re-importable as it stands and the refusal is only a count.
 var declaredReadOnly = map[string]string{
+	settings.APIRequestContentEnabled: "owned by /api/admin/logs/content-settings",
 	// /api/admin/checkin owns these and validates them; a write through the
 	// generic settings route would skip that validation.
 	settings.CheckinEnabled:  "owned by /api/admin/checkin",

@@ -227,10 +227,12 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 28.30 MB (24.60 MB `-tags nosqlite`, Linux amd64, Go 1.27.3), 0.41 MB of it the frontend's brotli copies and 0.41 MB the embedded zone database; this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 174.81 kB to open the chat with brotli (154.27 JS + 20.54 CSS); 207.96 kB with gzip (183.79 JS + 24.17 CSS), which the budget holds; the brotli is a copy compressed at build time, the gzip is Go's, made as it goes out |
+| Binary (SQLite + embedded SPA) | < 30 MB | 28.32 MB (24.63 MB `-tags nosqlite`, Linux amd64, Go 1.27.3), 0.41 MB of it the frontend's brotli copies and 0.41 MB the embedded zone database; this repository ships no plugin |
+| Frontend, on the wire | < 135 kB | 174.88 kB to open the chat with brotli (154.27 JS + 20.54 CSS); 207.96 kB with gzip (183.79 JS + 24.17 CSS), which the budget holds; the brotli is a copy compressed at build time, the gzip is Go's, made as it goes out |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-11-08 after adding optional API request-body recording: 28,324,000 bytes Linux amd64 (24,625,312 without SQLite), first paint 207.96 kB gzip / 174.88 kB brotli. Recording is off by default, capped at 256 KiB per request and loaded separately from log listings.
 
 Remeasured on 2026-11-08 after moving model information from the picker footer
 into a detail face inside the existing picker and centering its copy icon alongside the API name. The list height is retained during a continuous two-face slide; the animated
@@ -238,10 +240,10 @@ shell owns its rounded surface and shadow. The empty-conversation subtitle
 was removed. Its script and stylesheet load only after an information
 click: 1.24 kB JS + 0.55 kB CSS gzip, 1.13 kB JS + 0.43 kB CSS brotli.
 The build now has 21 core assets. First paint is 207.96 kB gzip
-(183.79 JS + 24.17 CSS) and 174.81 kB brotli (154.27 JS + 20.54 CSS), within
+(183.79 JS + 24.17 CSS) and 174.88 kB brotli (154.27 JS + 20.54 CSS), within
 the unchanged 208 kB budget. Chinese adds 20.94 kB gzip / 17.41 kB brotli.
-Linux amd64, Go 1.27.3, `-trimpath -ldflags="-s -w"`: 28,299,424 bytes
-(24,596,640 with `-tags nosqlite`).
+Linux amd64, Go 1.27.3, `-trimpath -ldflags="-s -w"`: 28,324,000 bytes
+(24,625,312 with `-tags nosqlite`).
 
 Remeasured on 2026-11-08 after placing chat notices on the chat surface: first paint is 207.83 kB gzip (183.62 JS + 24.20 CSS) and 174.82 kB brotli (154.22 JS + 20.60 CSS).
 

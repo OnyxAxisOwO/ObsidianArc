@@ -27,6 +27,7 @@ import (
 // looked at my conversations" is the question the trail exists to answer.
 // Every other read is left out, or the trail would be the request log again.
 var sensitiveReads = map[string]bool{
+	"GET /api/admin/logs/{id}/content":                       true,
 	"GET /api/admin/users/{id}/conversations":                true,
 	"GET /api/admin/users/{id}/conversations/{conversation}": true,
 }
