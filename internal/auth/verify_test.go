@@ -442,7 +442,7 @@ func TestConcurrentLinkAndCodeVerificationConsumeOneCredentialSet(t *testing.T) 
 func TestCodeVerificationDuringResendCountsBothRowsAndConsumesBoth(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
-	verifying(t, f)
+	// Registration mail must not take the SMTP connection held for the resend.
 	if _, _, err := f.auth.Register(ctx, RegisterInput{Username: "founder", Password: "a-good-password"}); err != nil {
 		t.Fatal(err)
 	}
@@ -452,6 +452,10 @@ func TestCodeVerificationDuringResendCountsBothRowsAndConsumesBoth(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := f.db.Exec(ctx, `UPDATE users SET email_verified = ? WHERE id = ?`, false, account.ID); err != nil {
+		t.Fatal(err)
+	}
+	verifying(t, f)
 	oldToken, err := f.auth.issueVerification(ctx, f.db, account.ID, account.Email)
 	if err != nil {
 		t.Fatal(err)
