@@ -1379,7 +1379,7 @@ export const enAdmin = {
   logClear: 'Clear',
   logContentRemoved: 'Cleared {count} recorded request bodies.',
   logContentTitle: 'API request content',
-  logContentHint: 'Record authenticated Chat Completions, Messages and Responses request bodies from now on. Off by default. Each body keeps up to 256 KiB; answers and headers are not recorded. Clearing content keeps request and usage records.',
+  logContentHint: 'Record authenticated Chat Completions, Messages and Responses request bodies from now on. Off by default. Bodies retain up to 2 GB in total, automatically deleting the oldest first. Each body keeps up to 256 KiB; answers and headers are not recorded. Clearing content keeps request and usage records.',
   logContentOn: 'Recording on · click to stop',
   logContentOff: 'Recording off · click to enable',
   logContentDays: 'Clear content older than days (0 = all)',

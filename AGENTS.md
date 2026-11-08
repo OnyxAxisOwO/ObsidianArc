@@ -585,3 +585,5 @@ Cutting a release is a decision, never a side effect of deploying:
 
 A release candidate is `v1.3.0-rc.1`; `git describe` follows it like any other
 tag.
+
+API body retention measured on 2026-11-08: 2 GB of retained UTF-8 bodies, oldest first; Linux amd64 binary 28,328,096 bytes (24,625,312 without SQLite), first paint 207.96 kB gzip / 174.74 kB brotli.

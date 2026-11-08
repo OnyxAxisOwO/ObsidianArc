@@ -206,3 +206,5 @@ Release images are available at `ghcr.io/onyxaxisowo/obsidianarc:latest` for Lin
 ## 开源协议 / License
 
 [MIT License](LICENSE)
+
+API body retention measured on 2026-11-08: 2 GB of retained UTF-8 bodies, oldest first; Linux amd64 binary 28,328,096 bytes (24,625,312 without SQLite), first paint 207.96 kB gzip / 174.74 kB brotli.

@@ -1373,7 +1373,7 @@ export const zhAdmin: Record<AdminKey, string> = {
   logClear: '清空条件',
   logContentRemoved: '已清理 {count} 条请求正文。',
   logContentTitle: 'API 请求内容',
-  logContentHint: '开启后记录已认证的 Chat Completions、Messages 和 Responses 请求正文，默认关闭。每条最多保留 256 KiB，不记录回答和请求头。清理正文保留请求和用量记录。',
+  logContentHint: '开启后记录已认证的 Chat Completions、Messages 和 Responses 请求正文，默认关闭。正文总量上限 2 GB，超出后自动删除最早的正文。每条最多保留 256 KiB，不记录回答和请求头。清理正文保留请求和用量记录。',
   logContentOn: '记录已开启 · 点击停止',
   logContentOff: '记录已关闭 · 点击开启',
   logContentDays: '清理多少天以前的正文（0 = 全部）',

@@ -1546,3 +1546,5 @@ a frontend build, and a boot of the server before the next one starts.
 | 7 | User settings: profile, default model, default reasoning, theme, accent, wallpaper, preference sync |
 | 8 | Security pass (CSP, rate limits, redaction, an IDOR sweep), performance pass (indexes, allocation profile, bundle size), Dockerfile, Compose, README, release build |
 ```
+
+API body retention measured on 2026-11-08: 2 GB of retained UTF-8 bodies, oldest first; Linux amd64 binary 28,328,096 bytes (24,625,312 without SQLite), first paint 207.96 kB gzip / 174.74 kB brotli.

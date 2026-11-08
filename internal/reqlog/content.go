@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/text"
 )
 
@@ -73,4 +74,61 @@ func capturedContent(r *contentReader) *Content {
 		return nil
 	}
 	return &Content{Body: text.Clean(string(r.body)), Truncated: r.truncated}
+}
+
+// This counts retained UTF-8 body bytes, not database indexes or allocated
+// disk pages. Deleting old bodies lets the database reuse their storage.
+const MaxStoredContentBytes int64 = 2_000_000_000
+
+func (s *Store) trimContents(ctx context.Context, tx *database.Tx) error {
+	// Measure pre-cap records once, in small pages rather than loading all
+	// previously recorded transcripts into memory at upgrade time.
+	for {
+		rows, err := tx.Query(ctx, `SELECT log_id, body FROM request_contents WHERE body_bytes < 0 LIMIT 100`)
+		if err != nil {
+			return err
+		}
+		type size struct {
+			id    string
+			bytes int
+		}
+		pending := []size{}
+		for rows.Next() {
+			var id, body string
+			if err := rows.Scan(&id, &body); err != nil {
+				rows.Close()
+				return err
+			}
+			pending = append(pending, size{id, len(body)})
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return err
+		}
+		if len(pending) == 0 {
+			break
+		}
+		for _, entry := range pending {
+			if _, err := tx.Exec(ctx, `UPDATE request_contents SET body_bytes = ? WHERE log_id = ?`, entry.bytes, entry.id); err != nil {
+				return err
+			}
+		}
+	}
+	var total int64
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(SUM(body_bytes), 0) FROM request_contents`).Scan(&total); err != nil {
+		return err
+	}
+	if total <= s.maxContentBytes {
+		return nil
+	}
+	_, err := tx.Exec(ctx, `DELETE FROM request_contents WHERE log_id IN (
+  SELECT log_id FROM (
+   SELECT c.log_id, SUM(c.body_bytes) OVER (
+    ORDER BY l.at DESC, l.id DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+   ) AS retained_bytes
+   FROM request_contents c JOIN request_log l ON l.id = c.log_id
+  ) sized WHERE retained_bytes > ?
+ )`, s.maxContentBytes)
+	return err
 }

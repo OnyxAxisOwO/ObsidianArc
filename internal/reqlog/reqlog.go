@@ -28,6 +28,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/id"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/text"
 )
 
@@ -107,11 +108,12 @@ type Store struct {
 	writes  atomic.Int64
 	// Overridden only by tests so the cap can be exercised without creating
 	// hundreds of thousands of rows.
-	maxEntries int
+	maxEntries      int
+	maxContentBytes int64
 }
 
 func NewStore(db *database.DB) *Store {
-	return &Store{db: db, entries: make(chan Entry, bufferSize), maxEntries: MaxStoredEntries}
+	return &Store{db: db, entries: make(chan Entry, bufferSize), maxEntries: MaxStoredEntries, maxContentBytes: MaxStoredContentBytes}
 }
 
 // Record queues an entry. It never blocks and never fails: a request must not
@@ -250,9 +252,23 @@ func (s *Store) write(ctx context.Context, batch []Entry) error {
 			entry.ModelID, entry.ModelName, entry.ErrorCode)
 	}
 
+	hasContent := false
+	for _, entry := range batch {
+		if entry.Content != nil {
+			hasContent = true
+			break
+		}
+	}
 	trim := s.writes.Add(1)%trimEveryBatches == 1
 	var evicted int64
 	err := s.db.Tx(ctx, func(tx *database.Tx) error {
+		// The cap is shared by instances: serialize the insert and eviction
+		// before either can observe the other's unfinished batch.
+		if hasContent {
+			if err := settings.Lock(ctx, tx); err != nil {
+				return err
+			}
+		}
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO request_log (`+columns+`) VALUES `+strings.Join(placeholders, ", "), args...); err != nil {
 			return fmt.Errorf("reqlog: write %d entries: %w", len(batch), err)
@@ -260,9 +276,14 @@ func (s *Store) write(ctx context.Context, batch []Entry) error {
 
 		for _, entry := range batch {
 			if entry.Content != nil {
-				if _, err := tx.Exec(ctx, `INSERT INTO request_contents (log_id, body, truncated) VALUES (?, ?, ?)`, entry.ID, entry.Content.Body, entry.Content.Truncated); err != nil {
+				if _, err := tx.Exec(ctx, `INSERT INTO request_contents (log_id, body, truncated, body_bytes) VALUES (?, ?, ?, ?)`, entry.ID, entry.Content.Body, entry.Content.Truncated, len(entry.Content.Body)); err != nil {
 					return err
 				}
+			}
+		}
+		if hasContent {
+			if err := s.trimContents(ctx, tx); err != nil {
+				return err
 			}
 		}
 		if !trim || s.maxEntries <= 0 {
