@@ -11,7 +11,7 @@
 // hard should it think" and "should it think at all" are the same question
 // asked at different volumes.
 
-import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
 import { useEventListener } from '@vueuse/core';
 import { Search } from 'lucide-vue-next';
 import OaMarquee from '@/components/OaMarquee.vue';
@@ -26,15 +26,36 @@ import {
   type AvailableModel,
 } from './useModels';
 
-const ModelInfo = defineAsyncComponent(() => import('./ModelInfo.vue'));
+const ModelInfo = shallowRef<typeof import('./ModelInfo.vue')['default'] | null>(null);
 const infoID = ref('');
+const infoLoading = ref('');
+const infoFailed = ref(false);
 const infoModel = computed(() => models.value.find((model) => model.id === infoID.value));
+let listScroll = 0;
+
+async function showInfo(model: AvailableModel): Promise<void> {
+  infoLoading.value = model.id;
+  infoFailed.value = false;
+  try {
+    // Keep the list in place until the lazy script and stylesheet are ready;
+    // expanding an empty async wrapper used to move it beside a blank card.
+    if (!ModelInfo.value) ModelInfo.value = (await import('./ModelInfo.vue')).default;
+    if (!open.value || view.value !== 'models' || infoLoading.value !== model.id) return;
+    listScroll = list.value?.parentElement?.scrollTop ?? 0;
+    infoID.value = model.id;
+    await morph('info');
+  } catch {
+    infoFailed.value = true;
+  } finally {
+    if (infoLoading.value === model.id) infoLoading.value = '';
+  }
+}
 
 async function closeInfo(): Promise<void> {
-  const trigger = list.value?.querySelector<HTMLButtonElement>('.ai-pop-model-info[aria-expanded="true"]');
-  infoID.value = '';
-  await nextTick();
-  (trigger?.isConnected ? trigger : search.value)?.focus({ preventScroll: true });
+  const index = filtered.value.findIndex((model) => model.id === infoID.value);
+  await morph('models');
+  if (list.value?.parentElement) list.value.parentElement.scrollTop = listScroll;
+  (list.value?.querySelectorAll<HTMLButtonElement>('.ai-pop-model-info')[index] ?? search.value)?.focus({ preventScroll: true });
 }
 
 /** How many cells the effort meter is drawn with. */
@@ -49,7 +70,7 @@ const body = ref<HTMLElement | null>(null);
 const open = ref(false);
 const mounted = ref(false);
 /** Which face the popover is showing. */
-const view = ref<'effort' | 'models'>('effort');
+const view = ref<'effort' | 'models' | 'info'>('effort');
 
 const stops = computed(() => stopsFor(currentModel.value));
 const position = computed(() => stopFor(reasoning.value, stops.value));
@@ -76,6 +97,8 @@ const settleMorph = useLatestTimeout();
 function toggle(next: boolean): void {
   if (next === open.value) return;
   open.value = next;
+  infoLoading.value = '';
+  infoFailed.value = false;
 
   if (next) {
     infoID.value = '';
@@ -113,12 +136,15 @@ const room = ref(0);
  * Measured rather than declared: the model list's height depends on how many
  * models this account has, which is not something a stylesheet can know.
  */
-async function morph(to: 'effort' | 'models'): Promise<void> {
+async function morph(to: 'effort' | 'models' | 'info'): Promise<void> {
   const node = body.value;
   const from = node?.offsetHeight ?? 0;
-  infoID.value = '';
+  const previous = view.value;
+  if (to !== 'info') infoID.value = '';
+  infoLoading.value = '';
+  infoFailed.value = false;
   view.value = to;
-  if (to === 'models') {
+  if (to === 'models' && previous === 'effort') {
     query.value = '';
     highlight.value = Math.max(0, filtered.value.findIndex((entry) => entry.id === currentModel.value?.id));
   }
@@ -333,7 +359,7 @@ onBeforeUnmount(() => {
     <div
       v-if="mounted"
       class="ai-model-pop"
-      :class="{ open: shown, 'has-info': view === 'models' && !!infoModel }"
+      :class="{ open: shown }"
       :style="room ? { '--ai-pop-room': `${room}px` } : undefined"
     >
       <!-- The height is animated on this wrapper, so the content inside can be
@@ -418,7 +444,7 @@ onBeforeUnmount(() => {
           </template>
         </div>
 
-        <div v-else class="ai-pop-face">
+        <div v-else-if="view === 'models'" class="ai-pop-face">
           <div class="ai-pop-search">
             <button type="button" class="ai-pop-back" :aria-label="t('back')" @click="morph('effort')">
               <IconChevron :size="14" />
@@ -490,20 +516,19 @@ onBeforeUnmount(() => {
                   type="button"
                   class="ai-pop-model-info"
                   :aria-label="`${t('modelInfo')}: ${model.display_name}`"
-                  :title="t('modelInfo')"
-                  :aria-expanded="infoID === model.id"
-                  @click="infoID = infoID === model.id ? '' : model.id"
-                ><IconInfo :size="14" /></button>
+                  :title="infoLoading === model.id ? t('loading') : t('modelInfo')"
+                  :aria-busy="infoLoading === model.id"
+                  @click="showInfo(model)"
+                ><span v-if="infoLoading === model.id" class="ai-chat-spinner" /><IconInfo v-else :size="14" /></button>
               </div>
             </div>
           </OaScrollArea>
+          <p v-if="infoFailed" class="ai-pop-note" role="alert">{{ t('failed') }} {{ t('retry') }}</p>
+        </div>
+        <div v-else-if="infoModel && ModelInfo" class="ai-model-info-view" role="region" :aria-label="t('modelInfo')">
+          <component :is="ModelInfo" :model="infoModel" @close="closeInfo" />
         </div>
       </div>
-      <Transition name="ai-model-info">
-        <div v-if="view === 'models' && infoModel" class="ai-model-info-pane" role="region" :aria-label="t('modelInfo')">
-          <ModelInfo :model="infoModel" @close="closeInfo" />
-        </div>
-      </Transition>
     </div>
   </div>
 </template>

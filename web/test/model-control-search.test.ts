@@ -87,8 +87,14 @@ it('chooses with the arrows and Enter, wrapping at the ends', async () => {
 });
 
 async function openInfo(index: number): Promise<void> {
+  const back = host.querySelector<HTMLButtonElement>('.ai-model-info-head .ai-pop-back');
+  if (back) {
+    back.click();
+    await nextTick();
+    await nextTick();
+  }
   host.querySelectorAll<HTMLButtonElement>('.ai-pop-model-info')[index]!.click();
-  await vi.waitFor(() => expect(host.querySelector('.ai-model-info-title')).not.toBeNull());
+  await vi.waitFor(() => expect(host.querySelector('.ai-model-info-title'), host.innerHTML).not.toBeNull());
   await nextTick();
 }
 
@@ -97,7 +103,7 @@ it('keeps details and keyboard hints out of the list until information is reques
   for (const row of host.querySelectorAll<HTMLElement>('.ai-pop-model-row')) {
     row.dispatchEvent(new Event('pointermove'));
     await nextTick();
-    expect(host.querySelector('.ai-model-info-pane')).toBeNull();
+    expect(host.querySelector('.ai-model-info-view')).toBeNull();
   }
   expect(host.querySelector('.ai-pop-spec')).toBeNull();
   expect(host.querySelector('.ai-pop-keys')).toBeNull();
@@ -108,7 +114,7 @@ it('opens and switches information without selecting, and hides unknown fields',
   models.value[1]!.api_name = 'beta-api';
   await openList();
   await openInfo(0);
-  const sheet = () => host.querySelector('.ai-model-info-pane')!;
+  const sheet = () => host.querySelector('.ai-model-info-view')!;
   expect(sheet().textContent).toContain('128001');
   expect(sheet().textContent).toContain(t('specVision'));
   expect(sheet().textContent).not.toContain(t('specOutput'));
@@ -121,7 +127,8 @@ it('opens and switches information without selecting, and hides unknown fields',
   expect(sheet().textContent).not.toContain('alpha-api');
   expect(sheet().textContent).not.toContain(t('specContext'));
   expect(selectedID.value).toBe('a');
-  expect(host.querySelector('.ai-pop-search-input')).not.toBeNull();
+  expect(host.querySelector('.ai-pop-search-input')).toBeNull();
+  expect(host.querySelector('.ai-model-pop-body')!.contains(sheet())).toBe(true);
 });
 
 it('copies the API name or complete information and resets feedback on another model', async () => {
@@ -147,19 +154,18 @@ it('allows information for an unavailable model while preventing selection', asy
   await openList();
   expect(host.querySelectorAll<HTMLButtonElement>('.ai-pop-model-pick')[1]!.disabled).toBe(true);
   await openInfo(1);
-  expect(host.querySelector('.ai-model-info-pane')!.textContent).toContain(t('modelNotAllowedGroup'));
+  expect(host.querySelector('.ai-model-info-view')!.textContent).toContain(t('modelNotAllowedGroup'));
   expect(selectedID.value).toBe('a');
 });
 
 it('returns from details with Escape, restores focus, then closes the picker on a second Escape', async () => {
   await openList();
-  const info = host.querySelector<HTMLButtonElement>('.ai-pop-model-info')!;
   await openInfo(0);
   const escape = () => document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
   escape();
   await nextTick();
-  await vi.waitFor(() => expect(host.querySelector('.ai-model-pop')!.classList.contains('has-info')).toBe(false));
-  await vi.waitFor(() => expect(document.activeElement).toBe(info));
+  await vi.waitFor(() => expect(host.querySelector('.ai-model-info-view')).toBeNull());
+  await vi.waitFor(() => expect(document.activeElement).toBe(host.querySelector('.ai-pop-model-info')));
   expect(host.querySelector('.ai-model-chip')!.getAttribute('aria-expanded')).toBe('true');
   escape();
   await nextTick();

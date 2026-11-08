@@ -12,7 +12,7 @@ import '@/styles/_model-info.scss';
 const props = defineProps<{ model: AvailableModel }>();
 defineEmits<{ close: [] }>();
 const back = ref<HTMLButtonElement | null>(null);
-// The list is hidden on narrow screens, so its trigger cannot retain focus.
+// The list has been replaced, so focus follows the new face.
 onMounted(() => { back.value?.focus({ preventScroll: true }); });
 const copied = ref('');
 const copyError = ref(false);

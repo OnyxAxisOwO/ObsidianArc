@@ -228,15 +228,15 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
 | Binary (SQLite + embedded SPA) | < 30 MB | 28.30 MB (24.60 MB `-tags nosqlite`, Linux amd64, Go 1.27.3), 0.41 MB of it the frontend's brotli copies and 0.41 MB the embedded zone database; this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 174.63 kB to open the chat with brotli (154.02 JS + 20.62 CSS); 207.84 kB with gzip (183.59 JS + 24.25 CSS), which the budget holds; the brotli is a copy compressed at build time, the gzip is Go's, made as it goes out |
+| Frontend, on the wire | < 135 kB | 174.66 kB to open the chat with brotli (154.18 JS + 20.48 CSS); 207.85 kB with gzip (183.75 JS + 24.10 CSS), which the budget holds; the brotli is a copy compressed at build time, the gzip is Go's, made as it goes out |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
 
 Remeasured on 2026-11-08 after moving model information from the picker footer
-into a separate card and centering its copy icon alongside the API name. Its script and stylesheet load only after an information
-click: 1.29 kB JS + 0.54 kB CSS gzip, 1.17 kB JS + 0.43 kB CSS brotli.
-The build now has 21 core assets. First paint is 207.84 kB gzip
-(183.59 JS + 24.25 CSS) and 174.63 kB brotli (154.02 JS + 20.62 CSS), within
+into a detail face inside the existing picker and centering its copy icon alongside the API name. Its script and stylesheet load only after an information
+click: 1.29 kB JS + 0.65 kB CSS gzip, 1.17 kB JS + 0.53 kB CSS brotli.
+The build now has 21 core assets. First paint is 207.85 kB gzip
+(183.75 JS + 24.10 CSS) and 174.66 kB brotli (154.18 JS + 20.48 CSS), within
 the unchanged 208 kB budget. Chinese adds 20.97 kB gzip / 17.43 kB brotli.
 Linux amd64, Go 1.27.3, `-trimpath -ldflags="-s -w"`: 28,299,424 bytes
 (24,596,640 with `-tags nosqlite`).

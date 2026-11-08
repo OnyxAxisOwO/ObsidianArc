@@ -1,3 +1,14 @@
+/* Details replace the list inside its card, so the chip and card keep their
+   horizontal positions while the content slides into view. */
+.ai-model-info-view { animation: aiModelInfoIn 0.28s var(--ai-ease-out); }
+@keyframes aiModelInfoIn {
+  from { opacity: 0; transform: translateX(16px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ai-model-info-view { animation: none; }
+}
+
 /* Loaded with the details: picking a model needs neither this card nor its
    selectable specification sheet. */
 .ai-model-info-head {

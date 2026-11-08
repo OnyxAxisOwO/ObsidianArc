@@ -2102,60 +2102,20 @@
   bottom: calc(100% + 8px);
   width: 288px;
   max-width: calc(100vw - 32px);
-  display: flex;
-  align-items: flex-end;
   /* Grows out of the chip it hangs from rather than appearing whole. The
      growth itself is the menus' own, declared once beside .oa-menu. */
   transform-origin: bottom right;
 }
 
-/* Two cards share the row; the list yields room as the details slide in. */
-.ai-model-pop.has-info { width: 568px; }
-
-.ai-model-pop-body,
-.ai-model-info-pane {
-  min-width: 0;
+/* The list and its details are faces of the same fixed-width card. */
+.ai-model-pop-body {
   box-sizing: border-box;
   padding: 3px;
   border-radius: 18px;
   background: var(--ai-surface-container);
   box-shadow: var(--ai-shadow-md);
-}
-
-.ai-model-pop-body {
-  position: relative;
-  z-index: 1;
-  flex: 1;
   overflow: hidden;
   transition: height 0.28s var(--ai-ease-out);
-}
-
-.ai-model-info-pane {
-  flex: 0 0 272px;
-  margin-left: 8px;
-  overflow: hidden;
-}
-
-.ai-model-info-enter-active,
-.ai-model-info-leave-active {
-  transition: margin-left 0.28s var(--ai-ease-out), opacity 0.22s var(--ai-ease-out), transform 0.28s var(--ai-ease-out);
-}
-
-.ai-model-info-enter-from,
-.ai-model-info-leave-to {
-  margin-left: -272px;
-  opacity: 0;
-}
-
-/* A second column cannot fit on a phone; back returns to the same list. */
-@media (max-width: 600px) {
-  .ai-model-pop.has-info { width: 288px; }
-  .ai-model-pop.has-info .ai-model-pop-body { display: none; }
-  .ai-model-info-pane { flex: 1; margin-left: 0; }
-  /* The returning list must not share its width with the departing card. */
-  .ai-model-info-leave-active { display: none; }
-  .ai-model-info-enter-from,
-  .ai-model-info-leave-to { margin-left: 0; transform: translateX(16px); }
 }
 
 .ai-pop-face {
@@ -2702,10 +2662,7 @@
 
   .ai-effort-track > i,
   .ai-effort-thumb,
-  .ai-model-pop-body,
-  .ai-model-pop,
-  .ai-model-info-enter-active,
-  .ai-model-info-leave-active {
+  .ai-model-pop-body {
     transition: none;
   }
 }

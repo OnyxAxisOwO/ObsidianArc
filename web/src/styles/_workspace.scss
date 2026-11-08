@@ -272,8 +272,7 @@
 
 /* The model popover is not an OaMenu, but it opens and closes the same way;
    one declaration keeps the two from drifting apart in timing. Blur and
-   scale share a curve so the menu comes into focus as it grows. Width also
-   settles here so the model's details column does not snap the list sideways. */
+   scale share a curve so the menu comes into focus as it grows. */
 .oa-menu,
 .ai-model-pop {
   opacity: 0;
@@ -286,8 +285,7 @@
   transition:
     opacity 0.12s cubic-bezier(0.4, 0, 1, 1),
     transform 0.14s cubic-bezier(0.4, 0, 1, 1),
-    filter 0.14s cubic-bezier(0.4, 0, 1, 1),
-    width 0.28s var(--ai-ease-out);
+    filter 0.14s cubic-bezier(0.4, 0, 1, 1);
 }
 
 .oa-menu.open,
@@ -298,8 +296,7 @@
   transition:
     opacity 0.18s var(--ai-ease-out),
     transform 0.26s cubic-bezier(0.12, 0.9, 0.2, 1),
-    filter 0.26s cubic-bezier(0.12, 0.9, 0.2, 1),
-    width 0.28s var(--ai-ease-out);
+    filter 0.26s cubic-bezier(0.12, 0.9, 0.2, 1);
 }
 
 .oa-menu-left {
