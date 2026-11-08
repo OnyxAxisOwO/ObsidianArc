@@ -39,6 +39,9 @@ afterEach(() => {
 async function openList(): Promise<HTMLInputElement> {
   app = createApp(ModelControl);
   app.mount(host);
+  // Vue ignores bubbling events stamped in the same millisecond its parent
+  // listener was attached; real user clicks happen after the mount task.
+  await new Promise((resolve) => setTimeout(resolve, 0));
   host.querySelector<HTMLButtonElement>('.ai-model-chip')!.click();
   await nextTick();
   host.querySelector<HTMLButtonElement>('.ai-pop-model')!.click();
@@ -87,13 +90,13 @@ it('chooses with the arrows and Enter, wrapping at the ends', async () => {
 });
 
 async function openInfo(index: number): Promise<void> {
-  const back = host.querySelector<HTMLButtonElement>('.ai-model-info-head .ai-pop-back');
+  const back = host.querySelector<HTMLButtonElement>('.ai-model-info-view[aria-hidden="false"] .ai-pop-back');
   if (back) {
     back.click();
     await nextTick();
     await nextTick();
   }
-  host.querySelectorAll<HTMLButtonElement>('.ai-pop-model-info')[index]!.click();
+  host.querySelectorAll<HTMLButtonElement>('.ai-pop-model-row .ai-pop-model-info')[index]!.click();
   await vi.waitFor(() => expect(host.querySelector('.ai-model-info-title'), host.innerHTML).not.toBeNull());
   await nextTick();
 }
@@ -103,7 +106,7 @@ it('keeps details and keyboard hints out of the list until information is reques
   for (const row of host.querySelectorAll<HTMLElement>('.ai-pop-model-row')) {
     row.dispatchEvent(new Event('pointermove'));
     await nextTick();
-    expect(host.querySelector('.ai-model-info-view')).toBeNull();
+    expect(host.querySelector('.ai-model-info-view')!.getAttribute('aria-hidden')).toBe('true');
   }
   expect(host.querySelector('.ai-pop-spec')).toBeNull();
   expect(host.querySelector('.ai-pop-keys')).toBeNull();
@@ -127,7 +130,7 @@ it('opens and switches information without selecting, and hides unknown fields',
   expect(sheet().textContent).not.toContain('alpha-api');
   expect(sheet().textContent).not.toContain(t('specContext'));
   expect(selectedID.value).toBe('a');
-  expect(host.querySelector('.ai-pop-search-input')).toBeNull();
+  expect(host.querySelector('.ai-model-list-view')!.getAttribute('aria-hidden')).toBe('true');
   expect(host.querySelector('.ai-model-pop-body')!.contains(sheet())).toBe(true);
 });
 
@@ -164,8 +167,8 @@ it('returns from details with Escape, restores focus, then closes the picker on 
   const escape = () => document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
   escape();
   await nextTick();
-  await vi.waitFor(() => expect(host.querySelector('.ai-model-info-view')).toBeNull());
-  await vi.waitFor(() => expect(document.activeElement).toBe(host.querySelector('.ai-pop-model-info')));
+  await vi.waitFor(() => expect(host.querySelector('.ai-model-info-view')!.getAttribute('aria-hidden')).toBe('true'));
+  await vi.waitFor(() => expect(document.activeElement).toBe(host.querySelector('.ai-pop-model-row .ai-pop-model-info')));
   expect(host.querySelector('.ai-model-chip')!.getAttribute('aria-expanded')).toBe('true');
   escape();
   await nextTick();
@@ -175,9 +178,30 @@ it('returns from details with Escape, restores focus, then closes the picker on 
 it('shows only the model entry when the model has no reasoning control', async () => {
   app = createApp(ModelControl);
   app.mount(host);
+  // Vue ignores bubbling events stamped in the same millisecond its parent
+  // listener was attached; real user clicks happen after the mount task.
+  await new Promise((resolve) => setTimeout(resolve, 0));
   host.querySelector<HTMLButtonElement>('.ai-model-chip')!.click();
   await nextTick();
   expect(host.querySelector('.ai-pop-model')).not.toBeNull();
   expect(host.querySelector('.ai-pop-note')).toBeNull();
   expect(host.querySelector('.ai-effort-range')).toBeNull();
+});
+
+it('keeps the list height through details and Back after the previous morph settles', async () => {
+  vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(220);
+  const computedStyle = window.getComputedStyle;
+  vi.spyOn(window, 'getComputedStyle').mockImplementation((node) => node.classList.contains('ai-model-pop-body')
+    ? { ...computedStyle(node), height: '220.25px' } as CSSStyleDeclaration : computedStyle(node));
+  vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(500);
+  await openList();
+  const body = host.querySelector<HTMLElement>('.ai-model-pop-body')!;
+  await openInfo(0);
+  expect(body.style.height).toBe('220.25px');
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  expect(body.style.height).toBe('220.25px');
+  host.querySelector<HTMLButtonElement>('.ai-model-info-head .ai-pop-back')!.click();
+  await nextTick();
+  await nextTick();
+  expect(body.style.height).toBe('220.25px');
 });

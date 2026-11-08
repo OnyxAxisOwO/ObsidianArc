@@ -250,7 +250,6 @@ const en = {
   greetAfternoon: 'Good afternoon',
   greetEvening: 'Good evening',
   greetNight: 'Still up',
-  emptyBody: 'Pick a model and ask it something. Your conversations are saved to your account.',
   suggestionExplain: 'Explain architecture principles & system design',
   suggestionBrainstorm: 'Brainstorm distributed architecture & high-availability designs',
   suggestionWrite: 'Draft core module code & technical spec',

@@ -245,7 +245,6 @@ export const zh: Record<CoreKey, string> = {
   greetAfternoon: '下午好',
   greetEvening: '晚上好',
   greetNight: '夜深了',
-  emptyBody: '选一个模型，问它点什么。对话会保存在你的账户里。',
   suggestionExplain: '深入解析底层原理与架构设计',
   suggestionBrainstorm: '构思分布式架构与高可用方案',
   suggestionWrite: '编写核心模块代码与技术方案',

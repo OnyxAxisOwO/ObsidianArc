@@ -279,7 +279,6 @@ defineExpose({ focus: () => composer.value?.focus() });
 
       <div v-if="!messages.length && status.configured" class="ai-chat-empty">
         <h3 class="ai-chat-empty-title">{{ greeting() }}</h3>
-        <p class="ai-chat-empty-body">{{ t('emptyBody') }}</p>
         <div class="ai-chat-suggestions">
           <button
             v-for="key in suggestions"

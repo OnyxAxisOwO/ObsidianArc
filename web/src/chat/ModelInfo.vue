@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, ref, watch } from 'vue';
 import ModelTile from './ModelTile.vue';
 import OaScrollArea from '@/components/OaScrollArea.vue';
 import { IconCheck, IconChevron, IconCopy } from '@/icons';
@@ -11,9 +11,6 @@ import '@/styles/_model-info.scss';
 
 const props = defineProps<{ model: AvailableModel }>();
 defineEmits<{ close: [] }>();
-const back = ref<HTMLButtonElement | null>(null);
-// The list has been replaced, so focus follows the new face.
-onMounted(() => { back.value?.focus({ preventScroll: true }); });
 const copied = ref('');
 const copyError = ref(false);
 const clearCopy = useLatestTimeout();
@@ -55,7 +52,7 @@ async function copy(apiOnly = false): Promise<void> {
 
 <template>
   <div class="ai-model-info-head">
-    <button ref="back" type="button" class="ai-pop-back" :aria-label="t('back')" @click="$emit('close')">
+    <button type="button" class="ai-pop-back" :aria-label="t('back')" @click="$emit('close')">
       <IconChevron :size="14" />
     </button>
     <span>{{ t('modelInfo') }}</span>

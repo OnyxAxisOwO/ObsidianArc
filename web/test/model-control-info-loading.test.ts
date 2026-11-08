@@ -29,6 +29,9 @@ it('keeps the list until details load, then replaces its face and returns to the
   document.body.appendChild(host);
   app = createApp(ModelControl);
   app.mount(host);
+  // Vue ignores bubbling events stamped in the same millisecond its parent
+  // listener was attached; real user clicks happen after the mount task.
+  await new Promise((resolve) => setTimeout(resolve, 0));
   host.querySelector<HTMLButtonElement>('.ai-model-chip')!.click();
   await nextTick();
   host.querySelector<HTMLButtonElement>('.ai-pop-model')!.click();
@@ -39,22 +42,22 @@ it('keeps the list until details load, then replaces its face and returns to the
   search.dispatchEvent(new Event('input'));
   await nextTick();
   const pop = host.querySelector('.ai-model-pop')!;
-  host.querySelector<HTMLButtonElement>('.ai-pop-model-info')!.click();
+  host.querySelector<HTMLButtonElement>('.ai-pop-model-row .ai-pop-model-info')!.click();
   await nextTick();
   expect(host.querySelector('.ai-chat-spinner')).not.toBeNull();
-  expect(host.querySelector('.ai-model-info-view')).toBeNull();
+  expect(host.querySelector('.ai-model-info-view')!.getAttribute('aria-hidden')).toBe('true');
   expect(host.querySelector('.ai-pop-search-input')).toBe(search);
   expect(pop.classList.contains('has-info')).toBe(false);
 
   load.finish();
-  await vi.waitFor(() => expect(host.querySelector('.ai-model-info-view')).not.toBeNull());
+  await vi.waitFor(() => expect(host.querySelector('.ai-model-info-view')!.getAttribute('aria-hidden')).toBe('false'));
   expect(host.querySelector('.ai-model-pop')).toBe(pop);
   expect(host.querySelector('.ai-model-pop-body')!.contains(host.querySelector('.ai-model-info-view'))).toBe(true);
-  expect(host.querySelector('.ai-pop-search-input')).toBeNull();
+  expect(host.querySelector('.ai-model-list-view')!.getAttribute('aria-hidden')).toBe('true');
   expect(selectedID.value).toBe('model');
   host.querySelector<HTMLButtonElement>('.ai-model-info-head .ai-pop-back')!.click();
   await nextTick();
   await nextTick();
   expect(host.querySelector<HTMLInputElement>('.ai-pop-search-input')!.value).toBe('Alpha');
-  expect(host.querySelector('.ai-model-info-view')).toBeNull();
+  expect(host.querySelector('.ai-model-info-view')!.getAttribute('aria-hidden')).toBe('true');
 });

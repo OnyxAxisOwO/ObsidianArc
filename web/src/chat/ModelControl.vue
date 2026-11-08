@@ -31,7 +31,6 @@ const infoID = ref('');
 const infoLoading = ref('');
 const infoFailed = ref(false);
 const infoModel = computed(() => models.value.find((model) => model.id === infoID.value));
-let listScroll = 0;
 
 async function showInfo(model: AvailableModel): Promise<void> {
   infoLoading.value = model.id;
@@ -41,7 +40,6 @@ async function showInfo(model: AvailableModel): Promise<void> {
     // expanding an empty async wrapper used to move it beside a blank card.
     if (!ModelInfo.value) ModelInfo.value = (await import('./ModelInfo.vue')).default;
     if (!open.value || view.value !== 'models' || infoLoading.value !== model.id) return;
-    listScroll = list.value?.parentElement?.scrollTop ?? 0;
     infoID.value = model.id;
     await morph('info');
   } catch {
@@ -54,7 +52,6 @@ async function showInfo(model: AvailableModel): Promise<void> {
 async function closeInfo(): Promise<void> {
   const index = filtered.value.findIndex((model) => model.id === infoID.value);
   await morph('models');
-  if (list.value?.parentElement) list.value.parentElement.scrollTop = listScroll;
   (list.value?.querySelectorAll<HTMLButtonElement>('.ai-pop-model-info')[index] ?? search.value)?.focus({ preventScroll: true });
 }
 
@@ -102,6 +99,7 @@ function toggle(next: boolean): void {
 
   if (next) {
     infoID.value = '';
+    if (body.value) body.value.style.height = '';
     view.value = 'effort';
     at.value = position.value;
     // Measured each time it opens: the composer sits mid-column in an empty
@@ -140,7 +138,18 @@ async function morph(to: 'effort' | 'models' | 'info'): Promise<void> {
   const node = body.value;
   const from = node?.offsetHeight ?? 0;
   const previous = view.value;
-  if (to !== 'info') infoID.value = '';
+  const detailsSwap = to === 'info' || (previous === 'info' && to === 'models');
+  if (node) {
+    if (detailsSwap) {
+      // A pending effort/list morph must not release the height while the
+      // details are using it as their scroll viewport.
+      settleMorph(() => {}, 0);
+      node.style.height = getComputedStyle(node).height;
+    } else {
+      node.style.height = '';
+    }
+  }
+  if (to === 'effort') infoID.value = '';
   infoLoading.value = '';
   infoFailed.value = false;
   view.value = to;
@@ -150,7 +159,8 @@ async function morph(to: 'effort' | 'models' | 'info'): Promise<void> {
   }
   await nextTick();
   if (to === 'models') search.value?.focus({ preventScroll: true });
-  if (!node) return;
+  if (to === 'info') node?.querySelector<HTMLButtonElement>('.ai-model-info-head button')?.focus({ preventScroll: true });
+  if (!node || detailsSwap) return;
   const target = node.scrollHeight;
   if (from === 0 || from === target) {
     node.style.height = '';
@@ -176,7 +186,7 @@ useEventListener(document, 'click', () => {
 useEventListener(document, 'keydown', (event: KeyboardEvent) => {
   if (!open.value || event.key !== 'Escape') return;
   event.preventDefault();
-  if (infoModel.value) {
+  if (view.value === 'info') {
     void closeInfo();
     return;
   }
@@ -444,89 +454,91 @@ onBeforeUnmount(() => {
           </template>
         </div>
 
-        <div v-else-if="view === 'models'" class="ai-pop-face">
-          <div class="ai-pop-search">
-            <button type="button" class="ai-pop-back" :aria-label="t('back')" @click="morph('effort')">
-              <IconChevron :size="14" />
-            </button>
-            <Search class="ai-pop-search-icon" :size="14" aria-hidden="true" />
-            <input
-              ref="search"
-              v-model="query"
-              type="text"
-              class="ai-pop-search-input"
-              :placeholder="t('modelSearch')"
-              :aria-label="t('modelSearch')"
-              autocomplete="off"
-              spellcheck="false"
-              @keydown="onSearchKey"
-            >
-          </div>
-
-          <div v-if="models.length" class="ai-pop-section">
-            <span>{{ t('modelListLabel') }}</span>
-            <span class="ai-pop-count">{{ String(filtered.length).padStart(2, '0') }}</span>
-          </div>
-          <p v-if="!models.length" class="ai-pop-note">{{ t('modelsEmpty') }}</p>
-          <p v-else-if="!filtered.length" class="ai-pop-note">{{ t('modelSearchNone') }}</p>
-          <!-- An overlay track rather than the system's scrollbar: where the
-               system draws one with a gutter, it took fifteen pixels off the
-               right of every row and left the figures standing off the edge. -->
-          <OaScrollArea v-else wrap-class="ai-pop-models-wrap" scroll-class="ai-pop-models">
-            <div ref="list" class="ai-pop-models-inner">
-              <div
-                v-for="(model, index) in filtered"
-                :key="model.id"
-                class="ai-pop-model-row"
-                :class="{ highlight: index === highlight, current: model.id === currentModel?.id }"
-                @pointermove="highlight = index"
+        <div v-else class="ai-model-pages" :class="{ 'show-info': view === 'info' }">
+          <div class="ai-pop-face ai-model-list-view" :inert="view !== 'models'" :aria-hidden="view !== 'models'">
+            <div class="ai-pop-search">
+              <button type="button" class="ai-pop-back" :aria-label="t('back')" @click="morph('effort')">
+                <IconChevron :size="14" />
+              </button>
+              <Search class="ai-pop-search-icon" :size="14" aria-hidden="true" />
+              <input
+                ref="search"
+                v-model="query"
+                type="text"
+                class="ai-pop-search-input"
+                :placeholder="t('modelSearch')"
+                :aria-label="t('modelSearch')"
+                autocomplete="off"
+                spellcheck="false"
+                @keydown="onSearchKey"
               >
-                <button type="button" class="ai-pop-model-pick" :disabled="model.usable === false" @click="pick(model)">
-                  <ModelTile :avatar="model.avatar" :name="model.display_name" />
-                  <span class="ai-pop-model-text">
-                    <span class="ai-pop-model-title-row">
-                      <span class="ai-pop-model-title">
-                        <OaMarquee :text="model.display_name" />
-                      </span>
-                      <!-- Only when it draws in a conversation. A model that
-                           generates in the image lab and talks here is a chat
-                           model here, and a tag saying otherwise would promise
-                           the composer something it cannot do. -->
-                      <span
-                        v-if="model.supports_chat_image_gen"
-                        class="ai-pop-model-tag"
-                      >{{ t('canImageGen') }}</span>
-                      <span
-                        v-if="uptimeTag(model)"
-                        class="ai-pop-model-tag"
-                        :class="{ warn: uptimeTag(model)!.warn }"
-                        :title="uptimeTag(model)!.title"
-                      >{{ uptimeTag(model)!.text }}</span>
-                    </span>
-                    <!-- No description means no description. Falling back to the
-                         provider's name answered a question nobody asked. -->
-                    <span
-                      v-if="model.usable === false || model.description"
-                      class="ai-pop-model-sub"
-                    >{{ model.usable === false ? t('modelNotAllowedGroup') : model.description }}</span>
-                  </span>
-                  <span v-if="model.context_window > 0" class="ai-pop-model-ctx">{{ tokens(model.context_window) }}</span>
-                </button>
-                <button
-                  type="button"
-                  class="ai-pop-model-info"
-                  :aria-label="`${t('modelInfo')}: ${model.display_name}`"
-                  :title="infoLoading === model.id ? t('loading') : t('modelInfo')"
-                  :aria-busy="infoLoading === model.id"
-                  @click="showInfo(model)"
-                ><span v-if="infoLoading === model.id" class="ai-chat-spinner" /><IconInfo v-else :size="14" /></button>
-              </div>
             </div>
-          </OaScrollArea>
-          <p v-if="infoFailed" class="ai-pop-note" role="alert">{{ t('failed') }} {{ t('retry') }}</p>
-        </div>
-        <div v-else-if="infoModel && ModelInfo" class="ai-model-info-view" role="region" :aria-label="t('modelInfo')">
-          <component :is="ModelInfo" :model="infoModel" @close="closeInfo" />
+
+            <div v-if="models.length" class="ai-pop-section">
+              <span>{{ t('modelListLabel') }}</span>
+              <span class="ai-pop-count">{{ String(filtered.length).padStart(2, '0') }}</span>
+            </div>
+            <p v-if="!models.length" class="ai-pop-note">{{ t('modelsEmpty') }}</p>
+            <p v-else-if="!filtered.length" class="ai-pop-note">{{ t('modelSearchNone') }}</p>
+            <!-- An overlay track rather than the system's scrollbar: where the
+                 system draws one with a gutter, it took fifteen pixels off the
+                 right of every row and left the figures standing off the edge. -->
+            <OaScrollArea v-else wrap-class="ai-pop-models-wrap" scroll-class="ai-pop-models">
+              <div ref="list" class="ai-pop-models-inner">
+                <div
+                  v-for="(model, index) in filtered"
+                  :key="model.id"
+                  class="ai-pop-model-row"
+                  :class="{ highlight: index === highlight, current: model.id === currentModel?.id }"
+                  @pointermove="highlight = index"
+                >
+                  <button type="button" class="ai-pop-model-pick" :disabled="model.usable === false" @click="pick(model)">
+                    <ModelTile :avatar="model.avatar" :name="model.display_name" />
+                    <span class="ai-pop-model-text">
+                      <span class="ai-pop-model-title-row">
+                        <span class="ai-pop-model-title">
+                          <OaMarquee :text="model.display_name" />
+                        </span>
+                        <!-- Only when it draws in a conversation. A model that
+                             generates in the image lab and talks here is a chat
+                             model here, and a tag saying otherwise would promise
+                             the composer something it cannot do. -->
+                        <span
+                          v-if="model.supports_chat_image_gen"
+                          class="ai-pop-model-tag"
+                        >{{ t('canImageGen') }}</span>
+                        <span
+                          v-if="uptimeTag(model)"
+                          class="ai-pop-model-tag"
+                          :class="{ warn: uptimeTag(model)!.warn }"
+                          :title="uptimeTag(model)!.title"
+                        >{{ uptimeTag(model)!.text }}</span>
+                      </span>
+                      <!-- No description means no description. Falling back to the
+                           provider's name answered a question nobody asked. -->
+                      <span
+                        v-if="model.usable === false || model.description"
+                        class="ai-pop-model-sub"
+                      >{{ model.usable === false ? t('modelNotAllowedGroup') : model.description }}</span>
+                    </span>
+                    <span v-if="model.context_window > 0" class="ai-pop-model-ctx">{{ tokens(model.context_window) }}</span>
+                  </button>
+                  <button
+                    type="button"
+                    class="ai-pop-model-info"
+                    :aria-label="`${t('modelInfo')}: ${model.display_name}`"
+                    :title="infoLoading === model.id ? t('loading') : t('modelInfo')"
+                    :aria-busy="infoLoading === model.id"
+                    @click="showInfo(model)"
+                  ><span v-if="infoLoading === model.id" class="ai-chat-spinner" /><IconInfo v-else :size="14" /></button>
+                </div>
+              </div>
+            </OaScrollArea>
+            <p v-if="infoFailed" class="ai-pop-note" role="alert">{{ t('failed') }} {{ t('retry') }}</p>
+          </div>
+          <div class="ai-model-info-view" :inert="view !== 'info'" :aria-hidden="view !== 'info'" role="region" :aria-label="t('modelInfo')">
+            <component :is="ModelInfo" v-if="infoModel && ModelInfo" :model="infoModel" @close="closeInfo" />
+          </div>
         </div>
       </div>
     </div>

@@ -2102,6 +2102,12 @@
   bottom: calc(100% + 8px);
   width: 288px;
   max-width: calc(100vw - 32px);
+  /* The animated shell owns its surface, so its corners and shadow survive
+     the opening scale instead of depending on a clipped child layer. */
+  border-radius: 18px;
+  background: var(--ai-surface-container);
+  box-shadow: var(--ai-shadow-md);
+  overflow: hidden;
   /* Grows out of the chip it hangs from rather than appearing whole. The
      growth itself is the menus' own, declared once beside .oa-menu. */
   transform-origin: bottom right;
@@ -2111,12 +2117,22 @@
 .ai-model-pop-body {
   box-sizing: border-box;
   padding: 3px;
-  border-radius: 18px;
-  background: var(--ai-surface-container);
-  box-shadow: var(--ai-shadow-md);
   overflow: hidden;
   transition: height 0.28s var(--ai-ease-out);
 }
+
+/* Both faces stay mounted so switching moves one continuous track instead
+   of replacing a page between animation frames. */
+.ai-model-pages {
+  display: flex;
+  height: 100%;
+  transform: translateX(0);
+  transition: transform 0.28s var(--ai-ease-standard);
+}
+
+.ai-model-pages.show-info { transform: translateX(-100%); }
+.ai-model-pages > * { flex: 0 0 100%; min-width: 0; box-sizing: border-box; }
+.ai-model-list-view { height: 100%; }
 
 .ai-pop-face {
   /* Align the list count with the model rows' right edge. */
@@ -2662,7 +2678,8 @@
 
   .ai-effort-track > i,
   .ai-effort-thumb,
-  .ai-model-pop-body {
+  .ai-model-pop-body,
+  .ai-model-pages {
     transition: none;
   }
 }
