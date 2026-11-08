@@ -122,6 +122,7 @@ func init() {
 				{"api_restricted", yesNo(asBoolVal(u["api_restricted"]))},
 				{"api_restricted_until", formatMS(u["api_restricted_until"])},
 				{"api_restriction_source", asStr(u["api_restriction_source"])},
+				{"api_restriction_reason", asStr(u["api_restriction_reason"])},
 				{"created_at", formatMS(u["created_at"])},
 				{"last_login_at", formatMS(u["last_login_at"])},
 				{"last_active_at", formatMS(u["last_active_at"])},
@@ -201,6 +202,7 @@ func init() {
 			{Name: "--status", Hint: Text{EN: "active or disabled", ZH: "active 或 disabled"}, Value: "STATUS"},
 			{Name: "--reason", Hint: Text{EN: "why the account is banned, shown at sign-in, ≤500 chars; needs --status disabled", ZH: "封禁理由，登录时显示，≤500 字符；需要同时给出 --status disabled"}, Value: "TEXT"},
 			{Name: "--api-restricted", Hint: Text{EN: "turn the per-account API brake on/off", ZH: "开启或关闭该账户的 API 限制"}, Value: "BOOL"},
+			{Name: "--api-restriction-reason", Hint: Text{EN: "reason shown to API clients", ZH: "显示给 API 用户的限制理由"}, Value: "TEXT"},
 			{Name: "--api-restriction-hours", Hint: Text{EN: "0-8760, 0 = no automatic expiry", ZH: "0-8760，0 表示不自动到期"}, Value: "N"},
 		},
 		Examples: []string{
@@ -261,6 +263,7 @@ func init() {
 			}
 			body.boolv(rt, "api-restricted", "api_restricted")
 			body.intv(rt, "api-restriction-hours", "api_restriction_hours")
+			body.str(rt, "api-restriction-reason", "api_restriction_reason")
 
 			if len(body) == 0 {
 				return rt.Fail(Text{EN: "nothing to change: give at least one flag", ZH: "没有需要修改的内容：请至少给出一个选项"})

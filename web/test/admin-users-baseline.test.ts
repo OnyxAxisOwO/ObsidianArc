@@ -88,6 +88,19 @@ describe('AdminUsers, the account panel after a change', () => {
     vi.restoreAllMocks();
   });
 
+  it('saves a changed API restriction reason without extending the restriction', async () => {
+    const row = account('a', { api_restricted: true, api_restricted_until: Date.now() + 3_600_000, api_restriction_reason: 'Old reason' });
+    await mount([row]);
+    rowOf('a').click();
+    await settle();
+    typeIn(fieldFor(t('apiRestrictionReason')), 'Stop automated checks');
+    footerSave().click();
+    await settle();
+    expect(adminApi.updateUser).toHaveBeenCalledWith('a', expect.objectContaining({ api_restriction_reason: 'Stop automated checks' }));
+    const patch = vi.mocked(adminApi.updateUser).mock.lastCall![1];
+    expect(patch).not.toHaveProperty('api_restriction_hours');
+  });
+
   // Opening B while A's save is in flight: A's failure is not in B's panel, so
   // it has to reach the list under A's name.
   it('reports a failed save for the account it was sent for once another account is open', async () => {

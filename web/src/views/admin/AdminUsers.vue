@@ -284,6 +284,7 @@ const form = ref({
   groupExpiresAt: '',
   apiRestricted: false,
   apiRestrictionHours: 24 as number | null,
+  apiRestrictionReason: '',
   newPassword: '',
   rpm: null as number | null,
   tpm: null as number | null,
@@ -499,6 +500,7 @@ async function open(id: string): Promise<void> {
     groupExpiresAt: row.group_expires_at ? toDateTimeLocal(row.group_expires_at) : '',
     apiRestricted: restrictionActive,
     apiRestrictionHours: restrictionActive ? restrictionHours : 24,
+    apiRestrictionReason: restrictionActive ? (row.api_restriction_reason ?? '') : '',
     newPassword: '',
     rpm: policy.rpm,
     tpm: policy.tpm,
@@ -633,6 +635,9 @@ async function save(): Promise<void> {
     if (apiRestrictionTouched.value) {
       patch.api_restricted = draft.apiRestricted;
       patch.api_restriction_hours = draft.apiRestrictionHours ?? 0;
+    }
+    if (draft.apiRestricted && (draft.apiRestrictionReason !== (row.api_restriction_reason ?? '') || (apiRestrictionTouched.value && !apiRestrictionActive(row)))) {
+      patch.api_restriction_reason = draft.apiRestrictionReason;
     }
     // Sent even when empty: the server answers that as a no-op, and one path for
     // every Save keeps the errors it can raise the same whatever was edited.
@@ -1427,6 +1432,7 @@ const state = { q: '', role: '', status: '', group: '' };
           :hint="t('apiRestrictedHint')"
           @update:model-value="apiRestrictionTouched = true"
         />
+        <OaTextField v-if="form.apiRestricted" v-model="form.apiRestrictionReason" :label="t('apiRestrictionReason')" :hint="t('apiRestrictionReasonHint')" :max-length="500" />
         <OaNumberField
           v-if="form.apiRestricted"
           v-model="form.apiRestrictionHours"

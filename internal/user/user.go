@@ -87,6 +87,7 @@ type User struct {
 	APIRestricted        bool   `json:"api_restricted"`
 	APIRestrictedUntil   int64  `json:"api_restricted_until"`
 	APIRestrictionSource string `json:"api_restriction_source"`
+	APIRestrictionReason string `json:"api_restriction_reason"`
 	// When the second sign-in step was switched on; zero while it is off.
 	// The secret itself lives with internal/auth and never rides on this.
 	TwoFactorAt int64 `json:"two_factor_at"`
@@ -184,7 +185,7 @@ func NewStore(db *database.DB) *Store { return &Store{db: db} }
 const baseColumns = `id, username, email, nickname, avatar, bio, role, group_id, status,
 	email_verified, created_at, updated_at, last_login_at, signup_ip, signup_user_agent,
 	api_restricted, api_restricted_until, api_restriction_source, group_expires_at, admin_permissions, last_active_at,
-	two_factor_at, ban_reason, email_proven_at`
+	two_factor_at, ban_reason, email_proven_at, api_restriction_reason`
 
 type CreateInput struct {
 	Username string
@@ -691,10 +692,21 @@ func (s *Store) UpdateAPIRestriction(
 	}
 	_, err := q.Exec(ctx,
 		`UPDATE users SET api_restricted = ?, api_restricted_until = ?,
-		 api_restriction_source = ?, updated_at = ? WHERE id = ?`,
-		restricted, until, strings.TrimSpace(source), time.Now().UnixMilli(), userID)
+		 api_restriction_source = ?, api_restriction_reason = CASE WHEN ? THEN api_restriction_reason ELSE '' END, updated_at = ? WHERE id = ?`,
+		restricted, until, strings.TrimSpace(source), restricted, time.Now().UnixMilli(), userID)
 	if err != nil {
 		return User{}, fmt.Errorf("user: update API restriction: %w", err)
+	}
+	return s.ByID(ctx, q, userID)
+}
+
+func (s *Store) UpdateAPIRestrictionReason(ctx context.Context, q database.Queryer, userID, reason string) (User, error) {
+	if q == nil {
+		q = s.db
+	}
+	_, err := q.Exec(ctx, `UPDATE users SET api_restriction_reason = ?, updated_at = ? WHERE id = ?`, strings.TrimSpace(text.Clean(reason)), time.Now().UnixMilli(), userID)
+	if err != nil {
+		return User{}, fmt.Errorf("user: update API restriction reason: %w", err)
 	}
 	return s.ByID(ctx, q, userID)
 }
@@ -1075,7 +1087,7 @@ func (s *Store) scan(row rowScanner, extra ...any) (User, error) {
 		&record.CreatedAt, &record.UpdatedAt, &record.LastLoginAt, &record.SignupIP,
 		&record.SignupUserAgent, &record.APIRestricted, &record.APIRestrictedUntil,
 		&record.APIRestrictionSource, &record.GroupExpiresAt, &permissions, &record.LastActiveAt,
-		&record.TwoFactorAt, &record.BanReason, &record.EmailProvenAt}
+		&record.TwoFactorAt, &record.BanReason, &record.EmailProvenAt, &record.APIRestrictionReason}
 	for i := range values {
 		dest = append(dest, &values[i])
 	}

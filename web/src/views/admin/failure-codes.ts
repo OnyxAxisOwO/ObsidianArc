@@ -20,6 +20,7 @@ const ADMIN_CODE_KEYS: Record<string, AdminKey> = {
   api_key_too_long: 'adminErrApiKeyTooLong',
   api_restriction_choice_required: 'adminErrApiRestrictionChoiceRequired',
   api_restriction_hours_range: 'adminErrApiRestrictionHoursRange',
+  api_restriction_reason_too_long: 'adminErrApiRestrictionReasonTooLong',
   application_not_found: 'adminErrApplicationNotFound',
   application_public_no_secret: 'adminErrApplicationPublicNoSecret',
   audit_entry_not_found: 'adminErrAuditEntryNotFound',

@@ -315,11 +315,15 @@ func (h *Handlers) authenticate(r *http.Request) (caller, error) {
 		return caller{}, invalidKey()
 	}
 	if !account.IsAdmin() && account.APIRestrictedAt(time.Now()) {
+		message := "API access is restricted for this account."
+		if reason := strings.TrimSpace(account.APIRestrictionReason); reason != "" {
+			message += " Reason: " + reason
+		}
 		return caller{}, apiError{
 			status:  http.StatusForbidden,
 			kind:    "permission_error",
 			code:    "api_restricted",
-			message: "API access is restricted for this account.",
+			message: message,
 		}
 	}
 

@@ -452,9 +452,9 @@ installs, updates and removes).
 change moves one of those numbers, re-measure and update it in the same change.
 They drifted to nearly double once because nobody re-ran the build.
 
-Current: 28.32 MB binary (this repository ships no plugin; 2.8 MB of it is
+Current: 28.34 MB binary (this repository ships no plugin; 2.8 MB of it is
 the plugin runtime, 0.41 MB the brotli copies of the frontend the
-build writes for the server to send, and 0.41 MB the embedded zone database); to open the chat, 174.88 kB on the wire
+build writes for the server to send, and 0.41 MB the embedded zone database); to open the chat, 174.75 kB on the wire
 to a browser that takes brotli and 207.96 kB to one that takes only gzip, which
 is the figure the budget holds (the build's own gzip column is not quoted:
 Node's zlib gives a few hundred bytes more or less on another CPU),
@@ -472,7 +472,7 @@ front page and the landing page travel with their chunks — so a static import 
 `views/LandingView.vue`, `i18n.zh`, `i18n.admin`, `i18n.admin.zh`,
 `styles/admin.scss` or `chat/math` from the main graph — or `i18n.admin.zh`
 from the backoffice's — silently undoes one of those splits. The Chinese
-dictionary is 20.94 kB on the wire; the backoffice's Chinese, 38.65 kB, is
+dictionary is 20.94 kB on the wire; the backoffice's Chinese, 38.99 kB, is
 fetched only when a Chinese reader opens the backoffice or an administrator
 switches to Chinese inside it, and the backoffice's route waits for it so its
 first render is already translated. `web/src/lib/format.ts` holds
@@ -587,3 +587,5 @@ A release candidate is `v1.3.0-rc.1`; `git describe` follows it like any other
 tag.
 
 API body retention measured on 2026-11-08: 2 GB of retained UTF-8 bodies, oldest first; Linux amd64 binary 28,328,096 bytes (24,625,312 without SQLite), first paint 207.96 kB gzip / 174.74 kB brotli.
+
+API restriction reasons measured on 2026-11-08: Linux amd64 binary 28,340,384 bytes (24,641,696 without SQLite), first paint 207.96 kB gzip / 174.75 kB brotli; admin chunk 180.86 kB JS / 15.87 kB CSS and admin Chinese 38.99 kB gzip.

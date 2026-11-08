@@ -49,6 +49,7 @@ export interface Account {
   api_restricted: boolean;
   api_restricted_until: number;
   api_restriction_source: string;
+  api_restriction_reason?: string;
   /** Where the account registered from. Administrators only; '' where it
    *  could not be resolved, and on accounts created before it was recorded. */
   signup_ip?: string;

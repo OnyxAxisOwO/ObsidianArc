@@ -331,6 +331,22 @@ func TestAccountAPIRestrictionCoversExistingKeysUntilItExpires(t *testing.T) {
 	f.account = restricted
 
 	w := f.do(t, http.MethodGet, "/v1/models", f.token, "")
+	if !strings.Contains(w.Body.String(), "API access is restricted for this account.") {
+		t.Fatalf("missing default message: %s", w.Body.String())
+	}
+	if _, err := f.users.UpdateAPIRestrictionReason(ctx, nil, f.account.ID, "请停止自动探测"); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/v1/models", "/v1/chat/completions", "/v1/responses", "/v1/messages"} {
+		method := http.MethodPost
+		if path == "/v1/models" {
+			method = http.MethodGet
+		}
+		response := f.do(t, method, path, f.token, "{}")
+		if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "请停止自动探测") {
+			t.Fatalf("%s: %d %s", path, response.Code, response.Body.String())
+		}
+	}
 	if w.Code != http.StatusForbidden || errorCode(t, w) != "api_restricted" {
 		t.Fatalf("restricted key: %d %s", w.Code, w.Body.String())
 	}

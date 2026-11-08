@@ -188,8 +188,9 @@ type userRequest struct {
 	Status           *user.Status `json:"status"`
 	BanReason        *string      `json:"ban_reason"`
 
-	APIRestricted       *bool `json:"api_restricted"`
-	APIRestrictionHours *int  `json:"api_restriction_hours"`
+	APIRestricted        *bool   `json:"api_restricted"`
+	APIRestrictionHours  *int    `json:"api_restriction_hours"`
+	APIRestrictionReason *string `json:"api_restriction_reason"`
 }
 
 // createUser is the operator making an account directly, for the cases
@@ -415,6 +416,9 @@ func (h *Handlers) updateUser(w http.ResponseWriter, r *http.Request) error {
 		return httpx.BadRequestCode("ban_reason_too_long", "Ban reason must be %d characters or fewer.", user.MaxBanReasonChars).
 			WithDetails(map[string]any{"max": user.MaxBanReasonChars})
 	}
+	if body.APIRestrictionReason != nil && utf8.RuneCountInString(strings.TrimSpace(*body.APIRestrictionReason)) > user.MaxBanReasonChars {
+		return httpx.BadRequestCode("api_restriction_reason_too_long", "API restriction reason must be %d characters or fewer.", user.MaxBanReasonChars)
+	}
 	if body.APIRestrictionHours != nil &&
 		(*body.APIRestrictionHours < 0 || *body.APIRestrictionHours > 24*365) {
 		return httpx.BadRequestCode("api_restriction_hours_range", "API restriction hours must be between 0 and 8760.")
@@ -476,6 +480,11 @@ func (h *Handlers) updateUser(w http.ResponseWriter, r *http.Request) error {
 		}
 		if updated, err = h.applyAPIRestriction(ctx, tx, actor, target, updated, &body); err != nil {
 			return err
+		}
+		if body.APIRestrictionReason != nil && (body.APIRestricted == nil || *body.APIRestricted) {
+			if updated, err = h.users.UpdateAPIRestrictionReason(ctx, tx, userID, *body.APIRestrictionReason); err != nil {
+				return err
+			}
 		}
 		return h.revokeDisabledSessions(ctx, tx, userID, &body)
 	})

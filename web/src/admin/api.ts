@@ -883,6 +883,7 @@ export interface AdminUserPatch {
   group_expires_at?: number;
   api_restricted?: boolean;
   api_restriction_hours?: number;
+  api_restriction_reason?: string;
   status?: AccountStatus;
   ban_reason?: string;
 }
