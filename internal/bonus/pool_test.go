@@ -28,7 +28,7 @@ func TestAPoolKeepsItsRulesAndOnlyAPoolMayBeOnly(t *testing.T) {
 	if _, err := f.store.CreateBar(context.Background(), Bar{Name: "x", ToggleMode: ModeOnly}, ""); !errors.Is(err, ErrInvalidBar) {
 		t.Errorf("a bar of one's own in 'only' mode: %v", err)
 	}
-	for _, bad := range []Pool{{ResetPeriod: "hour"}, {ResetPeriod: PeriodDay}, {PerUserDaily: -1}, {Amount: MaxAmount + 1}} {
+	for _, bad := range []Pool{{ResetPeriod: "hour"}, {ResetPeriod: PeriodDay}, {PerUserDaily: -1}, {Amount: MaxPoolAmount + 1}} {
 		if _, err := f.store.CreateBar(context.Background(), Bar{Name: "x", Kind: KindShared, Pool: &bad}, ""); !errors.Is(err, ErrInvalidPool) {
 			t.Errorf("%+v was accepted: %v", bad, err)
 		}
@@ -62,6 +62,22 @@ func TestAPoolIsNotGrantedIntoNorTurnedIntoABar(t *testing.T) {
 	gift.Kind = KindShared
 	if _, err := f.store.UpdateBar(context.Background(), nil, gift); !errors.Is(err, ErrKindChange) {
 		t.Errorf("a bar turned into a pool: %v", err)
+	}
+}
+
+func TestLargePoolBalanceAndAdjustment(t *testing.T) {
+	f := newFixture(t)
+	a := f.account(t, "alice")
+	bar := f.pool(t, ModeOnly, Pool{Amount: 13_918_449})
+	if _, err := f.take(t, a.ID, "m", 100, Exclusive); err != nil {
+		t.Fatal(err)
+	}
+	p, err := f.store.AdjustPool(context.Background(), bar.ID, false, 50)
+	if err != nil || !near(p.Remaining(), 13_918_399) {
+		t.Fatalf("large pool adjustment: %+v %v", p, err)
+	}
+	if _, err := f.store.AdjustPool(context.Background(), bar.ID, true, MaxPoolAmount+1); !errors.Is(err, ErrInvalidPoolAmount) {
+		t.Fatalf("pool adjustment over limit: %v", err)
 	}
 }
 
@@ -120,7 +136,7 @@ func TestATopUpAddsAndASetFixesWhatIsLeft(t *testing.T) {
 	if err != nil || !near(p.Remaining(), 7) {
 		t.Fatalf("set 7: %+v %v", p, err)
 	}
-	if _, err := f.store.AdjustPool(context.Background(), bar.ID, true, -1); !errors.Is(err, ErrInvalidAmount) {
+	if _, err := f.store.AdjustPool(context.Background(), bar.ID, true, -1); !errors.Is(err, ErrInvalidPoolAmount) {
 		t.Errorf("set below zero: %v", err)
 	}
 	gift := f.bar(t, Bar{Name: "gift"})

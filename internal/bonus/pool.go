@@ -71,6 +71,11 @@ func (e *PoolExhaustedError) Error() string {
 
 func (e *PoolExhaustedError) Unwrap() error { return ErrInsufficient }
 
+// Shared pools can cover many users and are larger than individual grants.
+const MaxPoolAmount = 100_000_000
+
+var ErrInvalidPoolAmount = errors.New("bonus: pool adjustment exceeds the allowed amount")
+
 func (p *Pool) normalise() error {
 	switch p.ResetPeriod {
 	case "", PeriodDay, PeriodWeek, PeriodMonth:
@@ -78,7 +83,7 @@ func (p *Pool) normalise() error {
 		return ErrInvalidPool
 	}
 	for _, v := range []float64{p.ResetAmount, p.PerUserDaily, p.Amount} {
-		if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 || v > MaxAmount {
+		if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 || v > MaxPoolAmount {
 			return ErrInvalidPool
 		}
 	}
@@ -259,8 +264,8 @@ func (s *Store) lockPool(ctx context.Context, q database.Queryer, barID string, 
 // A reset that is due is applied first, so the change is made to the balance
 // the next request would see.
 func (s *Store) AdjustPool(ctx context.Context, barID string, set bool, amount float64) (Pool, error) {
-	if math.IsNaN(amount) || math.IsInf(amount, 0) || math.Abs(amount) > MaxAmount || (set && amount < 0) {
-		return Pool{}, ErrInvalidAmount
+	if math.IsNaN(amount) || math.IsInf(amount, 0) || math.Abs(amount) > MaxPoolAmount || (set && amount < 0) {
+		return Pool{}, ErrInvalidPoolAmount
 	}
 	var out Pool
 	err := s.db.Tx(ctx, func(tx *database.Tx) error {
@@ -279,7 +284,7 @@ func (s *Store) AdjustPool(ctx context.Context, barID string, set bool, amount f
 		if !set {
 			left = p.Remaining() + amount
 		}
-		left = min(math.Max(left, 0), MaxAmount)
+		left = min(math.Max(left, 0), MaxPoolAmount)
 		p.Amount = p.Used + left
 		if _, err := tx.Exec(ctx, `UPDATE bonus_pools SET amount = ?, updated_at = ? WHERE bar_id = ?`,
 			p.Amount, time.Now().UnixMilli(), barID); err != nil {

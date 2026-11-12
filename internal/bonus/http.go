@@ -84,7 +84,9 @@ func TranslateError(err error) error {
 	case errors.Is(err, ErrKindChange):
 		return httpx.Conflict("bonus_kind_change", "A shared pool cannot be turned into another kind of bonus, nor another kind into a pool.")
 	case errors.Is(err, ErrInvalidPool):
-		return httpx.BadRequest("A pool resets never, daily, weekly or monthly, with an amount above zero, and its amounts are at most a million.")
+		return httpx.BadRequest("A pool resets never, daily, weekly or monthly, with an amount above zero, and its amounts are at most 100 million.")
+	case errors.Is(err, ErrInvalidPoolAmount):
+		return httpx.BadRequest("A pool adjustment must be at most 100 million, and a set balance cannot be negative.")
 	case errors.Is(err, ErrNotChoosable):
 		return httpx.Conflict("bonus_not_choosable", "This bonus is not yours to switch on or off.")
 	case errors.Is(err, ErrInvalidBar):
