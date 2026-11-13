@@ -19,7 +19,7 @@ import OaScrollArea from '@/components/OaScrollArea.vue';
 import ModelTile from './ModelTile.vue';
 import { t } from '@/composables/useI18n';
 import { useLatestTimeout } from '@/composables/useLatestTimeout';
-import { IconChevron, IconChevronRight, IconInfo, IconSpark } from '@/icons';
+import { IconChevron, IconChevronRight, IconInfo } from '@/icons';
 import { matchesSearch } from '@/lib/search';
 import {
   currentModel, models, reasoning, selectModel, setReasoning, stopFor, stopsFor,
@@ -358,7 +358,6 @@ onBeforeUnmount(() => {
            opening anything — which is the whole reason the two controls
            became one. -->
       <ModelTile v-if="currentModel" :avatar="currentModel.avatar" :name="currentModel.display_name" />
-      <IconSpark v-if="thinking" class="ai-model-chip-spark" :size="13" />
       <span class="ai-model-chip-name">
         <OaMarquee :text="currentModel ? currentModel.display_name : t('modelNone')" />
       </span>
