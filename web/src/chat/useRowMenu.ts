@@ -36,7 +36,9 @@ export function useRowMenu() {
         window.setTimeout(() => {
           target.closest('.ai-chat-list-item')
             ?.querySelector('.ai-chat-context-menu')
-            ?.scrollIntoView({ block: 'nearest' });
+            // Optional call, the way OaTable scrolls: jsdom implements neither,
+            // and this timer firing there used to take the whole test run down.
+            ?.scrollIntoView?.({ block: 'nearest' });
         }, 180);
       }
     }

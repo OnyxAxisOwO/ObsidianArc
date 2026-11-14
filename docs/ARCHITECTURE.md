@@ -227,10 +227,23 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 28.30 MB (24.60 MB `-tags nosqlite`, Linux amd64, Go 1.27.3), 0.41 MB of it the frontend's brotli copies and 0.41 MB the embedded zone database; this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 174.81 kB to open the chat with brotli (154.27 JS + 20.54 CSS); 207.96 kB with gzip (183.79 JS + 24.17 CSS), which the budget holds; the brotli is a copy compressed at build time, the gzip is Go's, made as it goes out |
+| Binary (SQLite + embedded SPA) | < 30 MB | 28.30 MB (24.60 MB `-tags nosqlite`, Linux amd64, Go 1.27.3), 0.42 MB of it the frontend's brotli copies and 0.41 MB the embedded zone database; this repository ships no plugin |
+| Frontend, on the wire | < 135 kB | 175.15 kB to open the chat with brotli (154.61 JS + 20.54 CSS); 208.42 kB with gzip (184.25 JS + 24.17 CSS), which the budget holds; the brotli is a copy compressed at build time, the gzip is Go's, made as it goes out |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-11-14, after the image lab appends the picked aspect
+ratio to the prompt, a generation that finishes after the panel closes
+announces itself with a toast, the bell marks both feeds read as it opens,
+and a url-only image model is fetched and re-encoded behind the model
+editor's image response format. First paint is 208.42 kB with Go's gzip
+(184.25 JS + 24.17 CSS) and 175.15 kB with brotli (154.61 JS + 20.54 CSS).
+The gzip budget is 209 kB, because 208.42 does not fit in 208. The build
+still has 21 core assets. The backoffice adds 180.22 kB JS + 15.86 kB CSS
+with gzip; Chinese adds 21.01 kB gzip / 17.45 kB brotli, and the backoffice
+dictionary 38.82 kB gzip. Brotli copies total 420,171 bytes.
+Linux amd64, Go 1.27.3, `-trimpath -ldflags="-s -w"`: 28,303,520 bytes
+(24,604,832 with `-tags nosqlite`).
 
 Remeasured on 2026-11-08 after moving model information from the picker footer
 into a detail face inside the existing picker and centering its copy icon alongside the API name. The list height is retained during a continuous two-face slide; the animated
@@ -1028,19 +1041,19 @@ page, and the landing page (the intro or trial a signed-out visitor sees on an
 instance that chose one), each of those last two with its stylesheet. The vendors' model marks, the
 account menu's content and stylesheet, and the folder list's content and
 stylesheet, and the model details and their stylesheet are optional chunks too.
-What each reader actually downloads, as the server sends it (2026-11-04):
+What each reader actually downloads, as the server sends it (2026-11-14):
 
 | | gzip | brotli |
 | --- | --- | --- |
-| English, not an administrator | 207.41 kB | 174.18 kB |
-| Chinese, not an administrator | 228.37 kB | 191.58 kB |
-| …and a conversation containing a formula | 232.13 kB | 194.84 kB |
-| Chinese administrator, backoffice open | 462.45 kB | 381.42 kB |
-| Anybody, once they open the terminal | +9.74 kB | +8.76 kB |
+| English, not an administrator | 208.42 kB | 175.15 kB |
+| Chinese, not an administrator | 229.42 kB | 192.60 kB |
+| …and a conversation containing a formula | 233.19 kB | 195.86 kB |
+| Chinese administrator, backoffice open | 464.32 kB | 382.99 kB |
+| Anybody, once they open the terminal | +9.74 kB | +8.77 kB |
 | A visitor to an instance whose front door is the front page | +8.06 kB | +7.08 kB |
 | A signed-out visitor to an instance whose front door is the intro or trial | +3.74 kB | +3.25 kB |
 
-Provider sign-up completion adds 2.49 kB gzip / 2.20 kB brotli only when opened.
+Provider sign-up completion adds 2.49 kB gzip / 2.19 kB brotli only when opened.
 
 The baseline excludes the optional account menu, folder list and model marks.
 Accounts with folders fetch the folder chunk after the list is read, and the
