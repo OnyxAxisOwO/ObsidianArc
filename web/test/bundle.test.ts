@@ -482,12 +482,15 @@ describe('code splitting invariants in production bundle', () => {
     // new head are all on the screen the chat opens on, so a lazy chunk would
     // only have delayed them; they cost about 5 kB. The vendors' marks, which
     // are not needed for that first frame, are a chunk of their own.
-    // Raised from 208 kB to 209 kB on 2026-11-14, deliberately: the per-message
-    // web search switch sits beside the composer on the first screen, and the
-    // wait it introduces happens before the first token, so a lazy chunk would
-    // only delay the control that explains the wait. This check measures the
-    // server's gzip, the same bytes as the wire budget. That gzip is 208.81 kB.
-    const FIRST_PAINT_GZIP_BUDGET = 209_000;
+    // Raised from 208 kB to 210 kB on 2026-11-14, deliberately. The per-message
+    // web search switch sits beside the composer, and the wait it explains
+    // happens before the first token. The bell marks both feeds read as it
+    // opens, and a generation that finishes after its panel closed announces
+    // itself with a toast. All of that is on the first screen, so a lazy
+    // chunk would only delay it. Together the server's gzip is 209.16 kB,
+    // which does not fit in 209. This check measures that gzip, the same
+    // bytes as the wire budget.
+    const FIRST_PAINT_GZIP_BUDGET = 210_000;
     const gzipped = firstPaintGzipBytes();
     expect(gzipped, `first paint is ${gzipped} bytes gzipped, budget ${FIRST_PAINT_GZIP_BUDGET}`).toBeLessThanOrEqual(
       FIRST_PAINT_GZIP_BUDGET,

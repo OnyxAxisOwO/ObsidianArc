@@ -23,10 +23,11 @@ import (
 // for. The brotli figure is what most browsers actually receive, and the docs
 // quote both so neither is mistaken for the other.
 func TestFirstPaintFitsItsBudgetOnTheWire(t *testing.T) {
-	// 209 kB since the per-message web search switch joined the first screen
-	// (2026-11-14). The measured gzip is 208.81 kB. The switch cannot be a
-	// later chunk: the wait it explains happens before the first token.
-	const budget = 209_000
+	// 210 kB since 2026-11-14. The per-message web search switch, the bell
+	// marking both feeds read as it opens, and the toast for a generation
+	// that finishes after its panel closed all sit on the first screen.
+	// Together they measure 209.16 kB, which does not fit in 209.
+	const budget = 210_000
 	handler := httpx.Compress()(builtHandler(t))
 
 	index := httptest.NewRecorder()

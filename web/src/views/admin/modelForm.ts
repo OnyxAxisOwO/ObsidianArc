@@ -33,6 +33,10 @@ export interface ModelForm {
   reasoningStyle: ReasoningStyle | '';
   tiers: ReasoningTier[];
   requestOverride: string;
+  // Mirrors the `image_response_format` key inside requestOverride as its own
+  // control, so an operator does not have to edit JSON to reach it; the payload
+  // merges it back into the override object.
+  imageResponseFormat: string;
   requestWeight: number | null;
   inputWeight: number | null;
   outputWeight: number | null;
@@ -98,11 +102,48 @@ export function formFromModel(
     reasoningStyle: source?.reasoning_style ?? '',
     tiers: source?.reasoning_tiers ?? [],
     requestOverride: source?.request_override ?? '',
+    imageResponseFormat: imageResponseFormatOf(source?.request_override),
     requestWeight: source?.request_weight ?? 0,
     inputWeight: source?.input_token_weight ?? 1,
     outputWeight: source?.output_token_weight ?? 1,
     reasoningWeight: source?.reasoning_token_weight ?? 1,
   };
+}
+
+/** The `image_response_format` a stored override carries, or '' when it carries none. */
+export function imageResponseFormatOf(requestOverride: string | undefined): string {
+  try {
+    const parsed: unknown = JSON.parse(requestOverride ?? '{}');
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return '';
+    const value = (parsed as Record<string, unknown>)['image_response_format'];
+    return typeof value === 'string' ? value : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * The override a save sends: the typed JSON with the form's image response
+ * format merged in. An empty selection removes the key rather than writing ""
+ * so the default (b64_json) stays implicit, and an override with nothing left
+ * in it is sent as `{}` so clearing the field clears the stored one.
+ */
+export function mergedRequestOverride(form: ModelForm, trimmedOverride: string): string {
+  let obj: Record<string, unknown> = {};
+  if (trimmedOverride) {
+    try {
+      const parsed: unknown = JSON.parse(trimmedOverride);
+      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+        obj = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // save() validates the JSON before this runs; a parse failure here
+      // leaves the object empty rather than sending the typed text through.
+    }
+  }
+  if (form.imageResponseFormat) obj['image_response_format'] = form.imageResponseFormat;
+  else delete obj['image_response_format'];
+  return Object.keys(obj).length ? JSON.stringify(obj) : '{}';
 }
 
 /** Whether a typed override is the JSON object the server merges into a request. */
@@ -125,7 +166,7 @@ export function modelPayload(form: ModelForm, trimmedOverride: string): AdminMod
     route_to_id: form.routeTo,
     reasoning_style: form.reasoningStyle,
     reasoning_tiers: form.tiers,
-    request_override: trimmedOverride || '{}',
+    request_override: mergedRequestOverride(form, trimmedOverride),
     model_id: form.modelID.trim(),
     api_name: form.apiName.trim(),
     system_prompt: form.systemPrompt.trim(),

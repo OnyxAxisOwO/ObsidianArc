@@ -227,20 +227,23 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 28.38 MB (24.68 MB `-tags nosqlite`, Linux amd64, Go 1.27.3), 0.42 MB of it the frontend's brotli copies and 0.41 MB the embedded zone database; this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 175.28 kB to open the chat with brotli (154.69 JS + 20.58 CSS); 208.81 kB with gzip (184.60 JS + 24.21 CSS), which the budget holds; the brotli is a copy compressed at build time, the gzip is Go's, made as it goes out |
+| Binary (SQLite + embedded SPA) | < 30 MB | 28.34 MB (24.64 MB `-tags nosqlite`, Linux amd64, Go 1.27.3), 0.42 MB of it the frontend's brotli copies and 0.41 MB the embedded zone database; this repository ships no plugin |
+| Frontend, on the wire | < 135 kB | 175.79 kB to open the chat with brotli (155.20 JS + 20.58 CSS); 209.16 kB with gzip (184.95 JS + 24.21 CSS), which the budget holds; the brotli is a copy compressed at build time, the gzip is Go's, made as it goes out |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
 
-Remeasured on 2026-11-14 after per-message web search joined the composer.
-The switch is on the first screen: the wait it explains happens before the
-first token, so it is not a later chunk. First paint is 208.81 kB with Go's
-gzip (184.60 JS + 24.21 CSS) and 175.28 kB with brotli (154.69 JS + 20.58 CSS),
-past the previous 208 kB budget, which is now 209 kB. Chinese adds 21.04 kB
-gzip / 17.49 kB brotli; the backoffice's Chinese adds 38.89 kB gzip. The
-backoffice adds 180.32 kB JS + 15.86 kB CSS gzip. Linux amd64, Go 1.27.3,
-`-trimpath -ldflags="-s -w"`: 28,381,447 bytes (24,678,663 with `-tags nosqlite`);
-the brotli copies total 420,456 bytes. There are still 21 core assets.
+Remeasured on 2026-11-14 after per-message web search joined the composer
+and, from main, the image lab appends the picked aspect ratio, a generation
+that finishes after the panel closes announces itself with a toast, and the
+bell marks both feeds read as it opens. The search switch is on the first
+screen: the wait it explains happens before the first token, so it is not a
+later chunk. First paint is 209.16 kB with Go's gzip (184.95 JS + 24.21 CSS)
+and 175.79 kB with brotli (155.20 JS + 20.58 CSS), past the previous 208 kB
+budget, which is now 210 kB because 209.16 does not fit in 209. Chinese adds
+21.10 kB gzip / 17.54 kB brotli; the backoffice's Chinese adds 39.06 kB gzip.
+The backoffice adds 180.81 kB JS + 15.86 kB CSS gzip. Linux amd64, Go 1.27.3,
+`-trimpath -ldflags="-s -w"`: 28,340,384 bytes (24,637,600 with `-tags nosqlite`);
+the brotli copies total 421,422 bytes. There are still 21 core assets.
 
 Remeasured on 2026-11-08 after moving model information from the picker footer
 into a detail face inside the existing picker and centering its copy icon alongside the API name. The list height is retained during a continuous two-face slide; the animated
@@ -1039,19 +1042,19 @@ page, and the landing page (the intro or trial a signed-out visitor sees on an
 instance that chose one), each of those last two with its stylesheet. The vendors' model marks, the
 account menu's content and stylesheet, and the folder list's content and
 stylesheet, and the model details and their stylesheet are optional chunks too.
-What each reader actually downloads, as the server sends it (2026-11-04):
+What each reader actually downloads, as the server sends it (2026-11-14):
 
 | | gzip | brotli |
 | --- | --- | --- |
-| English, not an administrator | 207.41 kB | 174.18 kB |
-| Chinese, not an administrator | 228.37 kB | 191.58 kB |
-| …and a conversation containing a formula | 232.13 kB | 194.84 kB |
-| Chinese administrator, backoffice open | 462.45 kB | 381.42 kB |
+| English, not an administrator | 209.16 kB | 175.79 kB |
+| Chinese, not an administrator | 230.26 kB | 193.33 kB |
+| …and a conversation containing a formula | 234.02 kB | 196.59 kB |
+| Chinese administrator, backoffice open | 465.99 kB | 384.25 kB |
 | Anybody, once they open the terminal | +9.74 kB | +8.76 kB |
 | A visitor to an instance whose front door is the front page | +8.06 kB | +7.08 kB |
 | A signed-out visitor to an instance whose front door is the intro or trial | +3.74 kB | +3.25 kB |
 
-Provider sign-up completion adds 2.49 kB gzip / 2.20 kB brotli only when opened.
+Provider sign-up completion adds 2.48 kB gzip / 2.20 kB brotli only when opened.
 
 The baseline excludes the optional account menu, folder list and model marks.
 Accounts with folders fetch the folder chunk after the list is read, and the

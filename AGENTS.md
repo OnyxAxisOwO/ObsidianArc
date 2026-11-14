@@ -452,10 +452,10 @@ installs, updates and removes).
 change moves one of those numbers, re-measure and update it in the same change.
 They drifted to nearly double once because nobody re-ran the build.
 
-Current: 28.38 MB binary (this repository ships no plugin; 2.8 MB of it is
+Current: 28.34 MB binary (this repository ships no plugin; 2.8 MB of it is
 the plugin runtime, 0.42 MB the brotli copies of the frontend the
-build writes for the server to send, and 0.41 MB the embedded zone database); to open the chat, 175.28 kB on the wire
-to a browser that takes brotli and 208.81 kB to one that takes only gzip, which
+build writes for the server to send, and 0.41 MB the embedded zone database); to open the chat, 175.79 kB on the wire
+to a browser that takes brotli and 209.16 kB to one that takes only gzip, which
 is the figure the budget holds (the build's own gzip column is not quoted:
 Node's zlib gives a few hundred bytes more or less on another CPU),
 against a target of 135. The target used to be 80 and
@@ -472,7 +472,7 @@ front page and the landing page travel with their chunks — so a static import 
 `views/LandingView.vue`, `i18n.zh`, `i18n.admin`, `i18n.admin.zh`,
 `styles/admin.scss` or `chat/math` from the main graph — or `i18n.admin.zh`
 from the backoffice's — silently undoes one of those splits. The Chinese
-dictionary is 21.04 kB on the wire; the backoffice's Chinese, 38.89 kB, is
+dictionary is 21.10 kB on the wire; the backoffice's Chinese, 39.06 kB, is
 fetched only when a Chinese reader opens the backoffice or an administrator
 switches to Chinese inside it, and the backoffice's route waits for it so its
 first render is already translated. `web/src/lib/format.ts` holds
@@ -489,10 +489,11 @@ The account menu's content and stylesheet load when it is first opened; the
 folder list's content and stylesheet load when the account has folders or
 starts one. Their triggers and shared row styles stay on the entry. These
 are deliberate splits: the merged rail and grouped menu otherwise exceeded
-the existing 209 kB build budget. Neither split changes that budget. The
-per-message web search switch raised it from 208 kB to 209 kB on 2026-11-14:
-the switch sits on the first screen, the server's gzip is 208.81 kB, and
-`test/bundle.test.ts` records why.
+the existing 210 kB build budget. Neither split changes that budget. The
+per-message web search switch, together with the bell and the finished-generation
+toast, raised it from 208 kB to 210 kB on 2026-11-14: all three sit on the
+first screen, the server's gzip is 209.16 kB, and `test/bundle.test.ts`
+records why.
 
 `test/bundle.test.ts` asserts the build produces exactly twenty-one files (the
 entry's, the backoffice's, the terminal's, the front page's and the landing
