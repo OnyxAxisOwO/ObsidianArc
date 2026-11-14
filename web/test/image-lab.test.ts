@@ -7,6 +7,7 @@ import { ApiError } from '@/api/client';
 import * as powLib from '@/lib/pow';
 import * as registry from '@/plugins/registry';
 import { currentUser, site, siteInfo } from '@/stores/session';
+import { activeToasts } from '@/stores/notifications';
 import * as chatImage from '@/chat/image';
 import { models } from '@/chat/useModels';
 import { providePanelHost } from '@/composables/usePanelHost';
@@ -535,4 +536,71 @@ it('does not send a former account’s prompt after its proof finishes', async (
   expect(generate).not.toHaveBeenCalled();
   forget();
   site.value = null;
+});
+
+describe('Image Lab generation outcomes', () => {
+  async function startGeneration(text: string): Promise<void> {
+    await mountImageLab();
+    const field = panels.querySelector('#image-lab-prompt') as HTMLTextAreaElement;
+    field.value = text;
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    await settle();
+    (panels.querySelector('.oa-panel-foot .oa-btn.primary') as HTMLButtonElement).click();
+    await settle();
+  }
+
+  it('sends the picked ratio as a directive in the prompt', async () => {
+    const generate = vi.spyOn(imagesApi, 'generateImages').mockResolvedValue({ created: 1, images: [] });
+    await mountImageLab();
+    const tile = [...panels.querySelectorAll<HTMLElement>('.oa-ratio-tile')]
+      .find((el) => el.querySelector('.oa-ratio-name')?.textContent?.trim() === '3:4');
+    tile!.click();
+    await settle();
+    const field = panels.querySelector('#image-lab-prompt') as HTMLTextAreaElement;
+    field.value = 'a poster, drawn 4:3';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    await settle();
+    (panels.querySelector('.oa-panel-foot .oa-btn.primary') as HTMLButtonElement).click();
+    await settle();
+
+    expect(generate).toHaveBeenCalledOnce();
+    const sent = generate.mock.calls[0]![0];
+    expect(sent.size).toBe('896x1152');
+    // The prompt's own mention of a ratio is what misled the model, so the
+    // directive rides after it and names the tile that was actually picked.
+    expect(sent.prompt).toContain('a poster, drawn 4:3');
+    expect(sent.prompt).toContain('[System: Output aspect ratio: 3:4 (3×4). Do not add padding or letterboxing.]');
+  });
+
+  it('toasts the finished picture when the panel closed while it generated', async () => {
+    activeToasts.value = [];
+    let release!: (value: any) => void;
+    vi.spyOn(imagesApi, 'generateImages').mockReturnValue(new Promise((resolve) => { release = resolve; }));
+    await startGeneration('a lighthouse');
+
+    app?.unmount();
+    app = undefined;
+    release({ created: 1, images: [{ b64_json: 'AAAA', mime: 'image/png' }] });
+    await settle();
+
+    const toast = activeToasts.value.find((entry) => entry.notification.kind === 'image_generation_complete');
+    expect(toast).toBeTruthy();
+    expect(toast!.notification.params).toEqual({ count: 1 });
+  });
+
+  it('toasts the failure when the panel closed while it generated', async () => {
+    activeToasts.value = [];
+    let fail!: (reason: unknown) => void;
+    vi.spyOn(imagesApi, 'generateImages').mockReturnValue(new Promise((_, reject) => { fail = reject; }));
+    await startGeneration('a lighthouse');
+
+    app?.unmount();
+    app = undefined;
+    fail(new Error('upstream said no'));
+    await settle();
+
+    const toast = activeToasts.value.find((entry) => entry.notification.kind === 'image_generation_failed');
+    expect(toast).toBeTruthy();
+    expect(toast!.notification.params).toEqual({ message: 'upstream said no' });
+  });
 });
