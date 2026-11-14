@@ -87,6 +87,13 @@ export const IconGift = draw('Gift', [
   'M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7Z',
 ]);
 export const IconPlus = draw('Plus', ['M12 5v14', 'M5 12h14']);
+// The web search switch. A globe rather than a magnifier: the search happens
+// outside this site, and the magnifier already means "find in the page".
+export const IconGlobe = draw('Globe', [
+  'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z',
+  'M3 12h18',
+  'M12 3c2.5 2.5 3.8 5.6 3.8 9S14.5 18.5 12 21c-2.5-2.5-3.8-5.6-3.8-9S9.5 5.5 12 3Z',
+]);
 export const IconClose = draw('X', ['M18 6L6 18', 'M6 6l12 12']);
 // Taking back a removal that has not been saved yet: lucide's undo arrow.
 export const IconUndo = draw('Undo2', ['M9 14 4 9l5-5', 'M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11']);

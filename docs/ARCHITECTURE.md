@@ -227,10 +227,20 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 28.30 MB (24.60 MB `-tags nosqlite`, Linux amd64, Go 1.27.3), 0.41 MB of it the frontend's brotli copies and 0.41 MB the embedded zone database; this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 174.81 kB to open the chat with brotli (154.27 JS + 20.54 CSS); 207.96 kB with gzip (183.79 JS + 24.17 CSS), which the budget holds; the brotli is a copy compressed at build time, the gzip is Go's, made as it goes out |
+| Binary (SQLite + embedded SPA) | < 30 MB | 28.38 MB (24.68 MB `-tags nosqlite`, Linux amd64, Go 1.27.3), 0.42 MB of it the frontend's brotli copies and 0.41 MB the embedded zone database; this repository ships no plugin |
+| Frontend, on the wire | < 135 kB | 175.28 kB to open the chat with brotli (154.69 JS + 20.58 CSS); 208.81 kB with gzip (184.60 JS + 24.21 CSS), which the budget holds; the brotli is a copy compressed at build time, the gzip is Go's, made as it goes out |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-11-14 after per-message web search joined the composer.
+The switch is on the first screen: the wait it explains happens before the
+first token, so it is not a later chunk. First paint is 208.81 kB with Go's
+gzip (184.60 JS + 24.21 CSS) and 175.28 kB with brotli (154.69 JS + 20.58 CSS),
+past the previous 208 kB budget, which is now 209 kB. Chinese adds 21.04 kB
+gzip / 17.49 kB brotli; the backoffice's Chinese adds 38.89 kB gzip. The
+backoffice adds 180.32 kB JS + 15.86 kB CSS gzip. Linux amd64, Go 1.27.3,
+`-trimpath -ldflags="-s -w"`: 28,381,447 bytes (24,678,663 with `-tags nosqlite`);
+the brotli copies total 420,456 bytes. There are still 21 core assets.
 
 Remeasured on 2026-11-08 after moving model information from the picker footer
 into a detail face inside the existing picker and centering its copy icon alongside the API name. The list height is retained during a continuous two-face slide; the animated
@@ -350,16 +360,17 @@ Remeasured on 2026-10-19 (UTC), after the build stopped writing gzip copies.
 Node's zlib picks its matching code by CPU: the same first paint gzipped at
 level 9 came to 201.27 kB on an ARM Mac and 201.89 kB on CI's x86 runner, so
 the figure the docs quote could not be reproduced by the test that holds them
-to it. Brotli's encoder showed no such difference (169.11 kB on both), so the
-build keeps its brotli copies and gzip is left to `httpx.Compress`, whose Go
-encoder at BestCompression gives the same bytes everywhere. A browser that
-takes only gzip receives 201.41 kB (178.60 JS + 22.81 CSS); one that takes
-brotli still receives 169.11 kB. The lazy chunks, gzip then brotli: backoffice
-170.65 / 137.12 kB plus 15.21 / 13.33 kB of stylesheet, Chinese dictionary
-20.35 / 16.92 kB, the backoffice's Chinese 37.25 / 30.87 kB, terminal 8.06 /
-7.36 kB plus 1.67 / 1.40 kB, math 3.76 / 3.25 kB, front page 4.17 / 3.68 kB
+to it. Brotli's encoder showed no such difference (169.74 kB in the latest
+build), so the build keeps its brotli copies and gzip is left to
+`httpx.Compress`, whose Go encoder at BestCompression gives the same bytes
+everywhere. A browser that
+takes only gzip receives 202.09 kB (179.23 JS + 22.86 CSS); one that takes
+brotli still receives 169.74 kB. The lazy chunks, gzip then brotli: backoffice
+171.30 / 137.49 kB plus 15.21 / 13.33 kB of stylesheet, Chinese dictionary
+20.45 / 17.00 kB, the backoffice's Chinese 37.49 / 31.08 kB, terminal 8.06 /
+7.35 kB plus 1.67 / 1.40 kB, math 3.76 / 3.26 kB, front page 4.17 / 3.68 kB
 plus 3.89 / 3.40 kB, landing page 3.12 / 2.75 kB plus 0.62 / 0.51 kB. The
-binary loses the gzip copies and is 27.98 MB (24.28 MB without SQLite), built
+binary loses the gzip copies and is 28.01 MB (24.31 MB without SQLite), built
 the same way as below. The bundle is unchanged. For the same reason the
 bundle test no longer holds the docs to the build's own gzip column (Node's
 zlib at its default level, 248.63 kB on the Mac against 249.16 kB on CI for
@@ -1260,7 +1271,7 @@ Reasoning and answer are stored in separate columns (`messages.reasoning`,
 ```
 POST /api/chat            (SSE response)
   { conversation_id?, model_id, content, attachment_ids[],
-    reasoning: {enabled, effort}, regenerate_from_message_id? }
+    reasoning: {enabled, effort}, truncate_from_message_id?, web_search? }
 ```
 
 1. `RequireUser` → the session's user; `status = 'disabled'` is rejected here.
@@ -1272,9 +1283,20 @@ POST /api/chat            (SSE response)
    the user message, create the conversation if this is the first turn.
 5. `adapter.Chat` with `ctx` derived from `r.Context()`.
 6. Frames are written to the client as they arrive and flushed immediately:
-   `message_start`, `delta`, `reasoning`, `usage`, `done`, `error`.
+   `start`, `search`, `delta`, `reasoning`, `usage`, `done`, `error`.
 7. On completion **or** cancellation: persist the assistant message, write the
    usage ledger row, settle the quota reservation.
+
+`web_search` is a per-message choice, and the server honours it only while the
+operator has enabled `chat.web_search`; otherwise the turn is refused before
+the stream opens. When it is on, the server asks the configured endpoint
+(Bing's HTML by default, or a SearXNG-compatible JSON endpoint) before calling
+the provider and appends the titles, URLs and snippets to the system prompt
+inside an explicit "untrusted reference material" frame. A search failure is
+sent as `search {failed:true}` and the answer proceeds without it. The endpoint
+is an administrator setting, so it may deliberately name a service on the
+private network; a result URL is never fetched, which keeps a hostile page
+from turning the search into an SSRF probe.
 
 **Stopping** is the client closing the stream. That cancels `r.Context()`,
 which cancels the outbound `http.Request`, which closes the upstream

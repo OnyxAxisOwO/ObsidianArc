@@ -313,6 +313,7 @@ type collected struct {
 	answer    strings.Builder
 	reasoning strings.Builder
 	start     *StartPayload
+	search    *SearchPayload
 	done      *DonePayload
 	failure   *ErrorPayload
 }
@@ -339,6 +340,9 @@ func (f *fixture) turn(t *testing.T, ctx context.Context, req TurnRequest) (*col
 			out.answer.WriteString(payload.(TextPayload).Text)
 		case EventReasoning:
 			out.reasoning.WriteString(payload.(TextPayload).Text)
+		case EventSearch:
+			value := payload.(SearchPayload)
+			out.search = &value
 		case EventDone:
 			value := payload.(DonePayload)
 			out.done = &value

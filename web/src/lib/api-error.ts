@@ -37,6 +37,7 @@ const CODE_KEYS: Record<string, StringKey> = {
   bonus_models_unreadable: 'errBonusModelsUnreadable',
   preferences_too_large: 'errPreferencesTooLarge',
   attachment_unavailable: 'errAttachmentUnavailable',
+  web_search_disabled: 'errWebSearchDisabled',
   reward_unavailable: 'errRewardUnavailable',
   // The check-in screen's refusals. They were shown as the server's English
   // whenever a screen did not map them itself.
