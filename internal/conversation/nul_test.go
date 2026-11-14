@@ -18,7 +18,9 @@ func nulFixture(t *testing.T) (*Store, user.User) {
 	t.Helper()
 	ctx := context.Background()
 
-	db, err := database.Open(ctx, dbtest.Either(t, filepath.Join(t.TempDir(), "nul.db")))
+	// Not "nul.db": NUL is a reserved device name on Windows, and SQLite
+	// cannot open a file by that name there.
+	db, err := database.Open(ctx, dbtest.Either(t, filepath.Join(t.TempDir(), "nulbytes.db")))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}

@@ -54,6 +54,7 @@ const FALLBACK_SITE: SiteInfo = {
   registration_enabled: false,
   health_show_users: false,
   leaderboard_show_users: false,
+  web_search: false,
   setup_required: false,
   require_email: false,
   email_domains: [],

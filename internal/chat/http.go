@@ -176,6 +176,7 @@ type chatRequest struct {
 		Effort  string `json:"effort"`
 	} `json:"reasoning"`
 	TruncateFromMessageID string `json:"truncate_from_message_id"`
+	WebSearch             bool   `json:"web_search"`
 	Stream                *bool  `json:"stream"`
 	Turnstile             string `json:"turnstile"`
 	// Read only when this turn opens a new conversation; an existing one
@@ -226,6 +227,12 @@ func (h *Handlers) chat(w http.ResponseWriter, r *http.Request) error {
 	if len([]rune(body.Content)) > conversation.MaxContentChars {
 		return httpx.BadRequest("Message must be %d characters or fewer.", conversation.MaxContentChars)
 	}
+	// The switch is drawn only while the operator offers it, but a hidden
+	// control is not a permission: a page left open from before it was turned
+	// off must not keep searching.
+	if body.WebSearch && !h.service.WebSearchEnabled() {
+		return httpx.BadRequestCode("web_search_disabled", "Web search is not enabled on this instance.")
+	}
 	if err := h.requireChatChallenge(r, account, body.Turnstile); err != nil {
 		return err
 	}
@@ -254,6 +261,7 @@ func (h *Handlers) chat(w http.ResponseWriter, r *http.Request) error {
 		Content:               body.Content,
 		AttachmentIDs:         body.AttachmentIDs,
 		TruncateFromMessageID: body.TruncateFromMessageID,
+		WebSearch:             body.WebSearch,
 		Stream:                stream,
 		Reasoning: adapter.Reasoning{
 			Enabled: body.Reasoning.Enabled,

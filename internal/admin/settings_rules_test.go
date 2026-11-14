@@ -35,6 +35,7 @@ var refusedByRule = map[string]string{
 	settings.UsageDisplay:               "nowhere",
 	settings.HomeNoticeTone:             "nowhere",
 	settings.LeaderboardIdentity:        "nowhere",
+	settings.WebSearchEndpoint:          "file:///etc/passwd",
 }
 
 type settingsFixture struct {

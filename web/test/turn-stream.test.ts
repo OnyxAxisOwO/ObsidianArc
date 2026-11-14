@@ -62,6 +62,27 @@ describe('turn stream', () => {
     expect(deltas).toEqual(['partial']);
   });
 
+  it('delivers the search notice before the answer starts', async () => {
+    answerWith({
+      start(controller) {
+        controller.enqueue(encoder.encode(
+          'event: search\ndata: {"results":3}\n\nevent: delta\ndata: {"text":"answer"}\n\n',
+        ));
+        controller.close();
+      },
+    });
+    const searches: Array<{ results: number; failed?: boolean }> = [];
+    const deltas: string[] = [];
+
+    await sendTurn(request, {
+      onSearch: (payload) => searches.push(payload),
+      onDelta: (text) => deltas.push(text),
+    }, new AbortController().signal);
+
+    expect(searches).toEqual([{ results: 3 }]);
+    expect(deltas).toEqual(['answer']);
+  });
+
   it('drops a delta whose text is not a string instead of writing "undefined" into the answer', async () => {
     answerWith({
       start(controller) {

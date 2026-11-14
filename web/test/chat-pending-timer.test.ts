@@ -33,7 +33,7 @@ describe('the elapsed clock under a streaming answer', () => {
     setStats(false);
     const setSpy = vi.spyOn(window, 'setInterval');
     const clearSpy = vi.spyOn(window, 'clearInterval');
-    pending.value = { answer: '', reasoning: '', startedAt: Date.now() };
+    pending.value = { answer: '', reasoning: '', startedAt: Date.now(), search: null };
     const host = mount(() => h(ChatPending));
 
     expect(host.querySelector('.ai-msg-timer')).toBeNull();
@@ -53,7 +53,7 @@ describe('the elapsed clock under a streaming answer', () => {
   it('runs from the start when stats are already on, and stops on unmount', () => {
     setStats(true);
     const clearSpy = vi.spyOn(window, 'clearInterval');
-    pending.value = { answer: '', reasoning: '', startedAt: Date.now() };
+    pending.value = { answer: '', reasoning: '', startedAt: Date.now(), search: null };
     mount(() => h(ChatPending));
 
     expect(document.querySelector('.ai-msg-timer')).not.toBeNull();
@@ -68,7 +68,7 @@ describe('the streaming answer and the transcript around it', () => {
     // The parent stands in for the transcript: it decides whether the pending
     // block is there and reads nothing of what is in it.
     let parentRenders = 0;
-    pending.value = { answer: 'a', reasoning: '', startedAt: Date.now() };
+    pending.value = { answer: 'a', reasoning: '', startedAt: Date.now(), search: null };
     const host = mount(() => {
       parentRenders += 1;
       return h('div', [h(ChatPending)]);
@@ -76,7 +76,7 @@ describe('the streaming answer and the transcript around it', () => {
     expect(parentRenders).toBe(1);
 
     for (const answer of ['ab', 'abc', 'abcd']) {
-      pending.value = { answer, reasoning: '', startedAt: pending.value!.startedAt };
+      pending.value = { answer, reasoning: '', startedAt: pending.value!.startedAt, search: null };
       await nextTick();
     }
 
@@ -86,7 +86,7 @@ describe('the streaming answer and the transcript around it', () => {
 
   it('survives the pending turn being cleared before it is taken away', async () => {
     setStats(true);
-    pending.value = { answer: 'done', reasoning: '', startedAt: Date.now() };
+    pending.value = { answer: 'done', reasoning: '', startedAt: Date.now(), search: null };
     const host = mount(() => h(ChatPending));
     // The turn's end clears pending a moment before busy hides this block.
     pending.value = null;
