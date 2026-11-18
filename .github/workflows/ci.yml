@@ -31,6 +31,7 @@ jobs:
           cache: npm
           cache-dependency-path: docs/package-lock.json
       - run: npm --prefix docs ci --no-fund --no-audit
+      - run: npm --prefix docs audit --omit=dev
       - run: npm --prefix docs run build
       - run: npm --prefix docs test
       - run: git diff --exit-code
@@ -64,6 +65,8 @@ jobs:
           cache-dependency-path: web/package-lock.json
       # Go embeds the frontend, so each isolated runner builds it first.
       - run: make web-ci
+      - name: Check Go vulnerability reachability
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.10.0 ./...
       - run: make test-go
         env:
           OBSIDIAN_TEST_POSTGRES_DSN: postgres://arc:arc@localhost:5432/arc_test?sslmode=disable
@@ -113,6 +116,7 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: make web-ci
+      - run: npm --prefix web audit --omit=dev
       - run: make web-test typecheck
       - run: node --test scripts/ghcr-cleanup.test.cjs
       - run: git diff --exit-code

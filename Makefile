@@ -49,7 +49,6 @@ else
 override VERSION := $(value VERSION)
 endif
 $(foreach _arc_name,$(.VARIABLES),$(if $(filter command line,$(origin $(_arc_name))),$(eval export $(_arc_name))))
-override undefine _arc_name
 # git accepts $(...), quotes and semicolons in a tag name, and this value reaches
 # the shell in several recipes and, through deploy.sh, on the server. So it is
 # refused here, before anything uses it, unless every character is one a plain
