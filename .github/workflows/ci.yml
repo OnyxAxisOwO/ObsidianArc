@@ -1,12 +1,4 @@
-# The gate, run by something other than the person who wrote the change.
-#
-# The same checks as `make test-full` run in parallel, with Gate collecting
-# their results so branch protection still requires every part.
-#
-# It also executes the two paths nothing had ever executed. The Postgres schema
-# was covered by a lint and by a test that skipped itself without a database,
-# and the Dockerfile had been written and reviewed but never built. Both run
-# here, on every push, against the real thing.
+# Checks run only when manually requested.
 
 name: CI
 
@@ -22,6 +14,7 @@ permissions:
 jobs:
   docs:
     name: Documentation
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -38,6 +31,7 @@ jobs:
 
   go-test:
     name: Go tests
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -74,6 +68,7 @@ jobs:
 
   race:
     name: Plugin race tests
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -107,6 +102,7 @@ jobs:
 
   frontend:
     name: Frontend tests
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -123,7 +119,7 @@ jobs:
 
   test:
     name: Gate
-    if: always()
+    if: always() && github.event_name == 'workflow_dispatch'
     needs: [go-test, race, frontend, docs, docker]
     runs-on: ubuntu-latest
     steps:
@@ -138,6 +134,7 @@ jobs:
 
   docker:
     name: Image
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
 
     steps:

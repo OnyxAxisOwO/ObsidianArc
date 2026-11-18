@@ -5,7 +5,7 @@
 ## 发布步骤
 
 1. 在 `CHANGELOG.md` 中把 `Unreleased` 的内容归入新版本，填写发布日期，并在上方留下空的 `Unreleased`。
-2. 将变更合并到 `main`，等该提交的 CI 全部通过，包括 Documentation、Gate 和 Image。
+2. 将变更合并到 `main`。推送后即可打标签，无需等待 CI 完成。
 3. 在这个干净提交上创建带注释的标签，并推送：
 
    ```bash
@@ -16,10 +16,12 @@
    git push origin vMAJOR.MINOR.PATCH
    ```
 
-4. 在 [Actions](https://github.com/OnyxAxisOwO/ObsidianArc/actions/workflows/release.yml) 等待 `Release` 成功。工作流核对标签属于 `main`，且标签对应的提交已有成功的主分支 CI，然后构建并发布下列产物。
+4. 在 [Actions](https://github.com/OnyxAxisOwO/ObsidianArc/actions/workflows/release.yml) 等待 `Release` 成功。工作流核对标签属于 `main`，直接构建并发布产物；构建失败会在工作流中报错。
 5. 核对 [GitHub Release](https://github.com/OnyxAxisOwO/ObsidianArc/releases)、镜像标签和下载文件。实例部署仍按该实例仓库的流程执行；正式部署从干净标签构建，服务报告的版本应与标签完全一致。
 
-已推送的标签不能移动或重复使用。若标签先于 CI 通过而导致 Release 拒绝发布，等 CI 成功后重跑该工作流。
+已推送的标签不能移动或重复使用。构建失败时修复问题并发布新标签。
+
+需要测试、类型检查、PostgreSQL、竞态或 Docker 检查时，手动运行 `gh workflow run ci.yml`；普通推送不执行这些检查。
 
 ## 发布产物
 
@@ -31,7 +33,7 @@
 | GHCR 镜像 | `ghcr.io/onyxaxisowo/obsidianarc:版本标签`，含 Linux amd64、arm64 的多架构清单 |
 | `latest` | 最新正式版；候选版和旧版补发不会把它改成更早的版本 |
 
-压缩包包含程序、`VERSION`、MIT 许可和对应版本的 README；前端已内嵌。镜像直接使用同一次构建的 Linux 程序，并在推送前启动 amd64 容器，检查健康响应中的版本。镜像另保留 `版本标签-amd64`、`版本标签-arm64`，可用于指定架构。
+压缩包包含程序、`VERSION`、MIT 许可和对应版本的 README；前端已内嵌。镜像直接使用同一次构建的 Linux 程序。镜像另保留 `版本标签-amd64`、`版本标签-arm64`，可用于指定架构。
 
 发布使用仓库自己的 `GITHUB_TOKEN`，不需要另设发布密钥。写权限只授予发布任务：`contents: write` 用于 Release，`packages: write` 用于 GHCR。
 

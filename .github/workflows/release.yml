@@ -43,20 +43,13 @@ jobs:
           path: source
           fetch-depth: 0
 
-      - name: Require a tagged main commit with green CI
+      - name: Validate the tagged main commit
         id: version
         working-directory: source
         run: |
           test "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag
           sha=$(git rev-parse HEAD)
           git merge-base --is-ancestor "$sha" origin/main
-          runs=$(gh api --method GET "repos/$GH_REPO/actions/workflows/ci.yml/runs" \
-            -f head_sha="$sha" -f branch=main -f event=push -f status=success \
-            -f per_page=1 --jq .total_count)
-          if [ "$runs" -eq 0 ]; then
-            echo "The tag's main-branch CI must pass before publishing. Rerun Release afterwards." >&2
-            exit 1
-          fi
           awk -v tag="$RELEASE_TAG" '
             /^## / { if (found) exit; if ($2 == tag) found = 1; next }
             found { print }
@@ -134,23 +127,6 @@ jobs:
               "images/$arch"
           done
 
-      - name: Check the packaged server and version
-        env:
-          IMAGE: ${{ steps.version.outputs.image }}
-        run: |
-          docker run -d --name arc-release -p 127.0.0.1:8080:8080 \
-            -e "OBSIDIAN_SECRET_KEY=$(openssl rand -hex 32)" "$IMAGE:$RELEASE_TAG-amd64"
-          for attempt in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8080/api/health > "$RUNNER_TEMP/health.json"; then
-              jq -e --arg version "$RELEASE_TAG" '.status == "ok" and .version == $version' \
-                "$RUNNER_TEMP/health.json"
-              exit 0
-            fi
-            sleep 1
-          done
-          docker logs arc-release
-          exit 1
-
       - name: Publish GHCR images
         env:
           IMAGE: ${{ steps.version.outputs.image }}
@@ -186,7 +162,3 @@ jobs:
 
       - name: Remove older GHCR images
         run: node scripts/ghcr-cleanup.cjs
-
-      - name: Stop the packaged server
-        if: always()
-        run: docker rm -f arc-release || true

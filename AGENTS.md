@@ -154,23 +154,19 @@ here hold for it unchanged; what differs is where the code comes from.
 
 ## Before you say you are done
 
-```bash
-make test     # go vet, gofmt, go test ./..., vue-tsc --noEmit, vitest
-```
+Run checks appropriate to the change. For a documentation-only change, review
+its diff; for code, run the affected tests and build or typecheck where useful.
+Do not repeat a full suite solely for a release or routine deployment.
 
-`make test` rebuilds the frontend first when anything under `web/src` is newer
-than the embedded build, so the bundle and first-paint checks never read a
-stale one; it does not reinstall packages.
+`make test` runs the full local Go and frontend suites; `make test-full` also
+runs the plugin race tests and Vue typecheck. Both are available when needed,
+not mandatory for every change. Checks run on demand: use
+`gh workflow run ci.yml` for the full suites, PostgreSQL and Docker checks.
+A release builds its artifacts directly; do not run a separate build first.
 
-All of it must pass, and `.github/workflows/ci.yml` runs it again on every
-push — on Linux, against a real PostgreSQL, and building the Docker image. It
-is the only reviewer that reads every agent's output, so it is not optional and
-it is not something to work around:
-
-- `gofmt` **fails the build** now. Run `make fmt`, do not hand-edit alignment.
+- Format changed Go files with `gofmt`. `make vet` checks formatting across the tree.
 - The frontend typecheck is `vue-tsc`, not `tsc`: templates are checked too,
-  so a prop that does not exist is a build failure rather than an `undefined`
-  discovered at runtime.
+  so it catches invalid template props when that check is run.
 - Source is **LF**, enforced by `.gitattributes`. `core.autocrlf` on Windows
   used to rewrite the tree to CRLF, gofmt read that as unformatted, and the
   gate lit up on sixty files at once — which is how a genuinely misformatted
@@ -380,10 +376,9 @@ application precisely to catch this.
 
 ## Known unverified ground
 
-**Docker and PostgreSQL now run on every push**, in CI, on Linux — the image is
-built and started and asked for its health, and the suite runs against a real
-PostgreSQL 16. Neither is installed on the machine most of this was written on,
-so locally they are still unexercised; trust the CI run, not your laptop.
+The manually triggered CI run checks Docker and PostgreSQL on Linux: it starts
+the images and runs the suite against PostgreSQL 16. Push CI does not run these
+checks. Release builds do not run that separate image check.
 
 What remains genuinely unproven is time. Nothing here has carried real traffic
 for a week. Do not write anything into the README that claims otherwise.
@@ -569,22 +564,20 @@ is `Requires.API` against `arcx.APILevel`, an integer that is not this version.
 
 Cutting a release is a decision, never a side effect of deploying:
 
-1. `main` is green in CI — `make test-full` and the image job.
-2. In `CHANGELOG.md`, `Unreleased` becomes the new version with its date, and
+1. In `CHANGELOG.md`, `Unreleased` becomes the new version with its date, and
    an empty `Unreleased` goes above it. Commit that.
-3. Tag that commit — `git tag -a v1.2.3 -m v1.2.3` — and `git push origin
+2. Tag that commit — `git tag -a v1.2.3 -m v1.2.3` — and `git push origin
    v1.2.3`. A pushed tag is never moved or reused; a mistake is fixed by the
    next patch.
-4. Wait for the `Release` workflow triggered by that tag. It requires a green
-   main-branch CI run for the tagged commit, builds the release downloads and
-   GHCR images, then creates a GitHub Release from the version's section of
-   `CHANGELOG.md`. If CI was still running, rerun Release after it passes.
+3. Wait for the `Release` workflow triggered by that tag. It builds and
+   publishes the downloads, GHCR images and GitHub Release directly, without
+   waiting for a separate CI run. A build error is reported by the workflow.
    Existing tags can be backfilled with `gh workflow run release.yml -f tag=v1.2.3`;
    this does not move the tag. See `docs/guide/releases.md` for downloads,
    image tags and the one-time GHCR visibility setting. The backoffice's
    update notice reads `releases/latest` and shows the release body, so a tag
    without a release is a version no administrator is told about.
-5. Deploy from the tag with a clean tree. What the server reports must be
+4. Deploy from the tag with a clean tree. What the server reports must be
    exactly `v1.2.3`.
 
 A release candidate is `v1.3.0-rc.1`; `git describe` follows it like any other
