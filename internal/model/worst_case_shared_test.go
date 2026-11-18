@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// The backoffice repeats WorstCase in TypeScript (web/src/views/admin/shared.ts)
+// The backoffice repeats ReservationEstimate in TypeScript (web/src/views/admin/shared.ts)
 // to tell an administrator how many turns an allowance pays for, and the two
 // copies are held to one table: web/test/models.test.ts reads the same file.
 // Changing the reservation here fails this test until the table is updated,
@@ -35,7 +35,7 @@ func TestWorstCaseMatchesTheSharedTable(t *testing.T) {
 			Capabilities: Capabilities{MaxOutputTokens: c.MaxOutputTokens},
 			Weights:      Weights{Request: c.Request, OutputToken: c.OutputToken},
 		}
-		tokens, credits := m.WorstCase()
+		tokens, credits := m.ReservationEstimate()
 		if tokens != c.Tokens || math.Abs(credits-c.Credits) > 1e-9 {
 			t.Errorf("max_output_tokens=%d request=%v output=%v: got (%d, %v), the table says (%d, %v)",
 				c.MaxOutputTokens, c.Request, c.OutputToken, tokens, credits, c.Tokens, c.Credits)

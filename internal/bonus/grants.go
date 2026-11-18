@@ -87,7 +87,7 @@ func (s *Store) Grant(ctx context.Context, barID string, target Target, amount f
 		}
 		for _, userID := range ids {
 			if err := insertGrant(ctx, tx, Grant{
-				BarID: barID, UserID: userID, Amount: amount, ExpiresAt: expiresAt,
+				ID: id.New(), BarID: barID, UserID: userID, Amount: amount, ExpiresAt: expiresAt,
 				Source: source, Note: note, GrantedBy: by, CreatedAt: now,
 			}); err != nil {
 				return err
@@ -129,7 +129,7 @@ func (s *Store) GrantTo(ctx context.Context, q database.Queryer, barID, userID s
 	if bar.Kind == KindShared {
 		return Grant{}, ErrSharedNoGrants
 	}
-	g := Grant{BarID: barID, UserID: userID, Amount: amount, ExpiresAt: expiresAt,
+	g := Grant{ID: id.New(), BarID: barID, UserID: userID, Amount: amount, ExpiresAt: expiresAt,
 		Source: source, Note: truncate(strings.TrimSpace(note), maxNote), CreatedAt: now}
 	if err := insertGrant(ctx, q, g); err != nil {
 		return Grant{}, err
@@ -138,7 +138,6 @@ func (s *Store) GrantTo(ctx context.Context, q database.Queryer, barID, userID s
 }
 
 func insertGrant(ctx context.Context, q database.Queryer, g Grant) error {
-	g.ID = id.New()
 	if _, err := q.Exec(ctx, `INSERT INTO bonus_grants
 		(id, bar_id, user_id, amount, used, expires_at, source, note, granted_by, created_at, warned_at)
 		VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, 0)`,

@@ -27,13 +27,19 @@ it('saves the original group policy and leaves the newly opened group alone', as
     const rows = host.querySelectorAll<HTMLTableRowElement>('tbody tr');
     rows[0]!.click();
     await settle();
+    const rpm = [...panels.querySelectorAll<HTMLElement>('.oa-field')]
+      .find((field) => field.querySelector('.oa-field-label')?.textContent === 'Requests per minute')!
+      .querySelector<HTMLInputElement>('input')!;
+    rpm.value = '11';
+    rpm.dispatchEvent(new Event('input', { bubbles: true }));
+    await settle();
     panels.querySelector<HTMLButtonElement>('.oa-panel-foot .oa-btn.primary')!.click();
     await settle();
     rows[1]!.click();
     await settle();
     release({ group: first });
     await settle();
-    expect(savePolicy).toHaveBeenCalledWith(expect.objectContaining({ scope_id: 'a', rpm: 10 }));
+    expect(savePolicy).toHaveBeenCalledWith(expect.objectContaining({ scope_id: 'a', rpm: 11 }));
     expect(panels.textContent).toContain('Beta');
   } finally { unmount(); }
 });

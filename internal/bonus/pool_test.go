@@ -76,6 +76,16 @@ func TestLargePoolBalanceAndAdjustment(t *testing.T) {
 	if err != nil || !near(p.Remaining(), 13_918_399) {
 		t.Fatalf("large pool adjustment: %+v %v", p, err)
 	}
+	filled, err := f.store.AdjustPool(context.Background(), bar.ID, true, MaxPoolAmount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bar.Pool = &filled
+	bar.Name = "renamed"
+	saved, err := f.store.UpdateBar(context.Background(), nil, bar)
+	if err != nil || saved.Pool.Amount <= MaxPoolAmount || saved.Pool.Remaining() != MaxPoolAmount {
+		t.Fatalf("rule edit after refill: %+v, %v", saved.Pool, err)
+	}
 	if _, err := f.store.AdjustPool(context.Background(), bar.ID, true, MaxPoolAmount+1); !errors.Is(err, ErrInvalidPoolAmount) {
 		t.Fatalf("pool adjustment over limit: %v", err)
 	}
@@ -183,5 +193,25 @@ func TestOnlyAPoolInOnlyModeHoldsItsModels(t *testing.T) {
 		if got, err := f.store.Exclusive(context.Background(), model); err != nil || got != want {
 			t.Errorf("%s: %v %v, want %v", model, got, err, want)
 		}
+	}
+}
+
+func TestGrantToReturnsItsStoredID(t *testing.T) {
+	f := newFixture(t)
+	account := f.account(t, "recipient")
+	bar := f.bar(t, Bar{Name: "Gift"})
+	err := f.db.Tx(t.Context(), func(tx *database.Tx) error {
+		grant, err := f.store.GrantTo(t.Context(), tx, bar.ID, account.ID, 1, 0, "checkin", "")
+		if err != nil {
+			return err
+		}
+		owner, err := f.store.GrantOwner(t.Context(), tx, grant.ID)
+		if owner != account.ID || err != nil {
+			t.Errorf("reading grant %q: owner %q, %v", grant.ID, owner, err)
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

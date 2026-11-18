@@ -56,6 +56,7 @@ var (
 // otherwise anybody could put a stranger's address on a new provider account
 // and walk into the account here that belongs to it.
 type Identity struct {
+	Issuer   string
 	Provider string
 	Subject  string
 	Login    string
@@ -131,15 +132,16 @@ func ByID(id string) *Provider {
 
 // Credentials are what an operator pastes in from the provider's console.
 type Credentials struct {
-	ClientID     string
-	ClientSecret string
-	Issuer       string
-	AuthURL      string
-	TokenURL     string
-	UserInfoURL  string
-	Scopes       []string
-	DisplayName  string
-	TrustEmail   bool
+	identityAuthority string
+	ClientID          string
+	ClientSecret      string
+	Issuer            string
+	AuthURL           string
+	TokenURL          string
+	UserInfoURL       string
+	Scopes            []string
+	DisplayName       string
+	TrustEmail        bool
 }
 
 func (c Credentials) configuredFor(providerID string) bool {
@@ -288,6 +290,7 @@ func (p *Provider) Authenticate(
 		return Identity{}, fmt.Errorf("%w: the provider named no account", ErrUnavailable)
 	}
 	identity.Provider = p.ID
+	identity.Issuer = creds.identitySource(p.ID)
 	return identity, nil
 }
 

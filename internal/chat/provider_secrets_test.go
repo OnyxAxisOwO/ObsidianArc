@@ -21,9 +21,13 @@ func TestProviderDiagnosticsDoNotReachTheChatOrTranscript(t *testing.T) {
 		} else {
 			f.upstream.fail(http.StatusBadRequest, `{"error":{"message":"diagnostic credential `+encoded+`"}}`)
 		}
-		out, err := f.turn(t, context.Background(), TurnRequest{Content: "hello", Stream: stream})
+		out, err := f.turnAsRequested(t, context.Background(), TurnRequest{Content: "hello", Stream: stream})
 		if err != nil {
 			t.Fatal(err)
+		}
+		sent, _ := f.upstream.lastRequest()["stream"].(bool)
+		if sent != stream {
+			t.Fatalf("upstream stream = %t, want %t", sent, stream)
 		}
 		if out.failure == nil {
 			t.Fatal("expected a provider failure")

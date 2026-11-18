@@ -655,6 +655,12 @@ func init() {
 		Endpoints:  []string{"GET /api/admin/quota/policies", "PUT /api/admin/quota/policies"},
 		Run: func(_ context.Context, rt *Runtime) error {
 			scope := rt.String("scope")
+			if (scope == "global" && rt.Present("id")) || ((scope == "user" || scope == "group") && rt.String("id") == "") {
+				return rt.Fail(Text{EN: "Only user and group scopes require --id.", ZH: "用户及分组范围必须指定 --id，全局范围应省略。"})
+			}
+			if rt.String("window") == "" && (rt.Present("enabled") || rt.Present("requests") || rt.Present("tokens") || rt.Present("credits") || rt.Present("clear-window")) {
+				return rt.Fail(Text{EN: "Window limits require --window.", ZH: "窗口限制必须指定 --window。"})
+			}
 			var scopeID string
 			switch scope {
 			case "global":
@@ -768,6 +774,9 @@ func init() {
 				return rt.Fail(Text{EN: "a scope is required: global, group or user", ZH: "需要 scope：global、group 或 user"})
 			}
 			scope := rt.Arg(0)
+			if (scope == "global" && rt.NArg() > 1) || ((scope == "user" || scope == "group") && rt.NArg() != 2) {
+				return rt.Fail(Text{EN: "Only user and group scopes require a reference.", ZH: "用户及分组范围必须提供目标，全局范围应省略。"})
+			}
 			var scopeID string
 			switch scope {
 			case "global":

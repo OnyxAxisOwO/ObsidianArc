@@ -151,18 +151,14 @@ func (ed *lineEditor) Feed(r rune) (line string, done bool, eof bool) {
 			if !submit {
 				return "", false, false
 			}
-			return ed.finishLine(matched), true, false
+			return ed.submit(matched)
 		}
 		return "", false, false
 	}
 
 	switch {
 	case r == '\r' || r == '\n':
-		if ed.dropped {
-			ed.refuseLine()
-			return "", false, false
-		}
-		return ed.finishLine(string(ed.buf)), true, false
+		return ed.submit(string(ed.buf))
 	case r == 0x03: // Ctrl-C: abandon the line, idle or not.
 		_, _ = ed.w.Write([]byte("^C\r\n"))
 		ed.buf = nil
@@ -631,6 +627,14 @@ func (ed *lineEditor) printCompletionList(items []editorCompletion) {
 	ed.redraw()
 }
 
+func (ed *lineEditor) submit(line string) (string, bool, bool) {
+	if ed.dropped {
+		ed.refuseLine()
+		return "", false, false
+	}
+	return ed.finishLine(line), true, false
+}
+
 func (ed *lineEditor) startSearch() {
 	ed.searching = true
 	ed.searchTerm = nil
@@ -715,9 +719,10 @@ func (ed *lineEditor) endSearch(cancelled bool) {
 	} else {
 		ed.buf = []rune(ed.searchMatch)
 		ed.pos = len(ed.buf)
-		// The match is a history line, which is never over the bound. Cancelling
-		// keeps the flag, because the buffer it restores may be the overlong one.
-		ed.dropped = false
+		// An empty search restores the draft, including its truncation state.
+		if ed.searchIdx < len(ed.hist.lines) {
+			ed.dropped = false
+		}
 	}
 	ed.preSearchBuf = nil
 	ed.redraw()

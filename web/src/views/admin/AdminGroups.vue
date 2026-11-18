@@ -50,14 +50,16 @@ const models = ref<Pick<AdminModel, 'id' | 'display_name' | 'model_id' | 'enable
 const error = ref('');
 const loaded = ref(false);
 
-const { open: panelOpen, panel, key: panelKey, show: showPanel, hide: hidePanel, closed: panelClosed } = usePanelSlot();
+const { open: panelOpen, key: panelKey, show: showPanel, hide: hidePanel, closed: panelClosed } = usePanelSlot();
 const existing = ref<Group | null>(null);
 let panelRevision = 0;
+let savedQuota = '';
 const busy = ref(false);
 const panelError = ref('');
 const nameField = ref<InstanceType<typeof OaTextField> | null>(null);
 
 interface WindowForm {
+  override: boolean;
   enabled: boolean;
   requests: number | null;
   tokens: number | null;
@@ -111,6 +113,7 @@ function limitBadges(policy: QuotaPolicy): string[] {
   if (policy.rpm) parts.push(t('perMinute', { count: policy.rpm }));
   for (const kind of WINDOWS) {
     const limits = policy.windows[kind];
+    if (limits?.enabled === false) parts.push(kind + ' · ' + t('disabled'));
     if (!limits?.enabled) continue;
     // A window can carry requests and tokens at once, and each figure the
     // operator set is its own badge; one badge would hide the rest.
@@ -146,6 +149,7 @@ function open(row: Group | null): void {
     const limits: QuotaLimits = policy.windows[kind]
       ?? { enabled: null, requests: null, tokens: null, credits: null };
     windows[kind] = {
+      override: limits.enabled != null,
       enabled: limits.enabled === true,
       requests: limits.requests,
       tokens: limits.tokens,
@@ -176,6 +180,7 @@ function open(row: Group | null): void {
     windows,
   };
 
+  savedQuota = row ? JSON.stringify(quotaInput()) : '';
   showPanel();
   void nextTick(() => nameField.value?.focus({ preventScroll: true }));
 }
@@ -198,6 +203,19 @@ const bulk = useBulk(() => groups.value, (row) => row.id);
 // reason, which the bar then shows, and the rule stays in one place.
 function bulkRemove(): Promise<void> {
   return bulk.run((row) => adminApi.deleteGroup(row.id), load);
+}
+
+function quotaInput() {
+  return {
+    rpm: form.value.rpm,
+    tpm: form.value.tpm,
+    windows: Object.fromEntries(WINDOWS.map((kind) => [kind, {
+      enabled: form.value.windows[kind].override ? form.value.windows[kind].enabled : null,
+      requests: windowFigure(form.value.windows[kind].requests),
+      tokens: windowFigure(form.value.windows[kind].tokens),
+      credits: windowFigure(form.value.windows[kind].credits),
+    }])),
+  };
 }
 
 async function save(): Promise<void> {
@@ -230,16 +248,8 @@ async function save(): Promise<void> {
   const wasCreating = creating.value;
   const revision = panelRevision;
   const targetID = existing.value?.id;
-  const quota = {
-    rpm: form.value.rpm,
-    tpm: form.value.tpm,
-    windows: Object.fromEntries(WINDOWS.map((kind) => [kind, {
-      enabled: form.value.windows[kind].enabled ? true : null,
-      requests: windowFigure(form.value.windows[kind].requests),
-      tokens: windowFigure(form.value.windows[kind].tokens),
-      credits: windowFigure(form.value.windows[kind].credits),
-    }])),
-  };
+  const quota = quotaInput();
+  const saveQuota = JSON.stringify(quota) !== savedQuota;
   try {
     const modelGrants = form.value.allowAll
       ? []
@@ -271,11 +281,9 @@ async function save(): Promise<void> {
     // no quota policy and no way back to it from this panel.
     if (wasCreating && revision === panelRevision) existing.value = saved;
 
-    await adminApi.savePolicy({
-      scope: 'group',
-      scope_id: saved.id,
-      ...quota,
-    });
+    if (saveQuota) {
+      await adminApi.savePolicy({ scope: 'group', scope_id: saved.id, ...quota });
+    }
 
     if (revision === panelRevision) finish();
     else void load();
@@ -467,6 +475,11 @@ onMounted(load);
     <template v-for="kind in WINDOWS" :key="kind">
       <OaFormSection :title="windowLabel(kind)" />
       <OaSwitchField
+        v-model="form.windows[kind].override"
+        :label="t('overrideWindow', { window: kind })"
+      />
+      <OaSwitchField
+        v-if="form.windows[kind].override"
         v-model="form.windows[kind].enabled"
         :label="t('enforceWindow', { window: windowLabel(kind).toLowerCase() })"
       />

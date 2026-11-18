@@ -73,7 +73,7 @@ describe('code splitting invariants in production bundle', () => {
     expect(pluginFiles, `plugin chunks: ${pluginFiles.join(', ')}`).toHaveLength(pluginNames.length);
     const core = files.filter((f) => !pluginFiles.includes(f));
 
-    // Exactly twenty-one besides the plugins', and deliberately exact: the project ships no fonts, no
+    // Exactly twenty-two besides the plugins', and deliberately exact: the project ships no fonts, no
     // images and no other chunks, so an extra file is either a split that
     // was not meant to happen or an asset nobody decided to ship. Route-level
     // splitting in particular produces a dozen of these on its own and is
@@ -105,7 +105,8 @@ describe('code splitting invariants in production bundle', () => {
     for (const extension of ['js', 'css']) {
       expect(files.filter((file) => new RegExp(`^ModelInfo-[^.]+\\.${extension}$`).test(file))).toHaveLength(1);
     }
-    expect(core, `unexpected build output: ${core.join(', ')}`).toHaveLength(21);
+    expect(files.filter((file) => /^ImageLabPanel-[^.]+\.js$/.test(file))).toHaveLength(1);
+    expect(core, `unexpected build output: ${core.join(', ')}`).toHaveLength(22);
 
     const indexJs = files.filter((f) => /^index-[^.]+\.js$/.test(f));
     const indexCss = files.filter((f) => /^index-[^.]+\.css$/.test(f));

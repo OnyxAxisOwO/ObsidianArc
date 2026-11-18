@@ -20,6 +20,9 @@ import {
   claimInviteCode, fetchProfileInvites, formatInviteCode, inviteLink, regenerateProfileInvite,
   type ProfileInvitee, type ProfileInvites,
 } from '@/api/invites';
+import OaPagination from '@/components/OaPagination.vue';
+import type { PageState } from '@/components/table-types';
+import { rememberedPageSize } from '@/lib/page-size';
 import OaConfirmButton from '@/components/OaConfirmButton.vue';
 import { t, tn } from '@/composables/useI18n';
 import { pluginInviteeNote } from '@/plugins/registry';
@@ -37,6 +40,8 @@ const router = useRouter();
 
 const data = ref<ProfileInvites | null>(null);
 const loading = ref(true);
+const page = ref<PageState>({ page: 1, pageSize: rememberedPageSize() });
+let loadTicket = 0;
 const flash = ref('');
 const busy = ref(false);
 const copiedCode = ref(false);
@@ -46,14 +51,17 @@ const formattedCode = computed(() => (data.value ? formatInviteCode(data.value.c
 const link = computed(() => (data.value ? inviteLink(data.value.code) : ''));
 
 async function load(): Promise<void> {
+  const ticket = ++loadTicket;
   loading.value = true;
   flash.value = '';
   try {
-    data.value = await fetchProfileInvites();
+    const { page: current, pageSize } = page.value;
+    const result = await fetchProfileInvites(pageSize, (current - 1) * pageSize);
+    if (ticket === loadTicket) data.value = result;
   } catch (failure) {
-    flash.value = apiErrorText(failure);
+    if (ticket === loadTicket) flash.value = apiErrorText(failure);
   } finally {
-    loading.value = false;
+    if (ticket === loadTicket) loading.value = false;
   }
 }
 
@@ -97,7 +105,11 @@ async function regenerate(): Promise<void> {
   busy.value = true;
   flash.value = '';
   try {
-    data.value = await regenerateProfileInvite();
+    const refreshed = await regenerateProfileInvite();
+    ++loadTicket;
+    page.value = { ...page.value, page: 1 };
+    data.value = { ...refreshed, invitees: refreshed.invitees.slice(0, page.value.pageSize) };
+    if (page.value.pageSize > 100 && refreshed.used > 100) await load();
   } catch (failure) {
     if (failure instanceof ApiError && failure.code === 'too_many_attempts') {
       flash.value = t('tooManyAttempts', { count: Number(failure.details['retry_after_seconds'] ?? 60) });
@@ -326,6 +338,8 @@ function skipLabel(reason: string): string {
         </div>
       </template>
       <p v-else class="oa-2fa-note">{{ t('inviteesEmpty') }}</p>
+      <OaPagination v-bind="page" :total="data.used" :busy="loading || busy"
+        @change="(next) => { page = next; load(); }" />
 
       <div class="oa-2fa-row">
         <div class="oa-2fa-row-text">

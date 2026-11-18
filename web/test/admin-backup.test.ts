@@ -192,6 +192,8 @@ describe('admin instance backup', () => {
   });
 
   it('correctly updates configured status when saving while background poll was in flight', async () => {
+    vi.useFakeTimers();
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
     const unconfigured: AdminBackup = {
       ...backup,
       configured: false,
@@ -227,8 +229,8 @@ describe('admin instance backup', () => {
     expect(testBtn.disabled).toBe(true);
     expect(runBtn.disabled).toBe(true);
 
-    // Trigger in-flight poll
-    void adminApi.backup();
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(adminApi.backup).toHaveBeenCalledTimes(2);
 
     // Fill form and save
     const endpoint = fieldInput(t('backupEndpoint'));
@@ -239,14 +241,11 @@ describe('admin instance backup', () => {
     bucketField.dispatchEvent(new Event('input', { bubbles: true }));
     await nextTick();
 
-    const savePromise = (async () => {
-      button(actions, t('save')).click();
-      await settle();
-    })();
-
-    // Background poll finishes before save refresh returns
+    button(actions, t('save')).click();
+    await settle();
+    expect(adminApi.backup).toHaveBeenCalledTimes(3);
     resolvePoll!(unconfigured);
-    await savePromise;
+    await settle();
 
     expect(testBtn.disabled).toBe(false);
     expect(runBtn.disabled).toBe(false);

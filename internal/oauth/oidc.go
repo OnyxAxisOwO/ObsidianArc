@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 )
 
@@ -359,6 +360,22 @@ func (s *Service) discover(ctx context.Context, client *http.Client, issuer stri
 	return doc, nil
 }
 
+// Discovery vouches for the endpoints published by an issuer. An explicit
+// override instead chooses who can attest a subject even when an issuer is
+// also named, particularly for userinfo-only servers.
+func (c Credentials) identitySource(provider string) string {
+	if provider != "oidc" {
+		return ""
+	}
+	if c.identityAuthority != "" {
+		return c.identityAuthority
+	}
+	if c.Issuer != "" && c.AuthURL == "" && c.TokenURL == "" && c.UserInfoURL == "" {
+		return c.Issuer
+	}
+	return "manual:" + secret.Digest(c.AuthURL+"\x00"+c.TokenURL+"\x00"+c.UserInfoURL) + ":" + c.Issuer
+}
+
 // ResolveCredentials resolves endpoints for a provider, querying discovery for OIDC
 // when endpoints have not been manually overridden.
 func (s *Service) ResolveCredentials(ctx context.Context, client *http.Client, providerID string) (Credentials, error) {
@@ -366,6 +383,7 @@ func (s *Service) ResolveCredentials(ctx context.Context, client *http.Client, p
 	if providerID != "oidc" {
 		return creds, nil
 	}
+	creds.identityAuthority = creds.identitySource(providerID)
 	// Both the start and the callback come through here, and the callback's
 	// code exchange posts the client secret to the token URL, so a configured
 	// plaintext address is refused before anything is sent to it. Discovered

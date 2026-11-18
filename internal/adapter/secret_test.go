@@ -62,7 +62,7 @@ func TestErrorMessageRemovesTheKey(t *testing.T) {
 			// Decoded before the key is looked for, so a body that spells the
 			// same characters as JSON escapes is caught too.
 			name: "json escapes",
-			body: `{"error":{"message":"bad key sk-test-0123456789abcdef"}}`,
+			body: `{"error":{"message":"bad key \u0073\u006b-test-0123456789abcdef"}}`,
 			want: "bad key ***",
 		},
 		{

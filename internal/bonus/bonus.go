@@ -233,7 +233,7 @@ func encodeModels(ids []string) string {
 	return string(raw)
 }
 
-func (b *Bar) normalise() error {
+func (b *Bar) normalise(creating bool) error {
 	b.Name = truncate(strings.TrimSpace(b.Name), maxName)
 	b.Description = truncate(strings.TrimSpace(b.Description), maxText)
 	if b.Name == "" {
@@ -261,7 +261,7 @@ func (b *Bar) normalise() error {
 		if b.Pool == nil {
 			b.Pool = &Pool{}
 		}
-		if err := b.Pool.normalise(); err != nil {
+		if err := b.Pool.normalise(creating); err != nil {
 			return err
 		}
 	} else {
@@ -286,7 +286,7 @@ func truncate(s string, n int) string {
 
 // CreateBar adds a bar.
 func (s *Store) CreateBar(ctx context.Context, bar Bar, createdBy string) (Bar, error) {
-	if err := bar.normalise(); err != nil {
+	if err := bar.normalise(true); err != nil {
 		return Bar{}, err
 	}
 	at := time.Now()
@@ -319,7 +319,7 @@ func (s *Store) UpdateBar(ctx context.Context, q database.Queryer, bar Bar) (Bar
 	if q == nil {
 		q = s.db
 	}
-	if err := bar.normalise(); err != nil {
+	if err := bar.normalise(false); err != nil {
 		return Bar{}, err
 	}
 	// The stored cell is read as written, not through modelsForScreen. The screen

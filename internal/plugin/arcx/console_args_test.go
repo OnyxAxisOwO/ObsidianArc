@@ -1,6 +1,9 @@
 package arcx
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func consoleWithArgs(args, flags string) string {
 	return `{"arcx":1,"name":"demo","version":"1","title":{"en":"Demo"},"requires":{"api":5},"backend":"plugin.wasm",` +
@@ -31,5 +34,20 @@ func TestSensitiveArgumentsAndFlagsAreRead(t *testing.T) {
 	c := m.Console[0]
 	if !c.Args[0].Sensitive || !c.Flags[0].Sensitive {
 		t.Fatalf("sensitive was not read: argument %v, flag %v", c.Args[0].Sensitive, c.Flags[0].Sensitive)
+	}
+}
+
+func TestConsoleManifestMatchesTheCommandGrammar(t *testing.T) {
+	valid := consoleWithArgs("", "")
+	for _, invalid := range []string{
+		strings.Replace(valid, "demo import", "demo command with five words", 1),
+		consoleWithArgs("", `{"name":"--help"}`),
+		consoleWithArgs("", `{"name":"--mode"},{"name":"--mode"}`),
+		consoleWithArgs("", `{"name":"value"}`),
+		consoleWithArgs("", `{"name":"--mode","value":"A B"}`),
+	} {
+		if _, err := ParseManifest([]byte(invalid)); err == nil {
+			t.Fatal("accepted invalid console declaration", invalid)
+		}
 	}
 }

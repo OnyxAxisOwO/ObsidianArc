@@ -261,21 +261,21 @@ func noMatch(rt *Runtime, kind Text, ref string) error {
 	})
 }
 
-// resolveUserRef resolves ref to a user id via GET /api/admin/users, which
-// every command in this file already holds the "users" grant to call. A
-// value that already looks like an id is trusted as-is and not looked up —
-// a wrong id then surfaces as the endpoint's own 404, which is the correct
-// answer for "that account is gone", not "no account is named that".
+// A scoped operator can resolve a name with the same grant used by the command.
 func resolveUserRef(rt *Runtime, ref string) (string, error) {
 	if id.Valid(ref) {
 		return ref, nil
+	}
+	path := "/api/admin/users?"
+	if !rt.Session.Actor.CanAdmin("users") {
+		path = "/api/admin/references?kind=accounts&"
 	}
 	// An exact username is looked up on its own first. The search below is
 	// newest-first and capped at one page, so an older account whose name is
 	// contained in newer ones would otherwise be unreachable by its name.
 	if strings.TrimSpace(ref) != "" {
 		exact := url.Values{"username": {ref}, "limit": {"1"}}
-		data, _, err := rt.Call(http.MethodGet, "/api/admin/users?"+exact.Encode(), nil)
+		data, _, err := rt.Call(http.MethodGet, path+exact.Encode(), nil)
 		if err != nil {
 			return "", err
 		}
@@ -284,7 +284,7 @@ func resolveUserRef(rt *Runtime, ref string) (string, error) {
 		}
 	}
 	q := url.Values{"q": {ref}, "limit": {strconv.Itoa(accountPageSize)}}
-	data, _, err := rt.Call(http.MethodGet, "/api/admin/users?"+q.Encode(), nil)
+	data, _, err := rt.Call(http.MethodGet, path+q.Encode(), nil)
 	if err != nil {
 		return "", err
 	}

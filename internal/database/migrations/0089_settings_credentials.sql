@@ -1,0 +1,1 @@
+ALTER TABLE settings ADD COLUMN sealed_value TEXT NOT NULL DEFAULT '';

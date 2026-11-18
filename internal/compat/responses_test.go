@@ -1,6 +1,7 @@
 package compat
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -26,6 +27,15 @@ func TestResponsesTranslatesAFlatToolOnTheWayOut(t *testing.T) {
 	w := f.do(t, http.MethodPost, "/v1/responses", f.token, responsesBody(f.model.ID))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+
+	var echoed struct {
+		Instructions string
+		Tools        []responsesTool
+		ToolChoice   string `json:"tool_choice"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &echoed); err != nil || echoed.Instructions != "You are helpful." || len(echoed.Tools) != 1 || echoed.Tools[0].Name != "read_file" || echoed.ToolChoice != "auto" {
+		t.Fatalf("response metadata: %+v, %v", echoed, err)
 	}
 
 	// Flat on the way in, nested under `function` on the way out.

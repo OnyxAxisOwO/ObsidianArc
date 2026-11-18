@@ -43,6 +43,7 @@ export interface RequestOptions {
   // Sent as a multipart form, for the one kind of request that carries a file.
   // The browser writes the Content-Type, boundary included.
   form?: FormData;
+  file?: File;
 }
 
 async function request<T>(method: string, path: string, options: RequestOptions = {}): Promise<T> {
@@ -54,7 +55,10 @@ async function request<T>(method: string, path: string, options: RequestOptions 
     headers: { Accept: 'application/json' },
   };
   if (options.signal) init.signal = options.signal;
-  if (options.form) {
+  if (options.file) {
+    init.headers = { ...init.headers, 'Content-Type': 'application/x-tar' };
+    init.body = options.file;
+  } else if (options.form) {
     init.body = options.form;
   } else if (options.body !== undefined) {
     init.headers = { ...init.headers, 'Content-Type': 'application/json' };

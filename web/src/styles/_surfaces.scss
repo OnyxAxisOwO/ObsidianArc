@@ -4848,3 +4848,9 @@
 .oa-legal-document summary { cursor: pointer; font-weight: 500; }
 .oa-legal-document .oa-checkbox-field { margin-top: 10px; }
 .oa-legal-body { max-height: 240px; overflow: auto; overflow-wrap: anywhere; }
+
+/* Readers who reduce motion still see the expanded panel and the current step. */
+@media (prefers-reduced-motion: reduce) {
+  .oa-uptime-chevron, .oa-uptime-accordion, .oa-uptime-accordion-body { transition: none; }
+  .oa-2fa-pane, .oa-2fa-key { animation: none; }
+}

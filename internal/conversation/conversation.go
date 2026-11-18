@@ -129,6 +129,16 @@ const (
 	MaxListLimit     = 200
 )
 
+// MessageText keeps a delivered assistant answer intact across storage and
+// backup. User-authored messages retain the same limits as the composer.
+func MessageText(role Role, content, reasoning string) (string, string) {
+	content, reasoning = text.Clean(content), text.Clean(reasoning)
+	if role == RoleAssistant {
+		return content, reasoning
+	}
+	return text.TrimAndTruncate(content, MaxContentChars), text.TrimAndTruncate(reasoning, MaxReasoningChars)
+}
+
 type Store struct{ db *database.DB }
 
 func NewStore(db *database.DB) *Store { return &Store{db: db} }
@@ -436,9 +446,24 @@ func (s *Store) MessagePage(ctx context.Context, q database.Queryer, userID, con
 	if err != nil {
 		return nil, fmt.Errorf("conversation: message page: %w", err)
 	}
-	defer rows.Close()
-
-	messages, err := scanMessages(rows)
+	// A single generated answer can occupy an entire provider response. Read
+	// until either limit is met so a page never accumulates many such answers.
+	messages := []Message{}
+	size := 0
+	for rows.Next() {
+		message, err := scanMessage(rows)
+		if err != nil {
+			rows.Close()
+			return nil, err
+		}
+		messages = append(messages, message)
+		size += len(message.Content) + len(message.Reasoning)
+		if size >= 1<<20 {
+			break
+		}
+	}
+	err = rows.Err()
+	rows.Close()
 	if err != nil || len(messages) == 0 {
 		return messages, err
 	}
@@ -606,6 +631,8 @@ func (s *Store) requestPictures(ctx context.Context, q database.Queryer, userID 
 // AppendInput is one message to add. Seq is assigned by the store so two
 // concurrent turns cannot land on the same position.
 type AppendInput struct {
+	// A backup supplies the original timestamp. Ordinary writes use the current time.
+	CreatedAt      int64
 	ConversationID string
 	UserID         string
 	Role           Role
@@ -705,18 +732,23 @@ func (s *Store) appendIn(ctx context.Context, q database.Queryer, in AppendInput
 	// A NUL byte fails the whole INSERT on PostgreSQL, so it is removed before
 	// the limits count the text. Every writer goes through here, and a model's
 	// answer is the text no caller can refuse first.
+	content, reasoning := MessageText(in.Role, in.Content, in.Reasoning)
+	createdAt := in.CreatedAt
+	if createdAt == 0 {
+		createdAt = time.Now().UnixMilli()
+	}
 	record := Message{
 		ID:        id.New(),
 		Seq:       next,
 		Role:      in.Role,
-		Content:   text.TrimAndTruncate(text.Clean(in.Content), MaxContentChars),
-		Reasoning: text.TrimAndTruncate(text.Clean(in.Reasoning), MaxReasoningChars),
+		Content:   content,
+		Reasoning: reasoning,
 		Error:     text.TrimAndTruncate(text.Clean(in.Error), MaxErrorChars),
 		ErrorCode: in.ErrorCode,
 		ModelID:   in.ModelID,
 		ModelName: in.ModelName,
 		Stats:     in.Stats,
-		CreatedAt: time.Now().UnixMilli(),
+		CreatedAt: createdAt,
 	}
 
 	stats := ""

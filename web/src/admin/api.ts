@@ -55,6 +55,7 @@ export interface Provider {
   api_key_hint: string;
   /** One per stored key, in the order they are taken. */
   api_key_hints: string[];
+  key_revision: number;
   key_rotation: KeyRotation;
   headers: Record<string, string>;
   anthropic_version: string;
@@ -749,7 +750,7 @@ export interface CardHolding {
 }
 
 export type GroupOption = Pick<Group, 'id' | 'name'>;
-type ModelOption = Pick<AdminModel, 'id' | 'display_name' | 'model_id' | 'enabled' | 'provider_name'>;
+export type ModelOption = Pick<AdminModel, 'id' | 'display_name' | 'model_id' | 'enabled' | 'provider_name'>;
 type ProviderOption = Pick<Provider, 'id' | 'name' | 'kind' | 'enabled'>;
 /** An application registered to sign people in with accounts from here. */
 export interface SignInApplication {
@@ -916,9 +917,9 @@ export interface AdminProviderInput {
   key_rotation?: KeyRotation;
   /** Keys typed in this save, appended after the kept ones. */
   api_keys?: string[];
-  /** Which stored keys stay, by position in `key_hints`. */
+  /** Which stored keys stay, by position at `key_revision`. */
   keep_keys?: number[];
-  key_hints?: string[];
+  key_revision?: number;
   headers?: Record<string, string>;
   /** A duplicate names the provider whose keys it takes, which this page never holds. */
   copy_key_from?: string;

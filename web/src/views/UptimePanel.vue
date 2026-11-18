@@ -19,7 +19,7 @@ import { usePanelExit } from '@/composables/usePanelExit';
 import { usePanelFullscreen } from '@/composables/usePanelFullscreen';
 import { IconChevron } from '@/icons';
 import { maskProvider } from '@/admin/safeMode';
-import { formatUptime } from '@/lib/format';
+import { formatUptime, uptimePercent } from '@/lib/format';
 import { canAdmin, siteInfo } from '@/stores/session';
 
 interface ModelUptimeItem {
@@ -182,7 +182,7 @@ onMounted(load);
             </div>
             <div class="oa-uptime-row-meta">
               <span class="oa-uptime-percentage" :title="t('uptimeHourTitle')">
-                {{ t('uptimeHourShort') }} {{ model.uptime_hour === undefined ? '—' : `${(model.uptime_hour * 100).toFixed(model.uptime_hour >= 0.995 ? 0 : 1)}%` }}
+                {{ t('uptimeHourShort') }} {{ model.uptime_hour === undefined ? '—' : `${uptimePercent(model.uptime_hour)}%` }}
               </span>
               <OaBadge
                 :tone="model.state === 'up' ? 'default' : model.state === 'degraded' ? 'warning' : model.state === 'down' ? 'danger' : 'muted'"
@@ -215,7 +215,7 @@ onMounted(load);
                     {{ t('statRequests') }}: <strong>{{ model.total ?? 0 }}</strong>
                   </span>
                   <span v-if="model.uptime !== undefined">
-                    {{ t('uptimeDayTitle') }}: <strong>{{ (model.uptime * 100).toFixed(1) }}%</strong>
+                    {{ t('uptimeDayTitle') }}: <strong>{{ uptimePercent(model.uptime) }}%</strong>
                   </span>
                 </div>
               </div>

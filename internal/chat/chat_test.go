@@ -320,9 +320,14 @@ type collected struct {
 
 func (f *fixture) turn(t *testing.T, ctx context.Context, req TurnRequest) (*collected, error) {
 	t.Helper()
+	req.Stream = true
+	return f.turnAsRequested(t, ctx, req)
+}
+
+func (f *fixture) turnAsRequested(t *testing.T, ctx context.Context, req TurnRequest) (*collected, error) {
+	t.Helper()
 	req.User = f.account
 	req.ModelID = f.model.ID
-	req.Stream = true
 
 	resolved, release, err := f.service.Prepare(ctx, &req)
 	if err != nil {

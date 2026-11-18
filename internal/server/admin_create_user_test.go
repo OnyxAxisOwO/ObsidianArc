@@ -116,9 +116,9 @@ func TestAdminCreatedAccountWithoutPasswordCannotSignIn(t *testing.T) {
 
 	for _, attempt := range []string{"", "a-good-password", " "} {
 		login := in.do(http.MethodPost, "/api/auth/login",
-			map[string]string{"username": "station-bot", "password": attempt}, nil)
-		if login.Code == http.StatusOK {
-			t.Fatalf("signed in to a passwordless account with %q", attempt)
+			map[string]string{"identifier": "station-bot", "password": attempt}, nil)
+		if login.Code != http.StatusUnauthorized || !strings.Contains(login.Body.String(), "invalid_credentials") {
+			t.Fatalf("login with %q: %d %s", attempt, login.Code, login.Body.String())
 		}
 	}
 }

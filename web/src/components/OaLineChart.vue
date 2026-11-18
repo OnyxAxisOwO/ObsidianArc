@@ -6,6 +6,7 @@
 // of kilobytes for one graph.
 
 import { computed, ref } from 'vue';
+import { uptimePercent } from '@/lib/format';
 import { t } from '@/composables/useI18n';
 
 interface ChartPoint {
@@ -117,21 +118,12 @@ function formatTime(timestamp: number): string {
   return `${h}:${m}`;
 }
 
-// Rounding 99.7% to a whole percent prints "100%", which reads as a window
-// with no failures at all. Near the top the value is truncated to one decimal
-// instead, so only a window that really had no failures says 100.
-function formatUptime(uptime: number): string {
-  if (uptime >= 1) return '100';
-  if (uptime >= 0.995) return (Math.floor(uptime * 1000) / 10).toFixed(1);
-  return (uptime * 100).toFixed(1);
-}
-
 function pointTooltip(p: ChartPoint): string {
   const timeStr = formatTime(p.at);
   if (p.total === 0 || p.uptime === null) {
     return `${timeStr} — ${t('uptimeNoData')}`;
   }
-  const pct = formatUptime(p.uptime);
+  const pct = uptimePercent(p.uptime);
   return `${timeStr} — ${pct}% (${p.total} ${t('statRequests').toLowerCase()})`;
 }
 

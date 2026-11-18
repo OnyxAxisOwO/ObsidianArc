@@ -105,3 +105,12 @@ export function formatBytes(count: number): string {
   if (count >= 1024) return `${Math.round(count / 1024)} KB`;
   return `${count} B`;
 }
+
+// Rounding 99.7% to a whole percent prints "100%", which reads as a window
+// with no failures at all. Near the top the value is truncated to one decimal
+// instead, so only a window that really had no failures says 100.
+export function uptimePercent(uptime: number): string {
+  if (uptime >= 1) return '100';
+  if (uptime >= 0.995) return (Math.floor(uptime * 1000) / 10).toFixed(1);
+  return (uptime * 100).toFixed(1);
+}

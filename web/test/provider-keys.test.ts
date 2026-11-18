@@ -10,7 +10,7 @@ import { settle } from './helpers';
 
 const provider: Provider = {
   id: 'prov-1', name: 'Pool', kind: 'openai', base_url: 'https://api.example.com/v1',
-  allow_insecure: false, api_key_hint: '••••1111', api_key_hints: ['••••1111', '••••2222'],
+  allow_insecure: false, api_key_hint: '••••1111', key_revision: 1, api_key_hints: ['••••1111', '••••2222'],
   key_rotation: 'sequential', headers: {}, anthropic_version: '',
   reasoning_style: 'auto', timeout_seconds: 120, enabled: true, sort_order: 0, model_count: 0,
   created_at: Date.now(), updated_at: Date.now(),
@@ -94,7 +94,7 @@ describe('provider API keys', () => {
 
     const payload = await save();
     expect(payload['keep_keys']).toEqual([1]);
-    expect(payload['key_hints']).toEqual(['••••1111', '••••2222']);
+    expect(payload['key_revision']).toBe(1);
     expect(payload['api_keys']).toEqual(['sk-new-3333', 'sk-new-4444', 'sk-new-5555']);
     expect(payload['key_rotation']).toBe('sequential');
   });

@@ -13,6 +13,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/project"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
@@ -140,6 +141,16 @@ func (h *Handlers) export(w http.ResponseWriter, r *http.Request) error {
 	// an error response rather than a body that begins and stops. The file is
 	// named only once the body is about to begin: an error response carrying an
 	// attachment name would be saved to disk as the export.
+	if r.URL.Query().Get("format") == "tar" {
+		w.Header().Set("Content-Type", "application/x-tar")
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"obsidian-arc-%s-%s.tar\"", safeName(account.Username), time.Now().Format("2006-01-02")))
+		rc := http.NewResponseController(w)
+		if err := h.service.exportParts(r.Context(), account, &deadlineWriter{w: w, rc: rc, timeout: exportWriteTimeout}, 32); err != nil {
+			return err
+		}
+		_ = rc.SetWriteDeadline(time.Time{})
+		return nil
+	}
 	stream, err := h.service.openExport(r.Context(), account)
 	if err != nil {
 		if errors.Is(err, ErrTooLarge) {
@@ -148,7 +159,7 @@ func (h *Handlers) export(w http.ResponseWriter, r *http.Request) error {
 			// The limits travel as details as well as in the sentence, so a reader's
 			// own wording can carry the same figures.
 			return httpx.Conflict("export_too_large", fmt.Sprintf(
-				"This account is too large for one export file: the server imports at most %d conversations, %d messages and %d MiB, and a larger file would be refused on the way back in. Delete some conversations and export again.",
+				"This account is too large for one export file: the server imports at most %d conversations, %d messages and %d MiB, and a larger file would be refused on the way back in. Download the segmented archive with ?format=tar.",
 				MaxConversations, MaxMessagesPerImport, MaxDocumentBytes>>20)).
 				WithDetails(importLimits())
 		}
@@ -202,6 +213,23 @@ func (d *deadlineWriter) Write(p []byte) (int, error) {
 	return written, nil
 }
 
+// The archive importer alternates socket reads and database transactions.
+// An active network deadline during a transaction could expire even when
+// all the bytes needed for the next entry are already waiting.
+type archiveBody struct {
+	io.ReadCloser
+	rc *http.ResponseController
+}
+
+func (b *archiveBody) Read(p []byte) (int, error) {
+	_ = b.rc.SetReadDeadline(time.Now().Add(importBodyTimeout))
+	n, err := b.ReadCloser.Read(p)
+	if err == nil || errors.Is(err, io.EOF) {
+		_ = b.rc.SetReadDeadline(time.Time{})
+	}
+	return n, err
+}
+
 func (h *Handlers) importDocument(w http.ResponseWriter, r *http.Request) error {
 	account := auth.MustUser(r.Context())
 
@@ -228,22 +256,25 @@ func (h *Handlers) importDocument(w http.ResponseWriter, r *http.Request) error 
 	}
 	defer release()
 
-	// Armed after the slot is held, so the time spent waiting for one does not
-	// count against the body. Deliberately not cleared once the decode returns:
-	// when the handler is done the server reads whatever is left of the body,
-	// so that it can reuse the connection, and with the deadline gone that read
-	// has no bound at all. A client that sent a complete document and then
-	// stopped would hold its goroutine and descriptor for ever. The next request
-	// on the connection resets the deadline, so nothing outlives this one.
 	rc := http.NewResponseController(w)
-	_ = rc.SetReadDeadline(time.Now().Add(importBodyTimeout))
+	archive := r.Header.Get("Content-Type") == "application/x-tar"
+	if archive {
+		// After the handler, net/http may drain remaining bytes directly to
+		// reuse the connection. That read also needs an idle deadline.
+		defer func() { _ = rc.SetReadDeadline(time.Now().Add(importBodyTimeout)) }()
+		r.Body = &archiveBody{ReadCloser: r.Body, rc: rc}
+	} else {
+		_ = rc.SetReadDeadline(time.Now().Add(importBodyTimeout))
+	}
 
 	// Lenient: an export from a later release carries fields this build has
 	// not heard of, and losing them is the right outcome — refusing the whole
 	// file is not.
 	var document Document
-	if err := httpx.DecodeJSONLenient(w, r, &document, MaxDocumentBytes); err != nil {
-		return err
+	if !archive {
+		if err := httpx.DecodeJSONLenient(w, r, &document, MaxDocumentBytes); err != nil {
+			return err
+		}
 	}
 
 	// An import is a save, and each conversation in it commits on its own.
@@ -253,13 +284,23 @@ func (h *Handlers) importDocument(w http.ResponseWriter, r *http.Request) error 
 	// holding one of the four slots for ever.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), importWriteTimeout)
 	defer cancel()
-	result, err := h.service.Import(ctx, account, document)
+	var result Result
+	if archive {
+		// UTF-8 and JSON escapes can expand a stored character by up to twelve bytes.
+		// Allow the per-entry TAR overhead too, while bounding a malformed upload.
+		body := http.MaxBytesReader(w, r.Body, 12*MaxStoredChars+2048*MaxStoredMessages)
+		result, err = h.service.importParts(ctx, account, body)
+	} else {
+		result, err = h.service.Import(ctx, account, document)
+	}
 	if err != nil {
 		switch {
 		// Codes rather than sentences: a sentence written here is English on a
 		// Chinese screen, and the reader's wording is picked by the code.
-		case errors.Is(err, ErrWrongFormat):
-			return httpx.BadRequestCode("import_wrong_format", "That file is not an Obsidian Arc export.")
+		case errors.Is(err, project.ErrTooMany):
+			return httpx.Conflict("too_many_projects", "This account has reached its project limit.")
+		case errors.Is(err, project.ErrNameRequired), errors.Is(err, project.ErrNameTooLong), errors.Is(err, project.ErrInstructionsLong), errors.Is(err, ErrWrongFormat):
+			return httpx.BadRequestCode("import_wrong_format", "That file is not a complete Obsidian Arc export.").WithDetails(importCounts(result))
 		case errors.Is(err, ErrTooLarge):
 			return httpx.BadRequestCode("import_too_large",
 				"That export is larger than this server will import: at most %d conversations and %d messages.",

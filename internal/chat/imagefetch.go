@@ -55,12 +55,12 @@ var reservedRanges = []netip.Prefix{
 	netip.MustParsePrefix("64:ff9b:1::/48"),
 }
 
-// generatedImageBytes takes delivery of one image, whichever way the provider
+// GeneratedImageBytes takes delivery of one image, whichever way the provider
 // chose to hand it over, and returns bytes that are safe to store along with
 // the media type they actually are.
 //
 // ceiling is the operator's per-file limit; zero means the default.
-func generatedImageBytes(
+func GeneratedImageBytes(
 	ctx context.Context, img adapter.GeneratedImage, ceiling int64,
 ) ([]byte, string, error) {
 	if ceiling <= 0 {
@@ -78,6 +78,8 @@ func generatedImageBytes(
 		return nil, "", errImageMedia
 	}
 
+	ctx, cancel := context.WithTimeout(ctx, pictureFetchBudget)
+	defer cancel()
 	data, err := fetchImageURL(ctx, img.URL, ceiling)
 	if err != nil {
 		return nil, "", err

@@ -13,7 +13,7 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import {
   adminApi,
-  type AdminModel, type BonusBarRow, type BonusGrantRow, type CheckinRuleBody, type CheckinSettings, type Group,
+  type ModelOption, type BonusBarRow, type BonusGrantRow, type CheckinRuleBody, type CheckinSettings, type GroupOption,
   type AdminBonusPoolInput,
 } from '@/admin/api';
 import { ApiError } from '@/api/client';
@@ -63,19 +63,21 @@ function poolRefusal(code: string): string | undefined {
 }
 
 const bars = ref<BonusBarRow[]>([]);
-const models = ref<AdminModel[]>([]);
-const groups = ref<Group[]>([]);
+const models = ref<ModelOption[]>([]);
+const groups = ref<GroupOption[]>([]);
 const error = ref('');
 const loaded = ref(false);
 
 async function load(): Promise<void> {
+  const read = listRead.begin();
   error.value = '';
   try {
-    bars.value = (await adminApi.bonusBars()).bars;
+    const result = await adminApi.bonusBars();
+    if (listRead.isCurrent(read)) bars.value = result.bars;
     // The pickers below are only needed once a panel is open, and a failure to
     // fetch them should not hide the bars.
-    void adminApi.models().then((r) => { models.value = r.models; }).catch(() => undefined);
-    void adminApi.groups().then((r) => { groups.value = r.groups; }).catch(() => undefined);
+    void adminApi.modelOptions().then((r) => { models.value = r.models; }).catch(() => undefined);
+    void adminApi.groupOptions().then((r) => { groups.value = r.groups; }).catch(() => undefined);
     await loadCheckin();
   } catch (failure) {
     error.value = failureText(failure);
@@ -104,6 +106,8 @@ interface BarForm {
 }
 
 const panel = ref<'closed' | 'bar' | 'grant'>('closed');
+const editor = useLatestRequest();
+const listRead = useLatestRequest();
 const existing = ref<BonusBarRow | null>(null);
 const form = ref<BarForm>(blankForm());
 const busy = ref(false);
@@ -135,6 +139,8 @@ function fromLocalInput(value: string): number {
 }
 
 function openBar(row: BonusBarRow | null): void {
+  editor.invalidate();
+  busy.value = false;
   existing.value = row;
   panelError.value = '';
   flash.value = '';
@@ -171,6 +177,7 @@ function poolBody(): AdminBonusPoolInput | undefined {
 }
 
 async function saveBar(): Promise<void> {
+  const revision = editor.current();
   busy.value = true;
   panelError.value = '';
   try {
@@ -180,39 +187,42 @@ async function saveBar(): Promise<void> {
       model_ids: form.value.model_ids, default_expires_at: fromLocalInput(form.value.expiry), active: form.value.active,
       pool: poolBody(),
     });
-    panel.value = 'closed';
+    if (editor.isCurrent(revision)) panel.value = 'closed';
     await refreshBars();
   } catch (failure) {
     // Only a code the interface has a sentence for is translated; any other
     // keeps the server's sentence, which an administrator may need verbatim.
-    panelError.value = (failure instanceof ApiError ? poolRefusal(failure.code) : undefined) ?? failureText(failure);
+    if (editor.isCurrent(revision)) panelError.value = (failure instanceof ApiError ? poolRefusal(failure.code) : undefined) ?? failureText(failure);
   } finally {
-    busy.value = false;
+    if (editor.isCurrent(revision)) busy.value = false;
   }
 }
 
 // The save or delete is committed before this runs, so a failed read-back is
 // reported where the page is, not as a failed save in a panel that is closed.
 async function refreshBars(): Promise<void> {
+  const read = listRead.begin();
   pageError.value = '';
   try {
-    bars.value = (await adminApi.bonusBars()).bars;
+    const result = await adminApi.bonusBars();
+    if (listRead.isCurrent(read)) bars.value = result.bars;
   } catch (failure) {
-    pageError.value = failureText(failure);
+    if (listRead.isCurrent(read)) pageError.value = failureText(failure);
   }
 }
 
 async function removeBar(): Promise<void> {
   if (!existing.value) return;
+  const revision = editor.current();
   busy.value = true;
   try {
     await adminApi.deleteBonusBar(existing.value.id);
-    panel.value = 'closed';
+    if (editor.isCurrent(revision)) panel.value = 'closed';
     await refreshBars();
   } catch (failure) {
-    panelError.value = failureText(failure);
+    if (editor.isCurrent(revision)) panelError.value = failureText(failure);
   } finally {
-    busy.value = false;
+    if (editor.isCurrent(revision)) busy.value = false;
   }
 }
 
@@ -269,6 +279,7 @@ function poolLine(row: BonusBarRow): string {
 async function adjustPool(): Promise<void> {
   const bar = existing.value;
   if (!bar || adjust.value.amount === null) return;
+  const revision = editor.current();
   busy.value = true;
   panelError.value = '';
   flash.value = '';
@@ -277,17 +288,19 @@ async function adjustPool(): Promise<void> {
     const { pool } = await adminApi.adjustBonusPool(bar.id, adjust.value.op, adjust.value.amount);
     left = Math.max(pool.amount - pool.used, 0);
   } catch (failure) {
-    panelError.value = (failure instanceof ApiError ? poolRefusal(failure.code) : undefined) ?? failureText(failure);
+    if (editor.isCurrent(revision)) panelError.value = (failure instanceof ApiError ? poolRefusal(failure.code) : undefined) ?? failureText(failure);
     return;
   } finally {
-    busy.value = false;
+    if (editor.isCurrent(revision)) busy.value = false;
   }
   // Committed by here: a failed read-back is reported on the page, as after a
   // grant, so the operator is not sent to top up a second time.
-  flash.value = t('poolAdjusted', { left: credits(left) });
-  adjust.value = { op: 'add', amount: null };
+  if (editor.isCurrent(revision)) {
+    flash.value = t('poolAdjusted', { left: credits(left) });
+    adjust.value = { op: 'add', amount: null };
+  }
   await refreshBars();
-  existing.value = bars.value.find((row) => row.id === bar.id) ?? existing.value;
+  if (editor.isCurrent(revision)) existing.value = bars.value.find((row) => row.id === bar.id) ?? bar;
 }
 
 function credits(amount: number): string {
@@ -354,15 +367,16 @@ function grantLine(row: BonusGrantRow): string {
 // As with grant(): the revoke is committed before the reads run, so a failed
 // read-back is reported at the page, not as a failed revoke.
 async function revoke(row: BonusGrantRow): Promise<void> {
+  const revision = editor.current();
   let revoked: number;
   try {
     revoked = (await adminApi.revokeBonusGrant(row.id)).revoked;
   } catch (failure) {
-    grantsError.value = failureText(failure);
+    if (editor.isCurrent(revision)) grantsError.value = failureText(failure);
     return;
   }
-  flash.value = t('bonusRevoked', { amount: credits(revoked) });
-  if (existing.value) await loadGrants(existing.value.id, 0);
+  if (editor.isCurrent(revision)) flash.value = t('bonusRevoked', { amount: credits(revoked) });
+  if (editor.isCurrent(revision) && existing.value) await loadGrants(existing.value.id, 0);
   await refreshBars();
 }
 
@@ -377,6 +391,8 @@ const toChoices = computed(() => [
 const groupChoices = computed(() => groups.value.map((g) => ({ value: g.id, label: g.name })));
 
 function openGrant(): void {
+  editor.invalidate();
+  busy.value = false;
   grantForm.value = { to: 'named', group: groups.value[0]?.id ?? '', names: '', amount: null, days: null, note: '' };
   panelError.value = '';
   panel.value = 'grant';
@@ -386,6 +402,7 @@ async function grant(): Promise<void> {
   const bar = existing.value;
   if (!bar) return;
   const f = grantForm.value;
+  const revision = editor.current();
   busy.value = true;
   panelError.value = '';
   try {
@@ -397,20 +414,22 @@ async function grant(): Promise<void> {
       ...(f.days ? { days: f.days } : {}),
       note: f.note,
     });
-    flash.value = tn(result.granted, 'bonusGrantedOne', 'bonusGrantedOther');
-    panel.value = 'bar';
+    if (editor.isCurrent(revision)) {
+      flash.value = tn(result.granted, 'bonusGrantedOne', 'bonusGrantedOther');
+      panel.value = 'bar';
+    }
   } catch (failure) {
     // A grant's refusals carry codes (no such name, bar switched off), which
     // are worded in the reader's language here rather than the server's.
-    panelError.value = failureText(failure);
+    if (editor.isCurrent(revision)) panelError.value = failureText(failure);
     return;
   } finally {
-    busy.value = false;
+    if (editor.isCurrent(revision)) busy.value = false;
   }
   // The grant is committed by here. A failed read-back is not a failed grant:
   // reporting it as one sends the operator back to grant again, doubling it.
   await refreshBars();
-  void loadGrants(bar.id, 0);
+  if (editor.isCurrent(revision)) void loadGrants(bar.id, 0);
 }
 
 // --- check-in ----------------------------------------------------------------
@@ -540,7 +559,7 @@ onMounted(load);
     :destructive-confirm="existing ? t('confirmDeleteBonus', { name: existing.name }) : undefined"
     :busy="busy"
     :error="panelError"
-    @close="panel = 'closed'"
+    @close="editor.invalidate(); panel = 'closed'"
     @confirm="saveBar"
     @destructive="removeBar"
   >
@@ -622,8 +641,8 @@ onMounted(load);
     :busy="busy"
     :error="panelError"
     back
-    @close="panel = 'closed'"
-    @back="panel = 'bar'"
+    @close="editor.invalidate(); panel = 'closed'"
+    @back="editor.invalidate(); busy = false; panel = 'bar'"
     @confirm="grant"
   >
     <OaSelectField v-model="grantForm.to" :label="t('bonusGrantTo')" :options="toChoices" :searchable="false" />

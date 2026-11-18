@@ -46,7 +46,7 @@ func (h *Handlers) completeSignIn(w http.ResponseWriter, r *http.Request) error 
 	if body.Remember {
 		h.service.Remember(r.Context(), w, account)
 	}
-	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"user": h.account(r, account)})
+	return h.writeSession(w, r, account)
 }
 
 // signInPending answers a request that is halfway signed in. Coded, so the

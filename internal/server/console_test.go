@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
 )
 
 // The console's permission story, exercised as HTTP.
@@ -537,5 +538,78 @@ func TestConsoleFollowsTheGroupsTerminalSwitch(t *testing.T) {
 	}
 	if _, done := consoleRun(t, in, founder, "me show"); !done.OK {
 		t.Errorf("an administrator in a group without the terminal was refused: %s", done.Code)
+	}
+}
+
+func TestConsolePagesOwnConversationsAndImages(t *testing.T) {
+	in := newInstance(t)
+	person := in.register("collector", "a-good-password")
+	store := in.server.conversations
+	old, err := store.Create(t.Context(), nil, person.userID, conversation.NewConversation{Title: "Older thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.Create(t.Context(), nil, person.userID, conversation.NewConversation{Title: "Pinned thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned := true
+	if _, err := store.Update(t.Context(), person.userID, first.ID, conversation.Update{Pinned: &pinned}); err != nil {
+		t.Fatal(err)
+	}
+	out, done := consoleRun(t, in, person, "chat list --limit 1 --offset 1 --json")
+	if !done.OK || !strings.Contains(out, old.ID) || strings.Contains(out, first.ID) {
+		t.Fatalf("second chat page: %s %+v", out, done)
+	}
+	pic, err := store.Upload(t.Context(), conversation.UploadInput{UserID: person.userID, Mime: "image/png", Data: []byte("picture")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"image-a", "image-b"} {
+		if _, err := in.db.Exec(t.Context(), `INSERT INTO image_generations (id,user_id,attachment_id,model_id,prompt,created_at) VALUES (?,?,?,?,?,?)`, key, person.userID, pic.ID, "painter", "lake", 1700000000000); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, done = consoleRun(t, in, person, "image list --limit 1 --before 1700000000000 --before-id image-b --json")
+	if !done.OK || !strings.Contains(out, "image-a") || strings.Contains(out, "image-b") {
+		t.Fatalf("second image page: %s %+v", out, done)
+	}
+}
+
+func TestScopedAdministratorsCanResolveTheirOwnCommandArguments(t *testing.T) {
+	in := newInstance(t)
+	founder := in.register("founder", "a-good-password")
+	auditor := in.register("auditor", "a-good-password")
+	billing := in.register("billing", "a-good-password")
+	delegate(t, in, founder, auditor, "audit")
+	delegate(t, in, founder, billing, "usage")
+	modelID := addHealthModel(t, in, founder, "vendor/painter")
+	out, done := consoleRun(t, in, auditor, "audit list --actor founder --json")
+	if !done.OK || !strings.Contains(out, founder.userID) {
+		t.Fatalf("audit lookup by account name: %s %+v", out, done)
+	}
+	if r := in.do(http.MethodGet, "/api/admin/users", nil, auditor); r.Code != http.StatusForbidden {
+		t.Fatalf("audit grant could read full users: %d", r.Code)
+	}
+	refs := in.do(http.MethodGet, "/api/admin/references", nil, billing)
+	if refs.Code != http.StatusOK {
+		t.Fatalf("usage selector status: %d", refs.Code)
+	}
+	var selectors struct{ Groups, Models, Providers []struct{ ID, Name string } }
+	if err := json.Unmarshal(refs.Body.Bytes(), &selectors); err != nil || len(selectors.Groups) == 0 || len(selectors.Models) != 1 || selectors.Models[0].ID != modelID || len(selectors.Providers) > 0 {
+		t.Fatalf("usage selectors: %+v %v", selectors, err)
+	}
+	out, done = consoleRun(t, in, billing, "bonus create Drawings --models Watched --json")
+	if !done.OK || !strings.Contains(out, modelID) {
+		t.Fatalf("model-scoped bonus: %s %+v", out, done)
+	}
+	out, done = consoleRun(t, in, billing, "bonus grant Drawings --amount 1 --group \""+selectors.Groups[0].Name+"\" --yes --json")
+	if !done.OK {
+		t.Fatalf("group bonus: %s %+v", out, done)
+	}
+	for _, path := range []string{"/api/admin/models", "/api/admin/groups"} {
+		if r := in.do(http.MethodGet, path, nil, billing); r.Code != http.StatusForbidden {
+			t.Fatalf("usage grant could read %s: %d", path, r.Code)
+		}
 	}
 }

@@ -97,7 +97,7 @@ func (h *Handlers) Routes(mux *http.ServeMux) {
 // this section works from settings.InvitesRewardCards/Every alone and has
 // nothing to do with whether this account has a personal code of its own, so
 // reward_every, reward_cards and reward_card_days are always present.
-func (h *Handlers) payload(ctx context.Context, accountID string) (map[string]any, error) {
+func (h *Handlers) payload(ctx context.Context, accountID string, limit, offset int) (map[string]any, error) {
 	policy := h.store.Settings()
 	out := map[string]any{
 		"enabled": policy.UserEnabled, "code": "", "limit": policy.Limit, "used": 0, "counted": 0,
@@ -113,7 +113,7 @@ func (h *Handlers) payload(ctx context.Context, accountID string) (map[string]an
 	if err != nil {
 		return nil, err
 	}
-	uses, err := h.store.UsesByInviter(ctx, accountID)
+	uses, err := h.store.UsesByInviter(ctx, accountID, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -169,7 +169,8 @@ func (h *Handlers) payload(ctx context.Context, accountID string) (map[string]an
 
 func (h *Handlers) profile(w http.ResponseWriter, r *http.Request) error {
 	account := auth.MustUser(r.Context())
-	out, err := h.payload(r.Context(), account.ID)
+	limit, offset := httpx.HistoryPage(r)
+	out, err := h.payload(r.Context(), account.ID, limit, offset)
 	if err != nil {
 		return httpx.Internal(err)
 	}
@@ -188,7 +189,7 @@ func (h *Handlers) regenerate(w http.ResponseWriter, r *http.Request) error {
 		}
 		return httpx.Internal(err)
 	}
-	out, err := h.payload(r.Context(), account.ID)
+	out, err := h.payload(r.Context(), account.ID, maxUsesListed, 0)
 	if err != nil {
 		return httpx.Internal(err)
 	}

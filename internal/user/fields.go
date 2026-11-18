@@ -125,6 +125,7 @@ func Fields() []Field { return append([]Field(nil), fields...) }
 // plugin changes state, so a query takes one snapshot and every list it
 // builds from it agrees.
 type fieldSet struct {
+	readers sync.WaitGroup
 	list    []Field
 	columns string
 	// JoinColumns' lists, per alias, built on first use.
@@ -263,7 +264,16 @@ func (s *Store) SetPluginGate(g plugingate.Gate) {
 	s.RefreshFields()
 }
 
-func (s *Store) RefreshFields() { s.set.Store(s.buildFieldSet()) }
+func (s *Store) RefreshFields() {
+	s.projectionMu.Lock()
+	previous := s.set.Swap(s.buildFieldSet())
+	s.projectionMu.Unlock()
+	// New reads use the replacement while the last query naming an old
+	// column drains. Only then may the plugin manager purge that column.
+	if previous != nil {
+		previous.readers.Wait()
+	}
+}
 
 func (s *Store) active() *fieldSet {
 	if set := s.set.Load(); set != nil {

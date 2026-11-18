@@ -13,8 +13,8 @@
 // check at the top of each screen. The server enforces the same rules on
 // every endpoint regardless — this only decides what to draw.
 //
-// The backoffice, terminal and provider sign-up completion load lazily; everything else
-// is imported statically on purpose. Route-level splitting sounds free and is
+// The backoffice, terminal, image lab and provider sign-up completion load lazily. Other panels
+// are imported statically on purpose. Route-level splitting sounds free and is
 // not: the panels below are columns over a chat that is already on screen, so
 // a chunk per panel buys a round trip in the middle of a click and saves bytes
 // nobody was going to avoid downloading anyway. The backoffice is different —
@@ -39,7 +39,6 @@ import AuthView from '@/views/AuthView.vue';
 import BindOIDCView from '@/views/BindOIDCView.vue';
 import ConsentView from '@/views/ConsentView.vue';
 import FeedbackPanel from '@/views/FeedbackPanel.vue';
-import ImageLabPanel from '@/views/ImageLabPanel.vue';
 import KeysPanel from '@/views/KeysPanel.vue';
 import NotFoundView from '@/views/NotFoundView.vue';
 import RootView from '@/views/RootView.vue';
@@ -50,7 +49,7 @@ import LeaderboardPanel from '@/views/LeaderboardPanel.vue';
 import UsagePanel from '@/views/UsagePanel.vue';
 import PluginUserPanel from '@/views/PluginUserPanel.vue';
 import VerifyView from '@/views/VerifyView.vue';
-import { panelAllowed, resolveSidePanel } from '@/views/panels';
+import { loadImageLab, panelAllowed, resolveSidePanel } from '@/views/panels';
 
 const routes: RouteRecordRaw[] = [
   { path: '/login', component: AuthView, props: { mode: 'login' } },
@@ -96,7 +95,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'usage', component: UsagePanel, meta: { auth: true } },
       { path: 'feedback', component: FeedbackPanel, meta: { auth: true } },
       { path: 'about', component: AboutPanel, meta: { auth: true } },
-      { path: 'image-lab', component: ImageLabPanel, meta: { auth: true } },
+      { path: 'image-lab', component: loadImageLab, meta: { auth: true } },
       { path: 'uptime', component: UptimePanel, meta: { auth: true } },
       { path: 'leaderboard', component: LeaderboardPanel, meta: { auth: true } },
       // A panel a plugin brings (UserPanelSpec). The slug is resolved when the

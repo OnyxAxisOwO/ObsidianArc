@@ -16,23 +16,19 @@ import (
 // doc comment). So there is no id-or-username argument to resolve here,
 // unlike cmd_users.go's account-scoped commands: accepting one would be
 // the wrong shape for a command that can only ever mean "mine".
-//
-// GET /api/conversations takes no offset (internal/chat/http.go's
-// listConversations reads only "limit" off the query string), so unlike
-// "user chats" there is no --offset flag to declare — one would silently
-// do nothing, which is worse than not offering it.
 func init() {
 	registerCommand(Command{
 		Name:    "chat list",
 		Group:   "chat",
 		Summary: Text{EN: "List your own conversations", ZH: "列出你自己的对话"},
-		Usage:   "chat list [--limit N] [--archived] [--project ID]",
+		Usage:   "chat list [--limit N] [--offset N] [--archived] [--project ID]",
 		Help: Text{
 			EN: "Lists your conversations, pinned first and then newest first.",
 			ZH: "列出你的对话，置顶的排在最前，其余按最新排序。",
 		},
 		Flags: []Flag{
 			{Name: "--limit", Hint: Text{EN: "page size, default 60, max 200", ZH: "每页数量，默认 60，最多 200"}, Value: "N", Default: "60"},
+			{Name: "--offset", Hint: Text{EN: "skip this many conversations", ZH: "跳过的对话数"}, Value: "N"},
 			{Name: "--archived", Hint: Text{EN: "show archived conversations", ZH: "显示已归档的对话"}},
 			{Name: "--project", Hint: Text{EN: "filter by project id", ZH: "按项目 ID 筛选"}, Value: "ID"},
 		},
@@ -50,6 +46,13 @@ func init() {
 			}
 			q := url.Values{}
 			q.Set("limit", strconv.Itoa(limit))
+			if rt.Present("offset") {
+				offset := rt.IntOr("offset", -1)
+				if offset < 0 {
+					return rt.Fail(Text{EN: "--offset must be nonnegative", ZH: "--offset 必须非负"})
+				}
+				q.Set("offset", strconv.Itoa(offset))
+			}
 			if rt.Present("archived") {
 				q.Set("archived", strconv.FormatBool(rt.Bool("archived")))
 			}

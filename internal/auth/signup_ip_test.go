@@ -35,11 +35,20 @@ func TestOneAddressIsHeldToTheLimit(t *testing.T) {
 		}
 	}
 
+	reviews := 0
+	f.auth.Hooks.ReviewSignup = func(context.Context, RegisterInput, int) (SignupReview, error) {
+		reviews++
+		return SignupReview{Decision: SignupAllow}, nil
+	}
 	_, _, err := f.auth.Register(ctx, RegisterInput{
 		Username: "three", Password: "a-good-password", IP: "198.51.100.4",
 	})
 	if !errors.Is(err, ErrSignupIPBlocked) {
 		t.Fatalf("the third gave %v, want ErrSignupIPBlocked", err)
+	}
+
+	if reviews != 0 {
+		t.Fatalf("IP limit spent %d reviews", reviews)
 	}
 
 	// Somebody else is not affected. This is the whole reason the limit is
@@ -103,5 +112,44 @@ func set(t *testing.T, f *fixture, key, value string) {
 	t.Helper()
 	if err := f.settings.Set(context.Background(), key, value); err != nil {
 		t.Fatalf("set %s: %v", key, err)
+	}
+}
+
+func TestPaidReviewBudgetIsSharedBetweenConcurrentRegistrations(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	const address = "192.0.2.1"
+	for _, name := range []string{"one", "two", "three", "four", "five", "six", "seven", "eight", "nine"} {
+		if err := f.auth.reserveReview(ctx, RegisterInput{Username: name, IP: address}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A second service has no in-memory attempt history for the first nine.
+	peer := &Service{db: f.db, settings: f.settings}
+	start := make(chan struct{})
+	done := make(chan error, 2)
+	for _, request := range []struct {
+		s    *Service
+		name string
+	}{{f.auth, "ten"}, {peer, "eleven"}} {
+		go func() {
+			<-start
+			done <- request.s.reserveReview(ctx, RegisterInput{Username: request.name, IP: address})
+		}()
+	}
+	close(start)
+	allowed := 0
+	for range 2 {
+		err := <-done
+		var throttled *SignupThrottleError
+		switch {
+		case err == nil:
+			allowed++
+		case !errors.As(err, &throttled):
+			t.Fatal(err)
+		}
+	}
+	if allowed != 1 {
+		t.Fatalf("remaining review slot admitted %d calls", allowed)
 	}
 }

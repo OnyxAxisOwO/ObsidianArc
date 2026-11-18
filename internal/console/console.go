@@ -286,6 +286,8 @@ func (c *Console) runTokens(ctx context.Context, s *Session, out io.Writer, toke
 	return Result{OK: ok, Code: code, Elapsed: elapsed}
 }
 
+const MaxCommandWords = 4
+
 // resolve finds the longest registered command name that is a prefix of
 // tokens, up to 4 words — every command today is 1 or 2 words ("clear",
 // "user edit"), and the cap just keeps a wildly long unknown line from
@@ -293,10 +295,7 @@ func (c *Console) runTokens(ctx context.Context, s *Session, out io.Writer, toke
 // one the caller must run: looking the name up again later can find nothing,
 // because a plugin may have been switched off in between.
 func (c *Console) resolve(tokens []string) (cmd *Command, name string, rest []string, found bool) {
-	max := len(tokens)
-	if max > 4 {
-		max = 4
-	}
+	max := min(len(tokens), MaxCommandWords)
 	for n := max; n >= 1; n-- {
 		candidate := strings.Join(tokens[:n], " ")
 		if hit, ok := c.reg.lookup(candidate); ok {

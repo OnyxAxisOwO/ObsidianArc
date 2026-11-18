@@ -7,12 +7,11 @@
 // same panel. The chat's routes in router/index.ts keep their own addresses and
 // give the same props from them, so a panel is drawn the same way in both.
 
-import type { Component } from 'vue';
+import { defineAsyncComponent, type Component } from 'vue';
 import { canAdmin, siteInfo } from '@/stores/session';
 import AboutPanel from './AboutPanel.vue';
 import ArchivePanel from './ArchivePanel.vue';
 import FeedbackPanel from './FeedbackPanel.vue';
-import ImageLabPanel from './ImageLabPanel.vue';
 import KeysPanel from './KeysPanel.vue';
 import LeaderboardPanel from './LeaderboardPanel.vue';
 import PluginUserPanel from './PluginUserPanel.vue';
@@ -26,6 +25,9 @@ interface PanelEntry {
   props?: (rest: string[]) => Record<string, string | undefined> | null;
 }
 
+// Both ways into the lab load its generator and gallery only when opened.
+export const loadImageLab = () => import('./ImageLabPanel.vue');
+
 const PANELS: Record<string, PanelEntry> = {
   settings: { component: SettingsPanel, props: ([tab]) => ({ tab }) },
   usage: { component: UsagePanel },
@@ -33,7 +35,7 @@ const PANELS: Record<string, PanelEntry> = {
   keys: { component: KeysPanel },
   feedback: { component: FeedbackPanel },
   about: { component: AboutPanel },
-  'image-lab': { component: ImageLabPanel },
+  'image-lab': { component: defineAsyncComponent(loadImageLab) },
   uptime: { component: UptimePanel },
   leaderboard: { component: LeaderboardPanel },
   x: { component: PluginUserPanel, props: ([slug, entry]) => (slug ? { slug, entry } : null) },

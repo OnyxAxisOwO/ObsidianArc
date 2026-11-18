@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, type App } from 'vue';
 
+import * as projectsApi from '../src/api/projects';
+import { t } from '../src/composables/useI18n';
 import type { Conversation } from '../src/api/chat';
 import { settle } from './helpers';
 
@@ -46,6 +48,42 @@ describe('the project list after a turn', () => {
   afterEach(() => {
     app?.unmount();
     app = null;
+  });
+
+  it('saves both fields from the submitted project and leaves a later editor focused', async () => {
+    const a = { id: 'a', name: 'Alpha', instructions: 'First', conversations: 0, created_at: 0, updated_at: 0 };
+    const b = { ...a, id: 'b', name: 'Beta', instructions: 'Second' };
+    vi.mocked(projectsApi.listProjects).mockResolvedValueOnce({ projects: [a, b], max: 64 });
+    let finish!: (record: projectsApi.Project) => void;
+    const update = vi.spyOn(projectsApi, 'updateProject').mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    resetProjects();
+    await loadProjects();
+    app = createApp(ProjectList);
+    app.mount(host);
+    await settle();
+    const edit = (id: string) => host.querySelector<HTMLButtonElement>(`[data-folder-id="${id}"] [aria-label="${t('editProject')}"]`)!;
+    edit(a.id).click();
+    await settle();
+    const name = host.querySelector<HTMLInputElement>('.ai-project-form input')!;
+    expect(document.activeElement).toBe(name);
+    name.value = 'Revised';
+    name.dispatchEvent(new Event('input', { bubbles: true }));
+    const instructions = host.querySelector<HTMLTextAreaElement>('.ai-project-form textarea')!;
+    instructions.value = 'Revised brief';
+    instructions.dispatchEvent(new Event('input', { bubbles: true }));
+    await settle();
+    host.querySelector<HTMLButtonElement>('.ai-project-form .primary')!.click();
+    await settle();
+    expect(update).toHaveBeenCalledWith(a.id, { name: 'Revised', instructions: 'Revised brief' });
+    edit(b.id).click();
+    await settle();
+    finish({ ...a, name: 'Revised', instructions: 'Revised brief' });
+    await settle();
+    const next = host.querySelector<HTMLInputElement>('.ai-project-form input')!;
+    expect(next.value).toBe(b.name);
+    expect(document.activeElement).toBe(next);
+    expect(update).toHaveBeenCalledTimes(1);
+    update.mockRestore();
   });
 
   it('keeps an open project listed while it is read again', async () => {

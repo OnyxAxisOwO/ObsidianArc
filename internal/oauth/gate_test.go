@@ -190,9 +190,7 @@ func TestAnAccountOwingBothStepsEnrolsBeforeBinding(t *testing.T) {
 	}
 }
 
-// A read error must fail an account through rather than lock every account
-// out of the API on a database hiccup — the same choice Attach makes.
-func TestBindingGateFailsOpenOnAStoreError(t *testing.T) {
+func TestBindingGateReturnsUnavailableOnAStoreError(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 	f.configure(t, "oidc")
@@ -222,7 +220,7 @@ func TestBindingGateFailsOpenOnAStoreError(t *testing.T) {
 	req = req.WithContext(auth.WithUser(req.Context(), member))
 	w := httptest.NewRecorder()
 	gated.ServeHTTP(w, req)
-	if !reached {
-		t.Fatalf("a store error locked the account out instead of failing open: %d %s", w.Code, w.Body.String())
+	if reached || w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("binding read error: reached=%t status=%d", reached, w.Code)
 	}
 }

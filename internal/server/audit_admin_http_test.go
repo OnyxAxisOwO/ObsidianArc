@@ -592,7 +592,7 @@ func TestProviderHeaderValuesStayWithTheServer(t *testing.T) {
 			ID string `json:"id"`
 		} `json:"provider"`
 	}](t, copied).Provider.ID
-	stored, err := provider.NewStore(in.db, nil).ByID(context.Background(), copyID)
+	stored, err := in.server.health.Providers.(*provider.Store).ByID(context.Background(), copyID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -629,7 +629,7 @@ func TestEchoedHeaderHintsAreReadBackOrRefused(t *testing.T) {
 	}](t, created).Provider.ID
 	storedToken := func() string {
 		t.Helper()
-		stored, err := provider.NewStore(in.db, nil).ByID(context.Background(), providerID)
+		stored, err := in.server.health.Providers.(*provider.Store).ByID(context.Background(), providerID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -659,7 +659,7 @@ func TestEchoedHeaderHintsAreReadBackOrRefused(t *testing.T) {
 			ID string `json:"id"`
 		} `json:"provider"`
 	}](t, copied).Provider.ID
-	stored, err := provider.NewStore(in.db, nil).ByID(context.Background(), copyID)
+	stored, err := in.server.health.Providers.(*provider.Store).ByID(context.Background(), copyID)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -7,11 +7,11 @@
 // about to vanish with it. `show` therefore remounts the panel when it finds
 // one on its way out, which is also how a replacement keeps the column.
 
-import { ref } from 'vue';
+import { ref, useTemplateRef } from 'vue';
 
 export function usePanelSlot() {
   const open = ref(false);
-  const panel = ref<{ close(): void } | null>(null);
+  const panel = useTemplateRef<{ close(): void }>('panel');
   /** Bound to the panel's `key`: a new value is a new panel. */
   const key = ref(0);
   let leaving = false;

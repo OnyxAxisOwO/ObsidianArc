@@ -12,6 +12,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/project"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
@@ -86,12 +87,23 @@ func TestExportedDocumentImportsBackUnchanged(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	sourceProject, err := project.NewStore(f.service.db).Create(ctx, f.account.ID, "Research", "Use metric units")
+	if err != nil {
+		t.Fatal(err)
+	}
 	pinned := true
-	if _, err := f.conversations.Update(ctx, f.account.ID, id, conversation.Update{Pinned: &pinned}); err != nil {
+	if _, err := f.conversations.Update(ctx, f.account.ID, id, conversation.Update{Pinned: &pinned, Archived: &pinned, ProjectID: &sourceProject.ID}); err != nil {
 		t.Fatal(err)
 	}
 
 	if _, err := f.preferences.Merge(ctx, f.account.ID, map[string]json.RawMessage{"accent": json.RawMessage(`"violet"`)}); err != nil {
+		t.Fatal(err)
+	}
+	const stamp = int64(946684800000)
+	if _, err := f.service.db.Exec(ctx, "UPDATE conversations SET created_at=?,updated_at=? WHERE id=?", stamp, stamp+100, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.db.Exec(ctx, "UPDATE messages SET created_at=? WHERE conversation_id=?", stamp+20, id); err != nil {
 		t.Fatal(err)
 	}
 	_, document := f.export(t, f.account)
@@ -102,7 +114,7 @@ func TestExportedDocumentImportsBackUnchanged(t *testing.T) {
 		t.Fatalf("import of the export: %v", err)
 	}
 
-	archived := false
+	archived := true
 	threads, err := f.conversations.ListWithFilter(ctx, f.stranger.ID, conversation.ListFilter{Limit: 50, Archived: &archived})
 	if err != nil {
 		t.Fatal(err)
@@ -116,6 +128,19 @@ func TestExportedDocumentImportsBackUnchanged(t *testing.T) {
 	}
 	if len(messages) != 3 {
 		t.Fatalf("restored %d messages, want 3", len(messages))
+	}
+	thread := threads[0]
+	if thread.CreatedAt != stamp || thread.UpdatedAt != stamp+100 || thread.ProjectID == sourceProject.ID || !thread.Archived {
+		t.Fatalf("lost conversation metadata: %+v", thread)
+	}
+	copy, err := project.NewStore(f.service.db).Get(ctx, nil, f.stranger.ID, thread.ProjectID)
+	if err != nil || copy.Instructions != sourceProject.Instructions || copy.Name != sourceProject.Name {
+		t.Fatalf("restored project: %+v, %v", copy, err)
+	}
+	for _, m := range messages {
+		if m.CreatedAt != stamp+20 {
+			t.Fatalf("message timestamp: %d", m.CreatedAt)
+		}
 	}
 	answer := messages[1]
 	if answer.Content != "a source of light" || answer.Reasoning != "lamps make light" || answer.ModelName != "Test Model" {
@@ -475,5 +500,63 @@ func TestAPageBoundaryHoldsWhenConversationsAreUsedMidExport(t *testing.T) {
 		if seen[title] != 1 {
 			t.Errorf("%q exported %d times, want once", title, seen[title])
 		}
+	}
+}
+
+func TestSegmentedBackupRestoresOneConversationAcrossSeveralParts(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	f.write(t, f.account, "Long chat", "one", "two", "three", "four", "five")
+	var out bytes.Buffer
+	if err := f.service.exportParts(ctx, f.account, &out, 2); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(out.Bytes(), []byte(partName(1, 2))) {
+		t.Fatal("expected a third segment")
+	}
+	got, err := f.service.importParts(ctx, f.stranger, bytes.NewReader(out.Bytes()))
+	if err != nil || got.Conversations != 1 || got.Messages != 5 {
+		t.Fatalf("result %+v, %v", got, err)
+	}
+	rows, err := f.conversations.ListForExport(ctx, f.stranger.ID, "", 2)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("copies %+v, %v", rows, err)
+	}
+	messages, err := f.conversations.Messages(ctx, nil, f.stranger.ID, rows[0].ID)
+	if err != nil || len(messages) != 5 || messages[0].Content != "one" || messages[4].Content != "five" {
+		t.Fatalf("messages %+v, %v", messages, err)
+	}
+
+	end := bytes.LastIndex(out.Bytes(), []byte("complete.json"))
+	if end < 0 {
+		t.Fatal("missing archive footer")
+	}
+	partial, err := f.service.importParts(ctx, f.account, bytes.NewReader(out.Bytes()[:end]))
+	if !errors.Is(err, ErrWrongFormat) || partial.Messages != 5 {
+		t.Fatalf("incomplete archive %+v, %v", partial, err)
+	}
+}
+
+func TestSegmentedBackupRestoresOneTurnLargerThanAJSONDocument(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	// The answer crosses a raw-entry boundary in the middle of a UTF-8 character.
+	body := strings.Repeat("界", MaxDocumentBytes/3+1)
+	f.write(t, f.account, "Large answer", "question", body)
+	var file bytes.Buffer
+	if err := f.service.exportParts(ctx, f.account, &file, 32); err != nil {
+		t.Fatal(err)
+	}
+	result, err := f.service.importParts(ctx, f.stranger, &file)
+	if err != nil || result.Messages != 2 {
+		t.Fatalf("restored %+v, %v", result, err)
+	}
+	chats, err := f.conversations.ListForExport(ctx, f.stranger.ID, "", 1)
+	if err != nil || len(chats) != 1 {
+		t.Fatalf("restored chats: %v, %v", len(chats), err)
+	}
+	messages, err := f.conversations.Messages(ctx, nil, f.stranger.ID, chats[0].ID)
+	if err != nil || len(messages) != 2 || messages[1].Content != body {
+		t.Fatalf("restored answer differs: %v", err)
 	}
 }

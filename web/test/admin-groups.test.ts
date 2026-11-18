@@ -193,7 +193,24 @@ describe('AdminGroups, the limits a group shows in its list', () => {
     const badges = [...host.querySelectorAll('.oa-badge')].map((node) => node.textContent?.trim());
     expect(badges).toContain(`5h: ${t('boardRequests', { count: 50 })}`);
     expect(badges).toContain(`5h: ${t('boardTokens', { count: 1000 })}`);
-    // A window the operator left unenforced shows nothing.
-    expect(badges.some((text) => text?.startsWith('1w'))).toBe(false);
+    expect(badges).toContain('1w · ' + t('disabled'));
+    vi.spyOn(adminApi, 'updateGroup').mockResolvedValue({ group });
+    const save = vi.spyOn(adminApi, 'savePolicy').mockResolvedValue({ policy });
+    host.querySelector<HTMLTableRowElement>('tbody tr')!.click();
+    await settle();
+    confirmButton().click();
+    await settle();
+    expect(save).not.toHaveBeenCalled();
+
+    host.querySelector<HTMLTableRowElement>('tbody tr')!.click();
+    await settle();
+    input(fieldFor(panels, t('requestsPerMinute')).querySelector<HTMLInputElement>('input')!, '9');
+    await settle();
+    confirmButton().click();
+    await settle();
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ windows: expect.objectContaining({
+      '1w': expect.objectContaining({ enabled: false }), '1m': expect.objectContaining({ enabled: null }),
+      '5h': expect.objectContaining({ enabled: true }),
+    }) }));
   });
 });

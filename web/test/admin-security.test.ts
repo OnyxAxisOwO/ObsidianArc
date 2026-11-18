@@ -75,6 +75,36 @@ describe('a retry after a failed first load', () => {
   });
 });
 
+it('shows the effective third-party signup restriction and clears both stored keys', async () => {
+  const settings = { ...settingsFixture, 'oauth.oidc_only_signup': 'true', 'oauth.third_party_only_signup': 'false' };
+  vi.spyOn(adminApi, 'settings').mockResolvedValue({ settings });
+  const save = vi.spyOn(adminApi, 'saveSettings').mockResolvedValue({ settings });
+  await mountSecurity();
+  const field = [...host.querySelectorAll<HTMLLabelElement>('.oa-checkbox-field')]
+    .find((label) => label.textContent?.includes(t('oauthThirdPartyOnlySignup')))!.querySelector('input')!;
+  expect(field.checked).toBe(true);
+  field.click();
+  await nextTick();
+  button(actions, t('save')).click();
+  await settle();
+  expect(save.mock.calls[0]![0]).toMatchObject({ 'oauth.oidc_only_signup': 'false', 'oauth.third_party_only_signup': 'false' });
+});
+
+it('saves third-party account review independently of local review', async () => {
+  const settings = { ...settingsFixture, 'security.signup_review': 'true', 'security.signup_review_oauth': 'false' };
+  vi.spyOn(adminApi, 'settings').mockResolvedValue({ settings });
+  const save = vi.spyOn(adminApi, 'saveSettings').mockResolvedValue({ settings });
+  await mountSecurity();
+  const field = [...host.querySelectorAll('label')].find((label) =>
+    label.textContent?.includes(t('signupReviewOAuth')))?.querySelector('input');
+  expect(field?.checked).toBe(false);
+  field!.click();
+  await nextTick();
+  button(actions, t('save')).click();
+  await settle();
+  expect(save.mock.calls[0]?.[0]).toMatchObject({ 'security.signup_review_oauth': 'true' });
+});
+
 describe('the two-factor prompt on save', () => {
   it('returns the Save label when the code prompt is cancelled', async () => {
     vi.spyOn(adminApi, 'settings').mockResolvedValue({ settings: { ...settingsFixture } });

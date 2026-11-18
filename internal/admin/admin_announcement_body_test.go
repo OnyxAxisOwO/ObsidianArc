@@ -19,8 +19,8 @@ func TestAnnouncementBodyAtTheCharacterCeilingFitsTheRequestCap(t *testing.T) {
 	forms := map[string]string{
 		"plain ASCII":            "a",
 		"CJK":                    "界",
-		"escaped angle bracket":  `<`,
-		"escaped surrogate pair": `😀`,
+		"escaped angle bracket":  `\u003c`,
+		"escaped surrogate pair": `\ud83d\ude00`,
 	}
 	for name, unit := range forms {
 		t.Run(name, func(t *testing.T) {

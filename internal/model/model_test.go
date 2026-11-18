@@ -519,7 +519,7 @@ func TestWorstCaseCapsAtDefaultMaxOutput(t *testing.T) {
 		Capabilities: Capabilities{MaxOutputTokens: 0},
 		Weights:      Weights{Request: 1, OutputToken: 2},
 	}
-	tokens, credits := mZero.WorstCase()
+	tokens, credits := mZero.ReservationEstimate()
 	if tokens != DefaultMaxOutput {
 		t.Errorf("got tokens %d, want %d", tokens, DefaultMaxOutput)
 	}
@@ -532,7 +532,7 @@ func TestWorstCaseCapsAtDefaultMaxOutput(t *testing.T) {
 		Capabilities: Capabilities{MaxOutputTokens: 1000},
 		Weights:      Weights{Request: 0, OutputToken: 1.5},
 	}
-	tokens, credits = mSmall.WorstCase()
+	tokens, credits = mSmall.ReservationEstimate()
 	if tokens != 1000 {
 		t.Errorf("got tokens %d, want 1000", tokens)
 	}
@@ -545,7 +545,7 @@ func TestWorstCaseCapsAtDefaultMaxOutput(t *testing.T) {
 		Capabilities: Capabilities{MaxOutputTokens: 256004},
 		Weights:      Weights{Request: 1, OutputToken: 1},
 	}
-	tokens, credits = mLarge.WorstCase()
+	tokens, credits = mLarge.ReservationEstimate()
 	if tokens != DefaultMaxOutput {
 		t.Errorf("got tokens %d, want %d", tokens, DefaultMaxOutput)
 	}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -91,9 +92,11 @@ func TestForRequestLeavesTheReasoningBehind(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	answer := strings.Repeat("汉", MaxContentChars+1)
+	thinking := strings.Repeat("考", MaxReasoningChars+1)
 	for _, in := range []AppendInput{
 		{Role: RoleUser, Content: "why"},
-		{Role: RoleAssistant, Content: "because", Reasoning: "a long chain of thought", ModelName: "m", Stats: &Stats{}},
+		{Role: RoleAssistant, Content: answer, Reasoning: thinking, ModelName: "m", Stats: &Stats{}},
 	} {
 		in.ConversationID, in.UserID = thread.ID, account.ID
 		if _, err := store.Append(ctx, nil, in); err != nil {
@@ -105,7 +108,7 @@ func TestForRequestLeavesTheReasoningBehind(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 2 || got[1].Content != "because" || got[1].Role != RoleAssistant || got[1].ID == "" {
+	if len(got) != 2 || got[1].Content != answer || got[1].Role != RoleAssistant || got[1].ID == "" {
 		t.Fatalf("for request = %+v", got)
 	}
 	if got[1].Reasoning != "" || got[1].Stats != nil || got[1].ModelName != "" {
@@ -116,7 +119,7 @@ func TestForRequestLeavesTheReasoningBehind(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if transcript[1].Reasoning != "a long chain of thought" {
+	if transcript[1].Reasoning != thinking || transcript[1].Content != answer {
 		t.Fatalf("the transcript lost its reasoning: %q", transcript[1].Reasoning)
 	}
 }

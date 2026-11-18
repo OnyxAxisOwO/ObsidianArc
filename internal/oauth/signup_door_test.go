@@ -131,7 +131,7 @@ func TestAProviderSignUpThatSkippedTheSignUpChallengeIsRefused(t *testing.T) {
 	if total := accountCount(t, f); total != 1 {
 		t.Errorf("accounts = %d, want none opened past the challenge", total)
 	}
-	if _, err := f.store.Account(context.Background(), nil, "github", "4218"); !errors.Is(err, ErrNoIdentity) {
+	if _, err := f.store.Account(context.Background(), nil, "github", "4218", ""); !errors.Is(err, ErrNoIdentity) {
 		t.Errorf("identity = %v, want it left unconnected", err)
 	}
 	if cookieNamed(back, pendingCookie) != nil {
@@ -299,7 +299,7 @@ func TestASignupGuardRefusalStopsProvisioning(t *testing.T) {
 	if total := accountCount(t, f); total != 1 {
 		t.Errorf("accounts = %d, want none opened by a refused sign-up", total)
 	}
-	if _, err := f.store.Account(context.Background(), nil, "github", "4218"); !errors.Is(err, ErrNoIdentity) {
+	if _, err := f.store.Account(context.Background(), nil, "github", "4218", ""); !errors.Is(err, ErrNoIdentity) {
 		t.Errorf("identity = %v, want it left unconnected", err)
 	}
 	if len(*asked) != 1 || (*asked)[0].Username != "octocat" || (*asked)[0].IP != "203.0.113.5" {
@@ -498,7 +498,7 @@ func TestAReplayedStateCannotOpenASecondAccount(t *testing.T) {
 	if total := accountCount(t, f); total != 2 {
 		t.Errorf("accounts = %d, want no second account opened from a replayed state", total)
 	}
-	if _, err := f.store.Account(context.Background(), nil, "github", "5150"); !errors.Is(err, ErrNoIdentity) {
+	if _, err := f.store.Account(context.Background(), nil, "github", "5150", ""); !errors.Is(err, ErrNoIdentity) {
 		t.Errorf("identity = %v, want the replayed sign-in left unconnected", err)
 	}
 }

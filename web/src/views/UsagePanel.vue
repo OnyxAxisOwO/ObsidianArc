@@ -25,7 +25,8 @@ import OaSwitchField from '@/components/OaSwitchField.vue';
 import OaTable from '@/components/OaTable.vue';
 import OaTurnstile from '@/components/OaTurnstile.vue';
 import OaUsageWindow from '@/components/OaUsageWindow.vue';
-import type { Column } from '@/components/table-types';
+import type { Column, PageState } from '@/components/table-types';
+import { rememberedPageSize } from '@/lib/page-size';
 import type { Stat } from '@/components/stat';
 import { celebrate } from '@/composables/useConfetti';
 import { t, type StringKey } from '@/composables/useI18n';
@@ -93,6 +94,7 @@ const allowanceError = ref('');
 const totals = ref<Totals | null>(null);
 const turns = ref<Turn[]>([]);
 const historyError = ref('');
+const historyPage = ref<PageState>({ page: 1, pageSize: rememberedPageSize() });
 
 const cards = ref<Card[]>([]);
 const cardsError = ref('');
@@ -275,7 +277,8 @@ async function refreshAllowance(): Promise<void> {
 }
 
 async function fetchHistory(): Promise<{ totals: Totals; turns: Turn[] }> {
-  return api.get<{ totals: Totals; turns: Turn[] }>('/api/usage/me/history');
+  const { page, pageSize } = historyPage.value;
+  return api.get<{ totals: Totals; turns: Turn[] }>(`/api/usage/me/history?limit=${pageSize}&offset=${(page - 1) * pageSize}`);
 }
 
 async function loadHistory(quiet = false): Promise<void> {
@@ -547,6 +550,8 @@ watch(visibility, (now, was) => {
         v-else
         :columns="columns"
         :rows="turns"
+        :pagination="{ ...historyPage, total: totals?.requests ?? 0 }"
+        @page="(next) => { historyPage = next; loadHistory(); }"
         :empty="t('noTurnsYet')"
         :muted="(row) => row.status !== 'ok'"
       />

@@ -17,7 +17,7 @@ script=$(cd "$(dirname "$0")" && pwd)/deploy.sh
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 work=$tmp/work
-server=$tmp/server
+server="$tmp/operator's server"
 mkdir -p "$work/dist" "$server/dist" "$tmp/bin"
 
 echo binary >"$work/dist/obsidian-arc"
@@ -30,8 +30,24 @@ esac
 printf '#!/bin/sh\nshift\nexec sh -c "$1"\n' >"$tmp/bin/ssh"
 # The docker stand-in fails the step named by DOCKER_FAIL ("build" or "compose
 # up"), so a deploy that stops part way can be exercised.
-printf '#!/bin/sh\necho "docker $*"\ncase "$*" in *"${DOCKER_FAIL:-@}"*) exit 1 ;; esac\n' >"$tmp/bin/docker"
-chmod +x "$tmp/bin/ssh" "$tmp/bin/docker"
+cat >"$tmp/bin/docker" <<'MOCK'
+#!/bin/sh
+echo "docker $*" >&2
+case "$*" in *"${DOCKER_FAIL:-@}"*) exit 1 ;; esac
+case "$*" in
+  "compose config server")
+    image=$OBSIDIAN_IMAGE
+    if [ "${DOCKER_FAIL:-}" = wrong-image ]; then image=obsidian-arc:old; fi
+    printf 'services:\n  db:\n    image: postgres:17-alpine\n  server:\n    image: %s\n' "$image"
+    ;;
+  "compose ps -q server") echo server-id ;;
+  "compose port server 8080") echo 127.0.0.1:8080 ;;
+  "inspect -f {{.State.Status}} server-id") echo restarting ;;
+  "image inspect"*|"inspect -f {{.Image}}"*) echo image-id ;;
+esac
+MOCK
+printf '#!/bin/sh\n[ "${DOCKER_FAIL:-}" != health ]\n' >"$tmp/bin/curl"
+chmod +x "$tmp/bin/ssh" "$tmp/bin/docker" "$tmp/bin/curl"
 
 # deploy <what the server has> <what the build carries> [DROP_PLUGINS] [the
 # file the server keeps its list in, under $server] [docker step to fail]
@@ -70,7 +86,7 @@ deploy "alpha beta" "alpha beta" "" dist/PLUGINS || fail "a build carrying every
 # A deploy that stops part way must not move the record. The build's own list
 # is in dist/ by then, and the next deploy, without DROP_PLUGINS=1, must still
 # be refused for the plugin the running server carries.
-for failing in build "compose up"; do
+for failing in wrong-image build "compose up" health; do
   if deploy "alpha beta" "alpha" 1 PLUGIN_LIST "$failing"; then fail "a deploy whose $failing step failed was reported as deployed"; fi
   if run_deploy "" ""; then fail "a deploy after a failed $failing let the plugin go"; fi
   grep -q "carries beta" "$tmp/out" || fail "the refusal after a failed $failing does not name the plugin"
@@ -79,7 +95,7 @@ done
 # The same holds for a server still keeping its list under dist/. The failed
 # attempt's rm -rf dist takes that file, and the build's own dist/PLUGIN_LIST
 # then holds only what the new build carries.
-for failing in build "compose up"; do
+for failing in wrong-image build "compose up" health; do
   if deploy "alpha beta" "alpha" 1 dist/PLUGINS "$failing"; then fail "a legacy deploy whose $failing step failed was reported as deployed"; fi
   if run_deploy "" ""; then fail "a deploy after a failed $failing, from a server with its list under dist/, let the plugin go"; fi
   grep -q "carries beta" "$tmp/out" || fail "the refusal after a failed $failing, from a server with its list under dist/, does not name the plugin"

@@ -51,43 +51,30 @@ func oidcBindingAllowed(r *http.Request) bool {
 // BindingGate holds an account this instance requires to link an OpenID
 // Connect identity to nothing but the endpoints above, on the server, where a
 // hidden screen is not the control.
-//
-// A DB read to answer MustBindOIDC where the two-step enrolment gate needs
-// none: whether an account has enrolled a factor is a field already sitting
-// on it, but whether it has connected OIDC lives in oauth_identities, behind
-// the same index Disconnect's own lookup uses. A failed read fails the
-// account through rather than locking it out — the same choice Attach makes
-// when a session lookup itself errors — because a database hiccup is not a
-// reason to hold every account at a door it cannot get past.
 func (s *Service) BindingGate() httpx.Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			account, ok := auth.UserFrom(r.Context())
-			if !ok || oidcBindingAllowed(r) {
+			if !ok || oidcBindingAllowed(r) || (!strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/oauth/authorize") {
 				next.ServeHTTP(w, r)
 				return
 			}
 			must, err := s.MustBindOIDC(r.Context(), account)
 			if err != nil {
 				slog.ErrorContext(r.Context(), "could not check the OIDC binding requirement", "error", err)
-				next.ServeHTTP(w, r)
+				httpx.WriteError(w, r, httpx.Unavailable("Unable to verify the OpenID Connect binding. Try again."))
 				return
 			}
 			if !must {
 				next.ServeHTTP(w, r)
 				return
 			}
-			switch {
-			case strings.HasPrefix(r.URL.Path, "/api/"):
-				httpx.WriteError(w, r, httpx.ForbiddenCode("oidc_binding_required",
-					"Link an OpenID Connect identity before continuing."))
-			case r.URL.Path == "/oauth/authorize":
-				// Back here once bound, with the application's request intact:
-				// it carries a state and a nonce that are not ours.
+			if r.URL.Path == "/oauth/authorize" {
+				// Keep the application's state and nonce across binding.
 				http.Redirect(w, r, "/bind-oidc?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusFound)
-			default:
-				next.ServeHTTP(w, r)
+				return
 			}
+			httpx.WriteError(w, r, httpx.ForbiddenCode("oidc_binding_required", "Link an OpenID Connect identity before continuing."))
 		})
 	}
 }

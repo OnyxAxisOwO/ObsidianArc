@@ -274,6 +274,10 @@ func (f Filter) usesRollup() bool {
 	if f.Since <= 0 {
 		return f.UserID != "" && f.Until <= 0
 	}
+	// A partial hour has no exact representation in the rollup.
+	if f.Since%hourMillis != 0 || f.Until > 0 && f.Until%hourMillis != 0 {
+		return false
+	}
 	var span int64
 	if f.Until > 0 {
 		span = f.Until - f.Since
@@ -288,19 +292,18 @@ func (f Filter) usesRollup() bool {
 // also has `status` and `group_id`, and an unqualified reference to either is
 // ambiguous rather than merely wrong.
 func (f Filter) where(prefix string) (string, []any) {
-	return f.clause(prefix, "started_at", false)
+	return f.clause(prefix, "started_at")
 }
 
 // whereRollup builds the filter clause for usage_rollup_hourly, where timestamps
 // are rounded to UTC hour_ts.
 func (f Filter) whereRollup(prefix string) (string, []any) {
-	return f.clause(prefix, "hour_ts", true)
+	return f.clause(prefix, "hour_ts")
 }
 
 // clause is the filter for either table. The two share every equality column
-// and differ in the timestamp column. The rollup keeps only the hour a turn
-// started in, so its lower bound is rounded down to that hour.
-func (f Filter) clause(prefix, timeCol string, hourly bool) (string, []any) {
+// and differ in the timestamp column.
+func (f Filter) clause(prefix, timeCol string) (string, []any) {
 	conditions := []string{}
 	args := []any{}
 
@@ -324,12 +327,8 @@ func (f Filter) clause(prefix, timeCol string, hourly bool) (string, []any) {
 		add("status", f.Status)
 	}
 	if f.Since > 0 {
-		since := f.Since
-		if hourly {
-			since -= since % hourMillis
-		}
 		conditions = append(conditions, prefix+timeCol+" >= ?")
-		args = append(args, since)
+		args = append(args, f.Since)
 	}
 	if f.Until > 0 {
 		conditions = append(conditions, prefix+timeCol+" < ?")

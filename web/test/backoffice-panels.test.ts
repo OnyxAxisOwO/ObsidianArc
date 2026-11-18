@@ -222,6 +222,13 @@ afterEach(() => {
 });
 
 describe('a panel from the account menu, opened over the backoffice', () => {
+  it.each(['/image-lab', '/admin/providers?panel=image-lab'])('loads the image lab at %s', async (url) => {
+    adopt(ADMIN);
+    await mountAt(url);
+    await vi.waitFor(() => expect(panelTitle()).toBe(t('imageLab')));
+    expect(host.querySelector('.oa-image-lab-tabs')).not.toBeNull();
+  });
+
   it('opens beside the page, which stays mounted under the same address', async () => {
     adopt(ADMIN);
     await mountAt('/admin/providers?keep=1#models');

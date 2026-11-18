@@ -145,11 +145,22 @@ func TestAnImageModelIsStillAnOrdinaryChatModel(t *testing.T) {
 // same model used from the transcript did not.
 func TestGeneratingAnImageIsChargedAndRecorded(t *testing.T) {
 	lab := newImageLab(t, 3)
+	override := `{"image_response_format":"url"}`
+	if _, err := lab.fixture.models.Update(t.Context(), lab.painter.ID, model.Update{RequestOverride: &override}); err != nil {
+		t.Fatal(err)
+	}
 	lab.fixture.upstream.reply(`{"created":1,"data":[{"b64_json":"` + generatedPNG + `"}]}`)
 
 	recorder := lab.generate(t, `{"model_id":"`+lab.painter.ID+`","prompt":"a sunset"}`)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", recorder.Code, recorder.Body.String())
+	}
+
+	var sent struct {
+		Format string `json:"response_format"`
+	}
+	if err := json.Unmarshal(lab.fixture.upstream.lastCall().body, &sent); err != nil || sent.Format != "url" {
+		t.Fatalf("image lab delivery format = %q, %v", sent.Format, err)
 	}
 
 	records := lab.ledger()

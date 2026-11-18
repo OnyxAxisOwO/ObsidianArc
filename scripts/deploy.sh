@@ -5,7 +5,7 @@
 # One SSH connection carries both the files and the commands, so a server
 # that asks for a password asks once. The image is built there from the
 # two-line Dockerfile.release, which takes seconds; the database container is
-# never touched — `up --no-build server` recreates the server alone.
+# never touched — `up --no-deps --no-build server` recreates the server alone.
 #
 # Arc only. Chat is a separate system on the same kind of host (a systemd
 # unit, its own port); nothing here goes near it.
@@ -75,7 +75,12 @@ if ! plugin_list_is_plain "$plugins"; then
   echo "dist/PLUGIN_LIST is refused: \"$plugins\" holds a name that is not plain; rebuild with make release" >&2
   exit 1
 fi
-drop=${DROP_PLUGINS:-}
+case "${DROP_PLUGINS:-}" in
+  1) drop=1 ;;
+  *) drop= ;;
+esac
+# Quote the path for the remote shell, including embedded single quotes.
+quoted_dir=$(printf '%s' "$dir" | sed "s/'/'\\\\''/g")
 
 # macOS tar would otherwise add AppleDouble files and extended attributes,
 # which GNU tar on the server warns about and extracts as clutter.
@@ -94,7 +99,7 @@ COPYFILE_DISABLE=1 tar -czf - -C dist . | $ssh_command "$host" "set -e
     echo \"this server is \$have but the build is $arch; run: make deploy ARCH=\$have\" >&2
     exit 1
   fi
-  cd '$dir'
+  cd '$quoted_dir'
   # The last successful deploy left its plugin list here. A plugin the running
   # server carries and this build does not would be switched off under the
   # people using it — a registration field gone, a sign-up check no longer
@@ -140,8 +145,42 @@ COPYFILE_DISABLE=1 tar -czf - -C dist . | $ssh_command "$host" "set -e
   tar -xzf - -C dist
   # Tagged with the version as well as latest, so the build before this one
   # is still there to go back to: docker tag obsidian-arc:<version> obsidian-arc:latest
-  docker build -q -t 'obsidian-arc:$version' -t obsidian-arc:latest dist
-  docker compose up -d --no-build server
+  target='obsidian-arc:$version'
+  export OBSIDIAN_IMAGE=\"\$target\"
+  # Compose includes the database in the selected service's dependencies.
+  # Read the image on server itself from the normalized configuration.
+  image=\$(docker compose config server | awk '
+    /^[^ ]/ { services = (\$0 == \"services:\") }
+    /^  [^ ]/ { server = (\$0 == \"  server:\") }
+    services && server && /^    image: / { print \$2 }
+  ')
+  if [ \"\$image\" != \"\$target\" ]; then
+    echo \"Compose does not select \$target for server\" >&2
+    exit 1
+  fi
+  docker build -q -t \"\$target\" -t obsidian-arc:latest dist
+  docker compose up -d --no-deps --no-build --pull never server
+  cid=\$(docker compose ps -q server)
+  expected=\$(docker image inspect -f '{{.Id}}' \"\$target\")
+  if [ -z \"\$cid\" ] || [ \"\$(docker inspect -f '{{.Image}}' \"\$cid\")\" != \"\$expected\" ]; then
+    echo \"Arc server is not running the built image \$target\" >&2
+    exit 1
+  fi
+  address=\$(docker compose port server 8080 | head -n 1)
+  case \"\$address\" in
+    0.0.0.0:*) address=\"127.0.0.1:\${address##*:}\" ;;
+    '[::]:'*) address=\"[::1]:\${address##*:}\" ;;
+  esac
+  attempt=0
+  until curl --noproxy '*' -fsS --max-time 2 \"http://\$address/api/health\" >/dev/null; do
+    attempt=\$((attempt+1))
+    state=\$(docker inspect -f '{{.State.Status}}' \"\$cid\")
+    if [ \"\$attempt\" -ge 30 ] || [ \"\$state\" != running ]; then
+      echo \"Arc health check failed for \$target (\$state)\" >&2
+      exit 1
+    fi
+    sleep 1
+  done
   # Recorded only now that the server runs this build, so a failed attempt
   # above leaves the record of what is actually running.
   printf '%s\n' '$plugins' >PLUGIN_LIST

@@ -120,15 +120,17 @@ jobs:
   test:
     name: Gate
     if: always()
-    needs: [go-test, race, frontend]
+    needs: [go-test, race, frontend, docs, docker]
     runs-on: ubuntu-latest
     steps:
       - name: Require every test job
         env:
+          DOCS_RESULT: ${{ needs.docs.result }}
+          IMAGE_RESULT: ${{ needs.docker.result }}
           GO_RESULT: ${{ needs.go-test.result }}
           RACE_RESULT: ${{ needs.race.result }}
           FRONTEND_RESULT: ${{ needs.frontend.result }}
-        run: test "$GO_RESULT" = success && test "$RACE_RESULT" = success && test "$FRONTEND_RESULT" = success
+        run: test "$DOCS_RESULT" = success && test "$IMAGE_RESULT" = success && test "$GO_RESULT" = success && test "$RACE_RESULT" = success && test "$FRONTEND_RESULT" = success
 
   docker:
     name: Image

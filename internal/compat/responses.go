@@ -68,14 +68,14 @@ type responsesRequest struct {
 // same fields under `function`. Same tool, different spelling.
 type responsesTool struct {
 	Type         string                `json:"type"`
-	Name         string                `json:"name"`
-	Description  string                `json:"description"`
-	Parameters   json.RawMessage       `json:"parameters"`
-	Strict       *bool                 `json:"strict"`
-	CacheControl *adapter.CacheControl `json:"cache_control"`
+	Name         string                `json:"name,omitempty"`
+	Description  string                `json:"description,omitempty"`
+	Parameters   json.RawMessage       `json:"parameters,omitempty"`
+	Strict       *bool                 `json:"strict,omitempty"`
+	CacheControl *adapter.CacheControl `json:"cache_control,omitempty"`
 	// A namespace is a group rather than a tool: the functions inside it are
 	// what the model can call. Codex sends one for its sub-agent tools.
-	Tools []responsesTool `json:"tools"`
+	Tools []responsesTool `json:"tools,omitempty"`
 }
 
 // customToolParameters is the schema a custom tool is offered under.
@@ -151,7 +151,7 @@ func (h *Handlers) responses(w http.ResponseWriter, r *http.Request, who caller)
 		return err
 	}
 
-	request, custom, err := h.buildResponsesRequest(body, resolved)
+	request, custom, err := h.buildResponsesRequest(&body, resolved)
 	if err != nil {
 		return err
 	}
@@ -168,9 +168,9 @@ func (h *Handlers) responses(w http.ResponseWriter, r *http.Request, who caller)
 
 	label := strings.TrimSpace(body.Model)
 	if request.Stream {
-		return h.responsesStreamed(w, r, who, request, resolved, label, custom)
+		return h.responsesStreamed(w, r, who, request, resolved, label, custom, &body)
 	}
-	return h.responsesBuffered(w, r, who, request, resolved, label, custom)
+	return h.responsesBuffered(w, r, who, request, resolved, label, custom, &body)
 }
 
 // --- request translation ------------------------------------------------------
@@ -178,7 +178,7 @@ func (h *Handlers) responses(w http.ResponseWriter, r *http.Request, who caller)
 // buildResponsesRequest translates the body into a provider request. It also
 // reports which tool names are custom tools, whose calls must go back to the
 // client as custom_tool_call items rather than function_call ones.
-func (h *Handlers) buildResponsesRequest(body responsesRequest, resolved model.Resolved) (adapter.ChatRequest, map[string]bool, error) {
+func (h *Handlers) buildResponsesRequest(body *responsesRequest, resolved model.Resolved) (adapter.ChatRequest, map[string]bool, error) {
 	pictureLimit := h.pictureCeiling()
 	items, err := readResponsesInput(body.Input)
 	if err != nil {
@@ -308,7 +308,7 @@ func (h *Handlers) buildResponsesRequest(body responsesRequest, resolved model.R
 		prompt = resolved.Model.Prompt(h.settings.Get(settings.DefaultSystemPrompt))
 	}
 
-	tools, custom, err := readResponsesTools(declared)
+	tools, custom, err := body.readResponsesTools(declared)
 	if err != nil {
 		return adapter.ChatRequest{}, nil, err
 	}
@@ -535,13 +535,14 @@ func responsesOutputHasPicture(raw json.RawMessage) bool {
 
 // readResponsesTools turns the declared tools into the ones offered to the
 // provider, and reports which of them are custom tools.
-func readResponsesTools(declared []responsesTool) ([]adapter.Tool, map[string]bool, error) {
+func (body *responsesRequest) readResponsesTools(declared []responsesTool) ([]adapter.Tool, map[string]bool, error) {
 	if len(declared) == 0 {
 		return nil, nil, nil
 	}
 
 	out := make([]adapter.Tool, 0, len(declared))
 	custom := map[string]bool{}
+	accepted := make([]responsesTool, 0, len(declared))
 	// A tool can be declared at the top level and again in additional_tools.
 	// Offering it twice is a request most providers reject outright.
 	seen := map[string]string{}
@@ -563,6 +564,8 @@ func readResponsesTools(declared []responsesTool) ([]adapter.Tool, map[string]bo
 					continue
 				}
 				seen[name] = signature
+				tool.Type, tool.Name = "function", name
+				accepted = append(accepted, tool)
 				out = append(out, adapter.Tool{
 					Name: name, Description: tool.Description, Parameters: tool.Parameters, Strict: tool.Strict, CacheControl: tool.CacheControl,
 				})
@@ -585,6 +588,8 @@ func readResponsesTools(declared []responsesTool) ([]adapter.Tool, map[string]bo
 				}
 				seen[name] = signature
 				custom[name] = true
+				tool.Name = name
+				accepted = append(accepted, tool)
 				description := strings.TrimSpace(tool.Description +
 					"\n\nThis tool takes one free-form text input: put the raw text in the `input` field.")
 				out = append(out, adapter.Tool{
@@ -620,6 +625,7 @@ func readResponsesTools(declared []responsesTool) ([]adapter.Tool, map[string]bo
 	if len(out) > maxTools {
 		return nil, nil, badRequest("tools", tooManyToolsMessage(len(out)))
 	}
+	body.Tools = accepted
 	return out, custom, nil
 }
 
@@ -627,7 +633,7 @@ func readResponsesTools(declared []responsesTool) ([]adapter.Tool, map[string]bo
 
 func (h *Handlers) responsesBuffered(
 	w http.ResponseWriter, r *http.Request, who caller,
-	request adapter.ChatRequest, resolved model.Resolved, label string, custom map[string]bool,
+	request adapter.ChatRequest, resolved model.Resolved, label string, custom map[string]bool, body *responsesRequest,
 ) error {
 	startedAt := time.Now()
 	requestID := id.New()
@@ -688,7 +694,7 @@ func (h *Handlers) responsesBuffered(
 	status, incomplete := responsesStatus(result.FinishReason)
 	return writeJSON(w, http.StatusOK, responseObject(
 		requestID, label, startedAt, status, incomplete,
-		output, usage, request,
+		output, usage, body,
 	))
 }
 
@@ -703,7 +709,7 @@ func (h *Handlers) responsesBuffered(
 // right even when the deltas in between are not read.
 func (h *Handlers) responsesStreamed(
 	w http.ResponseWriter, r *http.Request, who caller,
-	request adapter.ChatRequest, resolved model.Resolved, label string, custom map[string]bool,
+	request adapter.ChatRequest, resolved model.Resolved, label string, custom map[string]bool, body *responsesRequest,
 ) error {
 	startedAt := time.Now()
 	requestID := id.New()
@@ -751,12 +757,12 @@ func (h *Handlers) responsesStreamed(
 	var closeText func() error
 
 	if err := emit("response.created", map[string]any{
-		"response": responseObject(requestID, label, startedAt, "in_progress", nil, nil, adapter.Usage{}, request),
+		"response": responseObject(requestID, label, startedAt, "in_progress", nil, nil, adapter.Usage{}, body),
 	}); err != nil {
 		return nil
 	}
 	if err := emit("response.in_progress", map[string]any{
-		"response": responseObject(requestID, label, startedAt, "in_progress", nil, nil, adapter.Usage{}, request),
+		"response": responseObject(requestID, label, startedAt, "in_progress", nil, nil, adapter.Usage{}, body),
 	}); err != nil {
 		return nil
 	}
@@ -1056,7 +1062,7 @@ func (h *Handlers) responsesStreamed(
 		closing = "response." + status
 	}
 	_ = emit(closing, map[string]any{
-		"response": responseObject(requestID, label, startedAt, status, incomplete, finished, usage, request),
+		"response": responseObject(requestID, label, startedAt, status, incomplete, finished, usage, body),
 	})
 	return nil
 }
@@ -1067,7 +1073,7 @@ func (h *Handlers) responsesStreamed(
 // several events rather than sending once.
 func responseObject(
 	requestID, label string, startedAt time.Time,
-	status string, incomplete map[string]any, output []map[string]any, usage adapter.Usage, requests ...adapter.ChatRequest,
+	status string, incomplete map[string]any, output []map[string]any, usage adapter.Usage, body *responsesRequest,
 ) map[string]any {
 	if output == nil {
 		output = []map[string]any{}
@@ -1088,8 +1094,17 @@ func responseObject(
 		"tool_choice":         "auto",
 		"tools":               []any{},
 	}
-	if len(requests) > 0 && requests[0].ParallelToolCalls != nil {
-		object["parallel_tool_calls"] = *requests[0].ParallelToolCalls
+	if body.Instructions != "" {
+		object["instructions"] = body.Instructions
+	}
+	if len(body.Tools) > 0 {
+		object["tools"] = body.Tools
+	}
+	if choice := strings.TrimSpace(string(body.ToolChoice)); choice != "" && choice != "null" {
+		object["tool_choice"] = body.ToolChoice
+	}
+	if body.ParallelToolCalls != nil {
+		object["parallel_tool_calls"] = *body.ParallelToolCalls
 	}
 
 	if usage.HasUsage() {

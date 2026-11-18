@@ -2746,3 +2746,7 @@
   max-width: 100%;
   font-size: 12px;
 }
+
+@media (prefers-reduced-motion: reduce) {
+  .oa-feedback-card { animation: none; transition: none; }
+}

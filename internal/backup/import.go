@@ -10,6 +10,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/project"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/text"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
@@ -34,6 +35,10 @@ type Result struct {
 // of the same file produce two copies, which is a duplicate the user can
 // delete rather than a merge that ate something.
 func (s *Service) Import(ctx context.Context, account user.User, document Document) (Result, error) {
+	return s.importDocument(ctx, account, document, map[string]string{})
+}
+
+func (s *Service) importDocument(ctx context.Context, account user.User, document Document, refs map[string]string) (Result, error) {
 	if document.Format != Format {
 		return Result{}, ErrWrongFormat
 	}
@@ -51,6 +56,31 @@ func (s *Service) Import(ctx context.Context, account user.User, document Docume
 	}
 	if overImportLimits(len(document.Conversations), total) {
 		return Result{}, ErrTooLarge
+	}
+	if len(document.Projects) > project.MaxPerUser {
+		return Result{}, ErrTooLarge
+	}
+	for _, p := range document.Projects {
+		if p.ID == "" {
+			return Result{}, ErrWrongFormat
+		}
+		if _, ok := refs[p.ID]; ok {
+			return Result{}, ErrWrongFormat
+		}
+		refs[p.ID] = ""
+	}
+	for _, thread := range document.Conversations {
+		if _, ok := refs[thread.ProjectID]; thread.ProjectID != "" && !ok {
+			return Result{}, ErrWrongFormat
+		}
+		if !validTimestamp(thread.CreatedAt) || !validTimestamp(thread.UpdatedAt) {
+			return Result{}, ErrWrongFormat
+		}
+		for _, turn := range thread.Messages {
+			if !validTimestamp(turn.CreatedAt) {
+				return Result{}, ErrWrongFormat
+			}
+		}
 	}
 	if hasNUL(document) {
 		return Result{}, ErrNULCharacter
@@ -103,21 +133,37 @@ func (s *Service) Import(ctx context.Context, account user.User, document Docume
 	}
 
 	var result Result
-
-	// Merged rather than replaced: a document from an older release is
-	// missing keys this one has, and dropping those to their defaults would
-	// be a change the user did not ask for.
+	var patch map[string]json.RawMessage
 	if len(document.Preferences) > 0 {
-		var patch map[string]json.RawMessage
-		if err := json.Unmarshal(document.Preferences, &patch); err == nil && len(patch) > 0 {
-			if _, err := s.preferences.Merge(ctx, account.ID, patch); err != nil {
-				return Result{}, fmt.Errorf("backup: restore preferences: %w", err)
-			}
-			result.Preferences = true
+		// Older exports may carry a preference document this version cannot read.
+		if err := json.Unmarshal(document.Preferences, &patch); err != nil {
+			patch = nil
 		}
+	}
+	if len(document.Projects) > 0 || len(patch) > 0 {
+		err := s.db.Tx(ctx, func(tx *database.Tx) error {
+			store := project.NewStore(s.db)
+			for _, p := range document.Projects {
+				copy, err := store.CreateIn(ctx, tx, account.ID, p.Name, p.Instructions)
+				if err != nil {
+					return err
+				}
+				refs[p.ID] = copy.ID
+			}
+			if len(patch) > 0 {
+				_, err := s.preferences.MergeIn(ctx, tx, account.ID, patch)
+				return err
+			}
+			return nil
+		})
+		if err != nil {
+			return Result{}, err
+		}
+		result.Preferences = len(patch) > 0
 	}
 
 	for _, thread := range document.Conversations {
+		thread.ProjectID = refs[thread.ProjectID]
 		written, unpinned, err := s.importThread(ctx, account, thread, tally)
 		if err != nil {
 			return result, err
@@ -135,10 +181,19 @@ func (s *Service) Import(ctx context.Context, account user.User, document Docume
 	return result, nil
 }
 
+// Epoch milliseconds up to the end of year 9999 remain portable to JSON clients.
+// Zero is how older exports omit a timestamp.
+func validTimestamp(ms int64) bool { return ms >= 0 && ms <= 253402300799999 }
+
 // hasNUL reports whether any text the import would store carries U+0000. The
 // preferences are not walked: they are stored as JSON, which writes a NUL as
 // the escape \u0000, so no NUL byte reaches the store through them.
 func hasNUL(document Document) bool {
+	for _, p := range document.Projects {
+		if strings.ContainsRune(p.Name, 0) || strings.ContainsRune(p.Instructions, 0) {
+			return true
+		}
+	}
 	for _, thread := range document.Conversations {
 		if strings.IndexByte(thread.Title, 0) >= 0 {
 			return true
@@ -237,6 +292,10 @@ func planThread(thread Thread) threadPlan {
 	if len(turns) == 0 {
 		return threadPlan{}
 	}
+	return planTurns(thread, turns)
+}
+
+func planTurns(thread Thread, turns []Turn) threadPlan {
 	title := text.TrimAndTruncate(thread.Title, MaxTitleChars)
 	if title == "" {
 		// The first turn may be an image with no words to name the thread by.
@@ -249,8 +308,8 @@ func planThread(thread Thread) threadPlan {
 	}
 	chars := int64(utf8.RuneCountInString(title))
 	for _, turn := range turns {
-		chars += int64(utf8.RuneCountInString(text.TrimAndTruncate(turn.Content, MaxImportContentChars)) +
-			utf8.RuneCountInString(text.TrimAndTruncate(turn.Reasoning, MaxImportReasoningChars)) +
+		content, reasoning := conversation.MessageText(conversation.Role(strings.ToLower(strings.TrimSpace(turn.Role))), turn.Content, turn.Reasoning)
+		chars += int64(utf8.RuneCountInString(content) + utf8.RuneCountInString(reasoning) +
 			utf8.RuneCountInString(text.TrimAndTruncate(turn.Error, conversation.MaxErrorChars)))
 	}
 	return threadPlan{title: title, turns: turns, chars: chars}
@@ -261,8 +320,21 @@ func planThread(thread Thread) threadPlan {
 // returns how many turns it wrote, and whether the conversation was written but
 // could not be pinned.
 func (s *Service) importThread(ctx context.Context, account user.User, thread Thread, tally *charTally) (int, bool, error) {
+	var target string
+	return s.importPart(ctx, account, thread, tally, &target, false)
+}
+
+func (s *Service) importPart(ctx context.Context, account user.User, thread Thread, tally *charTally, target *string, segmented bool) (int, bool, error) {
 	plan := planThread(thread)
-	if len(plan.turns) == 0 {
+	if segmented {
+		// The next page can contain the answer to an image-only question.
+		// Preserve each stored turn even when a page carries only empty text.
+		plan = planTurns(thread, thread.Messages)
+		if *target != "" {
+			plan.chars -= int64(utf8.RuneCountInString(plan.title))
+		}
+	}
+	if !segmented && len(plan.turns) == 0 {
 		return 0, false, nil
 	}
 
@@ -301,10 +373,12 @@ func (s *Service) importThread(ctx context.Context, account user.User, thread Th
 		// No model id: the export names the model as text, and an id from
 		// another instance would point at a row that is not the same model or
 		// does not exist. The name is kept on each message instead.
-		created, err := s.conversations.Create(ctx, tx, account.ID,
-			conversation.NewConversation{Title: plan.title})
-		if err != nil {
-			return err
+		created := conversation.Conversation{ID: *target}
+		if created.ID == "" {
+			created, err = s.conversations.Create(ctx, tx, account.ID, conversation.NewConversation{Title: plan.title, ProjectID: thread.ProjectID})
+			if err != nil {
+				return err
+			}
 		}
 
 		for _, turn := range plan.turns {
@@ -313,8 +387,9 @@ func (s *Service) importThread(ctx context.Context, account user.User, thread Th
 				ConversationID: created.ID,
 				UserID:         account.ID,
 				Role:           role,
-				Content:        text.TrimAndTruncate(turn.Content, MaxImportContentChars),
-				Reasoning:      text.TrimAndTruncate(turn.Reasoning, MaxImportReasoningChars),
+				Content:        turn.Content,
+				CreatedAt:      turn.CreatedAt,
+				Reasoning:      turn.Reasoning,
 				Error:          text.TrimAndTruncate(turn.Error, conversation.MaxErrorChars),
 				ErrorCode:      text.TrimAndTruncate(turn.ErrorCode, maxImportErrorCodeChars),
 				ModelName:      text.TrimAndTruncate(turn.ModelName, maxImportModelNameChars),
@@ -324,6 +399,20 @@ func (s *Service) importThread(ctx context.Context, account user.User, thread Th
 			written++
 		}
 
+		// Append advances updated_at. Restore the historical ordering after the last turn.
+		createdAt, updatedAt := thread.CreatedAt, thread.UpdatedAt
+		if createdAt == 0 {
+			createdAt = created.CreatedAt
+		}
+		if updatedAt == 0 {
+			updatedAt = createdAt
+			for _, turn := range plan.turns {
+				updatedAt = max(updatedAt, turn.CreatedAt)
+			}
+		}
+		if _, err := tx.Exec(ctx, `UPDATE conversations SET archived=?, created_at=?, updated_at=? WHERE id=? AND user_id=?`, thread.Archived, createdAt, updatedAt, created.ID, account.ID); err != nil {
+			return err
+		}
 		newID = created.ID
 		return nil
 	})
@@ -336,7 +425,9 @@ func (s *Service) importThread(ctx context.Context, account user.User, thread Th
 	// conversation that arrived unpinned is a cosmetic loss rather than a
 	// reason to fail the import. It is still reported, so the reader knows
 	// which of the conversations they brought in are not where they were.
-	if thread.Pinned && newID != "" {
+	first := *target == ""
+	*target = newID
+	if thread.Pinned && first && newID != "" {
 		if err := s.pinConversation(ctx, account.ID, newID); err != nil {
 			slog.ErrorContext(ctx, "backup: pin imported conversation", "conversation", newID, "error", err)
 			return written, true, nil

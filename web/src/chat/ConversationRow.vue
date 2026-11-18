@@ -22,12 +22,12 @@ import OaScrollArea from '@/components/OaScrollArea.vue';
 import OaTextField from '@/components/OaTextField.vue';
 import { t } from '@/composables/useI18n';
 import {
-  IconArchive, IconChevronRight, IconEdit, IconFolder, IconFolderOutput, IconMoreVertical, IconTrash,
+  IconArchive, IconChevronRight, IconEdit, IconFolder, IconFolderOutput, IconMoreVertical, IconPin, IconTrash,
 } from '@/icons';
 import { projectList } from '@/stores/projects';
 import {
   canArchive, canDelete, draggedConversation, endConversationDrag, moveConversation, rename, renamingID,
-  setFlash, startConversationDrag,
+  setFlash, startConversationDrag, togglePinned,
 } from './useChat';
 import type { RowMenu } from './useRowMenu';
 
@@ -169,6 +169,7 @@ onBeforeUnmount(() => {
       @click="emit('open')"
       @dblclick="beginRename"
     >
+      <IconPin v-if="props.conversation.pinned" :size="12" />
       <span class="ai-chat-list-title">{{ props.conversation.title || t('newChat') }}</span>
     </button>
     <!-- The row that is still being written into, so a composer that is
@@ -196,6 +197,9 @@ onBeforeUnmount(() => {
         </OaIconButton>
       </template>
       <template #default="{ close }">
+        <OaMenuItem :title="t(props.conversation.pinned ? 'unpinChat' : 'pinChat')" @click.stop="close(); togglePinned(props.conversation)">
+          <template #leading><IconPin :size="13" /></template>
+        </OaMenuItem>
         <OaMenuItem :title="t('rename')" @click.stop="close(); beginRename()">
           <template #leading><IconEdit :size="13" /></template>
         </OaMenuItem>

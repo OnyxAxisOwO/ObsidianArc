@@ -2,7 +2,6 @@ package usage
 
 import (
 	"net/http"
-	"strconv"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/httpx"
@@ -23,11 +22,6 @@ func NewHandlers(store *Store) *Handlers { return &Handlers{store: store} }
 func (h *Handlers) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /api/usage/me/history", auth.RequireUser(httpx.Wrap(h.history)))
 }
-
-// MaxHistory bounds one page of turns. A reader is looking for "what did I
-// just spend", not for an export; the whole ledger is a different feature and
-// would be a different shape.
-const MaxHistory = 100
 
 // Public is one turn as its own author may read it.
 //
@@ -76,12 +70,7 @@ func (h *Handlers) history(w http.ResponseWriter, r *http.Request) error {
 	// The filter is built here rather than read from the query. The one field
 	// that decides whose rows these are must not be something a caller can
 	// send, so there is no code path where it could be.
-	limit := MaxHistory
-	if raw := r.URL.Query().Get("limit"); raw != "" {
-		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 && parsed < limit {
-			limit = parsed
-		}
-	}
+	limit, offset := httpx.HistoryPage(r)
 
 	// Both queries run on every visit to this page, and any signed-in account can
 	// ask for it as often as it likes. The totals come from the hourly rollup and
@@ -97,7 +86,7 @@ func (h *Handlers) history(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return httpx.Internal(err)
 	}
-	records, err := h.store.Recent(r.Context(), Filter{UserID: account.ID, Limit: limit})
+	records, err := h.store.Recent(r.Context(), Filter{UserID: account.ID, Limit: limit, Offset: offset})
 	if err != nil {
 		return httpx.Internal(err)
 	}

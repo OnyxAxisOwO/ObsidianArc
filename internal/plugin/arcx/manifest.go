@@ -20,6 +20,9 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"unicode"
+
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/console"
 )
 
 // Format is the version of the archive layout and the manifest schema this
@@ -290,6 +293,8 @@ var (
 	guardNameRE  = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
 	modeRE       = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
 	grantRE      = regexp.MustCompile(`^[a-z_]+(,[a-z_]+)*$`)
+	flagNameRE   = regexp.MustCompile(`^--[a-z][a-z0-9-]*$`)
+	flagValueRE  = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_|.-]*$`)
 	consoleRE    = regexp.MustCompile(`^[a-z][a-z0-9-]*( [a-z][a-z0-9-]*)*$`)
 )
 
@@ -349,6 +354,9 @@ func (m *Manifest) Validate() error {
 	}
 	if strings.TrimSpace(m.Title.EN) == "" {
 		return errors.New("title.en is required")
+	}
+	if !safeTerminalText(m.Title.EN, m.Title.ZH, m.Author, m.Description.EN, m.Description.ZH, m.License) {
+		return errors.New("package metadata contains terminal control characters")
 	}
 	if m.Requires.API < 1 {
 		return errors.New("requires.api is required")
@@ -598,16 +606,37 @@ func publicPathOK(path string) error {
 	return nil
 }
 
+func safeTerminalText(values ...string) bool {
+	for _, value := range values {
+		for _, r := range value {
+			if (unicode.IsControl(r) && r != '\n' && r != '\t') || unicode.In(r, unicode.Cf) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func (m *Manifest) validateConsole() error {
 	seen := map[string]bool{}
 	for _, c := range m.Console {
-		if !consoleRE.MatchString(c.Name) {
+		if !consoleRE.MatchString(c.Name) || strings.Count(c.Name, " ")+1 > console.MaxCommandWords {
 			return fmt.Errorf("console command %q is not a valid name", c.Name)
 		}
 		if seen[c.Name] {
 			return fmt.Errorf("console command %q defined twice", c.Name)
 		}
 		seen[c.Name] = true
+		if !safeTerminalText(c.Group, c.Summary.EN, c.Summary.ZH, c.Help.EN, c.Help.ZH, c.Usage) || !safeTerminalText(c.Examples...) || !safeTerminalText(c.SeeAlso...) || !safeTerminalText(c.Endpoints...) {
+			return fmt.Errorf("console command %q contains terminal control characters", c.Name)
+		}
+		flags := map[string]bool{"--help": true, "--yes": true, "--json": true}
+		for _, flag := range c.Flags {
+			if !flagNameRE.MatchString(flag.Name) || flags[flag.Name] || (flag.Value != "" && !flagValueRE.MatchString(flag.Value)) || !safeTerminalText(flag.Hint.EN, flag.Hint.ZH) {
+				return fmt.Errorf("console command %q: invalid or duplicate flag %q", c.Name, flag.Name)
+			}
+			flags[flag.Name] = true
+		}
 		if strings.TrimSpace(c.Summary.EN) == "" {
 			return fmt.Errorf("console command %q needs a summary", c.Name)
 		}
@@ -624,6 +653,9 @@ func (m *Manifest) validateConsole() error {
 		// else it is ignored, and the command refuses surplus tokens as though the
 		// flag were absent, so the mistake would surface only at the terminal.
 		for i, a := range c.Args {
+			if !safeTerminalText(a.Name, a.Hint.EN, a.Hint.ZH) {
+				return fmt.Errorf("console command %q: invalid argument text", c.Name)
+			}
 			if a.Rest && i != len(c.Args)-1 {
 				return fmt.Errorf("console command %q: argument %q takes the rest of the line, so it must be the last one", c.Name, a.Name)
 			}

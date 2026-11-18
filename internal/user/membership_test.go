@@ -118,7 +118,8 @@ func TestMembershipExpiry(t *testing.T) {
 			renewed := make(chan struct{})
 			resolved := make(chan error, 1)
 			go func() {
-				stale, err := users.scan(db.QueryRow(ctx, `SELECT `+users.columns()+` FROM users WHERE id = ?`, account.ID))
+				set := users.active()
+				stale, err := set.scan(db.QueryRow(ctx, `SELECT `+set.columns+` FROM users WHERE id = ?`, account.ID))
 				close(read)
 				<-renewed
 				if err == nil {

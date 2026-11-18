@@ -42,6 +42,8 @@ curl https://ai.example.com/v1/responses \
 
 ## 返回内容
 
+流式和非流式的响应对象均包含本次请求的 `instructions`、`tools`、`tool_choice` 和 `parallel_tool_calls`。未指定时分别为 `null`、空数组、`"auto"` 和 `true`。工具列表列出实际交给模型的客户端工具，包含 `additional_tools` 中的有效声明。命名空间会展开，重复声明会合并，厂商托管工具会过滤。
+
 非流式结果使用 `object: "response"` 和 `output` 数组。文本位于 message 项的 content 中，类型为 `output_text`。
 
 以下只展示用于读取文本的结构片段：

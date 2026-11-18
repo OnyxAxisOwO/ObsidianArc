@@ -52,7 +52,7 @@ func TestAGeneratedImageURLOnTheLoopbackInterfaceIsRefused(t *testing.T) {
 	}))
 	defer internal.Close()
 
-	_, _, err := generatedImageBytes(context.Background(),
+	_, _, err := GeneratedImageBytes(context.Background(),
 		adapter.GeneratedImage{URL: internal.URL + "/internal-secret"}, 0)
 	if err == nil {
 		t.Fatal("fetched a loopback URL")
@@ -64,7 +64,7 @@ func TestAGeneratedImageURLOnTheLoopbackInterfaceIsRefused(t *testing.T) {
 
 func TestAGeneratedImageURLMustBeHTTP(t *testing.T) {
 	for _, raw := range []string{"file:///etc/passwd", "gopher://example.com/", "ftp://example.com/x.png"} {
-		if _, _, err := generatedImageBytes(context.Background(),
+		if _, _, err := GeneratedImageBytes(context.Background(),
 			adapter.GeneratedImage{URL: raw}, 0); err == nil {
 			t.Errorf("%s was accepted", raw)
 		}
@@ -75,14 +75,14 @@ func TestAGeneratedImageURLMustBeHTTP(t *testing.T) {
 // stored under a media type, and it used to be told it was a PNG.
 func TestGeneratedImageBytesRefuseWhatIsNotAnImage(t *testing.T) {
 	notAnImage := base64.StdEncoding.EncodeToString([]byte(`{"secret":"not a picture"}`))
-	if _, _, err := generatedImageBytes(context.Background(),
+	if _, _, err := GeneratedImageBytes(context.Background(),
 		adapter.GeneratedImage{B64JSON: notAnImage}, 0); err == nil {
 		t.Fatal("stored a JSON document as an image")
 	}
 }
 
 func TestGeneratedImageBytesIdentifyTheMediaType(t *testing.T) {
-	data, mime, err := generatedImageBytes(context.Background(),
+	data, mime, err := GeneratedImageBytes(context.Background(),
 		adapter.GeneratedImage{B64JSON: onePixelPNG}, 0)
 	if err != nil {
 		t.Fatalf("refused a real PNG: %v", err)
@@ -97,7 +97,7 @@ func TestGeneratedImageBytesIdentifyTheMediaType(t *testing.T) {
 
 func TestAGeneratedImageIsRefusedWhenItIsLargerThanTheCeiling(t *testing.T) {
 	oversized := base64.StdEncoding.EncodeToString([]byte(strings.Repeat("x", 64)))
-	if _, _, err := generatedImageBytes(context.Background(),
+	if _, _, err := GeneratedImageBytes(context.Background(),
 		adapter.GeneratedImage{B64JSON: oversized}, 16); err == nil {
 		t.Fatal("accepted an image past the ceiling")
 	}

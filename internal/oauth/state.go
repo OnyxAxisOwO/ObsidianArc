@@ -43,6 +43,7 @@ const (
 
 // state is what the callback has to know and cannot be told by the caller.
 type state struct {
+	Issuer   string `json:"iss,omitempty"`
 	Provider string `json:"p"`
 	// The opaque value handed to the provider and compared with what comes
 	// back. Signing the cookie proves this browser started a sign-in; this
@@ -81,6 +82,7 @@ type state struct {
 // Nothing is written while this is outstanding. An abandoned form leaves a
 // cookie that expires, and no row anywhere.
 type pending struct {
+	Issuer   string `json:"iss,omitempty"`
 	Provider string `json:"p"`
 	Subject  string `json:"s"`
 	Login    string `json:"l"`

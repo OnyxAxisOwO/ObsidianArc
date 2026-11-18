@@ -1155,8 +1155,6 @@ func (sess *sshSession) serve(requests <-chan *ssh.Request) {
 			}
 			started.Stop()
 			sess.serveExec(requests, payload.Command)
-			// Deliberately not sess.close(): see closeChannel.
-			sess.closeChannel()
 			return
 
 		default:
@@ -1212,6 +1210,22 @@ func (sess *sshSession) serveExec(requests <-chan *ssh.Request, line string) {
 	sess.mu.Lock()
 	sess.cancel = cancel
 	sess.mu.Unlock()
+	readerDone := make(chan struct{})
+	go func() {
+		defer close(readerDone)
+		defer recoverSession(sess)
+		sess.watchCancel(ctx, cancel)
+	}()
+	// Keep the slot until both ends of the channel have closed. Sending CLOSE
+	// alone does not wake Read or remove the channel from x/crypto's mux.
+	defer func() {
+		sess.closeChannel()
+		timeout := time.AfterFunc(sess.server.writeStallTimeout(), sess.abort)
+		defer timeout.Stop()
+		for range requests {
+		}
+		<-readerDone
+	}()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -1463,8 +1477,6 @@ func (sess *sshSession) runExec(ctx context.Context, cancel context.CancelFunc, 
 		return
 	}
 	consoleSession.Colour = false
-
-	go sess.watchCancel(ctx, cancel)
 
 	result := sess.server.cfg.Console.Execute(ctx, consoleSession, sess.output(), line)
 

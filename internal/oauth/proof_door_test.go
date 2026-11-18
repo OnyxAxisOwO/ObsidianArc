@@ -210,7 +210,7 @@ func TestAProviderSignUpFromTheLoginPageIsRefusedWhileAProofIsRequired(t *testin
 	if total := accountCount(t, f); total != 1 {
 		t.Errorf("accounts = %d, want none opened past the challenge", total)
 	}
-	if _, err := f.store.Account(t.Context(), nil, "github", "4218"); !errors.Is(err, ErrNoIdentity) {
+	if _, err := f.store.Account(t.Context(), nil, "github", "4218", ""); !errors.Is(err, ErrNoIdentity) {
 		t.Errorf("identity = %v, want it left unconnected", err)
 	}
 }

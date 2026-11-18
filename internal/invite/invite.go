@@ -1451,7 +1451,7 @@ func (s *Store) Uses(ctx context.Context, codeID string) ([]Use, error) {
 			JOIN users u ON u.id = ic.user_id
 			WHERE ic.code_id = ?
 		) everything
-		ORDER BY created_at DESC
+		ORDER BY created_at DESC, user_id DESC, via DESC
 		LIMIT ?`, ViaRegister, codeID, ViaClaim, codeID, maxUsesListed)
 	if err != nil {
 		return nil, fmt.Errorf("invite: list uses: %w", err)
@@ -1487,10 +1487,10 @@ func (s *Store) UsesTotal(ctx context.Context, codeID string) (int, error) {
 	return total, nil
 }
 
-// UsesByInviter returns up to maxUsesListed registrations made through any of
+// UsesByInviter pages the registrations made through any of
 // this inviter's personal invite codes (including codes previously regenerated),
 // ordered newest first.
-func (s *Store) UsesByInviter(ctx context.Context, inviterID string) ([]Use, error) {
+func (s *Store) UsesByInviter(ctx context.Context, inviterID string, limit, offset int) ([]Use, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT iu.user_id, COALESCE(u.username, ''), COALESCE(u.nickname, ''),
 		       iu.group_days, iu.created_at, iu.rewarded_at, iu.reward_cards,
@@ -1498,8 +1498,8 @@ func (s *Store) UsesByInviter(ctx context.Context, inviterID string) ([]Use, err
 		FROM invite_uses iu
 		JOIN users u ON u.id = iu.user_id
 		WHERE iu.inviter_id = ?
-		ORDER BY iu.created_at DESC
-		LIMIT ?`, ViaRegister, inviterID, maxUsesListed)
+		ORDER BY iu.created_at DESC, iu.user_id DESC
+		LIMIT ? OFFSET ?`, ViaRegister, inviterID, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("invite: list uses by inviter: %w", err)
 	}

@@ -67,6 +67,17 @@ const columns = `p.id, p.name, p.instructions, p.created_at, p.updated_at,
 // followed by a standalone insert lets two parallel requests both see the
 // last free slot and take it.
 func (s *Store) Create(ctx context.Context, userID, name, instructions string) (Project, error) {
+	var record Project
+	err := s.db.Tx(ctx, func(tx *database.Tx) error {
+		var err error
+		record, err = s.CreateIn(ctx, tx, userID, name, instructions)
+		return err
+	})
+	return record, err
+}
+
+// CreateIn lets a backup restore its whole set of project references atomically.
+func (s *Store) CreateIn(ctx context.Context, tx *database.Tx, userID, name, instructions string) (Project, error) {
 	clean, err := checkName(name)
 	if err != nil {
 		return Project{}, err
@@ -82,36 +93,30 @@ func (s *Store) Create(ctx context.Context, userID, name, instructions string) (
 		CreatedAt: now, UpdatedAt: now,
 	}
 
-	err = s.db.Tx(ctx, func(tx *database.Tx) error {
-		locked, err := tx.Exec(ctx,
-			`UPDATE users SET updated_at = updated_at WHERE id = ?`, userID)
-		if err != nil {
-			return fmt.Errorf("project: lock owner: %w", err)
-		}
-		if affected, rowsErr := locked.RowsAffected(); rowsErr == nil && affected == 0 {
-			return ErrNotFound
-		}
-
-		var count int
-		if err := tx.QueryRow(ctx,
-			`SELECT COUNT(*) FROM projects WHERE user_id = ?`, userID).Scan(&count); err != nil {
-			return fmt.Errorf("project: count: %w", err)
-		}
-		if count >= MaxPerUser {
-			return ErrTooMany
-		}
-
-		_, err = tx.Exec(ctx,
-			`INSERT INTO projects (id, user_id, name, instructions, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?)`,
-			record.ID, userID, record.Name, record.Instructions, record.CreatedAt, record.UpdatedAt)
-		if err != nil {
-			return fmt.Errorf("project: create: %w", err)
-		}
-		return nil
-	})
+	locked, err := tx.Exec(ctx,
+		`UPDATE users SET updated_at = updated_at WHERE id = ?`, userID)
 	if err != nil {
-		return Project{}, err
+		return Project{}, fmt.Errorf("project: lock owner: %w", err)
+	}
+	if affected, rowsErr := locked.RowsAffected(); rowsErr == nil && affected == 0 {
+		return Project{}, ErrNotFound
+	}
+
+	var count int
+	if err := tx.QueryRow(ctx,
+		`SELECT COUNT(*) FROM projects WHERE user_id = ?`, userID).Scan(&count); err != nil {
+		return Project{}, fmt.Errorf("project: count: %w", err)
+	}
+	if count >= MaxPerUser {
+		return Project{}, ErrTooMany
+	}
+
+	_, err = tx.Exec(ctx,
+		`INSERT INTO projects (id, user_id, name, instructions, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		record.ID, userID, record.Name, record.Instructions, record.CreatedAt, record.UpdatedAt)
+	if err != nil {
+		return Project{}, fmt.Errorf("project: create: %w", err)
 	}
 	return record, nil
 }

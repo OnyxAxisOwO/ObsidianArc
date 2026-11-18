@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -221,4 +222,83 @@ func parseDomains(raw string) []string {
 		}
 	}
 	return out
+}
+
+// registrationOpen reads the row locked by the caller: closing registration on
+// any node must take effect on the very next account commit.
+func (s *Service) registrationOpen(ctx context.Context, tx *database.Tx) error {
+	var value string
+	if err := tx.QueryRow(ctx, `SELECT value FROM settings WHERE key = ?`, settings.RegistrationEnabled).Scan(&value); err != nil {
+		return err
+	}
+	open, _ := strconv.ParseBool(strings.TrimSpace(value))
+	if !open {
+		return ErrRegistrationClosed
+	}
+	return nil
+}
+
+// ReviewRegistration performs the paid step outside the account transaction.
+// A provider failure carries the fallback verdict chosen by the operator.
+func (s *Service) ReviewRegistration(ctx context.Context, in RegisterInput) (SignupReview, error) {
+	if err := s.checkSignupIP(ctx, nil, in.IP); err != nil {
+		return SignupReview{}, err
+	}
+	if s.Hooks.ReviewSignup == nil {
+		return SignupReview{Decision: SignupAllow}, nil
+	}
+	seen, err := s.countRecentFromIP(ctx, in.IP)
+	if err != nil {
+		return SignupReview{}, err
+	}
+	if s.settings.Bool(settings.SignupReview) && s.settings.Get(settings.SignupReviewModel) != "" {
+		if err := s.reserveReview(ctx, in); err != nil {
+			return SignupReview{}, err
+		}
+	}
+	review, _ := s.Hooks.ReviewSignup(ctx, in, seen)
+	switch review.Decision {
+	case SignupRefuse:
+		s.RecordSignupReview(ctx, in, nil, review)
+		return review, ErrSignupRefused
+	case SignupAllow, SignupRestrict:
+	default:
+		review.Decision = SignupRestrict
+		review.Reason = "审查未返回有效决策"
+	}
+	return review, nil
+}
+
+// A refused review still costs the instance. Count attempts independently of
+// successful sign-ups, and hold the database lock only for the reservation.
+func (s *Service) reserveReview(ctx context.Context, in RegisterInput) error {
+	return s.db.Tx(ctx, func(tx *database.Tx) error {
+		if err := settings.Lock(ctx, tx); err != nil {
+			return err
+		}
+		if err := s.registrationOpen(ctx, tx); err != nil {
+			return err
+		}
+		if err := s.checkSignupRate(ctx, tx); err != nil {
+			return err
+		}
+		now := time.Now()
+		if _, err := tx.Exec(ctx, `DELETE FROM signup_review_attempts WHERE created_at <= ?`, now.Add(-time.Minute).UnixMilli()); err != nil {
+			return err
+		}
+		var total, address int
+		var last int64
+		if err := tx.QueryRow(ctx, `SELECT COUNT(*),COUNT(CASE WHEN ip = ? THEN 1 END),
+     COALESCE(MAX(CASE WHEN ip = ? AND username = ? THEN created_at END),0) FROM signup_review_attempts`, in.IP, in.IP, strings.ToLower(in.Username)).Scan(&total, &address, &last); err != nil {
+			return err
+		}
+		if total >= 120 || address >= 10 {
+			return &SignupThrottleError{RetryAfter: time.Minute}
+		}
+		if delay := time.UnixMilli(last).Add(5 * time.Second).Sub(now); delay > 0 {
+			return &SignupThrottleError{RetryAfter: delay}
+		}
+		_, err := tx.Exec(ctx, `INSERT INTO signup_review_attempts (ip, username, created_at) VALUES (?,?,?)`, in.IP, strings.ToLower(in.Username), now.UnixMilli())
+		return err
+	})
 }

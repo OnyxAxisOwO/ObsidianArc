@@ -41,6 +41,9 @@ func ValidateControls(p Provider, req ChatRequest) error {
 	}
 	for _, message := range req.Messages {
 		for _, part := range message.Parts {
+			if part.Kind == PartImage && !req.Model.SupportsImages {
+				return invalid("This model does not accept images, including images returned by tools. Choose a model with image input support.")
+			}
 			if err := check(part.CacheControl); err != nil {
 				return err
 			}

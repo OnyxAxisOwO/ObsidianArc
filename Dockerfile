@@ -21,7 +21,7 @@ RUN mkdir -p /src/internal/web/dist && npm run build
 
 # --- the binary ---------------------------------------------------------------
 
-FROM golang:1.27-alpine AS build
+FROM golang:1.27.4-alpine AS build
 
 WORKDIR /src
 

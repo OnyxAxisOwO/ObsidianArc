@@ -108,9 +108,9 @@ const emptyCheckin: CheckinSettings = { enabled: false, timezone: 'Asia/Shanghai
 
 function stub(bars: BonusBarRow[] = [bar()], checkin: CheckinSettings = emptyCheckin) {
   vi.spyOn(adminApi, 'bonusBars').mockResolvedValue({ bars });
-  vi.spyOn(adminApi, 'models').mockResolvedValue({ models: [model('m1', 'Alpha'), model('m2', 'Beta')] });
-  vi.spyOn(adminApi, 'groups').mockResolvedValue({
-    groups: [{ id: 'g1', name: 'Premium' } as Group, { id: 'g2', name: 'Basic' } as Group], policies: [],
+  vi.spyOn(adminApi, 'modelOptions').mockResolvedValue({ models: [model('m1', 'Alpha'), model('m2', 'Beta')] });
+  vi.spyOn(adminApi, 'groupOptions').mockResolvedValue({
+    groups: [{ id: 'g1', name: 'Premium' } as Group, { id: 'g2', name: 'Basic' } as Group],
   });
   vi.spyOn(adminApi, 'checkinSettings').mockResolvedValue(structuredClone(checkin));
   vi.spyOn(adminApi, 'bonusGrants').mockResolvedValue({ grants: [], total: 0 });
@@ -605,6 +605,29 @@ describe('a shared pool', () => {
       kind: 'shared', toggle_mode: 'only', name: 'Everyone',
       pool: { reset_period: 'day', reset_amount: 500, per_user_daily: 20, amount: 0 },
     }));
+  });
+
+  it('keeps the newly opened pool selected while an earlier adjustment finishes', async () => {
+    const a = pool(), b = pool({ id: 'p-2', name: 'Second' });
+    stub([a, b]);
+    let finish!: (result: Awaited<ReturnType<typeof adminApi.adjustBonusPool>>) => void;
+    vi.spyOn(adminApi, 'adjustBonusPool').mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    const save = vi.spyOn(adminApi, 'saveBonusBar').mockResolvedValue({ bar: b });
+    await mount();
+    rows()[0]!.click();
+    await settle();
+    type(inputOf(panels, t('poolAdjustAmount')), '10');
+    await settle();
+    button(panels, t('poolAdjust')).click();
+    await settle();
+    expect(adminApi.adjustBonusPool).toHaveBeenCalledWith(a.id, 'add', 10);
+    rows()[1]!.click();
+    await settle();
+    finish({ pool: a.pool! });
+    await settle();
+    button(panels, t('save')).click();
+    await settle();
+    expect(save).toHaveBeenCalledWith(b.id, expect.objectContaining({ name: b.name }));
   });
 
   it('shows its balance instead of grants, and tops it up', async () => {

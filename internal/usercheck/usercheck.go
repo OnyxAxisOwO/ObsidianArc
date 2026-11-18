@@ -118,24 +118,34 @@ func (m *Manager) load(ctx context.Context) error {
 	if _, err := normalizeConfig(cfg); err != nil {
 		return fmt.Errorf("usercheck: invalid stored configuration: %w", err)
 	}
+	key := ""
 	if len(sealed) > 0 {
-		key, err := m.box.Open(sealed)
+		var err error
+		key, err = m.box.Open(sealed)
 		if err != nil {
 			// Sealed under a master secret this process no longer has (a
 			// key-lost restore, a rotated SECRET_KEY). Refusing to boot would
 			// also take down the settings screen that can enter the key again,
 			// so start without it and let the lookup follow the failure policy.
 			slog.ErrorContext(ctx, "UserCheck stored API key cannot be opened; enter it again in the settings", "error", err)
-		} else {
-			m.apiKey = key
 		}
 	}
+	if key != m.apiKey {
+		m.backoffUntil = time.Time{}
+	}
+	m.apiKey = key
 	if cfg.Enabled && m.apiKey == "" {
 		slog.WarnContext(ctx, "UserCheck is enabled without a usable API key; lookups follow the failure policy")
 	}
 	cfg.APIKeySet = m.apiKey != ""
 	m.cfg = cfg
 	return nil
+}
+
+func (m *Manager) Refresh(ctx context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.load(ctx)
 }
 
 func (m *Manager) Config() Config {
@@ -229,7 +239,7 @@ func (m *Manager) Save(ctx context.Context, cfg Config, apiKey string, clearKey 
 			cfg.Enabled, string(domains), cfg.FailureMode, sealed, time.Now().UnixMilli()); err != nil {
 			return fmt.Errorf("usercheck: save configuration: %w", err)
 		}
-		return nil
+		return database.AdvanceRevision(ctx, tx, "usercheck")
 	}); err != nil {
 		return err
 	}

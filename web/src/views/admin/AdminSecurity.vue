@@ -115,6 +115,7 @@ const form = ref({
   chatChallengeWindowSecs: 60 as number | null,
   chatChallengeClearMins: 30 as number | null,
   reviewEnabled: false,
+  reviewOAuth: false,
   reviewModel: '',
   reviewMode: 'normal',
   reviewRestrictHours: 24 as number | null,
@@ -222,6 +223,7 @@ function share(part: number, whole: number): string {
 // Where the server says this instance lives, handed up by the applications
 // card that reads it; the sign-in providers' callback hints are built from it.
 const issuer = ref('');
+const exampleIssuer = 'https://auth.example.com';
 
 /**
  * What to paste into the provider's own console.
@@ -329,6 +331,7 @@ function collect(): Record<string, string> {
     'security.chat_challenge_window_seconds': String(form.value.chatChallengeWindowSecs ?? 60),
     'security.chat_challenge_clear_minutes': String(form.value.chatChallengeClearMins ?? 30),
     'security.signup_review': String(form.value.reviewEnabled),
+    'security.signup_review_oauth': String(form.value.reviewOAuth),
     'security.signup_review_model': form.value.reviewModel,
     'security.signup_review_mode': form.value.reviewMode,
     'security.signup_review_restrict_hours': String(form.value.reviewRestrictHours ?? 24),
@@ -595,6 +598,7 @@ async function load(): Promise<void> {
       chatChallengeWindowSecs: Number(values['security.chat_challenge_window_seconds'] ?? 60),
       chatChallengeClearMins: Number(values['security.chat_challenge_clear_minutes'] ?? 30),
       reviewEnabled: values['security.signup_review'] === 'true',
+      reviewOAuth: values['security.signup_review_oauth'] === 'true',
       reviewModel: values['security.signup_review_model'] ?? '',
       reviewMode: values['security.signup_review_mode'] ?? 'normal',
       reviewRestrictHours: Number(values['security.signup_review_restrict_hours'] ?? 24),
@@ -619,7 +623,7 @@ async function load(): Promise<void> {
       oidcTokenURL: values['oauth.oidc_token_url'] ?? '',
       oidcUserInfoURL: values['oauth.oidc_userinfo_url'] ?? '',
       oidcTrustEmail: values['oauth.oidc_trust_email'] === 'true',
-      thirdPartyOnlySignup: (values['oauth.third_party_only_signup'] ?? values['oauth.oidc_only_signup']) === 'true',
+      thirdPartyOnlySignup: values['oauth.third_party_only_signup'] === 'true' || values['oauth.oidc_only_signup'] === 'true',
       oidcRequireForAll: values['oauth.oidc_require_for_all'] === 'true',
       oauthOIDCRequireCompletion: values['oauth.oidc_require_completion'] === 'true',
       oauthAllowPassword: (values['oauth.allow_password'] ?? 'true') === 'true',
@@ -773,6 +777,7 @@ onMounted(load);
       </AdminControlCard>
       <AdminControlCard id="secSignupReview" v-show="visible('secSignupReview')" :title="t('secSignupReview')" :icon="IconSpark" :hint="t('signupReviewIntro')">
         <OaSwitchField v-model="form.reviewEnabled" :label="t('signupReview')" :hint="t('signupReviewHint')" />
+        <OaSwitchField v-if="form.reviewEnabled" v-model="form.reviewOAuth" :label="t('signupReviewOAuth')" />
         <OaSelectField
           v-model="form.reviewModel"
           :label="t('signupReviewModel')"
@@ -1073,7 +1078,7 @@ onMounted(load);
               v-model="form.oidcIssuer"
               :label="t('oauthOIDCIssuer')"
               :hint="t('oauthOIDCIssuerHint')"
-              placeholder="https://auth.example.com"
+              :placeholder="exampleIssuer"
               monospace
             />
             <OaTextField
@@ -1119,21 +1124,21 @@ onMounted(load);
               v-if="isSuperAdmin"
               v-model="form.oidcAuthURL"
               :label="t('oauthOIDCAuthURL')"
-              placeholder="https://auth.example.com/oauth/authorize"
+              :placeholder="exampleIssuer + '/oauth/authorize'"
               monospace
             />
             <OaTextField
               v-if="isSuperAdmin"
               v-model="form.oidcTokenURL"
               :label="t('oauthOIDCTokenURL')"
-              placeholder="https://auth.example.com/oauth/token"
+              :placeholder="exampleIssuer + '/oauth/token'"
               monospace
             />
             <OaTextField
               v-if="isSuperAdmin"
               v-model="form.oidcUserInfoURL"
               :label="t('oauthOIDCUserInfoURL')"
-              placeholder="https://auth.example.com/oauth/userinfo"
+              :placeholder="exampleIssuer + '/oauth/userinfo'"
               monospace
             />
           </div>
@@ -1171,8 +1176,8 @@ onMounted(load);
           :hint="t('oauthLinkByEmailHint')"
         />
       </AdminControlCard>
-      <SecurityApplicationsCard v-show="visible('secApplications')" @issuer="(value) => { issuer = value; }" />
-      <SecurityLogCard v-show="visible('secSecurityLog')" @failed="(message) => { flash = message; }" />
+      <SecurityApplicationsCard v-show="visible('secApplications')" @issuer="issuer = $event" />
+      <SecurityLogCard v-show="visible('secSecurityLog')" @failed="flash = $event" />
     </template>
   </AdminWorkbench>
   <p v-if="flash" class="oa-drawer-flash visible oa-control-flash" role="status">{{ flash }}</p>

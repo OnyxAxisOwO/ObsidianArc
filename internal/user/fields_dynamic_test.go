@@ -3,8 +3,10 @@ package user
 import (
 	"errors"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func digits(v string) error {
@@ -121,5 +123,49 @@ func TestTakenFieldNamesOnlyTheColumnTheMessageNames(t *testing.T) {
 		if got := s.takenField(message); got != want {
 			t.Errorf("takenField(%q) = %q, want %q", message, got, want)
 		}
+	}
+}
+
+type projectedRow func(...any) error
+
+func (r projectedRow) Scan(dest ...any) error { return r(dest...) }
+
+func TestFieldProjectionOutlivesConcurrentReplacement(t *testing.T) {
+	store := storeWithGate(map[string]bool{"zeta": true})
+	if err := store.AddPluginFields("zeta", []Field{{Key: "former"}}); err != nil {
+		t.Fatal(err)
+	}
+	previous, release := store.Projection()
+	if !strings.HasSuffix(previous.JoinColumns("u"), "u.former") {
+		release()
+		t.Fatal("old field not selected")
+	}
+	replaced := make(chan error, 1)
+	go func() { replaced <- store.AddPluginFields("zeta", []Field{{Key: "current"}}) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for !store.HasField("current") {
+		if time.Now().After(deadline) {
+			release()
+			t.Fatal("new projection unavailable")
+		}
+		runtime.Gosched()
+	}
+	select {
+	case <-replaced:
+		release()
+		t.Fatal("purge could proceed before the read finished")
+	default:
+	}
+	row, err := previous.ScanRow(projectedRow(func(dest ...any) error {
+		*dest[19].(*string) = "[]"
+		*dest[len(dest)-1].(*string) = "value"
+		return nil
+	}))
+	release()
+	if err != nil || row.Fields["former"] != "value" || row.Fields["current"] != "" {
+		t.Fatalf("projection changed during read: %v, %v", row.Fields, err)
+	}
+	if err := <-replaced; err != nil {
+		t.Fatal(err)
 	}
 }

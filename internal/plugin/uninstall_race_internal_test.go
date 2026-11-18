@@ -70,6 +70,12 @@ func TestConcurrentAnUninstallQueuedBehindAnUpdatePurgesTheVersionThatIsInstalle
 	// Long enough for the uninstall to reach the lock. Without the lock it has
 	// read the installed version by then, and the swap below is too late for it.
 	time.Sleep(100 * time.Millisecond)
+	// A committed update publishes both the bytes and the in-process registration
+	// under this lock. The uninstall checks that it has the same revision.
+	if _, err := r.db.Exec(ctx, `UPDATE plugin_packages SET archive = ?, sha256 = ? WHERE name = ?`, next.pkg.Raw, next.pkg.SHA256, next.name); err != nil {
+		m.mu.Unlock()
+		t.Fatal(err)
+	}
 	m.swapPackages(func(pkgs map[string]*loaded) { pkgs["racer"] = next })
 	m.mu.Unlock()
 	if err := <-done; err != nil {
@@ -89,4 +95,30 @@ func tableInDB(t *testing.T, r *rig, table string) bool {
 		t.Fatal(err)
 	}
 	return n == 1
+}
+
+func TestPeerRefreshesChangedPackageBeforePurging(t *testing.T) {
+	r := newRig(t)
+	ctx := t.Context()
+	original := parsed(t, purgingPackage(t, "racer", "DROP TABLE IF EXISTS original;"))
+	if _, err := r.manager.InstallPackage(ctx, someone, original, SourceUpload, InstallOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	peer := reload(t, r.db)
+	next := parsed(t, purgingPackage(t, "racer", "DROP TABLE IF EXISTS revised;"))
+	if _, err := r.manager.InstallPackage(ctx, someone, next, SourceUpload, InstallOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := peer.manager.Uninstall(ctx, someone, "racer", true); err == nil {
+		t.Fatal("peer purged using its old script")
+	}
+	if err := peer.manager.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if l := peer.manager.loadedPackage("racer"); l == nil || l.pkg.SHA256 != next.SHA256 {
+		t.Fatal("peer did not load the committed revision")
+	}
+	if err := peer.manager.Uninstall(ctx, someone, "racer", true); err != nil {
+		t.Fatal(err)
+	}
 }

@@ -6,7 +6,7 @@ import { computed, ref } from 'vue';
 import { fetchMe, resendVerification, verifyEmailCode } from '@/api/auth';
 import { t, type StringKey } from '@/composables/useI18n';
 import { verificationErrorKey } from '@/lib/verification-error';
-import { adopt, currentUser, siteInfo } from '@/stores/session';
+import { adopt, currentUser, isCurrentSession, sessionStamp, siteInfo } from '@/stores/session';
 
 const visible = computed(() => {
   const account = currentUser.value;
@@ -31,15 +31,17 @@ function resend(): void {
 
 async function verifyCode(): Promise<void> {
   if (codeBusy.value || !/^\d{6}$/.test(code.value)) return;
+  const stamp = sessionStamp();
   codeBusy.value = true;
   label.value = null;
   try {
     await verifyEmailCode(code.value);
+    if (!isCurrentSession(stamp)) return;
     try {
       const session = await fetchMe();
       // Adopting the verified account removes this banner, so there is no
       // success line to draw on this path: the banner going away says it.
-      adopt(session.user, session.preferences);
+      if (isCurrentSession(stamp)) adopt(session.user, session.preferences);
     } catch {
       // The code is accepted, but the banner still reads the unconfirmed account.
       // Say so, rather than leaving it up beside a success line.

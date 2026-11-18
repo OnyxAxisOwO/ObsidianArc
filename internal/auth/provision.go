@@ -120,11 +120,7 @@ func (s *Service) MissingFor(ctx context.Context, q database.Queryer, email stri
 // the first account, and the per-address count cannot be read by two of them
 // before either has written.
 //
-// Deliberately not run past the sign-up reviewer. That review reads a
-// username, an address and a user agent and judges whether a person chose
-// them; here nobody chose them, and the provider has already done the work of
-// establishing that an account exists somewhere with a history. Sending it a
-// row it cannot judge would produce a verdict about nothing.
+// The caller performs any configured review before this transaction.
 func (s *Service) Provision(ctx context.Context, tx *database.Tx, in ProvisionInput) (user.User, error) {
 	if err := settings.Lock(ctx, tx); err != nil {
 		return user.User{}, err
@@ -143,8 +139,8 @@ func (s *Service) Provision(ctx context.Context, tx *database.Tx, in ProvisionIn
 		if err := s.CheckLegalAcceptance(in.LegalAccepted); err != nil {
 			return user.User{}, err
 		}
-		if !s.settings.Bool(settings.RegistrationEnabled) {
-			return user.User{}, ErrRegistrationClosed
+		if err := s.registrationOpen(ctx, tx); err != nil {
+			return user.User{}, err
 		}
 		if err := checkEmail(s.settings, in.Email); err != nil {
 			return user.User{}, err

@@ -115,7 +115,7 @@ export function addMonths(from: Date, months: number): Date {
 const DEFAULT_MAX_OUTPUT = 4096;
 
 /**
- * What one turn reserves before it runs, mirroring Model.WorstCase in Go.
+ * What one turn reserves before it runs, mirroring Model.ReservationEstimate in Go.
  *
  * The reservation, not the average cost: it is what the limit is actually
  * compared against, so it is what decides whether an allowance can pay for
@@ -123,7 +123,7 @@ const DEFAULT_MAX_OUTPUT = 4096;
  * message rather than running out partway through the day, and that is worth
  * being told before saving rather than after a user complains.
  */
-export function worstCase(entry: AdminModel): number {
+export function reservationEstimate(entry: AdminModel): number {
   const ceiling = entry.max_output_tokens > 0 && entry.max_output_tokens < DEFAULT_MAX_OUTPUT
     ? entry.max_output_tokens
     : DEFAULT_MAX_OUTPUT;
@@ -134,7 +134,7 @@ export function worstCase(entry: AdminModel): number {
  *  decides when somebody is cut off. */
 export function priciest(models: AdminModel[]): AdminModel | null {
   return models.reduce<AdminModel | null>(
-    (worst, entry) => (worst === null || worstCase(entry) > worstCase(worst) ? entry : worst),
+    (worst, entry) => (worst === null || reservationEstimate(entry) > reservationEstimate(worst) ? entry : worst),
     null,
   );
 }
@@ -142,7 +142,7 @@ export function priciest(models: AdminModel[]): AdminModel | null {
 /** The few models that cost the most per turn, dearest first: the readout
  *  names several because the dearest one alone says nothing about the rest. */
 export function priciestFew(models: AdminModel[], count: number): AdminModel[] {
-  return [...models].sort((a, b) => worstCase(b) - worstCase(a)).slice(0, count);
+  return [...models].sort((a, b) => reservationEstimate(b) - reservationEstimate(a)).slice(0, count);
 }
 
 export function round(value: number): string {

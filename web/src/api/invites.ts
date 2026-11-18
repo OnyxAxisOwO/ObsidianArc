@@ -55,8 +55,8 @@ export interface ProfileInvites {
  * row lock, so two tabs opened at once cannot mint two — which is why there
  * is no separate "create mine" endpoint.
  */
-export function fetchProfileInvites(): Promise<ProfileInvites> {
-  return api.get<ProfileInvites>('/api/profile/invites');
+export function fetchProfileInvites(limit = 100, offset = 0): Promise<ProfileInvites> {
+  return api.get<ProfileInvites>(`/api/profile/invites?limit=${limit}&offset=${offset}`);
 }
 
 /** Revokes the current personal code and issues a new one in its place. */

@@ -67,3 +67,54 @@ func TestAdministratorAndActivityUpgrade(t *testing.T) {
 		t.Fatalf("restart role: %s %v", role, err)
 	}
 }
+
+func TestRequestOverrideUpgradePreservesGroupAccess(t *testing.T) {
+	db := openTestDB(t)
+	ctx := t.Context()
+	if err := db.ensureMigrationsTable(ctx); err != nil {
+		t.Fatal(err)
+	}
+	migrations, err := loadMigrations(db.Dialect())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range migrations {
+		if m.version >= "0034" {
+			break
+		}
+		if err := db.applyMigration(ctx, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec := func(query string, args ...any) {
+		t.Helper()
+		if _, err := db.Exec(ctx, query, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec(`INSERT INTO providers(id,name,kind,base_url,api_key_enc,created_at,updated_at) VALUES (?,?,?,?,?,?,?)`, "p", "test", "openai", "https://example.com", []byte("test"), 1, 1)
+	for _, model := range []string{"none", "view", "use"} {
+		exec(`INSERT INTO models (id,provider_id,model_id,display_name,created_at,updated_at) VALUES (?,?,?,?,?,?)`, model, "p", model, model, 1, 1)
+	}
+	for _, group := range []string{"open", "restricted"} {
+		exec(`INSERT INTO user_groups(id,name,allow_all_models,created_at,updated_at) VALUES (?,?,?,?,?)`, group, group, group == "open", 1, 1)
+		for _, access := range []string{"view", "use"} {
+			exec(`INSERT INTO group_models (group_id,model_id,access) VALUES (?,?,?)`, group, access, access)
+		}
+	}
+	if _, err := db.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, group := range []string{"open", "restricted"} {
+		for _, want := range []string{"none", "view", "use"} {
+			var got string
+			err := db.QueryRow(ctx, `SELECT access FROM group_models WHERE group_id = ? AND model_id = ?`, group, want).Scan(&got)
+			if want == "none" && IsNotFound(err) {
+				continue
+			}
+			if err != nil || got != want {
+				t.Fatalf("%s/%s: %q %v", group, want, got, err)
+			}
+		}
+	}
+}

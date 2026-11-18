@@ -7,7 +7,7 @@ import type { TwoFactorStatus } from '../src/api/twofactor';
 import { changeLanguage, t } from '../src/composables/useI18n';
 import { serverOwned } from '../src/lib/next';
 import {
-  adopt, currentUser, forget, pendingSecondFactor, site, siteInfo,
+  adopt, currentPreferences, currentUser, forget, pendingSecondFactor, site, siteInfo,
 } from '../src/stores/session';
 import AuthView from '../src/views/AuthView.vue';
 import SecuritySection from '../src/views/settings/SecuritySection.vue';
@@ -78,7 +78,7 @@ describe('the code step of signing in', () => {
 
   it('asks for the code once the password was right, and finishes with it', async () => {
     vi.spyOn(authApi, 'login').mockResolvedValue({ two_factor: true });
-    const finish = vi.spyOn(authApi, 'completeSignIn').mockResolvedValue({ user: ACCOUNT });
+    const finish = vi.spyOn(authApi, 'completeSignIn').mockResolvedValue({ user: ACCOUNT, preferences: { default_model_id: 'custom' } });
     await signInWithPassword();
 
     expect(host.querySelector('.oa-auth-title')!.textContent).toBe(t('twoFactorSignInTitle'));
@@ -92,6 +92,14 @@ describe('the code step of signing in', () => {
     await settle();
     expect(finish).toHaveBeenCalledWith('123 456', false);
     expect(currentUser.value?.username).toBe('ada');
+    expect(currentPreferences.value.default_model_id).toBe('custom');
+    expect(replace).toHaveBeenCalledWith('/');
+  });
+
+  it('loads account preferences with the password sign-in', async () => {
+    vi.spyOn(authApi, 'login').mockResolvedValue({ user: ACCOUNT, preferences: { default_model_id: 'preferred' } });
+    await signInWithPassword();
+    expect(currentPreferences.value.default_model_id).toBe('preferred');
     expect(replace).toHaveBeenCalledWith('/');
   });
 
@@ -117,7 +125,7 @@ describe('the code step of signing in', () => {
 
   it('takes a recovery code, which does not submit itself', async () => {
     pendingSecondFactor.value = true;
-    const finish = vi.spyOn(authApi, 'completeSignIn').mockResolvedValue({ user: ACCOUNT });
+    const finish = vi.spyOn(authApi, 'completeSignIn').mockResolvedValue({ user: ACCOUNT, preferences: { default_model_id: 'custom' } });
     await mount(AuthView, { mode: 'login' });
 
     button(host, t('twoFactorUseRecovery')).click();
@@ -141,7 +149,7 @@ describe('the code step of signing in', () => {
     unmount?.();
 
     site.value = { ...siteInfo.value, two_factor_remember_days: 30 };
-    const finish = vi.spyOn(authApi, 'completeSignIn').mockResolvedValue({ user: ACCOUNT });
+    const finish = vi.spyOn(authApi, 'completeSignIn').mockResolvedValue({ user: ACCOUNT, preferences: { default_model_id: 'custom' } });
     await mount(AuthView, { mode: 'login' });
     expect(host.textContent).toContain(t('twoFactorRemember', { days: 30 }));
     const remember = host.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
@@ -169,7 +177,7 @@ describe('the code step of signing in', () => {
     const { assign } = stubLocation();
     route.query = { next: '/oauth/authorize?client_id=wiki&state=s' };
     pendingSecondFactor.value = true;
-    vi.spyOn(authApi, 'completeSignIn').mockResolvedValue({ user: ACCOUNT });
+    vi.spyOn(authApi, 'completeSignIn').mockResolvedValue({ user: ACCOUNT, preferences: { default_model_id: 'custom' } });
     await mount(AuthView, { mode: 'login' });
 
     type(host.querySelector<HTMLInputElement>('input.oa-2fa-code')!, '123456');
@@ -392,6 +400,23 @@ describe('leaving with regenerated codes unsaved', () => {
     available: true, enabled: true, enabled_at: Date.UTC(2026, 8, 1), recovery_remaining: 8,
     mandatory: false, policy: 'optional', remember_days: 0,
   };
+
+  it('keeps the first set of codes when the enrollment panel is reopened', async () => {
+    adopt(ACCOUNT);
+    vi.spyOn(twoFactorApi, 'beginTwoFactor').mockResolvedValue(SETUP);
+    vi.spyOn(twoFactorApi, 'enableTwoFactor').mockResolvedValue({ recovery_codes: CODES, user: { ...ACCOUNT, two_factor_at: 1 } });
+    vi.spyOn(twoFactorApi, 'fetchTwoFactor').mockResolvedValue(ON);
+    await mount(TwoFactorWizard);
+    button(host, t('twoFactorAppHaveOne')).click();
+    await settle();
+    button(host, t('twoFactorContinue')).click();
+    await settle();
+    type(host.querySelector<HTMLInputElement>('input.oa-2fa-code')!, '123456');
+    await settle();
+    unmount!();
+    await mount(SecuritySection);
+    expect([...host.querySelectorAll('.oa-2fa-codes li')].map((el) => el.textContent)).toEqual(CODES);
+  });
 
   it('asks before the page is left while the new codes are unsaved, and not once they are acknowledged', async () => {
     adopt({ ...ACCOUNT, two_factor_at: 1 });

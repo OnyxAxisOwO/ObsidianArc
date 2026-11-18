@@ -86,6 +86,15 @@ describe('the invites card', () => {
     expect(host.textContent).not.toContain(t('inviteYourCode'));
   });
 
+  it('requests older invitees from the server', async () => {
+    const read = vi.spyOn(invitesApi, 'fetchProfileInvites').mockResolvedValue({ ...ON, used: 240 });
+    await mount(InvitesSection);
+    const size = read.mock.calls[0]![0]!;
+    button(host, t('next')).click();
+    await settle();
+    expect(read).toHaveBeenLastCalledWith(size, size);
+  });
+
   it('shows the personal code grouped as XXXX-XXXX once enabled', async () => {
     vi.spyOn(invitesApi, 'fetchProfileInvites').mockResolvedValue(ON);
     await mount(InvitesSection);

@@ -50,6 +50,18 @@ async function openNewBatch(): Promise<void> {
   await settle();
 }
 
+it('offers deletion in the details of an existing code', async () => {
+  vi.mocked(adminApi.codes).mockResolvedValue({ codes: [{
+    id: 'c1', code: 'EXAMPLE', name: '', windows: [], cards: 1, claimed: 0,
+    card_days: 30, expires_at: 0, note: '', created_at: 1,
+  } as RedemptionCode] });
+  await mount();
+  host.querySelector<HTMLTableRowElement>('tbody tr')!.click();
+  await settle();
+  expect(button(panels, t('deleteLabel'))).toBeDefined();
+  expect(panels.querySelector('.oa-panel-foot button.primary')).toBeNull();
+});
+
 describe('generating a batch of codes from a cleared number', () => {
   // A cleared card count used to mint one card per code, and a cleared card
   // length thirty days, neither of them shown in the panel once it was sent.

@@ -13,7 +13,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
-// ReserveFor claims one request and the turn's worst case against every
+// ReserveFor claims one request and the turn's estimated cost against every
 // window that applies, for a request to a particular model, which is what
 // decides which bonus bars may pay for it, and fails if any of them is
 // already spent. modelID may be empty and reset may be nil.
@@ -379,9 +379,7 @@ func reserveAllowance(
 }
 
 // windowRefusal is the rejection a window's counter earns, or nil. The counter
-// already includes this turn's worst case, so the comparison is "would finishing
-// this put you over" rather than "were you already over", which is the question
-// that has an answer while ten turns are in flight at once.
+// already includes the deposit for this turn and the other turns still in flight.
 func windowRefusal(window Window, limits Limits, used counter, resets time.Time) *ExceededError {
 	if limits.Requests != nil && *limits.Requests > 0 && used.Requests > *limits.Requests {
 		return &ExceededError{

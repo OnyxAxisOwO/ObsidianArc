@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/project"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
@@ -52,25 +53,11 @@ type messagePager func(ctx context.Context, userID, conversationID string, after
 // bound it: the walk stops as soon as one is crossed, so an account far past
 // them is refused after about one import's worth of reads.
 func (s *Service) openExport(ctx context.Context, account user.User) (*exportStream, error) {
-	// Already a JSON document in the store, carried across as it is. Get answers
-	// an account that never saved preferences with an empty object, so an error
-	// here is a failed read. Refusing keeps the export from writing a file that
-	// quietly lacks the preferences the README says an export carries.
-	stored, err := s.preferences.Get(ctx, account.ID)
+	doc, err := s.exportHeader(ctx, account)
 	if err != nil {
-		return nil, fmt.Errorf("backup: read preferences: %w", err)
+		return nil, err
 	}
-	var preferences json.RawMessage
-	if len(stored) > 0 {
-		preferences = stored
-	}
-
-	envelope, err := encodeEnvelope(Document{
-		Format:      Format,
-		ExportedAt:  time.Now().UnixMilli(),
-		Username:    account.Username,
-		Preferences: preferences,
-	})
+	envelope, err := encodeEnvelope(doc)
 	if err != nil {
 		return nil, err
 	}
@@ -91,6 +78,37 @@ func (s *Service) openExport(ctx context.Context, account user.User) (*exportStr
 		return nil, err
 	}
 	return stream, nil
+}
+
+func (s *Service) exportHeader(ctx context.Context, account user.User) (Document, error) {
+	// Already a JSON document in the store, carried across as it is. Get answers
+	// an account that never saved preferences with an empty object, so an error
+	// here is a failed read. Refusing keeps the export from writing a file that
+	// quietly lacks the preferences the README says an export carries.
+	stored, err := s.preferences.Get(ctx, account.ID)
+	if err != nil {
+		return Document{}, fmt.Errorf("backup: read preferences: %w", err)
+	}
+	var preferences json.RawMessage
+	if len(stored) > 0 {
+		preferences = stored
+	}
+
+	storedProjects, err := project.NewStore(s.db).List(ctx, account.ID)
+	if err != nil {
+		return Document{}, err
+	}
+	var projects []Project
+	for _, p := range storedProjects {
+		projects = append(projects, Project{ID: p.ID, Name: p.Name, Instructions: p.Instructions})
+	}
+	return Document{
+		Projects:    projects,
+		Format:      Format,
+		ExportedAt:  time.Now().UnixMilli(),
+		Username:    account.Username,
+		Preferences: preferences,
+	}, nil
 }
 
 // encodeEnvelope is the document up to where its conversations begin. It is
@@ -182,11 +200,7 @@ func (e *exportStream) writeTo(ctx context.Context, w io.Writer) error {
 // renaming keep what they were given, and an export that carried it would be a
 // file its own account could not restore.
 func (e *exportStream) writeThread(ctx context.Context, w io.Writer, record conversation.Conversation, conversations, messages int) (int, error) {
-	header, err := encodeThreadHeader(Thread{
-		Title:     scrubNUL(record.Title),
-		Pinned:    record.Pinned,
-		CreatedAt: record.CreatedAt,
-	})
+	header, err := encodeThreadHeader(threadOf(record))
 	if err != nil {
 		return messages, err
 	}
@@ -206,6 +220,9 @@ func (e *exportStream) writeThread(ctx context.Context, w io.Writer, record conv
 		messages += len(page)
 
 		for _, message := range page {
+			if len(message.Content)+len(message.Reasoning) > MaxDocumentBytes {
+				return messages, ErrTooLarge
+			}
 			encoded, err := json.Marshal(turnOf(message))
 			if err != nil {
 				return messages, fmt.Errorf("backup: encode %s: %w", record.ID, err)
@@ -221,7 +238,7 @@ func (e *exportStream) writeThread(ctx context.Context, w io.Writer, record conv
 			written++
 		}
 
-		if len(page) < e.messagePageSize {
+		if len(page) == 0 {
 			break
 		}
 		afterSeq = page[len(page)-1].Seq
@@ -229,6 +246,17 @@ func (e *exportStream) writeThread(ctx context.Context, w io.Writer, record conv
 
 	_, err = io.WriteString(w, "]}")
 	return messages, err
+}
+
+func threadOf(record conversation.Conversation) Thread {
+	return Thread{
+		Title:     scrubNUL(record.Title),
+		Pinned:    record.Pinned,
+		Archived:  record.Archived,
+		UpdatedAt: record.UpdatedAt,
+		ProjectID: record.ProjectID,
+		CreatedAt: record.CreatedAt,
+	}
 }
 
 // encodeThreadHeader is a thread up to where its messages begin, marshalled

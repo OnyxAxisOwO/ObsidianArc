@@ -31,7 +31,7 @@ curl https://ai.example.com/v1/images/generations \
 | `style` | 传给上游，支持值由上游决定 |
 | `image` | 可选，Base64 参考图数据 |
 | `images` | 可选，Base64 参考图数据列表（最多 5 张） |
-| `response_format` | 当前网关固定向上游请求 `b64_json` |
+| `response_format` | 客户端收到 `b64_json`。网关按模型配置向上游请求内联数据或公开图片 URL |
 
 `size` 和 `quality` 未填写时，网关没有统一补上 `1024x1024` 或 `standard`。最终行为由适配器与上游决定。
 

@@ -43,7 +43,7 @@
   - `POST /v1/images/generations`（图像生成）
   - `GET /v1/models` 与 `GET /v1/models/{id}`（模型列表与详情）
   - 支持工具调用（Tool Calling / Function Calling）的统一协议转换。
-- **管理工作台（Workbench）与终端**：管理后台采用模块化工作台架构，提供清晰的分组导航、响应式选项卡与草稿自动暂存（`settingsDraft`）。右上角账户菜单里的**终端**是一个命令行界面，所有账号都能用（用户组可以关掉），每个人只能运行自己在页面上本来就能做的事：普通用户管理自己的资料、密钥、对话、项目、额度、反馈与生图记录，管理员另外获得其授权对应的全部后台命令（`user`、`group`、`model`、`health`、`usage` 等）。覆盖全部后台管理接口和账户侧所有可设置、可更改的接口，支持多标签页、双语 `help`、Tab 补全与 `--json` 输出；设置 `OBSIDIAN_SSH_ADDR` 后可通过 `ssh 用户名@域名` 直接连接（连上的是终端，不是服务器 shell），并可作为单条命令被脚本调用。
+- **管理工作台（Workbench）与终端**：管理后台采用模块化工作台架构，提供清晰的分组导航、响应式选项卡与设置变更提示。右上角账户菜单里的**终端**是一个命令行界面，所有账号都能用（用户组可以关掉），每个人只能运行自己在页面上本来就能做的事：普通用户管理自己的资料、密钥、对话、项目、额度、反馈与生图记录，管理员另外获得其授权对应的全部后台命令（`user`、`group`、`model`、`health`、`usage` 等）。覆盖全部后台管理接口和账户侧所有可设置、可更改的接口，支持多标签页、双语 `help`、Tab 补全与 `--json` 输出；设置 `OBSIDIAN_SSH_ADDR` 后可通过 `ssh 用户名@域名` 直接连接（连上的是终端，不是服务器 shell），并可作为单条命令被脚本调用。
 - **服务健康与可用性监控**：实时记录运行时间与健康状态；对空闲模型进行定时探活；支持连续失败自动熔断与警告阈值（`health.warn_below`）；管理员可在系统设置中控制普通用户是否可见状态页面，对非管理员请求自动脱敏上游信息。
 - **图像实验室（Image Lab）**：支持图像生成模型调用、宽高比切换、灯箱缩放与图片下载；支持在后台独立标记模型的生图能力。
 - **用量核算与配额控制**：每次对话和 API 调用记录到用量账本；支持按 5 小时、周、月周期，针对请求次数、Token 消耗或积分设置限制；使用数据库行锁避免并发透支；管理员可批量生成兑换码或直接给账户发放重置卡，供用户按周期自行恢复额度；还可以另加**赠金条**（额外的一条额度：用户可自选是否优先使用，管理员可强制开关、限定模型、设置到期与是否公开总量，另有所有额度用完后才动用的备用额度），并开启**每日签到**，连续或累计签到即可领取赠金或重置卡。
@@ -155,7 +155,7 @@ Release images are available at `ghcr.io/onyxaxisowo/obsidianarc:latest` for Lin
   - `POST /v1/images/generations` (image generation)
   - `GET /v1/models` and `GET /v1/models/{id}` (model listings)
   - Unified tool calling and function calling format conversion.
-- **Admin Workbench & Terminal**: Modular administration workbench with categorized navigation, responsive tabs, and automatic form draft recovery (`settingsDraft`). The **Terminal** in the account menu is a command line every account can open (a group can switch it off), and it runs only what that account could already do on its own screens: an ordinary account manages its own profile, keys, conversations, projects, credit, feedback and image history, and an administrator also gets the backoffice commands their grants cover (`user`, `group`, `model`, `health`, `usage`, …). It covers every administrative endpoint and every account-side setting that can be changed, with bilingual `help`, tab completion, and `--json` output. Setting `OBSIDIAN_SSH_ADDR` serves the same terminal over SSH (`ssh user@host`), scriptable one command at a time.
+- **Admin Workbench & Terminal**: Modular administration workbench with categorized navigation, responsive tabs, and unsaved-settings indicators. The **Terminal** in the account menu is a command line every account can open (a group can switch it off), and it runs only what that account could already do on its own screens: an ordinary account manages its own profile, keys, conversations, projects, credit, feedback and image history, and an administrator also gets the backoffice commands their grants cover (`user`, `group`, `model`, `health`, `usage`, …). It covers every administrative endpoint and every account-side setting that can be changed, with bilingual `help`, tab completion, and `--json` output. Setting `OBSIDIAN_SSH_ADDR` serves the same terminal over SSH (`ssh user@host`), scriptable one command at a time.
 - **Uptime Monitoring and Circuit Breaking**: Uptime tracking and health status checks; automated periodic probe checks for idle models; automatic circuit breaking on consecutive upstream failures and warning thresholds (`health.warn_below`); configurable public visibility with credential stripping for non-admin requests.
 - **Image Lab**: Standalone image generation interface with aspect-ratio selection, lightbox zoom, and download controls; capability flags distinguish drawing models from text models.
 - **Usage Accounting and Rate Limits**: Per-turn usage recorded into an append-only ledger; supports request count, token, and credit limits across 5-hour, weekly, and monthly windows; row-level database locks prevent concurrent overdrafts; administrators mint redemption codes or grant reset cards directly so accounts can restore their own allowance on a schedule.
@@ -177,11 +177,11 @@ Release images are available at `ghcr.io/onyxaxisowo/obsidianarc:latest` for Lin
 
 | 指标 / Metric | 实测数据 / Measurement |
 | --- | --- |
-| 二进制体积 / Binary size | 28.34 MB（Linux amd64，本仓库不自带插件，其中插件运行时约 2.8 MB，构建时预压缩的 brotli 前端副本约 0.42 MB，内嵌的时区数据约 0.41 MB；使用 `-tags nosqlite` 为 24.64 MB） |
+| 二进制体积 / Binary size | 28.59 MB（Linux amd64，内含约 2.8 MB 的插件运行时、0.43 MB 的 brotli 前端副本及 0.41 MB 的时区数据。使用 `-tags nosqlite` 构建的版本为 24.89 MB） |
 | 冷启动就绪时间 / Cold start | ~28 ms |
 | 空闲内存占用 / Idle RSS | ~16 MB |
 | 20 并发流式峰值 / Peak under 20 concurrency | ~54 MB 内存，11 个 OS 线程 |
-| 首次加载传输体积 / Wire payload | 打开对话界面：支持 brotli 的浏览器传输 175.79 kB（155.20 kB JS + 20.58 kB CSS），只支持 gzip 时传输 209.16 kB（184.95 kB JS + 24.21 kB CSS）——brotli 是构建时以最高质量预压缩、嵌入二进制的副本，gzip 由服务器用 Go 的压缩器以最高级别在发送时生成（Node 的 gzip 在不同 CPU 上压出的字节不同，Go 的处处一致）；首屏预算按 gzip 计。以下按 gzip 计：中文语言包 (21.10 kB；后台独用的中文词条另成一包 39.06 kB，只在中文界面进入后台时加载)、管理后台 (180.81 kB JS + 15.86 kB CSS，后台独用的英文词条和样式随它加载)、终端 (8.07 kB JS + 1.67 kB CSS)、公式渲染器 (3.76 kB)、访客官网首页 (4.17 kB JS + 3.89 kB CSS)、访客落地页 (3.12 kB JS + 0.62 kB CSS)，第三方注册完善资料页（2.48 kB JS，仅在需要时加载），以及每个编进二进制的插件各一个小分包，按需加载；以插件包安装的插件，其浏览器端模块只在启用后才取；账户菜单内容（1.72 kB JS + 0.81 kB CSS，首次打开时加载）、文件夹管理（2.66 kB JS + 1.08 kB CSS，有文件夹或新建时加载）、模型厂商标志（6.27 kB，首次绘制图标时加载）、模型详情（1.24 kB JS + 0.55 kB CSS，点击信息按钮时加载）另成按需分包 |
+| 首次加载传输体积 / Wire payload | 打开对话界面：brotli 173.18 kB（152.57 kB JS + 20.61 kB CSS），gzip 205.49 kB（181.25 kB JS + 24.24 kB CSS）。brotli 副本在构建时预压缩，gzip 由服务器在发送时压缩，首屏预算按 gzip 计。按需加载的 gzip 传输体积：中文词典 21.16 kB，后台中文词典 39.42 kB，管理后台 182.25 kB JS + 15.88 kB CSS，终端 8.06 kB JS + 1.67 kB CSS，官网首页 4.17 kB JS + 3.89 kB CSS，访客落地页 3.12 kB JS + 0.62 kB CSS，账户菜单 1.72 kB JS + 0.81 kB CSS，文件夹管理 2.72 kB JS + 1.08 kB CSS，模型详情 1.24 kB JS + 0.55 kB CSS，公式渲染 3.76 kB JS，模型厂商标志 6.27 kB JS，第三方注册完善资料页 2.48 kB JS，图像实验室 5.81 kB JS。每个编入的插件另有一个独立分包，运行时安装的插件模块在启用后加载。 |
 | 后台常驻协程 / Background goroutines | 3 个（请求日志写入、10 分钟清理、备份调度） |
 | Go 直接依赖 / Direct Go dependencies | 4 个（SQLite 驱动、pgx、x/crypto、wazero——插件包的沙箱） |
 | 前端运行时依赖 / Frontend runtime dependencies | 4 个（`vue`、`vue-router`、`@vueuse/core`、`lucide-vue-next`） |

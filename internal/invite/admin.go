@@ -322,7 +322,7 @@ func (s *Store) List(ctx context.Context, filter ListFilter) ([]Code, int, error
 
 	rows, err := s.db.Query(ctx,
 		`SELECT`+selectColumns+fromClause+` WHERE `+clause+`
-		 ORDER BY ic.created_at DESC LIMIT ? OFFSET ?`, listArgs...)
+		 ORDER BY ic.created_at DESC, ic.id DESC LIMIT ? OFFSET ?`, listArgs...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("invite: list: %w", err)
 	}

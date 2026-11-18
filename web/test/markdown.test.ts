@@ -188,6 +188,11 @@ describe('markdown renderer', () => {
       expect(Date.now() - start).toBeLessThan(500);
     });
 
+    it('continues looking for inline math after an escaped line break', () => {
+      const nodes = parseInline('\\(unfinished\\\n\\(x+y\\)');
+      expect(nodes).toContainEqual({ type: 'math', value: 'x+y', display: false });
+    });
+
     it('does not hang on unclosed code and math fences with large bodies', () => {
       const start = Date.now();
       const codeInput = '```typescript\n' + 'const a = 1;\n'.repeat(2000);

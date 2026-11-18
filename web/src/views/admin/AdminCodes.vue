@@ -71,7 +71,7 @@ function openExport(): void {
   exporting.value = true;
 }
 
-const { open: panelOpen, panel, key: panelKey, show: showPanel, hide: hidePanel, closed: panelClosed } = usePanelSlot();
+const { open: panelOpen, key: panelKey, show: showPanel, hide: hidePanel, closed: panelClosed } = usePanelSlot();
 // An existing code is shown rather than edited. Changing how many cards a code
 // carries after people have redeemed it is a decision with no honest answer —
 // the ones already handed out do not come back — so the only action offered is
@@ -324,7 +324,8 @@ onMounted(load);
     ref="panel"
     :key="panelKey"
     :title="minted ? t('codesMinted', { count: minted.length }) : creating ? t('addCode') : maskCredential(existing!.code)"
-    :footer="creating && !minted"
+    :footer="!minted"
+    :confirmable="creating"
     :confirm-label="t('add')"
     :destructive-label="existing ? t('deleteLabel') : undefined"
     :destructive-confirm="existing ? t('confirmDeleteCode', { code: maskCredential(existing.code) }) : undefined"

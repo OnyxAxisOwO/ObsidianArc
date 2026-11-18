@@ -164,7 +164,7 @@ function panelFailure(row: Account, failure: unknown): void {
 
 type PanelMode = 'account' | 'conversations' | 'transcript';
 
-const { open: panelOpen, panel, key: panelKey, show: showPanel, hide: hidePanel, closed: panelClosed } = usePanelSlot();
+const { open: panelOpen, key: panelKey, show: showPanel, hide: hidePanel, closed: panelClosed } = usePanelSlot();
 const loadingDetail = ref(false);
 // Whether the form below holds this account. Until it does the panel shows
 // nothing editable: an empty form saved by mistake would clear real fields.
@@ -206,6 +206,7 @@ const conversationPage = ref<PageState>({ page: 1, pageSize: rememberedPageSize(
 const conversationTotal = ref(0);
 async function changeConversationPage(next: PageState): Promise<void> { conversationPage.value = next; await openConversations(); }
 const transcript = ref<Message[] | null>(null);
+const conversationRead = useLatestRequest();
 const transcriptTitle = ref('');
 const apiRestrictionTouched = ref(false);
 
@@ -404,6 +405,7 @@ async function open(id: string): Promise<void> {
   panelError.value = '';
   twoFactorFlash.value = '';
   banDraft.value = '';
+  conversationRead.invalidate();
   mode.value = 'account';
   conversationPage.value.page = 1;
   keys.value = null;
@@ -1005,6 +1007,7 @@ function signOutEverywhere(): void {
 async function openConversations(): Promise<void> {
   const row = account.value;
   if (!row) return;
+  const read = conversationRead.begin();
   mode.value = 'conversations';
   conversations.value = null;
   panelError.value = '';
@@ -1013,17 +1016,18 @@ async function openConversations(): Promise<void> {
       limit: conversationPage.value.pageSize,
       offset: (conversationPage.value.page - 1) * conversationPage.value.pageSize,
     });
-    if (!panelShows(row.id)) return;
+    if (!panelShows(row.id) || !conversationRead.isCurrent(read) || mode.value !== 'conversations') return;
     conversations.value = result.conversations;
     conversationTotal.value = result.total;
   } catch (failure) {
-    if (panelShows(row.id)) panelError.value = failureText(failure);
+    if (panelShows(row.id) && conversationRead.isCurrent(read) && mode.value === 'conversations') panelError.value = failureText(failure);
   }
 }
 
 async function openTranscript(conversation: Conversation): Promise<void> {
   const row = account.value;
   if (!row) return;
+  const read = conversationRead.begin();
   mode.value = 'transcript';
   transcript.value = null;
   transcriptTitle.value = conversation.title || t('conversationFallback');
@@ -1032,9 +1036,9 @@ async function openTranscript(conversation: Conversation): Promise<void> {
     const { messages } = await adminApi.userTranscript(row.id, conversation.id);
     // An audit view of one person's messages must not sit under another
     // account's title: the answer is shown only while its account is.
-    if (panelShows(row.id)) transcript.value = messages;
+    if (panelShows(row.id) && conversationRead.isCurrent(read) && mode.value === 'transcript') transcript.value = messages;
   } catch (failure) {
-    if (panelShows(row.id)) panelError.value = failureText(failure);
+    if (panelShows(row.id) && conversationRead.isCurrent(read) && mode.value === 'transcript') panelError.value = failureText(failure);
   }
 }
 

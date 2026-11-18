@@ -223,10 +223,12 @@ func (s *SessionStore) GetWithUser(ctx context.Context, token string) (Session, 
 	key := HashToken(token)
 
 	var record Session
-	account, err := s.users.ScanRow(scanBoth{s.db.QueryRow(ctx,
+	projection, release := s.users.Projection()
+	defer release()
+	account, err := projection.ScanRow(scanBoth{s.db.QueryRow(ctx,
 		`SELECT s.id, s.user_id, s.created_at, s.expires_at, s.last_seen_at, s.ip, s.user_agent,
 		 s.two_factor_pending, s.backoffice_at, s.backoffice_ip, s.backoffice_ua, s.device_id, `+
-			s.users.JoinColumns("u")+
+			projection.JoinColumns("u")+
 			` FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id = ?`, key),
 		[]any{&record.ID, &record.UserID, &record.CreatedAt, &record.ExpiresAt,
 			&record.LastSeenAt, &record.IP, &record.UserAgent, &record.TwoFactorPending,

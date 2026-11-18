@@ -352,6 +352,7 @@ func (h *Handlers) begin(
 		value.Verifier = token()
 		challenge = challengeFor(value.Verifier)
 	}
+	value.Issuer = creds.identitySource(provider.ID)
 	cookie, err := h.stamp.issue(value)
 	if err != nil {
 		return "", err
@@ -464,6 +465,10 @@ func (h *Handlers) callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if value.Issuer != creds.identitySource(provider.ID) {
+		h.fail(w, r, back, "state")
+		return
+	}
 	identity, err := provider.Authenticate(r.Context(), h.Client,
 		creds, code, h.redirectURI(r, provider.ID), value.Verifier)
 	if err != nil {
@@ -538,6 +543,7 @@ func (h *Handlers) askForDetails(
 	w http.ResponseWriter, r *http.Request, identity Identity, next string, passedSignUp bool, back string,
 ) {
 	ticket, err := h.pending.issuePending(pending{
+		Issuer:   identity.Issuer,
 		Provider: identity.Provider,
 		Subject:  identity.Subject,
 		Login:    identity.Login,
@@ -634,6 +640,7 @@ func (h *Handlers) completeSignup(w http.ResponseWriter, r *http.Request) error 
 	}
 
 	account, err := h.service.Complete(r.Context(), Identity{
+		Issuer:   held.Issuer,
 		Provider: held.Provider,
 		Subject:  held.Subject,
 		Login:    held.Login,
@@ -715,6 +722,9 @@ func (h *Handlers) heldSignup(r *http.Request) (pending, error) {
 	// The ticket lives for twenty minutes, and an operator who switches the
 	// provider off in that time must not still get an account through it. The
 	// callback checks this too, but only on the way in.
+	if held.Issuer != h.service.Credentials(held.Provider).identitySource(held.Provider) {
+		return pending{}, staleSignup()
+	}
 	if !h.service.Enabled(held.Provider) {
 		return pending{}, httpx.UnavailableCode("unavailable", "This server is not offering that sign-in right now.")
 	}

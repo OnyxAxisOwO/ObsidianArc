@@ -133,7 +133,7 @@ func init() {
 			}); err != nil {
 				return err
 			}
-			if jsonMode {
+			if jsonMode || !rt.Session.Actor.CanAdmin("models") {
 				return nil
 			}
 			fmt.Fprintln(rt.Out, "\nmodels:")

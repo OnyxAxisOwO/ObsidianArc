@@ -88,6 +88,10 @@ export function getConversation(id: string): Promise<{ conversation: Conversatio
   return api.get<{ conversation: Conversation; messages: Message[] }>(`/api/conversations/${id}`);
 }
 
+export function pinConversation(id: string, pinned: boolean): Promise<{ conversation: Conversation }> {
+  return api.patch<{ conversation: Conversation }>(`/api/conversations/${id}`, { pinned });
+}
+
 export function renameConversation(id: string, title: string): Promise<{ conversation: Conversation }> {
   return api.patch<{ conversation: Conversation }>(`/api/conversations/${id}`, { title });
 }

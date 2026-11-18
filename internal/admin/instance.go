@@ -301,6 +301,7 @@ var writableSettings = map[string]bool{
 	settings.OAuthOIDCRequireCompletion: true,
 	settings.OAuthLinkByEmail:           true,
 	settings.SignupReview:               true,
+	settings.SignupReviewOAuth:          true,
 	settings.SignupReviewModel:          true,
 	settings.SignupReviewMode:           true,
 	settings.SignupReviewPrompt:         true,
@@ -428,7 +429,7 @@ type valueRule struct {
 }
 
 var valueRules = []valueRule{
-	{[]string{settings.ProfileShowSignupUserAgent, settings.TermsEnabled, settings.TermsRequired, settings.PrivacyEnabled, settings.PrivacyRequired}, func(_, value string) error {
+	{[]string{settings.SignupReviewOAuth, settings.ProfileShowSignupUserAgent, settings.TermsEnabled, settings.TermsRequired, settings.PrivacyEnabled, settings.PrivacyRequired}, func(_, value string) error {
 		if value != "true" && value != "false" {
 			return httpx.BadRequestCode("setting_boolean_invalid", "Expected true or false.")
 		}

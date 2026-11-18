@@ -27,7 +27,7 @@ import {
   Archive as LucideArchive, Check as LucideCheck, ChevronDown as LucideChevronDown,
   Download as LucideDownload, Folder as LucideFolder, FolderOutput as LucideFolderOutput,
   FolderPlus as LucideFolderPlus, Github as LucideGithub, MessageSquare as LucideMessageSquare,
-  MoreVertical as LucideMoreVertical, Pencil as LucidePencil, Puzzle as LucidePuzzle,
+  MoreVertical as LucideMoreVertical, Pencil as LucidePencil, Pin as LucidePin, Puzzle as LucidePuzzle,
   RefreshCw as LucideRefreshCw,
   Terminal as LucideTerminal, Trophy as LucideTrophy, createLucideIcon,
 } from 'lucide-vue-next';
@@ -120,6 +120,7 @@ export const IconCollapse = draw('Minimize', [
 export const IconCheck = wrap(LucideCheck as unknown as AnyComponent);
 export const IconChevron = wrap(LucideChevronDown as unknown as AnyComponent);
 export const IconDownload = wrap(LucideDownload as unknown as AnyComponent);
+export const IconPin = wrap(LucidePin as unknown as AnyComponent);
 export const IconArchive = wrap(LucideArchive as unknown as AnyComponent);
 export const IconMoreVertical = wrap(LucideMoreVertical as unknown as AnyComponent);
 export const IconEdit = wrap(LucidePencil as unknown as AnyComponent);

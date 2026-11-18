@@ -10,6 +10,7 @@
 // Laid out like Availability, which has the same shape: a preview of what
 // readers see, then the policy that governs it.
 
+import { maskBilling, maskUser } from '@/admin/safeMode';
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { adminApi } from '@/admin/api';
 import { fetchLeaderboard, type Leaderboard } from '@/api/leaderboard';
@@ -176,10 +177,10 @@ onBeforeUnmount(() => window.clearTimeout(saveLabelTimer));
         <li v-for="(entry, index) in preview.accounts" :key="index" class="oa-board-row">
           <span class="oa-board-rank" :data-rank="entry.rank">{{ entry.rank }}</span>
           <span class="oa-board-main">
-            <span class="oa-board-name">{{ entry.name || t('boardAnonymous', { rank: entry.rank }) }}</span>
-            <span v-if="entry.handle" class="oa-field-hint">@{{ entry.handle }}</span>
+            <span class="oa-board-name">{{ entry.name ? maskUser(entry.name) : t('boardAnonymous', { rank: entry.rank }) }}</span>
+            <span v-if="entry.handle" class="oa-field-hint">@{{ maskUser(entry.handle) }}</span>
           </span>
-          <span class="oa-board-value">{{ t('boardTokens', { count: compactNumber(entry.tokens) }) }}</span>
+          <span class="oa-board-value">{{ t('boardTokens', { count: maskBilling(compactNumber(entry.tokens)) }) }}</span>
         </li>
       </ol>
     </AdminControlCard>

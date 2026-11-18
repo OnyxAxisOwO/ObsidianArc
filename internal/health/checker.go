@@ -87,6 +87,14 @@ func (c *Checker) Run(ctx context.Context, policy Policy) {
 		since = policy.ResetAt
 	}
 
+	var rates map[string]Rate
+	if policy.DisableBelow > 0 {
+		rates, err = c.Store.Rates(ctx, since)
+		if err != nil {
+			slog.ErrorContext(ctx, "health: read success rates", "error", err)
+			policy.DisableBelow = 0
+		}
+	}
 	for _, record := range models {
 		// Past the sweep's deadline every probe would fail at once with the
 		// context error. The guard avoids provider calls that cannot succeed and
@@ -105,7 +113,7 @@ func (c *Checker) Run(ctx context.Context, policy Policy) {
 			continue
 		}
 
-		samples, err := c.Store.Samples(ctx, record.ID, since, sweepSampleLimit)
+		samples, err := c.Store.Samples(ctx, record.ID, since, max(sweepSampleLimit, policy.DisableAfter))
 		if err != nil {
 			slog.ErrorContext(ctx, "health: read samples", "model", record.ID, "error", err)
 			continue
@@ -114,16 +122,29 @@ func (c *Checker) Run(ctx context.Context, policy Policy) {
 		// Readers first. A model with traffic has better evidence than
 		// anything a probe could add, and asking it again costs tokens to
 		// learn nothing.
-		if len(samples) == 0 && (policy.Probe || record.AutoDisabled) {
+		// A failed synthetic probe is retried by a later sweep even when
+		// the observation window still contains it. This lets consecutive
+		// failures accumulate without spending probes on healthy traffic.
+		rate := rates[record.ID]
+		needsProbe := len(samples) == 0 || samples[0].Source == "system" && !samples[0].OK && time.Since(time.UnixMilli(samples[0].At)) >= 10*time.Minute
+		if needsProbe && (policy.Probe || record.AutoDisabled) {
 			if sample, ok := c.probe(ctx, record); ok {
 				samples = append([]Sample{sample}, samples...)
+				rate.Total++
+				if sample.OK {
+					rate.OK++
+				}
 			}
 		}
 		if len(samples) == 0 {
 			continue
 		}
 
-		c.apply(ctx, record, Summarise(record.ID, samples), policy)
+		status := Summarise(record.ID, samples)
+		if policy.DisableBelow > 0 {
+			status.Samples, status.Uptime = rate.Total, rate.Share()
+		}
+		c.apply(ctx, record, status, policy)
 	}
 
 	if policy.Retain > 0 {

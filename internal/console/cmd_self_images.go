@@ -21,9 +21,10 @@ func init() {
 		Name:    "image list",
 		Group:   "images",
 		Summary: Text{EN: "List the images you have generated", ZH: "列出你生成过的图片"},
-		Usage:   "image list [--limit N] [--before MS]",
+		Usage:   "image list [--limit N] [--before MS --before-id ID]",
 		Flags: []Flag{
 			{Name: "--limit", Hint: Text{EN: "page size, default 50", ZH: "每页数量，默认 50"}, Value: "N", Default: "50"},
+			{Name: "--before-id", Hint: Text{EN: "last image ID on the previous page", ZH: "上一页的最后一个图片 ID"}, Value: "ID"},
 			{Name: "--before", Hint: Text{EN: "epoch ms; older than this, for the next page", ZH: "毫秒时间戳；只看更早的，用于翻页"}, Value: "MS"},
 		},
 		Examples:   []string{"image list", "image list --limit 10 --json"},
@@ -34,6 +35,12 @@ func init() {
 			q := url.Values{"limit": {strconv.Itoa(rt.IntOr("limit", 50))}}
 			if v := rt.String("before"); v != "" {
 				q.Set("before", v)
+			}
+			if v := rt.String("before-id"); v != "" {
+				if rt.String("before") == "" {
+					return rt.Fail(Text{EN: "--before-id requires --before", ZH: "--before-id 需要 --before"})
+				}
+				q.Set("before_id", v)
 			}
 			data, _, err := rt.Call(http.MethodGet, "/api/images/generations?"+q.Encode(), nil)
 			if err != nil {

@@ -9,7 +9,7 @@ import { createApp, h, nextTick, type App } from 'vue';
 import * as authApi from '@/api/auth';
 import VerifyBanner from '@/announce/VerifyBanner.vue';
 import { changeLanguage, t } from '@/composables/useI18n';
-import { adopt, forget, site, siteInfo } from '@/stores/session';
+import { adopt, currentUser, forget, site, siteInfo } from '@/stores/session';
 import { settle } from './helpers';
 import { makeAccount } from './fixtures/account';
 
@@ -48,6 +48,21 @@ afterEach(() => {
 });
 
 describe('verification banner outcome', () => {
+  it('discards a verified account response after the session changes', async () => {
+    vi.spyOn(authApi, 'verifyEmailCode').mockResolvedValue();
+    let finish!: (result: Awaited<ReturnType<typeof authApi.fetchMe>>) => void;
+    vi.spyOn(authApi, 'fetchMe').mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    await submitCode('123456');
+    expect(authApi.fetchMe).toHaveBeenCalled();
+    app!.unmount();
+    app = null;
+    forget();
+    adopt(makeAccount({ id: 'next' }));
+    finish({ user: ACCOUNT, preferences: {} });
+    await settle();
+    expect(currentUser.value?.id).toBe('next');
+  });
+
   it('says a reload is needed when the code is accepted but the account cannot be refreshed', async () => {
     vi.spyOn(authApi, 'verifyEmailCode').mockResolvedValue();
     vi.spyOn(authApi, 'fetchMe').mockRejectedValue(new Error('offline'));

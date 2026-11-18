@@ -1124,7 +1124,7 @@ func (h *Handlers) generateImage(w http.ResponseWriter, r *http.Request) error {
 		Style:          body.Style,
 		Quality:        body.Quality,
 		N:              n,
-		ResponseFormat: "b64_json",
+		ResponseFormat: resolved.Upstream.ImageResponseFormat(),
 	}
 
 	var rawImages []string
@@ -1186,7 +1186,7 @@ func (h *Handlers) generateImage(w http.ResponseWriter, r *http.Request) error {
 	}
 	h.recordImages(saveCtx, account, resolved, requestID, startedAt, len(result.Data), StatusOK, "")
 
-	fetched := readPictures(saveCtx, result.Data, ceiling, pictureFetchBudget, generatedImageBytes)
+	fetched := readPictures(saveCtx, result.Data, ceiling, pictureFetchBudget, GeneratedImageBytes)
 
 	// Derived from the request, not saveCtx, for the same reason saveCtx is: the
 	// generation is billed whether or not the browser is still there, so the

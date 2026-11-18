@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ApiError } from '../src/api/client';
 import { sendTurn, type TurnHandlers } from '../src/api/chat';
 import type { SiteInfo } from '../src/api/auth';
-import { openConversation, pending, resetChat, runTurn, webSearchOn } from '../src/chat/useChat';
+import { completeChatChallenge, openConversation, startNewConversation, startProjectConversation, pending, resetChat, runTurn, webSearchOn } from '../src/chat/useChat';
 import { models, selectedID } from '../src/chat/useModels';
 import { site } from '../src/stores/session';
 
@@ -91,6 +92,24 @@ describe('turning web search on for one message', () => {
 
     finish!();
     await running;
+  });
+
+  it('clears the one-message choice for new chats and new project chats', () => {
+    startNewConversation();
+    expect(webSearchOn.value).toBe(false);
+    webSearchOn.value = true;
+    startProjectConversation('folder');
+    expect(webSearchOn.value).toBe(false);
+  });
+
+  it('retries the original message options after a challenge', async () => {
+    vi.mocked(sendTurn).mockRejectedValueOnce(new ApiError(428, 'chat_challenge_required', 'challenge'))
+      .mockResolvedValueOnce(undefined);
+    expect(await runTurn({ content: 'question' })).toBe('challenge');
+    await completeChatChallenge('proof');
+    const [first, second] = vi.mocked(sendTurn).mock.calls;
+    expect(first![0].web_search).toBe(true);
+    expect(second![0]).toEqual({ ...first![0], turnstile: 'proof' });
   });
 
   it('does not carry the switch into another conversation', async () => {

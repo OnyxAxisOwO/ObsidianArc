@@ -523,7 +523,7 @@ func TestASignInThatNeedsMoreStopsAndAsksRatherThanRefusing(t *testing.T) {
 		t.Errorf("account = %+v, want the provider's name and the number that was typed", account)
 	}
 	// And the provider is connected to it, so the next sign-in asks nothing.
-	if linked, err := f.store.Account(context.Background(), nil, "github", "4218"); err != nil || linked != account.ID {
+	if linked, err := f.store.Account(context.Background(), nil, "github", "4218", ""); err != nil || linked != account.ID {
 		t.Errorf("identity = %q (%v), want it connected to the new account", linked, err)
 	}
 }
@@ -602,7 +602,7 @@ func TestABadgeSubjectDoesNotAdoptTheAccountThatCarriesIt(t *testing.T) {
 	if total, _ := f.users.Count(context.Background(), nil); total != 1 {
 		t.Errorf("accounts = %d, want no second one opened", total)
 	}
-	if linked, _ := f.store.Account(context.Background(), nil, "oidc", "12345678"); linked != "" {
+	if linked, _ := f.store.Account(context.Background(), nil, "oidc", "12345678", f.service.Credentials("oidc").identitySource("oidc")); linked != "" {
 		t.Errorf("identity was connected to %q", linked)
 	}
 }
@@ -725,7 +725,7 @@ func TestATypedAddressIsNotProofOfAnything(t *testing.T) {
 		t.Fatalf("complete = %d %s, want it refused", done.Code, done.Body.String())
 	}
 	// And the account it belongs to is untouched: no identity was connected.
-	if _, err := f.store.Account(context.Background(), nil, "github", "4218"); err != ErrNoIdentity {
+	if _, err := f.store.Account(context.Background(), nil, "github", "4218", ""); err != ErrNoIdentity {
 		t.Error("a typed address connected an identity to somebody else's account")
 	}
 
@@ -803,7 +803,7 @@ func TestATypedBadgeCannotReplaceTheSubjectTheProviderProved(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	linked, err := f.store.Account(ctx, nil, "oidc", "123456789")
+	linked, err := f.store.Account(ctx, nil, "oidc", "123456789", f.service.Credentials("oidc").identitySource("oidc"))
 	if err != nil {
 		t.Fatalf("the provider's subject is not connected: %v", err)
 	}

@@ -156,6 +156,12 @@ func (h *Handlers) visibleSettings(account user.User) map[string]string {
 // returns just selector data, without granting access to those pages' records.
 func (h *Handlers) references(w http.ResponseWriter, r *http.Request) error {
 	actor := auth.MustUser(r.Context())
+	if r.URL.Query().Get("kind") == "accounts" {
+		if !hasPermission(actor, "audit,security,usage,logs") {
+			return permissionDenied()
+		}
+		return h.accountOptions(w, r)
+	}
 	out := map[string]any{}
 	// Invites is here because a code can carry a group, and an operator
 	// trusted with invites alone must be able to pick one.
@@ -170,7 +176,7 @@ func (h *Handlers) references(w http.ResponseWriter, r *http.Request) error {
 		}
 		out["groups"] = items
 	}
-	if hasPermission(actor, "groups,settings,security") {
+	if hasPermission(actor, "groups,settings,security,usage") {
 		models, err := h.models.ListAll(r.Context(), "")
 		if err != nil {
 			return httpx.Internal(err)
@@ -193,6 +199,20 @@ func (h *Handlers) references(w http.ResponseWriter, r *http.Request) error {
 		out["providers"] = items
 	}
 	return httpx.WriteJSON(w, http.StatusOK, out)
+}
+
+// Scoped operators can resolve a name to an ID without reading the account.
+func (h *Handlers) accountOptions(w http.ResponseWriter, r *http.Request) error {
+	query := r.URL.Query()
+	accounts, total, err := h.users.List(r.Context(), user.ListFilter{Username: query.Get("username"), Search: query.Get("q"), NameOnly: true, Limit: intParam(query.Get("limit"), 20)})
+	if err != nil {
+		return httpx.Internal(err)
+	}
+	options := make([]map[string]string, 0, len(accounts))
+	for _, a := range accounts {
+		options = append(options, map[string]string{"id": a.ID, "username": a.Username, "nickname": a.Nickname})
+	}
+	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"users": options, "total": total})
 }
 
 func (h *Handlers) listMemberOptions(w http.ResponseWriter, r *http.Request) error {

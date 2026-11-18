@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import AdminLeaderboard from '../src/views/admin/AdminLeaderboard.vue';
+import { safeModeEnabled, safeModeCategories, MASK_PLACEHOLDER } from '../src/admin/safeMode';
 import { adminApi } from '../src/admin/api';
 import * as leaderboardApi from '../src/api/leaderboard';
 import { changeLanguage, t } from '../src/composables/useI18n';
@@ -30,6 +31,33 @@ async function mount(): Promise<void> {
   const router = await catchAllRouter('/admin/leaderboard');
   unmount = await mountComponent(AdminLeaderboard, {}, { host, panels, adminView: adminShell(actions), router });
 }
+
+it('applies identity and billing masks independently in the preview', async () => {
+  vi.spyOn(adminApi, 'settings').mockResolvedValue({ settings: {}, groups: [] });
+  vi.spyOn(leaderboardApi, 'fetchLeaderboard').mockResolvedValue({
+    period: 'week', metric: 'tokens', identity: 'handle',
+    me: { rank: 1, value: 1234, gap: 0, participants: 1 },
+    accounts: [{ rank: 1, name: 'Ada', handle: 'user-name', tokens: 1234, requests: 1, models: 1, value: 1234 }],
+  });
+  const original = { ...safeModeCategories.value };
+  try {
+    safeModeEnabled.value = true;
+    safeModeCategories.value = { ...original, users: true, billing: false };
+    await mount();
+    const preview = host.querySelector('.oa-board-row')!;
+    expect(preview.textContent).not.toContain('Ada');
+    expect(preview.textContent).not.toContain('user-name');
+    expect(preview.textContent).toContain('1.2k');
+    safeModeCategories.value = { ...original, users: false, billing: true };
+    await settle();
+    expect(preview.textContent).toContain('Ada');
+    expect(preview.textContent).toContain('user-name');
+    expect(preview.querySelector('.oa-board-value')?.textContent).toContain(MASK_PLACEHOLDER);
+  } finally {
+    safeModeCategories.value = original;
+    safeModeEnabled.value = false;
+  }
+});
 
 describe('AdminLeaderboard, saving', () => {
   // The setting is written before the preview is re-read. A preview that

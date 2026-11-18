@@ -189,6 +189,7 @@ test-go: vet
 	fi
 	sh scripts/deploy_test.sh
 	go test -p 4 ./...
+	cd sdk && go test ./... && GOOS=wasip1 GOARCH=wasm go build ./...
 
 ## test-full: CI gate, including the slower Vue template typecheck
 ##
@@ -201,12 +202,13 @@ test-race:
 	go test -race -count=1 -run '^TestConcurrent' ./internal/plugin ./internal/plugin/wasm
 
 vet:
+	cd sdk && go vet ./...
 	go vet ./...
 	go vet -tags "$(ALL_PLUGIN_TAGS)" ./cmd/server
-	@test -z "$$(gofmt -l cmd internal plugins)" || { echo "gofmt would rewrite:"; gofmt -l cmd internal plugins; echo "run: make fmt"; exit 1; }
+	@test -z "$$(gofmt -l cmd internal plugins sdk)" || { echo "gofmt would rewrite:"; gofmt -l cmd internal plugins sdk; echo "run: make fmt"; exit 1; }
 
 fmt:
-	gofmt -w cmd internal plugins
+	gofmt -w cmd internal plugins sdk
 
 typecheck:
 	npm --prefix web run typecheck
@@ -240,10 +242,14 @@ package:
 	echo $(ARCH) > dist/ARCH
 	echo $(PLUGINS) $(PACKAGE_NAMES) > dist/PLUGIN_LIST
 
+override export DEPLOY_DIR := $(value DEPLOY_DIR)
+override export DEPLOY_HOST := $(value DEPLOY_HOST)
+override export DROP_PLUGINS := $(value DROP_PLUGINS)
+
 ## deploy: release, then ship dist/ to DEPLOY_HOST and replace the Arc server
 ## container with one built from it — seconds on the server, not minutes
 deploy: release
-	DEPLOY_HOST=$(DEPLOY_HOST) DEPLOY_DIR=$(DEPLOY_DIR) DROP_PLUGINS=$(DROP_PLUGINS) sh scripts/deploy.sh
+	sh scripts/deploy.sh
 
 ## docs: build VitePress documentation site
 docs:

@@ -44,6 +44,7 @@ export function exportAccount(): Promise<BackupDocument> {
 }
 
 export function importAccount(document: unknown): Promise<ImportResult> {
+  if (document instanceof File) return api.post<ImportResult>('/api/account/import', undefined, { file: document });
   return api.post<ImportResult>('/api/account/import', document);
 }
 
@@ -75,11 +76,11 @@ export function saveAsFile(name: string, contents: string, type = 'application/j
  * large, so the file itself is capped at eight times the limit. That bounds
  * what reading it whole costs without refusing a file the server would take.
  */
-export function pickJSONFile(maxBytes = 32 * 1024 * 1024): Promise<unknown | null> {
+export function pickJSONFile(maxBytes = 32 * 1024 * 1024, allowArchive = false): Promise<unknown | null> {
   return new Promise((resolve, reject) => {
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = 'application/json,.json';
+    input.accept = allowArchive ? 'application/json,.json,.tar' : 'application/json,.json';
 
     // Browsers that support it fire cancel when the picker is dismissed and
     // no change at all; without this the promise would hang forever.
@@ -88,6 +89,10 @@ export function pickJSONFile(maxBytes = 32 * 1024 * 1024): Promise<unknown | nul
       const file = input.files?.[0];
       if (!file) {
         resolve(null);
+        return;
+      }
+      if (allowArchive && file.name.toLowerCase().endsWith('.tar')) {
+        resolve(file);
         return;
       }
       if (file.size > maxBytes * 8) {

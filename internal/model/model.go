@@ -145,8 +145,14 @@ type Model struct {
 	GroupGrants []ModelGroupGrant `json:"group_grants,omitempty"`
 }
 
-// Extra returns unmarshaled JSON key-values from RequestOverride, or nil if empty.
+// Extra holds only fields that may travel to a chat provider.
 func (m Model) Extra() map[string]any {
+	values := m.override()
+	delete(values, "image_response_format")
+	return values
+}
+
+func (m Model) override() map[string]any {
 	trimmed := strings.TrimSpace(m.RequestOverride)
 	if trimmed == "" || trimmed == "{}" {
 		return nil
@@ -159,18 +165,13 @@ func (m Model) Extra() map[string]any {
 	return out
 }
 
-// ImageResponseFormat reads the "image_response_format" key from
-// RequestOverride. Empty means the provider honours b64_json; "url" means the
-// compat layer must fetch and re-encode because the upstream only returns a
-// signed link. Stored inside RequestOverride rather than as its own column so
-// no schema migration is needed for a field only the image path reads.
+// ImageResponseFormat chooses how to take delivery from the upstream. The
+// client always receives bytes, including when the provider requires a URL.
 func (m Model) ImageResponseFormat() string {
-	extra := m.Extra()
-	if extra == nil {
-		return ""
+	if m.override()["image_response_format"] == "url" {
+		return "url"
 	}
-	v, _ := extra["image_response_format"].(string)
-	return v
+	return "b64_json"
 }
 
 // DefaultMaxOutput is what a turn is assumed capable of costing when a
@@ -178,15 +179,10 @@ func (m Model) ImageResponseFormat() string {
 // ordinary use, small enough that reserving it means something.
 const DefaultMaxOutput = 4096
 
-// WorstCase is the most one turn on this model could cost, used to
-// reserve against an allowance before the answer exists. Output only:
-// what the prompt costs is not known until it has been assembled, and
-// output is the term that runs away.
-//
-// Capped at DefaultMaxOutput: models declaring large output ceilings (such as
-// 64k, 128k or 256k) should not compute an enormous upfront deposit that locks
-// out ordinary users from sending a single message.
-func (m Model) WorstCase() (tokens int64, credits float64) {
+// ReservationEstimate is the deposit required to start a turn. Final
+// settlement includes the actual input, reasoning and output, which can
+// exceed the deposit even when the request was admitted within its quota.
+func (m Model) ReservationEstimate() (tokens int64, credits float64) {
 	ceiling := DefaultMaxOutput
 	if m.MaxOutputTokens > 0 && m.MaxOutputTokens < DefaultMaxOutput {
 		ceiling = m.MaxOutputTokens
@@ -1194,7 +1190,10 @@ func (s *Store) readCallable(
 		}
 		return Model{}, provider.Provider{}, nil, fmt.Errorf("model: read callable: %w", err)
 	}
-	upstream.Headers = provider.DecodeHeaders(record.ProviderID, headerJSON)
+	upstream.Headers, err = s.providers.OpenHeaders(record.ProviderID, headerJSON)
+	if err != nil {
+		return Model{}, provider.Provider{}, nil, fmt.Errorf("model: open provider headers: %w", err)
+	}
 	return record, upstream, sealed, nil
 }
 

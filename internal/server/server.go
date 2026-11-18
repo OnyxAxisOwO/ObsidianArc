@@ -80,6 +80,7 @@ type Deps struct {
 // work (the janitor) and the HTTP handler share one set of stores rather than
 // each constructing its own.
 type Server struct {
+	configRefresh  map[string]func(context.Context) error
 	deps           Deps
 	handler        http.Handler
 	settings       *settings.Service
@@ -113,6 +114,9 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	// the dependency direction is visible here rather than inferred from
 	// imports scattered across packages.
 	settingsService := settings.New(db)
+	if err := settingsService.ProtectCredentials(cfg.SecretKey); err != nil {
+		return nil, err
+	}
 	if err := settingsService.Load(ctx); err != nil {
 		return nil, err
 	}
@@ -149,6 +153,9 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		return nil, err
 	}
 	providers := provider.NewStore(db, box)
+	if err := providers.SealLegacyHeaders(ctx); err != nil {
+		return nil, err
+	}
 	models := model.NewStore(db, providers)
 	registry := adapter.NewRegistry(cfg.Upstream)
 	healthStore := health.NewStore(db)
@@ -237,14 +244,13 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 				"Too many answers are already being generated for this account.")
 		}
 
-		// The worst case, not nothing. Reserving it is what makes the
-		// allowance hold while several turns are streaming at once; the
+		// Each concurrent turn claims its deposit before sending work; the
 		// release below gives back the whole reservation, and the turn record
 		// adds what the turn really cost. Both are deltas, so their order
 		// does not matter — but which counter each lands in does, so the
 		// reservation carries the moment it was charged and is given back
 		// there rather than wherever the answer happened to finish.
-		tokens, credits := chosen.WorstCase()
+		tokens, credits := chosen.ReservationEstimate()
 		// An image call is billed once for each picture it returns, so the
 		// reservation has to be for every picture it may ask for. One picture
 		// reserved and four billed overdraws the window by the difference.
@@ -971,6 +977,9 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 		return nil, err
 	}
 	plugins.Attach(host)
+	if err := settingsService.SealLegacyCredentials(ctx); err != nil {
+		return nil, err
+	}
 	adminHandlers.SetFallback(plugins.ServePlugins)
 	plugin.NewHandlers(plugins, authService, settingsService, clientIP).Mount(adminHandlers)
 	for _, name := range plugin.Names() {
@@ -1279,6 +1288,9 @@ func New(ctx context.Context, deps Deps) (*Server, error) {
 	)
 
 	return &Server{
+		configRefresh: map[string]func(context.Context) error{
+			"settings": settingsService.Load, "mail": mailManager.Refresh, "usercheck": userCheckManager.Refresh, "plugins": plugins.Refresh,
+		},
 		deps:           deps,
 		handler:        handler,
 		ssh:            sshServer,
@@ -1438,7 +1450,23 @@ func (s *Server) SSH() *consolessh.Server { return s.ssh }
 // the database.
 func (s *Server) StartJanitor(ctx context.Context) <-chan struct{} {
 	var loops sync.WaitGroup
-	loops.Add(3)
+	loops.Add(4)
+	go func() {
+		defer loops.Done()
+		applied := map[string]int64{}
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := s.refreshConfiguration(ctx, applied); err != nil && ctx.Err() == nil {
+					slog.ErrorContext(ctx, "could not refresh shared configuration", "error", err)
+				}
+			}
+		}
+	}()
 
 	go func() {
 		defer loops.Done()
@@ -1504,6 +1532,13 @@ func (s *Server) sweepTasks() []sweepTask {
 			run: func(ctx context.Context) error {
 				_, _ = s.auth.Sessions().DeleteExpired(ctx)
 				return nil
+			},
+		},
+		{
+			failure: "could not prune expired verification links",
+			run: func(ctx context.Context) error {
+				_, err := s.auth.PruneVerifications(ctx)
+				return err
 			},
 		},
 		{

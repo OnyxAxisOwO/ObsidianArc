@@ -122,16 +122,10 @@ export function resetProjects(): void {
 
 onSignOut(resetProjects);
 
-export async function renameProject(id: string, name: string): Promise<Project> {
-  const record = await apiUpdateProject(id, { name });
-  replace(record);
-  return record;
-}
-
-export async function updateProjectInstructions(id: string, instructions: string): Promise<Project> {
-  const record = await apiUpdateProject(id, { instructions });
-  replace(record);
-  return record;
+export async function editProject(id: string, patch: Parameters<typeof apiUpdateProject>[1]): Promise<void> {
+  const gen = generation;
+  const record = await apiUpdateProject(id, patch);
+  if (gen === generation) replace(record);
 }
 
 export async function deleteProject(id: string): Promise<void> {

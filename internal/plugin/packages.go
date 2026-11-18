@@ -351,7 +351,7 @@ func (m *Manager) InstallPackage(ctx context.Context, actor Actor, pkg *arcx.Pac
 			}
 		}
 		if op == AppliedInstall {
-			if err := m.settings.WriteMany(ctx, tx, values); err != nil {
+			if err := m.settings.WriteMany(ctx, tx, values, definitionsOf(man)...); err != nil {
 				return err
 			}
 		}

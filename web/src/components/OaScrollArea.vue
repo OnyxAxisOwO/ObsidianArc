@@ -35,7 +35,6 @@ const emit = defineEmits<{
   (event: 'scroll', e: Event): void;
 }>();
 
-const container = ref<HTMLElement | null>(null);
 const scroller = ref<HTMLElement | null>(null);
 const track = ref<HTMLElement | null>(null);
 
@@ -170,7 +169,7 @@ defineExpose({ scroller, update });
 </script>
 
 <template>
-  <div ref="container" :class="props.wrapClass">
+  <div :class="props.wrapClass">
     <div
       ref="scroller"
       :class="props.scrollClass"

@@ -3,8 +3,8 @@
 // called, which group new accounts join.
 //
 // The whole table is a handful of rows read on nearly every request, so it is
-// cached in memory and refreshed on write. One process owns the database, so
-// the cache cannot go stale behind its back.
+// cached in memory. Writers refresh their cache on commit, and peer servers
+// reload when the shared settings revision changes.
 package settings
 
 import (
@@ -23,6 +23,7 @@ import (
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/plugingate"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
 )
 
 // MaxValueBytes is the most one setting value may take, in bytes, whether a
@@ -231,6 +232,7 @@ const (
 	// chooses is whether it runs, which model answers, the mode, what a refusal
 	// says, and optionally custom review instructions. Modifying the custom
 	// prompt requires two-factor authentication to protect the door.
+	SignupReviewOAuth         = "security.signup_review_oauth"
 	SignupReview              = "security.signup_review"
 	SignupReviewModel         = "security.signup_review_model"
 	SignupReviewMode          = "security.signup_review_mode"
@@ -845,6 +847,7 @@ var Defaults = map[string]string{
 	OAuthOIDCRequireCompletion: "false",
 	OAuthLinkByEmail:           "true",
 	SignupReview:               "false",
+	SignupReviewOAuth:          "false",
 	SignupReviewModel:          "",
 	// Loose, normal or strict. Normal refuses what reads as generated and
 	// allows what reads as chosen; the other two move the line, and strict
@@ -1078,6 +1081,7 @@ func (s *Service) Known(key string) bool {
 func (s *Service) SetPluginGate(g plugingate.Gate) { s.gate = g }
 
 type Service struct {
+	box  *secret.Box
 	db   *database.DB
 	gate plugingate.Gate
 
@@ -1113,10 +1117,40 @@ func New(db *database.DB) *Service {
 	return &Service{db: db, values: map[string]string{}, loginBackgrounds: map[string]Background{}, siteLogoAt: 0}
 }
 
-// Load reads the table into memory. Called once at boot; after that the cache
-// is kept current by Set.
+// ProtectCredentials configures the instance key before the first database read.
+func (s *Service) ProtectCredentials(key []byte) error {
+	box, err := secret.New(key, "obsidian-arc/settings")
+	s.box = box
+	return err
+}
+
+// Load publishes a fresh snapshot after startup or a committed change on a peer.
 func (s *Service) Load(ctx context.Context) error {
-	rows, err := s.db.Query(ctx, `SELECT key, value FROM settings`)
+	s.writeMu.Lock()
+	prior := s.values
+	err := s.load(ctx)
+	var changed []string
+	if err == nil {
+		for key, value := range prior {
+			if next, ok := s.values[key]; !ok || next != value {
+				changed = append(changed, key)
+			}
+		}
+		for key := range s.values {
+			if _, ok := prior[key]; !ok {
+				changed = append(changed, key)
+			}
+		}
+	}
+	s.writeMu.Unlock()
+	if len(changed) > 0 {
+		s.changed(changed)
+	}
+	return err
+}
+
+func (s *Service) load(ctx context.Context) error {
+	rows, err := s.db.Query(ctx, `SELECT key, value, sealed_value FROM settings`)
 	if err != nil {
 		return fmt.Errorf("settings: load: %w", err)
 	}
@@ -1124,11 +1158,11 @@ func (s *Service) Load(ctx context.Context) error {
 
 	values := map[string]string{}
 	for rows.Next() {
-		var key, value string
-		if err := rows.Scan(&key, &value); err != nil {
+		var key, value, sealed string
+		if err := rows.Scan(&key, &value, &sealed); err != nil {
 			return fmt.Errorf("settings: scan: %w", err)
 		}
-		values[key] = value
+		values[key] = s.openValue(key, value, sealed)
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("settings: load: %w", err)
@@ -1170,6 +1204,22 @@ func (s *Service) Load(ctx context.Context) error {
 	s.siteLogoMime = logoMime
 	s.mu.Unlock()
 	return nil
+}
+
+// Values reads a single configuration snapshot. A credential and the endpoint
+// that receives it must come from the same committed settings update.
+func (s *Service) Values(keys []string) map[string]string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	values := make(map[string]string, len(keys))
+	for _, key := range keys {
+		value, ok := s.values[key]
+		if !ok {
+			value = s.defaultOf(key)
+		}
+		values[key] = value
+	}
+	return values
 }
 
 func (s *Service) Get(key string) string {
@@ -1258,7 +1308,7 @@ func (s *Service) All() map[string]string {
 func (s *Service) Set(ctx context.Context, key, value string) error {
 	values := map[string]string{key: value}
 	s.writeMu.Lock()
-	err := s.WriteMany(ctx, s.db, values)
+	err := s.db.Tx(ctx, func(tx *database.Tx) error { return s.WriteMany(ctx, tx, values) })
 	if err == nil {
 		if s.afterWrite != nil {
 			s.afterWrite(key)
@@ -1321,15 +1371,27 @@ func (s *Service) setMany(ctx context.Context, values map[string]string, check f
 // whose transaction writes other rows beside them — installing a plugin
 // writes its first settings with its state. Remember them once it commits:
 // a cache updated before then would serve values a rollback took away.
-func (s *Service) WriteMany(ctx context.Context, q database.Queryer, values map[string]string) error {
+func (s *Service) WriteMany(ctx context.Context, q database.Queryer, values map[string]string, installing ...Definition) error {
 	now := time.Now().UnixMilli()
 	for key, value := range values {
+		var sealed string
+		if s.box != nil && value != "" && s.isSecret(key, installing) {
+			var err error
+			sealed, err = s.box.SealText(key, value)
+			if err != nil {
+				return err
+			}
+			value = ""
+		}
 		if _, err := q.Exec(ctx,
-			`INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
-			 ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
-			key, value, now); err != nil {
+			`INSERT INTO settings (key, value, updated_at, sealed_value) VALUES (?, ?, ?, ?)
+			 ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, sealed_value = excluded.sealed_value`,
+			key, value, now, sealed); err != nil {
 			return fmt.Errorf("settings: set %s: %w", key, err)
 		}
+	}
+	if len(values) > 0 {
+		return database.AdvanceRevision(ctx, q, "settings")
 	}
 	return nil
 }
@@ -1341,6 +1403,9 @@ func (s *Service) DeleteMany(ctx context.Context, q database.Queryer, keys []str
 		if _, err := q.Exec(ctx, `DELETE FROM settings WHERE key = ?`, key); err != nil {
 			return fmt.Errorf("settings: delete %s: %w", key, err)
 		}
+	}
+	if len(keys) > 0 {
+		return database.AdvanceRevision(ctx, q, "settings")
 	}
 	return nil
 }
@@ -1427,15 +1492,15 @@ func (s *Service) storedLocked(keys []string) (map[string]string, error) {
 	ctx := context.Background()
 	out := make(map[string]string, len(keys))
 	for _, key := range keys {
-		var value string
-		err := s.db.QueryRow(ctx, `SELECT value FROM settings WHERE key = ?`, key).Scan(&value)
+		var value, sealed string
+		err := s.db.QueryRow(ctx, `SELECT value, sealed_value FROM settings WHERE key = ?`, key).Scan(&value, &sealed)
 		if database.IsNotFound(err) {
 			continue
 		}
 		if err != nil {
 			return nil, fmt.Errorf("settings: read %s: %w", key, err)
 		}
-		out[key] = value
+		out[key] = s.openValue(key, value, sealed)
 	}
 	return out, nil
 }

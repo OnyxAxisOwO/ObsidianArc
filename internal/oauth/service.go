@@ -258,20 +258,21 @@ func (s *Service) Credentials(providerID string) Credentials {
 	if !known {
 		return Credentials{}
 	}
+	values := s.settings.Values(keys)
 	creds := Credentials{
-		ClientID:     strings.TrimSpace(s.settings.Get(keys[1])),
-		ClientSecret: strings.TrimSpace(s.settings.Get(keys[2])),
+		ClientID:     strings.TrimSpace(values[keys[1]]),
+		ClientSecret: strings.TrimSpace(values[keys[2]]),
 	}
 	if providerID == "oidc" {
-		creds.Issuer = strings.TrimSpace(s.settings.Get(settings.OAuthOIDCIssuer))
-		creds.DisplayName = strings.TrimSpace(s.settings.Get(settings.OAuthOIDCDisplayName))
-		if scopes := strings.TrimSpace(s.settings.Get(settings.OAuthOIDCScopes)); scopes != "" {
+		creds.Issuer = strings.TrimSpace(values[settings.OAuthOIDCIssuer])
+		creds.DisplayName = strings.TrimSpace(values[settings.OAuthOIDCDisplayName])
+		if scopes := strings.TrimSpace(values[settings.OAuthOIDCScopes]); scopes != "" {
 			creds.Scopes = strings.Fields(scopes)
 		}
-		creds.AuthURL = strings.TrimSpace(s.settings.Get(settings.OAuthOIDCAuthURL))
-		creds.TokenURL = strings.TrimSpace(s.settings.Get(settings.OAuthOIDCTokenURL))
-		creds.UserInfoURL = strings.TrimSpace(s.settings.Get(settings.OAuthOIDCUserInfoURL))
-		creds.TrustEmail = s.settings.Bool(settings.OAuthOIDCTrustEmail)
+		creds.AuthURL = strings.TrimSpace(values[settings.OAuthOIDCAuthURL])
+		creds.TokenURL = strings.TrimSpace(values[settings.OAuthOIDCTokenURL])
+		creds.UserInfoURL = strings.TrimSpace(values[settings.OAuthOIDCUserInfoURL])
+		creds.TrustEmail = strings.EqualFold(strings.TrimSpace(values[settings.OAuthOIDCTrustEmail]), "true")
 	}
 	return creds
 }
@@ -296,7 +297,7 @@ func (s *Service) MustBindOIDC(ctx context.Context, account user.User) (bool, er
 	if !s.RequireForAll() {
 		return false, nil
 	}
-	bound, err := s.store.HasProvider(ctx, nil, account.ID, "oidc")
+	bound, err := s.store.HasProvider(ctx, nil, account.ID, "oidc", s.Credentials("oidc").identitySource("oidc"))
 	if err != nil {
 		return false, err
 	}
@@ -346,6 +347,15 @@ func (s *Service) Complete(
 func (s *Service) resolve(
 	ctx context.Context, identity Identity, details Details, ask bool, adm Admission, ip, ua string,
 ) (user.User, error) {
+	// Direct callers carry a subject verified against this service's configuration.
+	// HTTP callbacks carry the source of the actual exchange instead.
+	source := s.Credentials(identity.Provider).identitySource(identity.Provider)
+	if identity.Issuer == "" {
+		identity.Issuer = source
+	}
+	if identity.Issuer != source {
+		return user.User{}, ErrUnavailable
+	}
 	// A completion that carries an invite code is a guess at it, and the paid
 	// screening below runs before the transaction that would refuse the guess.
 	// The place in the budget is taken before that work and held to the end of
@@ -371,7 +381,7 @@ func (s *Service) resolve(
 	screened := false
 	var screeningErr error
 	if email != "" {
-		found, err := s.store.Account(ctx, nil, identity.Provider, identity.Subject)
+		found, err := s.store.Account(ctx, nil, identity.Provider, identity.Subject, identity.Issuer)
 		if err != nil && !errors.Is(err, ErrNoIdentity) {
 			return user.User{}, err
 		}
@@ -431,6 +441,8 @@ func (s *Service) resolve(
 	}
 	guarded := false
 	var verdict auth.Verdict
+	var review auth.SignupReview
+	var reviewInput auth.RegisterInput
 
 	// A completion password is hashed before any transaction opens, as Register
 	// hashes its own. Argon2 under the instance lock would hold every other writer
@@ -456,7 +468,7 @@ func (s *Service) resolve(
 		opened = false
 		err := s.db.Tx(ctx, func(tx *database.Tx) error {
 			// The common path, and the cheap one: somebody signing in again.
-			found, err := s.store.Account(ctx, tx, identity.Provider, identity.Subject)
+			found, err := s.store.Account(ctx, tx, identity.Provider, identity.Subject, identity.Issuer)
 			if err == nil {
 				account, err = s.returning(ctx, tx, found, identity)
 				return err
@@ -475,11 +487,21 @@ func (s *Service) resolve(
 			}
 			// Read again under the lock: the request that was ahead of this one
 			// may have just connected this very identity.
-			if found, err := s.store.Account(ctx, tx, identity.Provider, identity.Subject); err == nil {
+			if found, err := s.store.Account(ctx, tx, identity.Provider, identity.Subject, identity.Issuer); err == nil {
 				account, err = s.returning(ctx, tx, found, identity)
 				return err
 			} else if !errors.Is(err, ErrNoIdentity) {
 				return err
+			}
+
+			if identity.Provider == "oidc" {
+				// Until an owner rebinds or an operator verifies the legacy issuer,
+				// this subject cannot open a duplicate account or adopt the old one.
+				if _, err := s.store.Account(ctx, tx, "oidc", identity.Subject, ""); err == nil {
+					return ErrAddressTaken
+				} else if !errors.Is(err, ErrNoIdentity) {
+					return err
+				}
 			}
 
 			// An address the provider has proved, on an account that already
@@ -651,6 +673,7 @@ func (s *Service) resolve(
 			// its own and a transaction is never held open across one. So the
 			// transaction hands back here, and runs again once they have answered.
 			if populated && !guarded {
+				reviewInput = auth.RegisterInput{Username: desiredUsername, Email: address, Fields: fields, Nickname: nicknameFrom(identity.Name), IP: ip, UA: ua}
 				return errNeedsSignupGuards
 			}
 			created, err := s.auth.Provision(ctx, tx, auth.ProvisionInput{
@@ -676,8 +699,12 @@ func (s *Service) resolve(
 			// setting a sign-up review restriction has when Register opens the
 			// account. It is recorded as the guard's own, which the screening cohort
 			// does not count as the reviewer's.
-			if verdict.Restrict {
-				created, err = s.users.UpdateAPIRestriction(ctx, tx, created.ID, true, s.auth.SignupRestrictedUntil(), "guard")
+			if verdict.Restrict || review.Decision == auth.SignupRestrict {
+				source, until := "guard", s.auth.SignupRestrictedUntil()
+				if review.Decision == auth.SignupRestrict {
+					source, until = "signup_review", review.RestrictedUntil
+				}
+				created, err = s.users.UpdateAPIRestriction(ctx, tx, created.ID, true, until, source)
 				if err != nil {
 					return err
 				}
@@ -694,6 +721,15 @@ func (s *Service) resolve(
 			if err != nil {
 				return user.User{}, err
 			}
+			if s.settings.Bool(settings.SignupReviewOAuth) {
+				review, err = s.auth.ReviewRegistration(ctx, reviewInput)
+				if errors.Is(err, auth.ErrSignupRefused) {
+					return user.User{}, ErrSignupRefused
+				}
+				if err != nil {
+					return user.User{}, err
+				}
+			}
 			guarded = true
 			continue
 		}
@@ -709,6 +745,9 @@ func (s *Service) resolve(
 			return user.User{}, err
 		}
 		break
+	}
+	if opened {
+		s.auth.RecordSignupReview(ctx, reviewInput, &account, review)
 	}
 	// Provision could not call this itself: it ran inside the transaction
 	// above, and the invite use it may have recorded was not visible outside
@@ -801,6 +840,15 @@ func nicknameFrom(name string) string {
 // ErrAddressTaken, as sign-up does: that copy was typed, and the link must not
 // ride on it.
 func (s *Service) Connect(ctx context.Context, userID string, identity Identity) error {
+	// Direct callers carry a subject verified against this service's configuration.
+	// HTTP callbacks carry the source of the actual exchange instead.
+	source := s.Credentials(identity.Provider).identitySource(identity.Provider)
+	if identity.Issuer == "" {
+		identity.Issuer = source
+	}
+	if identity.Issuer != source {
+		return ErrUnavailable
+	}
 	return s.db.Tx(ctx, func(tx *database.Tx) error {
 		// The account's own row, because what follows is a check — is this
 		// identity spoken for — and then a write against the same account.
@@ -808,7 +856,7 @@ func (s *Service) Connect(ctx context.Context, userID string, identity Identity)
 			`UPDATE users SET updated_at = updated_at WHERE id = ?`, userID); err != nil {
 			return err
 		}
-		switch existing, err := s.store.Account(ctx, tx, identity.Provider, identity.Subject); {
+		switch existing, err := s.store.Account(ctx, tx, identity.Provider, identity.Subject, identity.Issuer); {
 		case err == nil:
 			if existing == userID {
 				// Already connected, to this very account. Refreshing what
@@ -818,6 +866,13 @@ func (s *Service) Connect(ctx context.Context, userID string, identity Identity)
 			return ErrAlreadyLinked
 		case !errors.Is(err, ErrNoIdentity):
 			return err
+		}
+		if identity.Provider == "oidc" {
+			// Only an authenticated connect may replace a link to an old issuer.
+			// A failed replacement rolls this deletion back in the same transaction.
+			if _, err := tx.Exec(ctx, `DELETE FROM oauth_identities WHERE user_id = ? AND provider = 'oidc' AND issuer <> ?`, userID, identity.Issuer); err != nil {
+				return err
+			}
 		}
 		if err := s.store.Link(ctx, tx, userID, identity); err != nil {
 			return err
@@ -857,7 +912,7 @@ func (s *Service) Connect(ctx context.Context, userID string, identity Identity)
 // the screen needs beside them: whether there is also a password, because
 // that is what decides whether a connection may be removed.
 func (s *Service) Connections(ctx context.Context, userID string) ([]Connection, bool, error) {
-	items, err := s.store.For(ctx, nil, userID)
+	items, err := s.store.For(ctx, nil, userID, s.Credentials("oidc").identitySource("oidc"))
 	if err != nil {
 		return nil, false, err
 	}
@@ -890,7 +945,7 @@ func (s *Service) Disconnect(ctx context.Context, userID, provider string) error
 		// Asked before the last-way-in rule: a provider the account never held
 		// removes nothing, so the account must not be told to set a password
 		// first for a disconnect that did not happen.
-		held, err := s.store.HasProvider(ctx, tx, userID, provider)
+		held, err := s.store.HasProvider(ctx, tx, userID, provider, s.Credentials(provider).identitySource(provider))
 		if err != nil {
 			return err
 		}
@@ -901,7 +956,7 @@ func (s *Service) Disconnect(ctx context.Context, userID, provider string) error
 		if err != nil {
 			return err
 		}
-		count, err := s.store.Count(ctx, tx, userID)
+		count, err := s.store.Count(ctx, tx, userID, s.Credentials("oidc").identitySource("oidc"))
 		if err != nil {
 			return err
 		}

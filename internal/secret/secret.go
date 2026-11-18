@@ -96,11 +96,15 @@ func DeriveKey(masterKey []byte, purpose string) ([]byte, error) {
 // A fresh random nonce per call is what makes it safe to encrypt the same key
 // twice.
 func (b *Box) Seal(plaintext string) ([]byte, error) {
+	return b.seal(plaintext, nil)
+}
+
+func (b *Box) seal(plaintext string, label []byte) ([]byte, error) {
 	nonce := make([]byte, b.aead.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, fmt.Errorf("secret: nonce: %w", err)
 	}
-	return b.aead.Seal(nonce, nonce, []byte(plaintext), nil), nil
+	return b.aead.Seal(nonce, nonce, []byte(plaintext), label), nil
 }
 
 // Open reverses Seal. It returns ErrDecrypt for every failure — a wrong key,
@@ -108,15 +112,41 @@ func (b *Box) Seal(plaintext string) ([]byte, error) {
 // different for any of them, and distinguishing them tells an attacker which
 // part of a forgery was wrong.
 func (b *Box) Open(sealed []byte) (string, error) {
+	return b.open(sealed, nil)
+}
+
+func (b *Box) open(sealed, label []byte) (string, error) {
 	size := b.aead.NonceSize()
 	if len(sealed) < size+b.aead.Overhead() {
 		return "", ErrDecrypt
 	}
-	plaintext, err := b.aead.Open(nil, sealed[:size], sealed[size:], nil)
+	plaintext, err := b.aead.Open(nil, sealed[:size], sealed[size:], label)
 	if err != nil {
 		return "", ErrDecrypt
 	}
 	return string(plaintext), nil
+}
+
+// SealText binds a text-column credential to its owner. Copying the ciphertext
+// to another setting or provider cannot make its plaintext travel there.
+func (b *Box) SealText(label, value string) (string, error) {
+	sealed, err := b.seal(value, []byte(label))
+	if err != nil {
+		return "", err
+	}
+	return "v1." + base64.RawStdEncoding.EncodeToString(sealed), nil
+}
+
+func (b *Box) OpenText(label, value string) (string, error) {
+	raw, ok := strings.CutPrefix(value, "v1.")
+	if !ok {
+		return "", ErrDecrypt
+	}
+	sealed, err := base64.RawStdEncoding.DecodeString(raw)
+	if err != nil {
+		return "", ErrDecrypt
+	}
+	return b.open(sealed, []byte(label))
 }
 
 // Digest is the hex SHA-256 of value, the form a session, a device or a

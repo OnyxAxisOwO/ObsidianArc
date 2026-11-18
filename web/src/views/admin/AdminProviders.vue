@@ -45,7 +45,7 @@ const meta = ref<Meta | null>(null);
 const error = ref('');
 const loaded = ref(false);
 
-const { open: panelOpen, panel, key: panelKey, show: showPanel, hide: hidePanel, closed: panelClosed } = usePanelSlot();
+const { open: panelOpen, key: panelKey, show: showPanel, hide: hidePanel, closed: panelClosed } = usePanelSlot();
 const existing = ref<Provider | null>(null);
 /**
  * Values to start from when creating. A copy of a provider is the create form
@@ -255,7 +255,8 @@ async function save(): Promise<void> {
   // keys alone should not fail because someone else changed them meanwhile.
   const sendKept = () => {
     payload.keep_keys = kept;
-    payload.key_hints = storedHints.value;
+    const source = existing.value ?? template.value;
+    if (source) payload.key_revision = source.key_revision;
   };
   if (template.value) {
     // Headers have no field in this form, and the keys are not something this
@@ -496,7 +497,7 @@ onMounted(load);
         v-model="form.reasoning"
         :label="t('reasoningStyle')"
         :hint="t('reasoningStyleHint')"
-        :options="meta.reasoning_styles.map((value) => ({ value, label: reasoningLabel(value) }))"
+        :options="(meta?.reasoning_styles ?? []).map((value) => ({ value, label: reasoningLabel(value) }))"
       />
       <OaTextField
         v-if="form.kind === 'anthropic'"

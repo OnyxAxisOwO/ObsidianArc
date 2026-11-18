@@ -74,11 +74,7 @@ type InstallOptions struct {
 // per-account invariants hold the account's row: a second process against
 // the same database waits there rather than running the migrations twice.
 //
-// The in-memory copy is this process's. A second instance learns a change
-// when it restarts; until then it keeps serving the state it booted with,
-// which for an uninstall that dropped a column means its queries naming the
-// column fail. The deployment notes allow a second instance; they do not
-// promise the backoffice's plugin screen is safe to use with one running.
+// Peer processes reconcile their registrations when the database revision changes.
 type Manager struct {
 	db       *database.DB
 	settings *settings.Service
@@ -349,9 +345,18 @@ func (m *Manager) lock(ctx context.Context, tx *database.Tx, name string) (State
 		name, stateRemoved, time.Now().UnixMilli()); err != nil {
 		return "", fmt.Errorf("plugin: lock %s: %w", name, err)
 	}
-	var state string
-	if err := tx.QueryRow(ctx, `SELECT state FROM plugin_installs WHERE name = ?`, name).Scan(&state); err != nil {
+	var state, storedSum string
+	if err := tx.QueryRow(ctx, `SELECT i.state, COALESCE(p.sha256,'') FROM plugin_installs i
+		LEFT JOIN plugin_packages p ON i.name = p.name WHERE i.name = ?`, name).Scan(&state, &storedSum); err != nil {
 		return "", fmt.Errorf("plugin: read %s: %w", name, err)
+	}
+	localSum := ""
+	if local := m.loadedPackage(name); local != nil {
+		localSum = local.pkg.SHA256
+	}
+	stuck := m.unreadable.Load()
+	if localSum != storedSum && !(localSum == "" && stuck != nil && (*stuck)[name]) {
+		return "", preflight("%s changed on another server; refresh and retry", name)
 	}
 	if state == stateRemoved {
 		return StateAvailable, nil
@@ -604,6 +609,9 @@ func (m *Manager) set(name string, r record) {
 }
 
 func (m *Manager) audit(ctx context.Context, q database.Queryer, actor Actor, name, decision string) error {
+	if err := database.AdvanceRevision(ctx, q, "plugins"); err != nil {
+		return err
+	}
 	if m.security == nil {
 		return nil
 	}

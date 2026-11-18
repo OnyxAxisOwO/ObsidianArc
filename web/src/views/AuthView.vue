@@ -229,7 +229,7 @@ async function onCode(): Promise<void> {
   error.value = '';
   try {
     const result = await completeSignIn(value, remember.value);
-    adopt(result.user);
+    adopt(result.user, result.preferences);
     await proceed();
   } catch (failure) {
     busy.value = false;
@@ -590,7 +590,7 @@ async function onSubmit(): Promise<void> {
       await askForCode();
       return;
     }
-    adopt(result.user);
+    adopt(result.user, result.preferences);
     // Back to whatever asked for a session — the consent screen, usually,
     // where another site is waiting on the answer.
     await proceed();

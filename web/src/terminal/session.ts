@@ -67,11 +67,11 @@ const SENSITIVE_FLAG = /(?:^|\s)-{1,2}[\w-]*(?:pass(?:word|wd)?|secret|token|api
 // another command, which is matched here by its own words, so `watch usage rpm`
 // stays in history like any other line.
 const SENSITIVE_COMMAND =
-  /(?:^|\s)(?:setting\s+import|2fa\s+(?:enable|disable|recovery|backoffice)|me\s+invite\s+claim|me\s+passwd|backup\s+import|login-bg\s+set|logo\s+set|user\s+passwd)(?=\s|$)/i;
+  /(?:^|\s)(?:setting\s+(?:import|set)|2fa\s+(?:enable|disable|recovery|backoffice)|me\s+invite\s+claim|me\s+passwd|backup\s+import|login-bg\s+set|logo\s+set|user\s+passwd)(?=\s|$)/i;
 // `user create <name> <password>`: the console declares only the name, so the
 // second positional is the secret, and the server masks it for the same reason.
 const SENSITIVE_POSITIONAL = /(?:^|\s)user\s+create\s+\S+\s+[^\s-]/i;
-const SECRET_SETTING = /(?:^|\s)setting\s+set\s+\S*(?:secret|pass(?:word|wd)|token|key|credential)/i;
+
 
 /**
  * Quotes and backslashes are stripped before matching, as the server's own
@@ -88,8 +88,7 @@ export function isSensitiveTerminalLine(line: string): boolean {
     SENSITIVE_FLAG.test(text) ||
     SENSITIVE_COMMAND.test(text) ||
     SENSITIVE_POSITIONAL.test(text) ||
-    SENSITIVE_POSITIONAL.test(line) ||
-    SECRET_SETTING.test(text)
+    SENSITIVE_POSITIONAL.test(line)
   );
 }
 
@@ -149,6 +148,7 @@ function loadHistory(userId: string | null): string[] {
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
     const lines = parsed.filter((entry): entry is string => typeof entry === 'string' && !isSensitiveTerminalLine(entry));
+    if (lines.length !== parsed.length) persistHistory(userId, lines);
     return lines.length > HISTORY_CAP ? lines.slice(lines.length - HISTORY_CAP) : lines;
   } catch {
     return [];

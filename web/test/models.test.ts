@@ -86,7 +86,7 @@ describe('which models a conversation may use', () => {
   });
 });
 
-describe('worstCase and priciest calculations', () => {
+describe('reservationEstimate and priciest calculations', () => {
   function adminModel(id: string, req: number, out: number, maxOut: number): any {
     return {
       id,
@@ -101,20 +101,20 @@ describe('worstCase and priciest calculations', () => {
     };
   }
 
-  it('caps reservation ceiling at 4096 so large output limits do not inflate worst case', async () => {
-    const { worstCase, priciest } = await import('../src/views/admin/shared');
+  it('caps reservation ceiling at 4096 so large output limits do not inflate the deposit', async () => {
+    const { reservationEstimate, priciest } = await import('../src/views/admin/shared');
 
     const deepseek = adminModel('deepseek', 1, 1, 256004);
     // 1 + (4096 / 1000) * 1 = 5.096
-    expect(worstCase(deepseek)).toBeCloseTo(5.096, 3);
+    expect(reservationEstimate(deepseek)).toBeCloseTo(5.096, 3);
 
     const claude = adminModel('claude', 0, 15, 0);
     // 0 + (4096 / 1000) * 15 = 61.44
-    expect(worstCase(claude)).toBeCloseTo(61.44, 2);
+    expect(reservationEstimate(claude)).toBeCloseTo(61.44, 2);
 
     const small = adminModel('small', 0, 2, 1000);
     // 0 + (1000 / 1000) * 2 = 2
-    expect(worstCase(small)).toBe(2);
+    expect(reservationEstimate(small)).toBe(2);
 
     expect(priciest([deepseek, claude, small])?.id).toBe('claude');
   });
@@ -122,14 +122,14 @@ describe('worstCase and priciest calculations', () => {
   // The same table internal/model's TestWorstCaseMatchesTheSharedTable reads,
   // so the estimate here cannot drift from what the server reserves.
   it('reserves what the server reserves', async () => {
-    const { worstCase } = await import('../src/views/admin/shared');
+    const { reservationEstimate } = await import('../src/views/admin/shared');
     const table = JSON.parse(readFileSync(resolve(__dirname, '../../internal/model/testdata/worst_case.json'), 'utf8')) as {
       max_output_tokens: number; request_weight: number; output_token_weight: number; credits: number;
     }[];
     expect(table.length).toBeGreaterThan(0);
     for (const row of table) {
       const entry = adminModel('m', row.request_weight, row.output_token_weight, row.max_output_tokens);
-      expect(worstCase(entry)).toBeCloseTo(row.credits, 9);
+      expect(reservationEstimate(entry)).toBeCloseTo(row.credits, 9);
     }
   });
 

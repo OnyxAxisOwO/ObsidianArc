@@ -45,3 +45,23 @@ func TestJanitorDoneWaitsForTheFinalRequestLogWrite(t *testing.T) {
 		t.Fatalf("request log dropped %d entries on shutdown", dropped)
 	}
 }
+
+func TestSweepPrunesOnlyExpiredVerificationLinks(t *testing.T) {
+	in := newInstance(t)
+	ctx := t.Context()
+	member := in.register("member", "a-good-password")
+	for name, expiry := range map[string]time.Time{"expired": time.Now().Add(-time.Hour), "active": time.Now().Add(time.Hour)} {
+		if _, err := in.db.Exec(ctx, `INSERT INTO email_verifications(id,user_id,email,created_at,expires_at) VALUES(?,?,?,?,?)`, name, member.userID, "member@example.com", 1, expiry.UnixMilli()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	in.server.sweep(ctx)
+	var id string
+	if err := in.db.QueryRow(ctx, `SELECT id FROM email_verifications`).Scan(&id); err != nil || id != "active" {
+		t.Fatalf("retained %q %v", id, err)
+	}
+	var n int
+	if err := in.db.QueryRow(ctx, `SELECT COUNT(*) FROM email_verifications`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("retained %d verification links: %v", n, err)
+	}
+}

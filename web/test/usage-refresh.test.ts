@@ -97,7 +97,7 @@ function totals(requests: number) {
 function panelRoutes(history: unknown, cards: unknown = { cards: [] }): (url: string) => unknown {
   return (url: string) => {
     if (url === '/api/usage/me') return { unlimited: false, windows: [] };
-    if (url === '/api/usage/me/history') return history;
+    if (url.startsWith('/api/usage/me/history?')) return history;
     if (url === '/api/usage/cards') return cards;
     if (url === '/api/bonus') return { bars: [] };
     if (url === '/api/checkin') return { enabled: false };
@@ -163,7 +163,7 @@ describe('UsagePanel', () => {
     let historyReads = 0;
     let releaseStale!: (value: unknown) => void;
     get.mockImplementation(async (url: string) => {
-      if (url === '/api/usage/me/history') {
+      if (url.startsWith('/api/usage/me/history?')) {
         historyReads += 1;
         if (historyReads === 1) return { totals: totals(1), turns: [] };
         // The first periodic read, held open past the next one.

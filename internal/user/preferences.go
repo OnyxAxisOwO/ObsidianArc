@@ -95,57 +95,62 @@ func (p *PreferenceStore) Bool(ctx context.Context, userID, key string) (bool, e
 // clobber one written by another device in between.
 func (p *PreferenceStore) Merge(ctx context.Context, userID string, patch map[string]json.RawMessage) (json.RawMessage, error) {
 	var merged json.RawMessage
-
 	err := p.db.Tx(ctx, func(tx *database.Tx) error {
-		// The account row lock comes before the read. Two devices merging at
-		// once would otherwise both read the old document, and the later write
-		// would drop the other's keys on Postgres, where READ COMMITTED does not
-		// serialise them. SQLite already serialises writers.
-		if _, err := tx.Exec(ctx, `UPDATE users SET updated_at = updated_at WHERE id = ?`, userID); err != nil {
-			return fmt.Errorf("user: lock account: %w", err)
-		}
-		var raw string
-		err := tx.QueryRow(ctx, `SELECT data FROM user_preferences WHERE user_id = ?`, userID).Scan(&raw)
-		if err != nil && !database.IsNotFound(err) {
-			return fmt.Errorf("user: load preferences: %w", err)
-		}
-
-		current := map[string]json.RawMessage{}
-		if raw != "" {
-			// A corrupted document is replaced rather than propagated: the
-			// alternative is a user who can never save a preference again.
-			_ = json.Unmarshal([]byte(raw), &current)
-		}
-		for key, value := range patch {
-			if len(value) == 0 || string(value) == "null" {
-				delete(current, key)
-				continue
-			}
-			current[key] = value
-		}
-
-		encoded, err := json.Marshal(current)
-		if err != nil {
-			return fmt.Errorf("user: encode preferences: %w", err)
-		}
-		if len(encoded) > MaxPreferencesBytes {
-			return fmt.Errorf("%w of %d bytes", ErrPreferencesTooLarge, MaxPreferencesBytes)
-		}
-
-		_, err = tx.Exec(ctx,
-			`INSERT INTO user_preferences (user_id, data, updated_at) VALUES (?, ?, ?)
-			 ON CONFLICT (user_id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`,
-			userID, string(encoded), time.Now().UnixMilli())
-		if err != nil {
-			return fmt.Errorf("user: save preferences: %w", err)
-		}
-		merged = encoded
-		return nil
+		var err error
+		merged, err = p.MergeIn(ctx, tx, userID, patch)
+		return err
 	})
 	if err != nil {
 		return nil, err
 	}
 	return merged, nil
+}
+
+// MergeIn lets an import restore preferences and project references together.
+func (p *PreferenceStore) MergeIn(ctx context.Context, tx *database.Tx, userID string, patch map[string]json.RawMessage) (json.RawMessage, error) {
+	// The account row lock comes before the read. Two devices merging at
+	// once would otherwise both read the old document, and the later write
+	// would drop the other's keys on Postgres, where READ COMMITTED does not
+	// serialise them. SQLite already serialises writers.
+	if _, err := tx.Exec(ctx, `UPDATE users SET updated_at = updated_at WHERE id = ?`, userID); err != nil {
+		return nil, fmt.Errorf("user: lock account: %w", err)
+	}
+	var raw string
+	err := tx.QueryRow(ctx, `SELECT data FROM user_preferences WHERE user_id = ?`, userID).Scan(&raw)
+	if err != nil && !database.IsNotFound(err) {
+		return nil, fmt.Errorf("user: load preferences: %w", err)
+	}
+
+	current := map[string]json.RawMessage{}
+	if raw != "" {
+		// A corrupted document is replaced rather than propagated: the
+		// alternative is a user who can never save a preference again.
+		_ = json.Unmarshal([]byte(raw), &current)
+	}
+	for key, value := range patch {
+		if len(value) == 0 || string(value) == "null" {
+			delete(current, key)
+			continue
+		}
+		current[key] = value
+	}
+
+	encoded, err := json.Marshal(current)
+	if err != nil {
+		return nil, fmt.Errorf("user: encode preferences: %w", err)
+	}
+	if len(encoded) > MaxPreferencesBytes {
+		return nil, fmt.Errorf("%w of %d bytes", ErrPreferencesTooLarge, MaxPreferencesBytes)
+	}
+
+	_, err = tx.Exec(ctx,
+		`INSERT INTO user_preferences (user_id, data, updated_at) VALUES (?, ?, ?)
+		 ON CONFLICT (user_id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`,
+		userID, string(encoded), time.Now().UnixMilli())
+	if err != nil {
+		return nil, fmt.Errorf("user: save preferences: %w", err)
+	}
+	return encoded, nil
 }
 
 // --- wallpaper ---------------------------------------------------------------

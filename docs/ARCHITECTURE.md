@@ -227,10 +227,12 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 28.34 MB (24.64 MB `-tags nosqlite`, Linux amd64, Go 1.27.3), 0.42 MB of it the frontend's brotli copies and 0.41 MB the embedded zone database; this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 175.79 kB to open the chat with brotli (155.20 JS + 20.58 CSS); 209.16 kB with gzip (184.95 JS + 24.21 CSS), which the budget holds; the brotli is a copy compressed at build time, the gzip is Go's, made as it goes out |
+| Binary (SQLite + embedded SPA) | < 30 MB | 28.59 MB (24.89 MB using `-tags nosqlite`, Linux amd64, Go 1.27.4), including 0.43 MB of precompressed frontend assets and 0.41 MB of embedded zone data. |
+| Frontend, on the wire | < 135 kB | 173.18 kB with brotli (152.57 JS + 20.61 CSS), 205.49 kB with gzip (181.25 JS + 24.24 CSS). The enforced gzip budget is 210 kB. |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Measured on 2026-11-18 after the audit fixes. The image lab loads 5.81 kB of gzip JavaScript when opened from chat or the backoffice. The build has 22 core assets. The Chinese dictionary is 21.16 kB gzip and 17.59 kB brotli. Backoffice Chinese adds 39.42 kB gzip. The backoffice itself adds 182.25 kB JS and 15.88 kB CSS gzip. All precompressed brotli copies total 425,727 bytes. Go 1.27.4 with `-trimpath -ldflags="-s -w"` produced 28,594,336 bytes for Linux amd64 and 24,891,552 bytes with `-tags nosqlite`.
 
 Remeasured on 2026-11-14 after per-message web search joined the composer
 and, from main, the image lab appends the picked aspect ratio, a generation

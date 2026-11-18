@@ -754,7 +754,7 @@ func (h *Handlers) login(w http.ResponseWriter, r *http.Request) error {
 	// Reached only past the *SecondFactorRequired branch above, so this is
 	// always a full session.
 	h.service.AttachDevice(r.Context(), w, r, account, token, ip, ua)
-	return httpx.WriteJSON(w, http.StatusOK, map[string]any{"user": h.account(r, account)})
+	return h.writeSession(w, r, account)
 }
 
 func (h *Handlers) logout(w http.ResponseWriter, r *http.Request) error {
@@ -773,6 +773,10 @@ func (h *Handlers) me(w http.ResponseWriter, r *http.Request) error {
 		}
 		return httpx.Unauthorized("Not signed in.")
 	}
+	return h.writeSession(w, r, account)
+}
+
+func (h *Handlers) writeSession(w http.ResponseWriter, r *http.Request, account user.User) error {
 	preferences, err := h.preferences.Get(r.Context(), account.ID)
 	if err != nil {
 		return httpx.Internal(err)

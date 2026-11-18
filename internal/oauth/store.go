@@ -43,11 +43,11 @@ func (s *Store) queryer(q database.Queryer) database.Queryer {
 }
 
 // Account resolves a provider's own identifier to an account here.
-func (s *Store) Account(ctx context.Context, q database.Queryer, provider, subject string) (string, error) {
+func (s *Store) Account(ctx context.Context, q database.Queryer, provider, subject, issuer string) (string, error) {
 	var userID string
 	err := s.queryer(q).QueryRow(ctx,
-		`SELECT user_id FROM oauth_identities WHERE provider = ? AND subject = ?`,
-		provider, subject).Scan(&userID)
+		`SELECT user_id FROM oauth_identities WHERE provider = ? AND subject = ? AND issuer = ?`,
+		provider, subject, issuer).Scan(&userID)
 	if err != nil {
 		if database.IsNotFound(err) {
 			return "", ErrNoIdentity
@@ -68,9 +68,9 @@ func (s *Store) Link(ctx context.Context, q database.Queryer, userID string, ide
 	now := time.Now().UnixMilli()
 	_, err := s.queryer(q).Exec(ctx,
 		`INSERT INTO oauth_identities
-		 (id, provider, subject, user_id, email, login, created_at, last_login_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		id.New(), identity.Provider, identity.Subject, userID,
+		 (id, provider, issuer, subject, user_id, email, login, created_at, last_login_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id.New(), identity.Provider, identity.Issuer, identity.Subject, userID,
 		identity.Email, identity.Login, now, now)
 	if err != nil {
 		if database.IsUnique(err) {
@@ -86,9 +86,9 @@ func (s *Store) Link(ctx context.Context, q database.Queryer, userID string, ide
 func (s *Store) Touch(ctx context.Context, q database.Queryer, identity Identity) error {
 	_, err := s.queryer(q).Exec(ctx,
 		`UPDATE oauth_identities SET email = ?, login = ?, last_login_at = ?
-		 WHERE provider = ? AND subject = ?`,
+		 WHERE provider = ? AND subject = ? AND issuer = ?`,
 		identity.Email, identity.Login, time.Now().UnixMilli(),
-		identity.Provider, identity.Subject)
+		identity.Provider, identity.Subject, identity.Issuer)
 	if err != nil {
 		return fmt.Errorf("oauth: record sign-in: %w", err)
 	}
@@ -96,10 +96,10 @@ func (s *Store) Touch(ctx context.Context, q database.Queryer, identity Identity
 }
 
 // For lists one account's connections, oldest first.
-func (s *Store) For(ctx context.Context, q database.Queryer, userID string) ([]Connection, error) {
+func (s *Store) For(ctx context.Context, q database.Queryer, userID, oidcIssuer string) ([]Connection, error) {
 	rows, err := s.queryer(q).Query(ctx,
 		`SELECT provider, login, email, created_at, last_login_at
-		 FROM oauth_identities WHERE user_id = ? ORDER BY created_at`, userID)
+		 FROM oauth_identities WHERE user_id = ? AND (provider <> 'oidc' OR issuer = ?) ORDER BY created_at`, userID, oidcIssuer)
 	if err != nil {
 		return nil, fmt.Errorf("oauth: list connections: %w", err)
 	}
@@ -123,10 +123,10 @@ func (s *Store) For(ctx context.Context, q database.Queryer, userID string) ([]C
 // Count is how many ways into this account a provider currently offers. Read
 // by the unlink check, which is why it takes a Queryer: it has to run inside
 // the transaction that holds the account's row lock.
-func (s *Store) Count(ctx context.Context, q database.Queryer, userID string) (int, error) {
+func (s *Store) Count(ctx context.Context, q database.Queryer, userID, oidcIssuer string) (int, error) {
 	var count int
 	if err := s.queryer(q).QueryRow(ctx,
-		`SELECT COUNT(*) FROM oauth_identities WHERE user_id = ?`, userID).Scan(&count); err != nil {
+		`SELECT COUNT(*) FROM oauth_identities WHERE user_id = ? AND (provider <> 'oidc' OR issuer = ?)`, userID, oidcIssuer).Scan(&count); err != nil {
 		return 0, fmt.Errorf("oauth: count connections: %w", err)
 	}
 	return count, nil
@@ -135,11 +135,11 @@ func (s *Store) Count(ctx context.Context, q database.Queryer, userID string) (i
 // HasProvider reports whether an account already holds a connection to one
 // named provider. Used by the OIDC binding gate, which cares about exactly
 // one provider rather than the count Count answers for the unlink check.
-func (s *Store) HasProvider(ctx context.Context, q database.Queryer, userID, provider string) (bool, error) {
+func (s *Store) HasProvider(ctx context.Context, q database.Queryer, userID, provider, issuer string) (bool, error) {
 	var count int
 	if err := s.queryer(q).QueryRow(ctx,
-		`SELECT COUNT(*) FROM oauth_identities WHERE user_id = ? AND provider = ?`,
-		userID, provider).Scan(&count); err != nil {
+		`SELECT COUNT(*) FROM oauth_identities WHERE user_id = ? AND provider = ? AND issuer = ?`,
+		userID, provider, issuer).Scan(&count); err != nil {
 		return false, fmt.Errorf("oauth: check provider connection: %w", err)
 	}
 	return count > 0, nil

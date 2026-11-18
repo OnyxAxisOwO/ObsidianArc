@@ -216,6 +216,7 @@ export function parseInline(text: string): Inline[] {
   let buffer = '';
   let index = 0;
   // Built on the first backtick, so a paragraph without code pays nothing.
+  let mathScanEnd = 0;
   let findCode: ((at: number) => CodeSpan | null) | null = null;
   // Markers known to have no closing anywhere after the current position. A
   // closing is judged by its own position alone, so a later opener's possible
@@ -244,13 +245,22 @@ export function parseInline(text: string): Inline[] {
     const char = source[index]!;
     const rest = source.slice(index);
 
-    if (rest.startsWith('\\(')) {
-      const mathParen = /^\\\(((?:[^\\]|\\.)+?)\\\)/.exec(rest);
-      if (mathParen) {
-        push({ type: 'math', value: mathParen[1]!.trim(), display: false });
-        index += mathParen[0].length;
+    if (rest.startsWith('\\(') && index >= mathScanEnd) {
+      let close = index + 2;
+      while (close < source.length) {
+        if (source[close] !== '\\') { close++; continue; }
+        const next = source[close + 1];
+        if (next === ')' && close > index + 2) break;
+        if (!next || /[\n\r\u2028\u2029]/.test(next)) break;
+        close += 2;
+      }
+      if (source[close + 1] === ')') {
+        push({ type: 'math', value: source.slice(index + 2, close).trim(), display: false });
+        index = close + 2;
         continue;
       }
+      // Later openers in this prefix would scan up to the same line break or end.
+      mathScanEnd = close + 1;
     }
 
     // A backslash at the very end of a block has nothing after it to escape.

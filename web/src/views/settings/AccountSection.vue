@@ -407,7 +407,13 @@ function exportData(): void {
       dataStatus.value = t('exportDone', { count: document.conversations.length });
     })
     .catch((error: unknown) => {
-      dataStatus.value = apiErrorText(error);
+      if (error instanceof ApiError && error.code === 'export_too_large') {
+        const download = window.document.createElement('a');
+        download.href = '/api/account/export?format=tar';
+        download.download = '';
+        download.click();
+        dataStatus.value = t('exportSegmented');
+      } else dataStatus.value = apiErrorText(error);
     })
     .finally(() => { exporting.value = false; });
 }
@@ -419,7 +425,7 @@ function exportData(): void {
  */
 function importData(): void {
   dataStatus.value = '';
-  void pickJSONFile()
+  void pickJSONFile(undefined, true)
     .then((document) => {
       if (document === null) return null;
       importing.value = true;

@@ -207,7 +207,7 @@ func (s *Store) List(ctx context.Context, q database.Queryer, filter Filter) (re
 	rows, err := queryer.Query(ctx,
 		`SELECT `+columns+`, u.username, u.nickname
 		 FROM feedback f JOIN users u ON u.id = f.user_id`+where+
-			` ORDER BY f.created_at DESC LIMIT ? OFFSET ?`,
+			` ORDER BY f.created_at DESC, f.id DESC LIMIT ? OFFSET ?`,
 		append(args, limit, offset)...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("feedback: list: %w", err)
@@ -237,8 +237,8 @@ func (s *Store) ListFor(ctx context.Context, q database.Queryer, userID string) 
 	rows, err := s.pick(q).Query(ctx,
 		`SELECT `+columns+` FROM feedback f
 		 WHERE f.user_id = ? AND (f.author_unread = ? OR f.id IN (
-		   SELECT id FROM feedback WHERE user_id = ? ORDER BY created_at DESC LIMIT ?))
-		 ORDER BY f.created_at DESC`,
+		   SELECT id FROM feedback WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT ?))
+		 ORDER BY f.created_at DESC, f.id DESC`,
 		userID, true, userID, listedNewest)
 	if err != nil {
 		return nil, fmt.Errorf("feedback: list for author: %w", err)

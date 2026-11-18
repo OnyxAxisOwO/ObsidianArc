@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -46,9 +45,8 @@ type Provider struct {
 	// The first key's hint, for the readers written before there could be
 	// more than one.
 	APIKeyHint string `json:"api_key_hint"`
-	// One per stored key, in the order they are taken. A form that keeps some
-	// of them names them by position in this list and sends it back, so the
-	// positions are checked against the list they were read from.
+	// Hints are for display. Positional edits refer to this key revision.
+	KeyRevision      int64                  `json:"key_revision"`
 	APIKeyHints      []string               `json:"api_key_hints"`
 	KeyRotation      KeyRotation            `json:"key_rotation"`
 	Headers          map[string]string      `json:"headers"`
@@ -224,7 +222,7 @@ var reservedHeaders = map[string]bool{
 }
 
 const columns = `id, name, kind, base_url, allow_insecure, api_key_hint, headers_json, anthropic_version,
-	reasoning_style, timeout_seconds, enabled, sort_order, created_at, updated_at, key_rotation`
+	reasoning_style, timeout_seconds, enabled, sort_order, created_at, updated_at, key_rotation, key_revision`
 
 type Store struct {
 	db  *database.DB
@@ -261,11 +259,11 @@ type CreateInput struct {
 	// browser asking for one has never been given them. Ignored when keys are
 	// typed and KeepKeys is nil.
 	CopyKeyFrom string
-	// The positions of the source's keys to take, in SeenKeyHints, when the
+	// The positions of the source's keys to take, in the displayed revision, when the
 	// duplicate keeps only some of them or adds its own beside them. Only
 	// this case opens the source's keys, since the list has to be rebuilt.
-	KeepKeys     *[]int
-	SeenKeyHints []string
+	KeepKeys    *[]int
+	KeyRevision int64
 }
 
 // Create adds a provider. superAdmin says whether the caller may choose its
@@ -343,9 +341,9 @@ func (s *Store) Create(ctx context.Context, in CreateInput, superAdmin bool) (Pr
 		// Read at the address the new row will have, so a source repointed
 		// since the check above gives up nothing.
 		var sealed []byte
-		var hints string
-		err := s.db.QueryRow(ctx, `SELECT api_key_enc, api_key_hint FROM providers WHERE id = ? AND base_url = ?`,
-			in.CopyKeyFrom, record.BaseURL).Scan(&sealed, &hints)
+		var revision int64
+		err := s.db.QueryRow(ctx, `SELECT api_key_enc, key_revision FROM providers WHERE id = ? AND base_url = ?`,
+			in.CopyKeyFrom, record.BaseURL).Scan(&sealed, &revision)
 		if err != nil {
 			if database.IsNotFound(err) {
 				return Provider{}, ErrNotFound
@@ -356,7 +354,10 @@ func (s *Store) Create(ctx context.Context, in CreateInput, superAdmin bool) (Pr
 		if err != nil {
 			return Provider{}, err
 		}
-		chosen, err := keep(stored, splitHints(hints), *in.KeepKeys, in.SeenKeyHints)
+		if revision != in.KeyRevision {
+			return Provider{}, ErrKeysChanged
+		}
+		chosen, err := keep(stored, *in.KeepKeys)
 		if err != nil {
 			return Provider{}, err
 		}
@@ -371,8 +372,9 @@ func (s *Store) Create(ctx context.Context, in CreateInput, superAdmin bool) (Pr
 
 	now := time.Now().UnixMilli()
 	record.CreatedAt, record.UpdatedAt = now, now
+	record.KeyRevision = 1
 
-	headers, err := json.Marshal(record.Headers)
+	headers, err := s.sealHeaders(record.ID, record.Headers)
 	if err != nil {
 		return Provider{}, fmt.Errorf("provider: encode headers: %w", err)
 	}
@@ -383,7 +385,7 @@ func (s *Store) Create(ctx context.Context, in CreateInput, superAdmin bool) (Pr
 		 key_rotation)`
 
 	identity := []any{record.ID, record.Name, record.Kind, record.BaseURL, record.AllowInsecure}
-	rest := []any{string(headers), record.AnthropicVersion, record.ReasoningStyle,
+	rest := []any{headers, record.AnthropicVersion, record.ReasoningStyle,
 		record.TimeoutSeconds, record.Enabled, record.SortOrder, record.CreatedAt, record.UpdatedAt,
 		record.KeyRotation}
 
@@ -444,10 +446,10 @@ type Update struct {
 	APIKey *string
 	// Keys typed to go beside the ones kept.
 	AddKeys []string
-	// The positions of the stored keys to keep, in SeenKeyHints. Nil keeps
+	// The positions of the stored keys to keep, in the displayed revision. Nil keeps
 	// them all; an empty list keeps none.
 	KeepKeys         *[]int
-	SeenKeyHints     []string
+	KeyRevision      int64
 	KeyRotation      *KeyRotation
 	Headers          *map[string]string
 	AnthropicVersion *string
@@ -472,7 +474,7 @@ func (s *Store) Update(ctx context.Context, providerID string, in Update, superA
 			return fmt.Errorf("provider: lock for update: %w", err)
 		}
 
-		current, err := byID(ctx, tx, providerID)
+		current, err := s.byID(ctx, tx, providerID)
 		if err != nil {
 			return err
 		}
@@ -536,16 +538,20 @@ func (s *Store) Update(ctx context.Context, providerID string, in Update, superA
 		}
 		next.UpdatedAt = time.Now().UnixMilli()
 
-		headers, err := json.Marshal(next.Headers)
-		if err != nil {
-			return fmt.Errorf("provider: encode headers: %w", err)
-		}
-
-		sets := `name = ?, kind = ?, base_url = ?, allow_insecure = ?, headers_json = ?, anthropic_version = ?,
+		sets := `name = ?, kind = ?, base_url = ?, allow_insecure = ?, anthropic_version = ?,
 			reasoning_style = ?, timeout_seconds = ?, enabled = ?, sort_order = ?, updated_at = ?, key_rotation = ?`
-		args := []any{next.Name, next.Kind, next.BaseURL, next.AllowInsecure, string(headers),
+		args := []any{next.Name, next.Kind, next.BaseURL, next.AllowInsecure,
 			next.AnthropicVersion, next.ReasoningStyle, next.TimeoutSeconds, next.Enabled,
 			next.SortOrder, next.UpdatedAt, next.KeyRotation}
+
+		if in.Headers != nil {
+			headers, err := s.sealHeaders(next.ID, next.Headers)
+			if err != nil {
+				return fmt.Errorf("provider: encode headers: %w", err)
+			}
+			sets += ", headers_json = ?"
+			args = append(args, headers)
+		}
 
 		if touched {
 			sealed, hints, err := s.sealKeys(keys.list)
@@ -553,7 +559,8 @@ func (s *Store) Update(ctx context.Context, providerID string, in Update, superA
 				return err
 			}
 			next.setHints(hints)
-			sets += `, api_key_enc = ?, api_key_hint = ?`
+			next.KeyRevision++
+			sets += `, api_key_enc = ?, api_key_hint = ?, key_revision = key_revision + 1`
 			args = append(args, sealed, hints)
 		}
 
@@ -592,6 +599,9 @@ func (s *Store) nextKeys(
 	if in.APIKey == nil && in.KeepKeys == nil && len(in.AddKeys) == 0 {
 		return keySet{}, false, nil
 	}
+	if in.KeepKeys != nil && in.KeyRevision != current.KeyRevision {
+		return keySet{}, true, ErrKeysChanged
+	}
 	typedBlocks := in.AddKeys
 	if in.APIKey != nil {
 		typedBlocks = append([]string{*in.APIKey}, typedBlocks...)
@@ -617,7 +627,7 @@ func (s *Store) nextKeys(
 		}
 		if in.KeepKeys == nil {
 			kept = stored
-		} else if kept, err = keep(stored, current.APIKeyHints, *in.KeepKeys, in.SeenKeyHints); err != nil {
+		} else if kept, err = keep(stored, *in.KeepKeys); err != nil {
 			return keySet{}, true, err
 		}
 	}
@@ -633,11 +643,11 @@ func (s *Store) nextKeys(
 }
 
 func (s *Store) ByID(ctx context.Context, providerID string) (Provider, error) {
-	return byID(ctx, s.db, providerID)
+	return s.byID(ctx, s.db, providerID)
 }
 
-func byID(ctx context.Context, q database.Queryer, providerID string) (Provider, error) {
-	return scan(q.QueryRow(ctx, `SELECT `+columns+` FROM providers WHERE id = ?`, providerID))
+func (s *Store) byID(ctx context.Context, q database.Queryer, providerID string) (Provider, error) {
+	return s.scan(q.QueryRow(ctx, `SELECT `+columns+` FROM providers WHERE id = ?`, providerID))
 }
 
 func (s *Store) List(ctx context.Context) ([]Provider, error) {
@@ -651,7 +661,7 @@ func (s *Store) List(ctx context.Context) ([]Provider, error) {
 
 	out := []Provider{}
 	for rows.Next() {
-		record, count, err := scanWithCount(rows)
+		record, count, err := s.scanWithCount(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -709,14 +719,17 @@ func (s *Store) Resolve(ctx context.Context, providerID string) (adapter.Provide
 	err := row.Scan(&record.ID, &record.Name, &record.Kind, &record.BaseURL, &record.AllowInsecure,
 		&hints, &headers, &record.AnthropicVersion, &record.ReasoningStyle,
 		&record.TimeoutSeconds, &record.Enabled, &record.SortOrder, &record.CreatedAt,
-		&record.UpdatedAt, &record.KeyRotation, &sealed)
+		&record.UpdatedAt, &record.KeyRotation, &record.KeyRevision, &sealed)
 	if err != nil {
 		if database.IsNotFound(err) {
 			return adapter.Provider{}, ErrNotFound
 		}
 		return adapter.Provider{}, fmt.Errorf("provider: resolve: %w", err)
 	}
-	record.Headers = DecodeHeaders(record.ID, headers)
+	record.Headers, err = s.OpenHeaders(record.ID, headers)
+	if err != nil {
+		return adapter.Provider{}, fmt.Errorf("provider: open headers: %w", err)
+	}
 	return s.ResolveFrom(record, sealed)
 }
 
@@ -803,13 +816,7 @@ func unique(keys []string) []string {
 	return out
 }
 
-// keep returns the stored keys at the positions a form chose, which mean
-// something only against the hints it was drawn from — so those come back
-// with them and must still be the ones stored.
-func keep(stored, hints []string, positions []int, seen []string) ([]string, error) {
-	if !slices.Equal(hints, seen) || len(stored) != len(hints) {
-		return nil, ErrKeysChanged
-	}
+func keep(stored []string, positions []int) ([]string, error) {
 	out := make([]string, 0, len(positions))
 	for _, position := range positions {
 		if position < 0 || position >= len(stored) {
@@ -1005,7 +1012,7 @@ func DecodeHeaders(providerID, raw string) map[string]string {
 
 type rowScanner = database.RowScanner
 
-func scan(row rowScanner) (Provider, error) {
+func (s *Store) scan(row rowScanner) (Provider, error) {
 	var (
 		record  Provider
 		headers string
@@ -1014,19 +1021,19 @@ func scan(row rowScanner) (Provider, error) {
 	err := row.Scan(&record.ID, &record.Name, &record.Kind, &record.BaseURL, &record.AllowInsecure,
 		&hints, &headers, &record.AnthropicVersion, &record.ReasoningStyle,
 		&record.TimeoutSeconds, &record.Enabled, &record.SortOrder, &record.CreatedAt,
-		&record.UpdatedAt, &record.KeyRotation)
+		&record.UpdatedAt, &record.KeyRotation, &record.KeyRevision)
 	if err != nil {
 		if database.IsNotFound(err) {
 			return Provider{}, ErrNotFound
 		}
 		return Provider{}, fmt.Errorf("provider: scan: %w", err)
 	}
-	record.Headers = DecodeHeaders(record.ID, headers)
+	record.Headers = s.listedHeaders(record.ID, headers)
 	record.setHints(hints)
 	return record, nil
 }
 
-func scanWithCount(row rowScanner) (Provider, int, error) {
+func (s *Store) scanWithCount(row rowScanner) (Provider, int, error) {
 	var (
 		record  Provider
 		headers string
@@ -1036,14 +1043,14 @@ func scanWithCount(row rowScanner) (Provider, int, error) {
 	err := row.Scan(&record.ID, &record.Name, &record.Kind, &record.BaseURL, &record.AllowInsecure,
 		&hints, &headers, &record.AnthropicVersion, &record.ReasoningStyle,
 		&record.TimeoutSeconds, &record.Enabled, &record.SortOrder, &record.CreatedAt,
-		&record.UpdatedAt, &record.KeyRotation, &count)
+		&record.UpdatedAt, &record.KeyRotation, &record.KeyRevision, &count)
 	if err != nil {
 		if database.IsNotFound(err) {
 			return Provider{}, 0, ErrNotFound
 		}
 		return Provider{}, 0, fmt.Errorf("provider: scan: %w", err)
 	}
-	record.Headers = DecodeHeaders(record.ID, headers)
+	record.Headers = s.listedHeaders(record.ID, headers)
 	record.setHints(hints)
 	return record, count, nil
 }

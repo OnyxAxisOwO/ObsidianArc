@@ -96,7 +96,7 @@ function card(hours: number, name?: string, windows?: string[]) {
 function routes(cards: ReturnType<typeof card>[]): (url: string) => unknown {
   return (url: string) => {
     if (url === '/api/usage/me') return { unlimited: false, windows: [] };
-    if (url === '/api/usage/me/history') return { totals: emptyTotals, turns: [] };
+    if (url.startsWith('/api/usage/me/history?')) return { totals: emptyTotals, turns: [] };
     if (url === '/api/usage/cards') return { cards };
     // Read by the same panel, and not what these tests are about.
     if (url === '/api/bonus') return { bars: [] };
@@ -196,7 +196,7 @@ describe('held reset cards', () => {
 
     const asked = get.mock.calls.map(([url]) => url);
     expect(asked).toContain('/api/usage/me');
-    expect(asked).toContain('/api/usage/me/history');
+    expect(asked.some((path) => path.startsWith('/api/usage/me/history?'))).toBe(true);
     expect(asked).toContain('/api/usage/cards');
     // The bars beside the allowance move with it, or the button looks like it
     // refreshed half a screen.

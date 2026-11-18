@@ -38,6 +38,7 @@ type providerRequest struct {
 	// source's), and the hints those positions were read from.
 	KeepKeys    *[]int                `json:"keep_keys"`
 	KeyHints    []string              `json:"key_hints"`
+	KeyRevision int64                 `json:"key_revision"`
 	KeyRotation *provider.KeyRotation `json:"key_rotation"`
 	// A provider to take the API key from, set when this request is a
 	// duplicate of an existing one. The key itself is never sent here — the
@@ -79,7 +80,7 @@ func (h *Handlers) createProvider(w http.ResponseWriter, r *http.Request) error 
 	if body.CopyKeyFrom != nil {
 		in.CopyKeyFrom = *body.CopyKeyFrom
 	}
-	in.APIKeys, in.KeepKeys, in.SeenKeyHints = body.APIKeys, body.KeepKeys, body.KeyHints
+	in.APIKeys, in.KeepKeys, in.KeyRevision = body.APIKeys, body.KeepKeys, body.KeyRevision
 	if body.KeyRotation != nil {
 		in.KeyRotation = *body.KeyRotation
 	}
@@ -131,7 +132,7 @@ func (h *Handlers) updateProvider(w http.ResponseWriter, r *http.Request) error 
 		APIKey:           body.APIKey,
 		AddKeys:          body.APIKeys,
 		KeepKeys:         body.KeepKeys,
-		SeenKeyHints:     body.KeyHints,
+		KeyRevision:      body.KeyRevision,
 		KeyRotation:      body.KeyRotation,
 		Headers:          body.Headers,
 		AnthropicVersion: body.AnthropicVersion,

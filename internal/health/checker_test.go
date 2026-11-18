@@ -519,3 +519,26 @@ func TestAnAutoDisabledModelStaysOffWhileItsProviderIsOff(t *testing.T) {
 		t.Errorf("model did not come back once its provider was on: %+v", back)
 	}
 }
+
+func TestConfiguredThresholdBeyondRecentSampleLimit(t *testing.T) {
+	checker, models, record := checkerFixture(t)
+	now := time.Now().UnixMilli()
+	for i := range 201 {
+		probeAt(t, checker, record.ID, now-int64(i), false)
+	}
+	checker.Run(t.Context(), Policy{Window: time.Hour, DisableAfter: 201})
+	if reload(t, models, record.ID).Enabled {
+		t.Fatal("201 consecutive failures left the model enabled")
+	}
+}
+
+func TestAQuietModelsFailedProbeCanReachItsThreshold(t *testing.T) {
+	checker, models, record := checkerFixture(t)
+	resolver := &scriptedResolver{}
+	checker.Providers = resolver
+	probeAt(t, checker, record.ID, time.Now().Add(-11*time.Minute).UnixMilli(), false)
+	checker.Run(t.Context(), Policy{Window: time.Hour, Probe: true, DisableAfter: 2})
+	if resolver.calls != 1 || reload(t, models, record.ID).Enabled {
+		t.Fatal("failed probe was not retried in its evidence window")
+	}
+}

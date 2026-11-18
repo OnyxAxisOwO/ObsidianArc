@@ -22,6 +22,8 @@ import type { Account } from '@/api/auth';
 import { saveAsFile } from '@/api/backup';
 import { ApiError } from '@/api/client';
 import { useLatestTimeout } from '@/composables/useLatestTimeout';
+import { pendingRecovery } from './recovery';
+import { sessionStamp, isCurrentSession } from '@/stores/session';
 import { useLeaveWarning } from '@/composables/useLeaveWarning';
 import { apiErrorText } from '@/lib/api-error';
 import { beginTwoFactor, enableTwoFactor, type TwoFactorSetup } from '@/api/twofactor';
@@ -124,10 +126,13 @@ async function verify(): Promise<void> {
   }
   busy.value = true;
   error.value = '';
+  const session = sessionStamp();
   try {
     const result = needsPassword.value
       ? await enableTwoFactor(digits, password.value)
       : await enableTwoFactor(digits);
+    if (!isCurrentSession(session)) return;
+    pendingRecovery.value = { codes: result.recovery_codes, saved: false };
     enabledAccount = result.user;
     recovery.value = result.recovery_codes;
     password.value = '';
@@ -193,6 +198,7 @@ function download(): void {
 
 function finish(): void {
   if (!saved.value || !enabledAccount) return;
+  pendingRecovery.value = null;
   emit('done', enabledAccount);
 }
 

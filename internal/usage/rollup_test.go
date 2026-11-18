@@ -212,7 +212,7 @@ func TestRollupQueryRouting(t *testing.T) {
 
 	now := time.Now().UnixMilli()
 	// Put the first record on an hourly boundary so a mid-hour filter
-	// includes it only when the rollup rounds the lower bound down.
+	// excludes it even for a multi-hour window.
 	tA := time.UnixMilli(now).Add(-3 * time.Hour).Truncate(time.Hour).UnixMilli()
 	// Turn B: 2 hours ago
 	tB := now - 2*3600_000
@@ -242,18 +242,18 @@ func TestRollupQueryRouting(t *testing.T) {
 	}
 
 	longFilter := Filter{Since: tA + 1234, Until: now, UserID: usr.ID}
-	if !longFilter.usesRollup() {
-		t.Fatal("longFilter should use rollup")
+	if longFilter.usesRollup() {
+		t.Fatal("a partial boundary hour needs the ledger")
 	}
 	totalsLong, err := store.Totals(ctx, longFilter)
 	if err != nil {
 		t.Fatalf("Totals long: %v", err)
 	}
-	if totalsLong.Requests != 3 || totalsLong.Users != 1 || totalsLong.Models != 2 {
-		t.Errorf("totalsLong = %+v, want 3 req, 1 user, 2 models", totalsLong)
+	if totalsLong.Requests != 2 || totalsLong.Users != 1 || totalsLong.Models != 2 {
+		t.Errorf("totalsLong = %+v, want 2 req, 1 user, 2 models", totalsLong)
 	}
-	if totalsLong.TotalTokens != 700 || totalsLong.Credits != 3.5 {
-		t.Errorf("totalsLong tokens/credits = %d/%f, want 700/3.5", totalsLong.TotalTokens, totalsLong.Credits)
+	if totalsLong.TotalTokens != 500 || totalsLong.Credits != 2.5 {
+		t.Errorf("totalsLong tokens/credits = %d/%f, want 500/2.5", totalsLong.TotalTokens, totalsLong.Credits)
 	}
 
 	// GroupBy on long range
@@ -264,7 +264,7 @@ func TestRollupQueryRouting(t *testing.T) {
 	if len(byModel) != 2 {
 		t.Fatalf("got %d models, want 2", len(byModel))
 	}
-	// m-2 has 400 tokens, m-1 has 300 tokens
+	// m-2 has 400 tokens, m-1 has 100 tokens
 	if byModel[0].Key != "m-2" || byModel[1].Key != "m-1" {
 		t.Errorf("unexpected model ranking: %+v", byModel)
 	}
@@ -319,7 +319,7 @@ func TestRollupQueryRouting(t *testing.T) {
 		t.Fatalf("Totals all: %v", err)
 	}
 	if totalsAll.Requests != 3 || totalsAll.Users != 1 || totalsAll.Models != 2 {
-		t.Errorf("totalsAll = %+v, want 3 req, 1 user, 2 models", totalsAll)
+		t.Errorf("totalsAll = %+v, want 2 req, 1 user, 2 models", totalsAll)
 	}
 
 	// 4. CurrentRPM and List continue to query usage_records
@@ -549,11 +549,12 @@ func TestFilterUsesRollupBoundaries(t *testing.T) {
 		{"zero value", Filter{}, false},
 		{"negative since", Filter{Since: -100}, false},
 		{"since only under 1h", Filter{Since: now - 30*60*1000}, false},
-		{"since only over 1h", Filter{Since: now - 2*3600*1000}, true},
+		{"since only over 1h", Filter{Since: now/hourMillis*hourMillis - 2*hourMillis}, true},
 		{"since and until under 1h", Filter{Since: 1000, Until: 1000 + 30*60*1000}, false},
 		{"since and until equal", Filter{Since: 1000, Until: 1000}, false},
 		{"until before since", Filter{Since: 2000, Until: 1000}, false},
-		{"since and until over 1h", Filter{Since: 1000, Until: 1000 + 3600*1000}, true},
+		{"unaligned hour", Filter{Since: 1000, Until: 1000 + hourMillis}, false},
+		{"aligned hour", Filter{Since: hourMillis, Until: 2 * hourMillis}, true},
 		{"one account all time", Filter{UserID: "u"}, true},
 		{"one account until only", Filter{UserID: "u", Until: now}, false},
 		{"everyone until only", Filter{Until: now}, false},

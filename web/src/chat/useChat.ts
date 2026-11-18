@@ -19,6 +19,7 @@ import {
   getConversation,
   listConversations,
   moveConversation as moveConversationApi,
+  pinConversation,
   renameConversation,
   sendTurn,
   uploadAttachment,
@@ -33,7 +34,7 @@ import { refreshProjects } from '@/stores/projects';
 import { pendingProjectID } from '@/stores/workspace';
 import { currentPreferences, currentUser, onSignOut, siteInfo } from '@/stores/session';
 import { ImageError, prepareImage, type PreparedImage } from './image';
-import { currentModel, reasoning } from './useModels';
+import { currentModel, reasoning, restorePreferences } from './useModels';
 import { markFlying, resetFlightState } from './useSendAnimation';
 
 export const MAX_MESSAGE_CHARS = 32000;
@@ -478,6 +479,7 @@ interface TurnOptions {
   sentAttachments?: AttachmentRef[];
   truncateFrom?: string;
   conversationID?: string;
+  options?: { search: boolean; modelID: string; reasoning: { enabled: boolean; effort: string }; projectID: string };
 }
 
 export const chatChallenge = ref<TurnOptions | null>(null);
@@ -495,7 +497,12 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
   const conversationID = turn.conversationID ?? activeID.value;
   // Read once: the switch can be flipped while the stream is open, and the
   // request and the block under it must agree about what was sent.
-  const searchThisTurn = webSearchOn.value && webSearchAvailable.value;
+  const options = turn.options ?? {
+    search: webSearchOn.value && webSearchAvailable.value,
+    modelID: status.value.modelID,
+    reasoning: { enabled: status.value.reasoningEnabled, effort: status.value.reasoningEffort },
+    projectID: conversationID ? '' : pendingProjectID.value,
+  };
   // The choice belongs to this message. Clearing it now means the next turn
   // starts from off even while this one is still streaming, which is what
   // makes the switch a per-message choice rather than a hidden preference.
@@ -539,7 +546,7 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
   // Read once, here, for both the request and the rail's stub: the reader may
   // point the composer at another folder before the server has answered, and
   // the conversation is in the folder the request named.
-  const openingProject = conversationID ? '' : pendingProjectID.value;
+  const openingProject = options.projectID;
   setFlash('');
   scrollToEnd();
   // justSentID deliberately stays set for the turn. Clearing it here, in the
@@ -561,19 +568,16 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
     await sendTurn(
       {
         ...(conversationID ? { conversation_id: conversationID } : {}),
-        model_id: status.value.modelID,
+        model_id: options.modelID,
         ...(turn.content ? { content: turn.content } : {}),
         ...(turn.attachmentIDs?.length ? { attachment_ids: turn.attachmentIDs } : {}),
         ...(turn.truncateFrom ? { truncate_from_message_id: turn.truncateFrom } : {}),
-        ...(searchThisTurn ? { web_search: true } : {}),
+        ...(options.search ? { web_search: true } : {}),
         // Only on the turn that opens the conversation. On a later one the
         // server ignores it anyway, and sending a stale one would read as an
         // attempt to move a thread after the fact.
         ...(openingProject ? { project_id: openingProject } : {}),
-        reasoning: {
-          enabled: status.value.reasoningAvailable && status.value.reasoningEnabled,
-          effort: status.value.reasoningEffort,
-        },
+        reasoning: options.reasoning,
         ...(turnstile ? { turnstile } : {}),
       },
       {
@@ -640,12 +644,14 @@ export async function runTurn(turn: TurnOptions, turnstile = ''): Promise<'done'
            error.code === 'challenge_unavailable')) {
         // The server rejects before creating a turn. Remove the optimistic
         // copy so solving or cancelling the challenge cannot duplicate text.
-        const last = messages.value[messages.value.length - 1];
-        if ((turn.content || turn.attachmentIDs?.length) && last?.id.startsWith('local-')) {
-          messages.value = messages.value.slice(0, -1);
+        if (watching()) {
+          const last = messages.value[messages.value.length - 1];
+          if ((turn.content || turn.attachmentIDs?.length) && last?.id.startsWith('local-')) {
+            messages.value = messages.value.slice(0, -1);
+          }
+          chatChallenge.value = { ...turn, conversationID, options };
+          chatChallengeError.value = error.code === 'chat_challenge_required' ? '' : error.message;
         }
-        chatChallenge.value = { ...turn, conversationID };
-        chatChallengeError.value = error.code === 'chat_challenge_required' ? '' : error.message;
       } else {
         // The server commits the user's message before it sends `start`, so a
         // dropped connection or an abort in between leaves the message on the
@@ -909,6 +915,7 @@ export async function openConversation(id: string): Promise<void> {
   // A different conversation starts with the search switch off; the choice
   // made in the previous thread does not carry into the next one.
   webSearchOn.value = false;
+  chatChallenge.value = null;
   activeID.value = id;
   openingID.value = id;
   editingID.value = '';
@@ -964,6 +971,9 @@ export function startProjectConversation(projectID: string): void {
  * cannot drift apart: they differ only in where the next conversation opens.
  */
 function leaveForNewConversation(projectID: string): void {
+  webSearchOn.value = false;
+  chatChallenge.value = null;
+  restorePreferences(true);
   activeID.value = '';
   pendingProjectID.value = projectID;
   messages.value = [];
@@ -1030,6 +1040,18 @@ export async function rename(conversation: Conversation, next: string): Promise<
     if (conversation.title === title) conversation.title = before;
     if (listed && listedBefore !== undefined && listed.title === title) listed.title = listedBefore;
     setFlash(failureText(error));
+  }
+}
+
+export async function togglePinned(conversation: Conversation): Promise<void> {
+  const account = generation;
+  try {
+    const { conversation: updated } = await pinConversation(conversation.id, !conversation.pinned);
+    if (account !== generation) return;
+    conversation.pinned = updated.pinned;
+    await refreshList();
+  } catch (error) {
+    if (account === generation) setFlash(failureText(error));
   }
 }
 

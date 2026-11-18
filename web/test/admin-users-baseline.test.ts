@@ -88,6 +88,32 @@ describe('AdminUsers, the account panel after a change', () => {
     vi.restoreAllMocks();
   });
 
+  it('keeps a late transcript out of the next conversation for the same account', async () => {
+    type List = Awaited<ReturnType<typeof adminApi.userConversations>>;
+    type Transcript = Awaited<ReturnType<typeof adminApi.userTranscript>>;
+    const first = deferred<Transcript>();
+    const message = (content: string) => ({ messages: [{ id: content, role: 'user', content }] } as Transcript);
+    vi.spyOn(adminApi, 'userTranscript').mockReturnValueOnce(first.promise).mockResolvedValueOnce(message('Second text'));
+    vi.spyOn(adminApi, 'userConversations').mockResolvedValue({
+      conversations: [{ id: 'first', title: 'First' }, { id: 'second', title: 'Second' }], total: 2,
+    } as List);
+    await mount([account('a')]);
+    rowOf('a').click();
+    await settle();
+    buttonNamed(t('viewConversations')).click();
+    await settle();
+    panels.querySelectorAll<HTMLTableRowElement>('tbody tr')[0]!.click();
+    await settle();
+    panels.querySelector<HTMLButtonElement>(`[aria-label="${t('back')}"]`)!.click();
+    await settle();
+    panels.querySelectorAll<HTMLTableRowElement>('tbody tr')[1]!.click();
+    await settle();
+    first.resolve(message('First text'));
+    await settle();
+    expect(panels.querySelector('.oa-transcript')?.textContent).toContain('Second text');
+    expect(panels.textContent).not.toContain('First text');
+  });
+
   it('saves a changed API restriction reason without extending the restriction', async () => {
     const row = account('a', { api_restricted: true, api_restricted_until: Date.now() + 3_600_000, api_restriction_reason: 'Old reason' });
     await mount([row]);

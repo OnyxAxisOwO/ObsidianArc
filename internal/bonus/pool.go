@@ -76,13 +76,17 @@ const MaxPoolAmount = 100_000_000
 
 var ErrInvalidPoolAmount = errors.New("bonus: pool adjustment exceeds the allowed amount")
 
-func (p *Pool) normalise() error {
+func (p *Pool) normalise(creating bool) error {
 	switch p.ResetPeriod {
 	case "", PeriodDay, PeriodWeek, PeriodMonth:
 	default:
 		return ErrInvalidPool
 	}
-	for _, v := range []float64{p.ResetAmount, p.PerUserDaily, p.Amount} {
+	amounts := []float64{p.ResetAmount, p.PerUserDaily}
+	if creating {
+		amounts = append(amounts, p.Amount)
+	}
+	for _, v := range amounts {
 		if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 || v > MaxPoolAmount {
 			return ErrInvalidPool
 		}

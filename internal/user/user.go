@@ -168,9 +168,10 @@ func ValidateEmail(value string) error {
 }
 
 type Store struct {
-	db   *database.DB
-	gate plugingate.Gate
-	set  atomic.Pointer[fieldSet]
+	db           *database.DB
+	gate         plugingate.Gate
+	set          atomic.Pointer[fieldSet]
+	projectionMu sync.Mutex
 
 	// The fields plugins installed while the server runs added; see
 	// AddPluginFields.
@@ -335,10 +336,12 @@ func (s *Store) MarkEmailProven(ctx context.Context, q database.Queryer, userID,
 }
 
 func (s *Store) ByID(ctx context.Context, q database.Queryer, userID string) (User, error) {
+	set, release := s.Projection()
+	defer release()
 	if q == nil {
 		q = s.db
 	}
-	record, err := s.scan(q.QueryRow(ctx, `SELECT `+s.columns()+` FROM users WHERE id = ?`, userID))
+	record, err := set.scan(q.QueryRow(ctx, `SELECT `+set.columns+` FROM users WHERE id = ?`, userID))
 	if err != nil {
 		return User{}, err
 	}
@@ -356,6 +359,8 @@ func (s *Store) ByID(ctx context.Context, q database.Queryer, userID string) (Us
 // Takes a Queryer because that decision is a check followed by a write and
 // has to happen inside the transaction holding the lock.
 func (s *Store) ByEmail(ctx context.Context, q database.Queryer, email string) (User, error) {
+	set, release := s.Projection()
+	defer release()
 	if q == nil {
 		q = s.db
 	}
@@ -363,8 +368,8 @@ func (s *Store) ByEmail(ctx context.Context, q database.Queryer, email string) (
 	if folded == "" {
 		return User{}, ErrNotFound
 	}
-	record, err := s.scan(q.QueryRow(ctx,
-		`SELECT `+s.columns()+` FROM users WHERE email_lower <> '' AND email_lower = ?`, folded))
+	record, err := set.scan(q.QueryRow(ctx,
+		`SELECT `+set.columns+` FROM users WHERE email_lower <> '' AND email_lower = ?`, folded))
 	if err != nil {
 		return User{}, err
 	}
@@ -376,12 +381,14 @@ func (s *Store) ByEmail(ctx context.Context, q database.Queryer, email string) (
 // whose subject is that value, say — so a match is a person, not a claim to
 // double-check.
 func (s *Store) ByField(ctx context.Context, q database.Queryer, key, value string) (User, error) {
+	set, release := s.Projection()
+	defer release()
 	if q == nil {
 		q = s.db
 	}
 	value = strings.TrimSpace(value)
 	unique := false
-	for _, f := range s.active().list {
+	for _, f := range set.list {
 		if f.Key == key && f.Unique {
 			unique = true
 		}
@@ -389,8 +396,8 @@ func (s *Store) ByField(ctx context.Context, q database.Queryer, key, value stri
 	if value == "" || !unique {
 		return User{}, ErrNotFound
 	}
-	record, err := s.scan(q.QueryRow(ctx,
-		`SELECT `+s.columns()+` FROM users WHERE `+key+` <> '' AND `+key+` = ?`, value))
+	record, err := set.scan(q.QueryRow(ctx,
+		`SELECT `+set.columns+` FROM users WHERE `+key+` <> '' AND `+key+` = ?`, value))
 	if err != nil {
 		return User{}, err
 	}
@@ -421,14 +428,16 @@ func (s *Store) PasswordHash(ctx context.Context, q database.Queryer, userID str
 // CredentialsByLogin resolves a username or an email address to the account
 // and its password hash. The only caller is the login flow.
 func (s *Store) CredentialsByLogin(ctx context.Context, identifier string) (User, string, error) {
+	set, release := s.Projection()
+	defer release()
 	folded := strings.ToLower(strings.TrimSpace(identifier))
 	row := s.db.QueryRow(ctx,
-		`SELECT `+s.columns()+`, password_hash FROM users
+		`SELECT `+set.columns+`, password_hash FROM users
 		 WHERE username_lower = ? OR (email_lower <> '' AND email_lower = ?)`,
 		folded, folded)
 
 	var hash string
-	record, err := s.scan(row, &hash)
+	record, err := set.scan(row, &hash)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return User{}, "", ErrNotFound
@@ -773,10 +782,12 @@ type ListFilter struct {
 }
 
 func (s *Store) List(ctx context.Context, filter ListFilter) ([]User, int, error) {
+	set, release := s.Projection()
+	defer release()
 	if err := s.ExpireMemberships(ctx, nil, time.Now()); err != nil {
 		return nil, 0, err
 	}
-	where, args := filter.clauses(s.active().list)
+	where, args := filter.clauses(set.list)
 
 	var total int
 	if err := s.db.QueryRow(ctx, `SELECT COUNT(*) FROM users`+where, args...).Scan(&total); err != nil {
@@ -788,7 +799,7 @@ func (s *Store) List(ctx context.Context, filter ListFilter) ([]User, int, error
 		limit = 50
 	}
 	rows, err := s.db.Query(ctx,
-		`SELECT `+s.columns()+` FROM users`+where+` ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`,
+		`SELECT `+set.columns+` FROM users`+where+` ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`,
 		append(append([]any{}, args...), limit, max(0, filter.Offset))...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("user: list: %w", err)
@@ -797,7 +808,7 @@ func (s *Store) List(ctx context.Context, filter ListFilter) ([]User, int, error
 
 	var out []User
 	for rows.Next() {
-		record, err := s.scan(rows)
+		record, err := set.scan(rows)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -963,6 +974,8 @@ func (s *Store) CountByGroup(ctx context.Context, q database.Queryer) (map[strin
 // account is (its names and picture), not for deciding what it may do. An id
 // with no account is simply absent.
 func (s *Store) ProfilesByID(ctx context.Context, q database.Queryer, ids []string) (map[string]User, error) {
+	set, release := s.Projection()
+	defer release()
 	if q == nil {
 		q = s.db
 	}
@@ -974,13 +987,13 @@ func (s *Store) ProfilesByID(ctx context.Context, q database.Queryer, ids []stri
 			args[i] = id
 		}
 		rows, err := q.Query(ctx,
-			`SELECT `+s.columns()+` FROM users WHERE id IN (`+database.Placeholders(len(batch))+`)`,
+			`SELECT `+set.columns+` FROM users WHERE id IN (`+database.Placeholders(len(batch))+`)`,
 			args...)
 		if err != nil {
 			return nil, fmt.Errorf("user: profiles by id: %w", err)
 		}
 		for rows.Next() {
-			record, err := s.scan(rows)
+			record, err := set.scan(rows)
 			if err != nil {
 				rows.Close()
 				return nil, err
@@ -1004,10 +1017,12 @@ const profileBatch = 500
 // in one query. A list of limits asks, for each account-scoped one, whether it
 // names an administrator; asking per limit read the same few rows over and over.
 func (s *Store) AdminAccounts(ctx context.Context, q database.Queryer) (map[string]User, error) {
+	set, release := s.Projection()
+	defer release()
 	if q == nil {
 		q = s.db
 	}
-	rows, err := q.Query(ctx, `SELECT `+s.columns()+` FROM users WHERE role IN (?, ?)`, RoleAdmin, RoleSuperAdmin)
+	rows, err := q.Query(ctx, `SELECT `+set.columns+` FROM users WHERE role IN (?, ?)`, RoleAdmin, RoleSuperAdmin)
 	if err != nil {
 		return nil, fmt.Errorf("user: admin accounts: %w", err)
 	}
@@ -1015,7 +1030,7 @@ func (s *Store) AdminAccounts(ctx context.Context, q database.Queryer) (map[stri
 
 	out := map[string]User{}
 	for rows.Next() {
-		record, err := s.scan(rows)
+		record, err := set.scan(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -1040,18 +1055,21 @@ func (s *Store) MoveGroupMembers(ctx context.Context, q database.Queryer, from, 
 
 // --- scanning ---------------------------------------------------------------
 
-// JoinColumns is the same column list qualified with a table alias, and
-// ScanRow reads what either list selects.
-//
-// Both exist so a query that joins users to another table can be answered in
-// one round trip without this package's column list being copied into the
-// caller — a copy that goes wrong silently, because a column list and a scan
-// list that disagree still compile.
-//
-// The session lookup calls this on every authenticated request with the same
-// alias, so each alias's list is built once and kept.
-func (s *Store) JoinColumns(alias string) string {
+// Projection captures the plugin fields for both halves of a joined read.
+func (s *Store) Projection() (*fieldSet, func()) {
+	// The core projection names no removable columns.
+	if set := s.active(); len(set.list) == 0 {
+		return set, func() {}
+	}
+	s.projectionMu.Lock()
 	set := s.active()
+	set.readers.Add(1)
+	s.projectionMu.Unlock()
+	return set, set.readers.Done
+}
+
+// JoinColumns caches the qualified names for frequent reads such as sessions.
+func (set *fieldSet) JoinColumns(alias string) string {
 	if cached, ok := set.joined.Load(alias); ok {
 		return cached.(string)
 	}
@@ -1064,18 +1082,14 @@ func (s *Store) JoinColumns(alias string) string {
 	return joined
 }
 
-// ScanRow reads what JoinColumns selected. A plugin switched between the two
-// calls would misalign them, so a caller builds its query and scans within
-// one request — the window is a query long, and the scan fails loudly
-// rather than reading one column as another.
-func (s *Store) ScanRow(row interface{ Scan(dest ...any) error }) (User, error) { return s.scan(row) }
+func (set *fieldSet) ScanRow(row rowScanner) (User, error) { return set.scan(row) }
 
 type rowScanner = database.RowScanner
 
 // scan reads what columns selects, then fills extra from whatever the query
 // selected after it.
-func (s *Store) scan(row rowScanner, extra ...any) (User, error) {
-	fields := s.active().list
+func (set *fieldSet) scan(row rowScanner, extra ...any) (User, error) {
+	fields := set.list
 	var (
 		record      User
 		group       sql.NullString

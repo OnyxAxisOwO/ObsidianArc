@@ -429,7 +429,7 @@ func TestAnEditKeepsSomeKeysAndAddsOthers(t *testing.T) {
 
 	positions := []int{0, 2}
 	updated, err := store.Update(ctx, record.ID, Update{
-		KeepKeys: &positions, SeenKeyHints: record.APIKeyHints, AddKeys: []string{"sk-test-key-d-4444"},
+		KeepKeys: &positions, KeyRevision: record.KeyRevision, AddKeys: []string{"sk-test-key-d-4444"},
 	}, false)
 	if err != nil {
 		t.Fatalf("keep two, add one: %v", err)
@@ -445,14 +445,14 @@ func TestAnEditKeepsSomeKeysAndAddsOthers(t *testing.T) {
 	// The same form again: its hints are the old list, so position 2 would
 	// now be a key it never showed.
 	if _, err := store.Update(ctx, record.ID, Update{
-		KeepKeys: &positions, SeenKeyHints: record.APIKeyHints,
+		KeepKeys: &positions, KeyRevision: record.KeyRevision,
 	}, false); !errors.Is(err, ErrKeysChanged) {
 		t.Fatalf("stale positions: err = %v, want ErrKeysChanged", err)
 	}
 
 	none := []int{}
 	if _, err := store.Update(ctx, record.ID, Update{
-		KeepKeys: &none, SeenKeyHints: updated.APIKeyHints,
+		KeepKeys: &none, KeyRevision: updated.KeyRevision,
 	}, false); !errors.Is(err, ErrKeyRequired) {
 		t.Fatalf("removing every key: err = %v, want ErrKeyRequired", err)
 	}
@@ -487,7 +487,7 @@ func TestKeptKeysDoNotFollowANewBaseURL(t *testing.T) {
 	moved := "https://elsewhere.example.com/v1"
 	first := []int{0}
 	if _, err := store.Update(ctx, record.ID, Update{
-		BaseURL: &moved, KeepKeys: &first, SeenKeyHints: record.APIKeyHints, AddKeys: []string{"sk-test-key-new-9999"},
+		BaseURL: &moved, KeepKeys: &first, KeyRevision: record.KeyRevision, AddKeys: []string{"sk-test-key-new-9999"},
 	}, true); !errors.Is(err, ErrKeyNeededForMove) {
 		t.Fatalf("move keeping a key: err = %v, want ErrKeyNeededForMove", err)
 	}
@@ -497,7 +497,7 @@ func TestKeptKeysDoNotFollowANewBaseURL(t *testing.T) {
 
 	none := []int{}
 	updated, err := store.Update(ctx, record.ID, Update{
-		BaseURL: &moved, KeepKeys: &none, SeenKeyHints: record.APIKeyHints, AddKeys: []string{"sk-test-key-new-9999"},
+		BaseURL: &moved, KeepKeys: &none, KeyRevision: record.KeyRevision, AddKeys: []string{"sk-test-key-new-9999"},
 	}, true)
 	if err != nil {
 		t.Fatalf("move with only typed keys: %v", err)
@@ -517,7 +517,7 @@ func TestADuplicateTakesTheKeysItKept(t *testing.T) {
 	second := []int{1}
 	copied, err := store.Create(ctx, CreateInput{
 		Name: "Pool 2", Kind: source.Kind, BaseURL: source.BaseURL, Enabled: true,
-		CopyKeyFrom: source.ID, KeepKeys: &second, SeenKeyHints: source.APIKeyHints,
+		CopyKeyFrom: source.ID, KeepKeys: &second, KeyRevision: source.KeyRevision,
 	}, false)
 	if err != nil {
 		t.Fatalf("duplicate keeping one key: %v", err)
@@ -618,5 +618,20 @@ func TestABaseURLRefusalIsMarkedAsOne(t *testing.T) {
 	}
 	if got := err.Error(); got != "provider: base URL must use https (plain http needs the provider's own opt-in, and is always allowed for localhost)" {
 		t.Errorf("the message changed: %q", got)
+	}
+}
+
+func TestKeyRevisionDistinguishesIdenticalHints(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+	record := newKeyed(t, store, "first-1111\nsecond-2222", RotateSequential)
+	replacement := "replacement-1111\nreplacement-2222"
+	rotated, err := store.Update(ctx, record.ID, Update{APIKey: &replacement}, true)
+	if err != nil || !slices.Equal(record.APIKeyHints, rotated.APIKeyHints) {
+		t.Fatalf("rotate: %+v %v", rotated, err)
+	}
+	keep := []int{0}
+	if _, err := store.Update(ctx, record.ID, Update{KeepKeys: &keep, KeyRevision: record.KeyRevision}, false); !errors.Is(err, ErrKeysChanged) {
+		t.Fatalf("stale selection returned %v", err)
 	}
 }

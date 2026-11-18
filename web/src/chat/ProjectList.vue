@@ -21,7 +21,7 @@ import { t } from '@/composables/useI18n';
 import { IconCheck, IconChevronRight, IconFolder, IconGear, IconPlus, IconTrash } from '@/icons';
 import {
   createProject, deleteProject, projectList, projectMax,
-  renameProject, updateProjectInstructions,
+  editProject,
 } from '@/stores/projects';
 import { pendingProjectID, setProject } from '@/stores/workspace';
 // Shared with the rest of the chat rather than a second banner of its own:
@@ -228,14 +228,16 @@ async function submitCreate(): Promise<void> {
 
 const editName = ref('');
 const editInstructions = ref('');
-const editNameField = ref<InstanceType<typeof OaTextField> | null>(null);
+const editNameField = ref<InstanceType<typeof OaTextField>[]>([]);
+let editRevision = 0;
 
 function beginEdit(project: Project): void {
   emit('update:creating', false);
+  editRevision++;
   editingID.value = project.id;
   editName.value = project.name;
   editInstructions.value = project.instructions;
-  void nextTick(() => editNameField.value?.focus());
+  void nextTick(() => editNameField.value[0]?.focus());
 }
 
 function cancelEdit(): void {
@@ -245,16 +247,15 @@ function cancelEdit(): void {
 async function submitEdit(project: Project): Promise<void> {
   const name = editName.value.trim();
   if (!name) return;
+  const revision = editRevision;
+  const patch = {
+    ...(name !== project.name ? { name } : {}),
+    ...(editInstructions.value !== project.instructions ? { instructions: editInstructions.value } : {}),
+  };
   busy.value = true;
   try {
-    // Two PATCHes, not one, because the store exposes what the server does:
-    // a name change and an instructions change are separate requests, and
-    // sending the one that did not change would just be a no-op write.
-    if (name !== project.name) await renameProject(project.id, name);
-    if (editInstructions.value !== project.instructions) {
-      await updateProjectInstructions(project.id, editInstructions.value);
-    }
-    editingID.value = '';
+    if (Object.keys(patch).length) await editProject(project.id, patch);
+    if (revision === editRevision) editingID.value = '';
   } catch (error) {
     reportFailure(error);
   } finally {

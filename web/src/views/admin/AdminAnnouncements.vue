@@ -98,7 +98,7 @@ function open(record: Announcement | null): void {
   void nextTick(() => titleField.value?.focus({ preventScroll: true }));
 }
 
-const { open: panelOpen, panel, key: panelKey, show: showPanel, hide: hidePanel, closed: panelClosed } = usePanelSlot();
+const { open: panelOpen, key: panelKey, show: showPanel, hide: hidePanel, closed: panelClosed } = usePanelSlot();
 
 /**
  * The panel slides away and the table is refetched where it stands, rather

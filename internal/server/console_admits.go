@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"errors"
-	"log/slog"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/auth"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/group"
@@ -21,9 +20,6 @@ import (
 // screen to scan from, and connecting an OpenID Connect identity is a
 // browser redirect, so neither can be done over SSH. Both doors ask again as
 // a session goes on, so a policy switched on reaches one already open.
-//
-// A failed binding lookup lets the account through, as oauth.BindingGate
-// does: a database hiccup is not a reason to lock everyone out.
 func consoleAdmits(ctx context.Context, groups *group.Store, authService *auth.Service, oauthService *oauth.Service,
 	account user.User) (bool, error) {
 	// terminalAllowed folds a failed group lookup into the refusal a missing
@@ -45,8 +41,7 @@ func consoleAdmits(ctx context.Context, groups *group.Store, authService *auth.S
 	}
 	mustBind, err := oauthService.MustBindOIDC(ctx, account)
 	if err != nil {
-		slog.ErrorContext(ctx, "could not check the OIDC binding requirement for a console", "error", err)
-		return true, nil
+		return false, err
 	}
 	return !mustBind, nil
 }

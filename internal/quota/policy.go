@@ -284,7 +284,7 @@ func (s *Store) Save(ctx context.Context, q database.Queryer, policy Policy) (Po
 			window_1m_requests = excluded.window_1m_requests,
 			window_1m_tokens = excluded.window_1m_tokens,
 			window_1m_credits = excluded.window_1m_credits,
-			updated_at = excluded.updated_at`,
+			updated_at = CASE WHEN quota_policies.updated_at >= excluded.updated_at THEN quota_policies.updated_at + 1 ELSE excluded.updated_at END`,
 		policy.ID, policy.Scope, policy.ScopeID, policy.RPM, policy.TPM,
 		five.Enabled, five.Requests, five.Tokens, five.Credits,
 		week.Enabled, week.Requests, week.Tokens, week.Credits,

@@ -229,6 +229,7 @@ export function fetchMe(): Promise<{ user: Account; preferences: Preferences }> 
  */
 export interface LoginResult {
   user?: Account;
+  preferences?: Preferences;
   two_factor?: true;
 }
 
@@ -247,8 +248,8 @@ export function login(
 }
 
 /** The second step: a code from the app, or a recovery code. */
-export function completeSignIn(code: string, remember: boolean): Promise<{ user: Account }> {
-  return api.post<{ user: Account }>('/api/auth/two-factor', { code, remember });
+export function completeSignIn(code: string, remember: boolean): Promise<{ user: Account; preferences: Preferences }> {
+  return api.post<{ user: Account; preferences: Preferences }>('/api/auth/two-factor', { code, remember });
 }
 
 export interface PoWChallenge {

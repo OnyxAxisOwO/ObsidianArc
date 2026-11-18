@@ -16,6 +16,7 @@ import (
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/config"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/database/dbtest"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/provider"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/secret"
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/settings"
 )
@@ -653,5 +654,93 @@ func TestStoreAppendLogAndTimeoutDiagnostics(t *testing.T) {
 	}
 	if status.LastStatus != "success" || status.Running {
 		t.Errorf("unexpected status after finish: %+v", status)
+	}
+}
+
+func TestRestoredCredentialRowsRequireTheOriginalKey(t *testing.T) {
+	ctx := t.Context()
+	source := openBackupTestDB(t, t.TempDir())
+	sample := insertSampleData(t, source, "headers")
+	if _, err := source.Exec(ctx, `UPDATE providers SET headers_json = ? WHERE id = ?`, `{"X-Token":"sample-value"}`, sample.providerID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.Exec(ctx, `INSERT INTO settings (key,value,updated_at) VALUES (?,?,?)`, settings.OAuthOIDCClientSecret, "sample-secret", 1); err != nil {
+		t.Fatal(err)
+	}
+	sourceSettings := settings.New(source)
+	if err := sourceSettings.ProtectCredentials(testMasterKey); err != nil {
+		t.Fatal(err)
+	}
+	if err := sourceSettings.SealLegacyCredentials(ctx); err != nil {
+		t.Fatal(err)
+	}
+	sourceBox, err := secret.New(testMasterKey, secret.PurposeProviderKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.NewStore(source, sourceBox).SealLegacyHeaders(ctx); err != nil {
+		t.Fatal(err)
+	}
+	archive := makeArchive(t, source)
+
+	for _, tc := range []struct {
+		name               string
+		archiveKey, runKey []byte
+		wantOpen           bool
+	}{
+		{"original", testMasterKey, testMasterKey, true}, {"key-lost", nil, []byte("new-instance-key"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dest := openBackupTestDB(t, t.TempDir())
+			if err := RestoreArchive(ctx, dest, archive, tc.archiveKey); err != nil {
+				t.Fatal(err)
+			}
+			var value, sealed, headers string
+			if err := dest.QueryRow(ctx, `SELECT value,sealed_value FROM settings WHERE key = ?`, settings.OAuthOIDCClientSecret).Scan(&value, &sealed); err != nil {
+				t.Fatal(err)
+			}
+			if err := dest.QueryRow(ctx, `SELECT headers_json FROM providers WHERE id = ?`, sample.providerID).Scan(&headers); err != nil {
+				t.Fatal(err)
+			}
+			if value != "" || sealed == "" || strings.Contains(headers, "sample-value") {
+				t.Fatal("archive did not preserve encrypted credential storage")
+			}
+			set := settings.New(dest)
+			if err := set.ProtectCredentials(tc.runKey); err != nil {
+				t.Fatal(err)
+			}
+			if err := set.Load(ctx); err != nil {
+				t.Fatal(err)
+			}
+			box, err := secret.New(tc.runKey, secret.PurposeProviderKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			p := provider.NewStore(dest, box)
+			h, openErr := p.OpenHeaders(sample.providerID, headers)
+			if tc.wantOpen {
+				if set.Get(settings.OAuthOIDCClientSecret) != "sample-secret" || openErr != nil || h["X-Token"] != "sample-value" {
+					t.Fatal("original key failed to recover credentials")
+				}
+				return
+			}
+			if set.Get(settings.OAuthOIDCClientSecret) != "" || openErr == nil {
+				t.Fatal("different instance key opened a restored credential")
+			}
+			if err := set.Set(ctx, settings.OAuthOIDCClientSecret, "replacement"); err != nil {
+				t.Fatal(err)
+			}
+			replacements := map[string]string{"X-Token": "replacement"}
+			if _, err := p.Update(ctx, sample.providerID, provider.Update{Headers: &replacements}, true); err != nil {
+				t.Fatal(err)
+			}
+			if err := set.Load(ctx); err != nil {
+				t.Fatal(err)
+			}
+			row, err := p.ByID(ctx, sample.providerID)
+			if err != nil || row.Headers["X-Token"] != "replacement" || set.Get(settings.OAuthOIDCClientSecret) != "replacement" {
+				t.Fatal("re-entered credentials did not survive reload")
+			}
+		})
 	}
 }

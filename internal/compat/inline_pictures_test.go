@@ -1,6 +1,7 @@
 package compat
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -8,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/OnyxAxisOwO/ObsidianArc/internal/conversation"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/model"
+	"github.com/OnyxAxisOwO/ObsidianArc/internal/user"
 )
 
 // A picture sent inline is checked the way an upload is: the ceiling, then the
@@ -114,5 +117,26 @@ func TestResponsesOutputPictureIsRefusedBeforeItIsChecked(t *testing.T) {
 				t.Error("a picture inside a result reached the provider")
 			}
 		})
+	}
+}
+
+func TestTextOnlyModelRefusesImagesBeforeReservation(t *testing.T) {
+	f := newFixture(t)
+	no := false
+	if _, err := f.models.Update(t.Context(), f.model.ID, model.Update{SupportsImages: &no}); err != nil {
+		t.Fatal(err)
+	}
+	f.handlers.Guard = func(context.Context, user.User, model.Model, int) (func(), error) {
+		t.Fatal("reserved quota for an unsupported image")
+		return nil, nil
+	}
+	for path, content := range map[string]string{
+		"/v1/chat/completions": `"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,` + testPNG + `"}}]}]`,
+		"/v1/responses":        `"input":[{"type":"message","role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,` + testPNG + `"}]}]`,
+	} {
+		r := f.do(t, http.MethodPost, path, f.token, `{"model":"`+f.model.ID+`",`+content+`}`)
+		if r.Code != http.StatusBadRequest || !strings.Contains(r.Body.String(), "does not accept images") {
+			t.Errorf("%s: %d %s", path, r.Code, r.Body.String())
+		}
 	}
 }

@@ -502,25 +502,9 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 		// Last of the gates and outside the transaction, for the same two
 		// reasons: it is a call to a provider, and it is the slowest thing
 		// here. Everything cheap has already had its chance to refuse.
-		if s.Hooks.ReviewSignup != nil {
-			seen, err := s.countRecentFromIP(ctx, in.IP)
-			if err != nil {
-				return user.User{}, "", err
-			}
-			// The error is not returned: when the model fails, ReviewSignup still
-			// answers with the mode's fallback decision, so an error here comes with
-			// a usable verdict by design. The wiring logs the failure itself.
-			review, _ = s.Hooks.ReviewSignup(ctx, in, seen)
-			switch review.Decision {
-			case SignupAllow, SignupRestrict, SignupRefuse:
-			default:
-				review.Decision = SignupRestrict
-				review.Reason = "审查未返回有效决策"
-			}
-			if review.Decision == SignupRefuse {
-				s.recordSignupReview(ctx, in, nil, review)
-				return user.User{}, "", ErrSignupRefused
-			}
+		review, err = s.ReviewRegistration(ctx, in)
+		if err != nil {
+			return user.User{}, "", err
 		}
 		// A guard's middle band, applied whatever the AI review said — and
 		// whether or not it ran. A refusal from either side still wins:
@@ -579,8 +563,10 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 			if !first && !challenged && s.challengesApply() {
 				return errSignupRetry
 			}
-			if !first && !s.settings.Bool(settings.RegistrationEnabled) {
-				return ErrRegistrationClosed
+			if !first {
+				if err := s.registrationOpen(ctx, tx); err != nil {
+					return err
+				}
 			}
 			if !first && s.isThirdPartyOnlySignup() && s.hasOAuthProviders() {
 				return ErrThirdPartyOnlyRegistration
@@ -715,7 +701,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (user.User, st
 	if err != nil {
 		return user.User{}, "", err
 	}
-	s.recordSignupReview(ctx, in, &created, review)
+	s.RecordSignupReview(ctx, in, &created, review)
 
 	if verification != "" {
 		s.mailVerification(ctx, created.Email, verification)
@@ -794,7 +780,7 @@ func (s *Service) SignupRestrictedUntil() int64 {
 	return time.Now().Add(time.Duration(hours) * time.Hour).UnixMilli()
 }
 
-func (s *Service) recordSignupReview(
+func (s *Service) RecordSignupReview(
 	ctx context.Context, in RegisterInput, account *user.User, review SignupReview,
 ) {
 	if s.Hooks.OnSignupReview == nil || !review.Ran {

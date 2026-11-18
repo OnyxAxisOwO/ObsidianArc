@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -159,5 +160,29 @@ func TestAnImportLeavesItsBodyReadBounded(t *testing.T) {
 	}
 	if w.readDeadline.IsZero() {
 		t.Fatal("the import cleared its read deadline, leaving the server's read of the rest of the body unbounded")
+	}
+}
+
+type archiveTransport struct {
+	io.ReadCloser
+	state *stalledReadWriter
+	t     *testing.T
+}
+
+func (t archiveTransport) Read(buf []byte) (int, error) {
+	if t.state.readDeadline.IsZero() {
+		t.t.Fatal("archive read has no idle deadline")
+	}
+	return t.ReadCloser.Read(buf)
+}
+func TestArchiveReadDeadlineExcludesDatabaseProcessing(t *testing.T) {
+	state := &stalledReadWriter{ResponseRecorder: httptest.NewRecorder()}
+	transport := archiveTransport{io.NopCloser(strings.NewReader("12")), state, t}
+	body := archiveBody{ReadCloser: transport, rc: http.NewResponseController(state)}
+	for range 2 {
+		n, err := body.Read(make([]byte, 1))
+		if n != 1 || err != nil || !state.readDeadline.IsZero() {
+			t.Fatalf("between entries: read %d, %v; deadline %v", n, err, state.readDeadline)
+		}
 	}
 }

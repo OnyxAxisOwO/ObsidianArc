@@ -149,13 +149,17 @@ export const currentModel = computed<AvailableModel | null>(
   () => models.value.find((model) => model.id === selectedID.value) ?? null,
 );
 
-/** Reads the account's remembered choices. Called once, before the fetch. */
-export function restorePreferences(): void {
+/** Reads the defaults for the next conversation from the current account. */
+export function restorePreferences(useCatalogue = false): void {
   const preferences = currentPreferences.value;
   const stored = preferences['default_model_id'];
   // Without a stored default, an id left over from another account is not this
   // account's choice, so it is cleared rather than kept.
   selectedID.value = typeof stored === 'string' ? stored : '';
+  if (useCatalogue && models.value.length) {
+    const usable = models.value.filter((model) => model.usable !== false);
+    if (!usable.some((model) => model.id === selectedID.value)) selectedID.value = usable[0]?.id ?? '';
+  }
 
   const effort = preferences['reasoning_effort'];
   reasoning.value = {

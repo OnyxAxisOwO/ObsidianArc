@@ -626,7 +626,7 @@ func TestDisconnectingAProviderNotHeldIsReportedAsSo(t *testing.T) {
 	if err := f.service.Disconnect(ctx, account.ID, "google"); !errors.Is(err, ErrNotConnected) {
 		t.Fatalf("disconnect a provider never connected = %v, want ErrNotConnected", err)
 	}
-	if linked, err := f.store.HasProvider(ctx, nil, account.ID, "github"); err != nil || !linked {
+	if linked, err := f.store.HasProvider(ctx, nil, account.ID, "github", ""); err != nil || !linked {
 		t.Errorf("github connection after the refused disconnect: linked=%v err=%v, want it kept", linked, err)
 	}
 }
@@ -662,7 +662,7 @@ func TestTwoDisconnectsAtOnceCannotEmptyAnAccount(t *testing.T) {
 	close(start)
 	workers.Wait()
 
-	left, err := f.store.Count(ctx, nil, account.ID)
+	left, err := f.store.Count(ctx, nil, account.ID, f.service.Credentials("oidc").identitySource("oidc"))
 	if err != nil {
 		t.Fatalf("count: %v", err)
 	}
@@ -725,7 +725,7 @@ func TestDeletingAnAccountTakesItsConnections(t *testing.T) {
 	if err := f.users.Delete(ctx, nil, account.ID); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	if _, err := f.store.Account(ctx, nil, "github", "4218"); !errors.Is(err, ErrNoIdentity) {
+	if _, err := f.store.Account(ctx, nil, "github", "4218", ""); !errors.Is(err, ErrNoIdentity) {
 		t.Errorf("the identity outlived its account: %v", err)
 	}
 }
@@ -941,7 +941,7 @@ func TestAnAddressNobodyProvedHereIsNotAdopted(t *testing.T) {
 	if !errors.Is(err, ErrAddressTaken) {
 		t.Fatalf("sign in = %v, want the address refused as taken", err)
 	}
-	if linked, _ := f.store.Account(ctx, nil, "github", "777"); linked == squatted.ID {
+	if linked, _ := f.store.Account(ctx, nil, "github", "777", ""); linked == squatted.ID {
 		t.Error("the victim's provider identity was linked into the squatter's account")
 	}
 }
@@ -1209,10 +1209,96 @@ func TestConnectRefusesABoundValueAnotherAccountHolds(t *testing.T) {
 	if err := f.service.Connect(ctx, member.ID, Identity{Provider: "oidc", Subject: "987654321", Login: "member"}); !errors.Is(err, ErrAddressTaken) {
 		t.Fatalf("Connect = %v, want the held value refused", err)
 	}
-	if linked, err := f.store.HasProvider(ctx, nil, member.ID, "oidc"); err != nil || linked {
+	if linked, err := f.store.HasProvider(ctx, nil, member.ID, "oidc", f.service.Credentials("oidc").identitySource("oidc")); err != nil || linked {
 		t.Fatalf("member linked = %v, %v; want the refused connection not to be written", linked, err)
 	}
 	if again, _ := f.users.ByID(ctx, nil, holder.ID); again.Fields[badge] != "987654321" {
 		t.Errorf("holder's badge = %q, want it left as it was", again.Fields[badge])
+	}
+}
+
+func TestOIDCRequiresTheSameIssuerBeforeReturningAnAccount(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	f.configure(t, "oidc")
+	a, b := "https://first.example", "https://second.example"
+	require(t, f, settings.OAuthOIDCIssuer, a)
+	person := Identity{Provider: "oidc", Subject: "subject", Login: "first_user", Issuer: a}
+	first, err := f.service.SignIn(ctx, person, cleared, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	require(t, f, settings.OAuthOIDCIssuer, b)
+	if _, err := f.service.SignIn(ctx, person, cleared, "", ""); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("old issuer returned %v", err)
+	}
+	person.Issuer, person.Login = b, "second_user"
+	require(t, f, settings.OAuthAllowSignup, "true")
+	second, err := f.service.SignIn(ctx, person, cleared, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ID == first.ID {
+		t.Fatal("distinct issuers returned the same account")
+	}
+	require(t, f, settings.OAuthOIDCRequireForAll, "true")
+	if must, err := f.service.MustBindOIDC(ctx, first); err != nil || !must {
+		t.Fatalf("previous binding satisfied new issuer: %v %v", must, err)
+	}
+	person.Subject = "new-subject"
+	if err := f.service.Connect(ctx, first.ID, person); err != nil {
+		t.Fatal(err)
+	}
+	if must, err := f.service.MustBindOIDC(ctx, first); err != nil || must {
+		t.Fatalf("new binding: %v %v", must, err)
+	}
+}
+
+func TestReviewingNewThirdPartyAccountsIsOptional(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	populate(t, f)
+	calls := 0
+	f.auth.Hooks.ReviewSignup = func(context.Context, auth.RegisterInput, int) (auth.SignupReview, error) {
+		calls++
+		return auth.SignupReview{Ran: true, Decision: auth.SignupRefuse}, nil
+	}
+	require(t, f, settings.OAuthAllowSignup, "true")
+	first := identity("foo", "first_user", "")
+	if _, err := f.service.SignIn(ctx, first, cleared, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	require(t, f, settings.SignupReviewOAuth, "true")
+	if _, err := f.service.SignIn(ctx, identity("bar", "second_user", ""), cleared, "", ""); !errors.Is(err, ErrSignupRefused) {
+		t.Fatalf("new account review returned %v", err)
+	}
+	if _, err := f.service.SignIn(ctx, first, cleared, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("review calls = %d", calls)
+	}
+}
+
+func TestOIDCManualOverridesPinTheIdentityAuthority(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	f.configure(t, "oidc")
+	require(t, f, settings.OAuthOIDCIssuer, "https://example.test")
+	for key, path := range map[string]string{settings.OAuthOIDCAuthURL: "authorize", settings.OAuthOIDCTokenURL: "token", settings.OAuthOIDCUserInfoURL: "userinfo"} {
+		require(t, f, key, "https://first.example/"+path)
+	}
+	creds, err := f.service.ResolveCredentials(ctx, nil, "oidc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := creds.identitySource("oidc")
+	require(t, f, settings.OAuthOIDCUserInfoURL, "https://second.example/userinfo")
+	creds, err = f.service.ResolveCredentials(ctx, nil, "oidc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current := creds.identitySource("oidc"); current == before || current != f.service.Credentials("oidc").identitySource("oidc") {
+		t.Fatal("manual endpoint change did not select a separate identity authority")
 	}
 }

@@ -403,3 +403,14 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+func TestSearchRestoresTheDraftsTruncationState(t *testing.T) {
+	ed, _, _ := newPipeEditor(t, nil)
+	ed.buf = []rune("draft")
+	ed.dropped = true
+	ed.startSearch()
+	ed.endSearch(false)
+	if !ed.dropped {
+		t.Fatal("search discarded the draft truncation state")
+	}
+}

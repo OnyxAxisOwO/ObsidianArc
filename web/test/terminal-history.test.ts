@@ -75,6 +75,9 @@ describe('which lines are kept out of the history', () => {
     'setting set oauth.github_client_secret abc',
     'setting set turnstile.secret_key abc',
     'setting set some.plugin_api_key abc',
+    'setting set --json example.setting value',
+    'setting set -- example.setting value',
+    'setting set site.name Arc',
     `setting import '{"site.name":"Arc"}' --yes`,
     '2fa enable 123456 --yes',
     '2fa disable 123456 --yes',
@@ -96,7 +99,6 @@ describe('which lines are kept out of the history', () => {
     'user list --q alice --limit 10',
     'setting list --q secret',
     'setting get oauth.github_client_secret',
-    'setting set site.name Arc',
     'feedback list --status open',
     '2fa status',
     'me invite',
@@ -112,9 +114,9 @@ describe('the history a signed-in tab keeps', () => {
     adopt(account('u-ada'));
     await type('user list', 'user create bob --password hunter22', '2fa backoffice 123456', 'setting set site.name Arc');
 
-    expect(recalled()).toEqual(['user list', 'setting set site.name Arc']);
+    expect(recalled()).toEqual(['user list']);
     const stored = localStorage.getItem(`${TERMINAL_HISTORY_KEY_PREFIX}:u-ada`) ?? '';
-    expect(JSON.parse(stored)).toEqual(['user list', 'setting set site.name Arc']);
+    expect(JSON.parse(stored)).toEqual(['user list']);
     expect(stored).not.toContain('hunter22');
     expect(stored).not.toContain('123456');
   });

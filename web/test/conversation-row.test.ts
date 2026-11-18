@@ -4,7 +4,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, defineComponent, h, nextTick, reactive, type App } from 'vue';
-import { renameConversation, type Conversation } from '../src/api/chat';
+import { pinConversation, renameConversation, type Conversation } from '../src/api/chat';
 import ConversationRow from '../src/chat/ConversationRow.vue';
 import { conversations, flash, renamingID } from '../src/chat/useChat';
 import { useRowMenu } from '../src/chat/useRowMenu';
@@ -17,6 +17,7 @@ vi.mock('@/api/chat', () => ({
   getConversation: vi.fn(async () => ({ conversation: undefined, messages: [] })),
   listConversations: vi.fn(async () => ({ conversations: [] })),
   renameConversation: vi.fn(),
+  pinConversation: vi.fn(),
   sendTurn: vi.fn(),
   updateMessage: vi.fn(),
   uploadAttachment: vi.fn(),
@@ -147,6 +148,22 @@ describe('renaming in the row', () => {
     expect(renameConversation).not.toHaveBeenCalled();
     expect(field()).not.toBeNull();
   });
+});
+
+it('pins and unpins the selected conversation from its menu', async () => {
+  vi.mocked(pinConversation).mockImplementation(async (_id, pinned) => ({ conversation: { ...row, pinned } }));
+  mount();
+  for (const pinned of [true, false]) {
+    host.querySelector<HTMLButtonElement>('.ai-chat-list-more')!.click();
+    await settle();
+    const action = [...host.querySelectorAll<HTMLElement>('.ai-chat-context-menu button')]
+      .find((entry) => entry.textContent?.trim() === (pinned ? 'Pin conversation' : 'Unpin conversation'));
+    expect(action).toBeDefined();
+    action!.click();
+    await settle();
+    expect(pinConversation).toHaveBeenLastCalledWith(row.id, pinned);
+    expect(row.pinned).toBe(pinned);
+  }
 });
 
 describe('deleting from the row menu', () => {

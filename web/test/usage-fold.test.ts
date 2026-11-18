@@ -48,7 +48,7 @@ beforeEach(async () => {
   document.body.appendChild(host);
   get.mockImplementation(async (url: string) => {
     if (url === '/api/usage/me') return { unlimited: false, display: 'remaining', windows: [] };
-    if (url === '/api/usage/me/history') {
+    if (url.startsWith('/api/usage/me/history?')) {
       return { totals: { requests: 0, input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, total_tokens: 0, credits: 0, errors: 0 }, turns: [] };
     }
     if (url === '/api/usage/cards') return { cards: [] };

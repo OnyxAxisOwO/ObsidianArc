@@ -108,6 +108,10 @@ describe('OaLineChart', () => {
     expect(info).not.toContain('100%');
   });
 
+  it('keeps a failure visible even in a window with 1999 successes', async () => {
+    expect(await hoverTooltip(1999 / 2000)).toContain('99.9%');
+  });
+
   it('says 100% only for a window with no failures', async () => {
     const info = await hoverTooltip(1);
     expect(info).toContain('100%');

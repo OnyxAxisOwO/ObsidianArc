@@ -24,7 +24,9 @@ func (s *Store) ResolveMembership(ctx context.Context, q database.Queryer, recor
 	}
 	// The conditional write may have lost to a renewal; read the winning row
 	// instead of returning a default group assembled from the stale snapshot.
-	return s.scan(q.QueryRow(ctx, `SELECT `+s.columns()+` FROM users WHERE id = ?`, record.ID))
+	set, release := s.Projection()
+	defer release()
+	return set.scan(q.QueryRow(ctx, `SELECT `+set.columns+` FROM users WHERE id = ?`, record.ID))
 }
 
 func (s *Store) ExpireMemberships(ctx context.Context, q database.Queryer, now time.Time) error {

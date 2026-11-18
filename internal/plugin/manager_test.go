@@ -389,3 +389,27 @@ func TestARowForAMissingPluginIsListed(t *testing.T) {
 		t.Fatal("a missing plugin was given a stand-in")
 	}
 }
+
+func TestASecondManagerRefreshesInstalledAndRemovedPluginGates(t *testing.T) {
+	r := newRig(t, newGadget())
+	peer := reload(t, r.db)
+	ctx := t.Context()
+	if err := r.manager.Install(ctx, someone, "gadget", InstallOptions{Enable: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := peer.manager.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !peer.manager.Enabled("gadget") {
+		t.Fatal("peer still treats installed plugin as disabled")
+	}
+	if err := r.manager.Uninstall(ctx, someone, "gadget", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := peer.manager.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if peer.manager.Enabled("gadget") {
+		t.Fatal("removed plugin is still enabled on peer")
+	}
+}

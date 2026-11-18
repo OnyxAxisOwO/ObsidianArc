@@ -230,10 +230,7 @@ func (h *Handlers) imagesGenerations(w http.ResponseWriter, r *http.Request, who
 	// the upstream only returns a signed link and refuses b64_json. In that
 	// case we ask for the URL and fetch it ourselves below, so the caller
 	// still receives bytes and never sees the upstream's own link.
-	responseFormat := "b64_json"
-	if resolved.Model.ImageResponseFormat() == "url" {
-		responseFormat = "url"
-	}
+	responseFormat := resolved.Upstream.ImageResponseFormat()
 	req := adapter.ImageRequest{
 		Model:          resolved.Upstream.ModelID,
 		Prompt:         body.Prompt,
@@ -275,9 +272,9 @@ func (h *Handlers) imagesGenerations(w http.ResponseWriter, r *http.Request, who
 		// The fetched bytes are capped to prevent a malicious or misconfigured
 		// upstream from making this server download arbitrarily large files.
 		if b64 == "" && img.URL != "" && responseFormat == "url" {
-			fetched, fetchErr := fetchImageAsBase64(r.Context(), img.URL)
+			data, _, fetchErr := chat.GeneratedImageBytes(r.Context(), img, ceiling)
 			if fetchErr == nil {
-				b64 = fetched
+				b64 = base64.StdEncoding.EncodeToString(data)
 			}
 		}
 		if b64 == "" {
@@ -330,33 +327,4 @@ func (h *Handlers) recordImages(
 	defer cancel()
 
 	h.OnTurn(recordCtx, chat.ImageTurnRecord(who.account, resolved, requestID, startedAt, images, status, code))
-}
-
-// fetchImageAsBase64 downloads an image from a URL and returns it as a
-// base64-encoded string. Capped at MaxAttachmentBytes to prevent a malicious
-// or misconfigured upstream from making this server download arbitrarily
-// large files. The context carries the original request's deadline so a slow
-// upstream does not hold the connection open indefinitely.
-func fetchImageAsBase64(ctx context.Context, imageURL string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, imageURL, nil)
-	if err != nil {
-		return "", err
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return "", errors.New("upstream returned HTTP " + strconv.Itoa(resp.StatusCode))
-	}
-	limited := io.LimitReader(resp.Body, conversation.MaxAttachmentBytes+1)
-	data, err := io.ReadAll(limited)
-	if err != nil {
-		return "", err
-	}
-	if int64(len(data)) > conversation.MaxAttachmentBytes {
-		return "", errors.New("upstream image exceeds size limit")
-	}
-	return base64.StdEncoding.EncodeToString(data), nil
 }

@@ -10,7 +10,7 @@ import { computed, onMounted, ref } from 'vue';
 import type { AdminModel } from '@/admin/api';
 import OaNumberField from '@/components/OaNumberField.vue';
 import { t } from '@/composables/useI18n';
-import { priciestFew, pricedModels, round, worstCase } from './shared';
+import { priciestFew, pricedModels, round, reservationEstimate } from './shared';
 
 const props = defineProps<{ modelValue: number | null }>();
 defineEmits<{ (event: 'update:modelValue', value: number | null): void }>();
@@ -23,7 +23,7 @@ const rows = computed(() => {
   const limit = props.modelValue;
   if (limit === null || limit <= 0) return [];
   return top.value.map((entry) => {
-    const cost = worstCase(entry);
+    const cost = reservationEstimate(entry);
     // Nothing reserved means no number of turns to count, and dividing by zero
     // would print "Infinity turns".
     if (cost <= 0) return t('creditsRowFree', { name: entry.display_name });

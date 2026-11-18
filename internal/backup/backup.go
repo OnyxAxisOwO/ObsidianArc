@@ -65,13 +65,8 @@ const (
 	// bytes, counted the same way on both sides of the comparison; generous
 	// for a person (a heavy year is a few megabytes) and reached only by
 	// somebody trying.
-	MaxStoredChars        = 512 << 20
-	MaxTitleChars         = 200
-	MaxImportContentChars = conversation.MaxContentChars
-	// Reasoning is stored under its own ceiling, above the content one. An
-	// import that cut it at the content figure would drop what an export of
-	// the same account carries.
-	MaxImportReasoningChars = conversation.MaxReasoningChars
+	MaxStoredChars = 512 << 20
+	MaxTitleChars  = 200
 )
 
 var (
@@ -98,11 +93,21 @@ type Document struct {
 	Username   string `json:"username,omitempty"`
 	// Whatever the preference document holds, carried opaquely: this package
 	// has no business knowing what a wallpaper or an accent is.
+	Projects      []Project       `json:"projects,omitempty"`
 	Preferences   json.RawMessage `json:"preferences,omitempty"`
 	Conversations []Thread        `json:"conversations"`
 }
 
+type Project struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Instructions string `json:"instructions,omitempty"`
+}
+
 type Thread struct {
+	ProjectID string `json:"project_id,omitempty"`
+	Archived  bool   `json:"archived,omitempty"`
+	UpdatedAt int64  `json:"updated_at,omitempty"`
 	Title     string `json:"title"`
 	Pinned    bool   `json:"pinned,omitempty"`
 	CreatedAt int64  `json:"created_at,omitempty"`

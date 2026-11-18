@@ -62,6 +62,16 @@ func NewManager(ctx context.Context, db *database.DB, sender *Sender, legacy Con
 	return m, nil
 }
 
+func (m *Manager) Refresh(ctx context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.read(ctx); err != nil {
+		return err
+	}
+	m.sender.Update(m.cfg)
+	return nil
+}
+
 func (m *Manager) Config() (Config, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -196,7 +206,7 @@ func (m *Manager) Save(ctx context.Context, cfg Config, password string, clearPa
 			cfg.Host, cfg.Port, cfg.Username, cfg.From, cfg.ImplicitTLS, cfg.PublicURL, sealed, time.Now().UnixMilli()); err != nil {
 			return fmt.Errorf("mail: save configuration: %w", err)
 		}
-		return nil
+		return database.AdvanceRevision(ctx, tx, "mail")
 	}); err != nil {
 		return err
 	}

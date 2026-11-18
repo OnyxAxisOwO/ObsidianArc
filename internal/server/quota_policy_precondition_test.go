@@ -31,11 +31,10 @@ func TestQuotaPolicySaveRefusesAWriteBasedOnAStaleRead(t *testing.T) {
 		t.Fatalf("first save of a new policy: %d %s", first.Code, first.Body.String())
 	}
 	readAt := decode[savedPolicy](t, first).Policy.UpdatedAt
-	// updated_at is in milliseconds, so a save landing in the same millisecond
-	// as the read would carry the same stamp and look unchanged. Wait it out
-	// so the race below tests the lock and not the clock.
-	for time.Now().UnixMilli() <= readAt {
-		time.Sleep(time.Millisecond)
+	// A revision ahead of the clock makes the same-tick case deterministic.
+	readAt += time.Minute.Milliseconds()
+	if _, err := in.db.Exec(t.Context(), `UPDATE quota_policies SET updated_at = ? WHERE scope = 'global'`, readAt); err != nil {
+		t.Fatal(err)
 	}
 
 	const racers = 8

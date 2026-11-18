@@ -48,7 +48,7 @@ func TestRegeneratePreservesHistoricalTotalUsedInPayload(t *testing.T) {
 		t.Fatal("code did not change")
 	}
 
-	payload, err := handlers.payload(ctx, inviter.ID)
+	payload, err := handlers.payload(ctx, inviter.ID, maxUsesListed, 0)
 	if err != nil {
 		t.Fatalf("payload: %v", err)
 	}
@@ -60,6 +60,14 @@ func TestRegeneratePreservesHistoricalTotalUsedInPayload(t *testing.T) {
 		t.Fatalf("payload used = %v, want 3 (historical uses across all codes)", payload["used"])
 	}
 	invitees, ok := payload["invitees"].([]map[string]any)
+	page, err := handlers.payload(ctx, inviter.ID, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	middle := page["invitees"].([]map[string]any)
+	if len(invitees) != 3 || len(middle) != 1 || middle[0]["username"] != invitees[1]["username"] {
+		t.Fatalf("second page = %+v", middle)
+	}
 	if !ok || len(invitees) != 3 {
 		t.Fatalf("payload invitees = %+v, want 3 historical invitees preserved", payload["invitees"])
 	}
@@ -135,7 +143,7 @@ func TestAFailingDecoratorKeepsThePanel(t *testing.T) {
 		t.Fatalf("record use: %v", err)
 	}
 
-	out, err := handlers.payload(ctx, inviter.ID)
+	out, err := handlers.payload(ctx, inviter.ID, maxUsesListed, 0)
 	if err != nil {
 		t.Fatalf("the panel failed because a decorator did: %v", err)
 	}
