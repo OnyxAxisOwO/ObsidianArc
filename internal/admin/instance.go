@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -336,6 +337,9 @@ var writableSettings = map[string]bool{
 	settings.DefaultSystemPrompt:        true,
 	settings.ConversationMaxTurns:       true,
 	settings.AllowArchive:               true,
+	settings.WebSearch:                  true,
+	settings.WebSearchEndpoint:          true,
+	settings.WebSearchResults:           true,
 	settings.APIEnabled:                 true,
 	settings.AttachmentMaxMB:            true,
 	settings.AttachmentRetain:           true,
@@ -406,6 +410,7 @@ var numericBounds = map[string][2]int{
 	settings.AuditRetentionDays:   {audit.MinRetentionDays, audit.MaxRetentionDays},
 	settings.QuotaMaxConcurrent:   {0, 100},
 	settings.ConversationMaxTurns: {2, 200},
+	settings.WebSearchResults:     {1, 10},
 	settings.TrialTurns:           {1, 20},
 	settings.AttachmentMaxMB:      {1, settings.MaxAttachmentCeilingMB},
 	// A millisecond timestamp, written by the reset itself. Only its sign and
@@ -500,6 +505,20 @@ var valueRules = []valueRule{
 		if !settings.ValidLeaderboardIdentity(value) {
 			return httpx.BadRequestCode("leaderboard_identity_unknown", "Unknown leaderboard identity %q.", value).
 				WithDetails(map[string]any{"value": value})
+		}
+		return nil
+	}},
+	// Empty means "use the built-in Bing URL", which is also what an operator
+	// who never opens the field gets. Anything else has to be fetchable, or
+	// every turn with the switch on would fail at the last moment.
+	{[]string{settings.WebSearchEndpoint}, func(_, value string) error {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return nil
+		}
+		parsed, err := url.Parse(value)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+			return httpx.BadRequestCode("web_search_endpoint_invalid", "The web search endpoint must be an http or https URL.")
 		}
 		return nil
 	}},

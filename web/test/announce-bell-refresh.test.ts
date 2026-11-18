@@ -201,10 +201,16 @@ describe('announcement bell refreshes', () => {
 
   it('a failed "mark all read" still reloads the feed instead of leaving it unhandled', async () => {
     fetchMock.mockResolvedValue(feed());
-    markAllMock.mockRejectedValueOnce(new Error('offline'));
     mountBell();
     await settle();
     await openBell();
+    await settle();
+
+    // Opening the bell already marked what it rendered read — that is the
+    // badge contract now — so the failure is armed only here, for the
+    // section button's own call, and the open's call is forgotten first.
+    markAllMock.mockClear();
+    markAllMock.mockRejectedValueOnce(new Error('offline'));
     const before = fetchMock.mock.calls.length;
 
     host.querySelector<HTMLElement>('.oa-menu-head:not(.oa-menu-head-secondary) .oa-menu-head-action')!.click();

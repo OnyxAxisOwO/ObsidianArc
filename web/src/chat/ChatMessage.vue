@@ -17,7 +17,7 @@ import { IconDownload } from '@/icons';
 import ChatAttachments from './ChatAttachments.vue';
 import ChatThinking from './ChatThinking.vue';
 import {
-  MAX_MESSAGE_CHARS, activeID, busy, editingID, failureText, justSentID, messages,
+  MAX_MESSAGE_CHARS, activeID, busy, editingID, failureText, justSentID, messages, opening,
   recentReasoningID, runTurn, setFlash, statsWanted,
 } from './useChat';
 import { hasFlown, isFlying } from './useSendAnimation';
@@ -55,7 +55,7 @@ function cancelEdit(): void {
 function resend(): void {
   // A turn that is already running would refuse this, and the edit would go
   // with the editor. Keeping the editor open keeps the edit.
-  if (busy.value) return;
+  if (busy.value || opening.value) return;
 
   const text = draft.value.trim();
   const live = images.value.filter((image) => !image.discarded);
@@ -85,7 +85,9 @@ function zoom(id: string): void {
 /** Editing an answer only corrects the record; nothing is re-generated. */
 async function saveAnswer(): Promise<void> {
   const text = draft.value.trim();
-  if (!text) return;
+  // While the next conversation is read this row is the previous one's, and
+  // activeID already names the next: the save would go to the wrong thread.
+  if (!text || opening.value) return;
   saving.value = true;
   try {
     await updateMessage(activeID.value, props.message.id, text);
@@ -199,10 +201,11 @@ function describe(value: MessageStats): string {
     <template v-else>
       <div v-if="props.message.error" class="ai-chat-error">
         <span class="ai-chat-error-text">{{ errorText }}</span>
-        <!-- Hidden while a turn runs: runTurn refuses a second one, so the press
-             would do nothing and look broken. -->
+        <!-- Hidden while a turn runs or the next conversation is being read:
+             runTurn refuses either, so the press would do nothing and look
+             broken. -->
         <button
-          v-if="!busy"
+          v-if="!busy && !opening"
           type="button"
           class="ai-chat-mini-btn"
           @click="runTurn({ truncateFrom: props.message.id })"
@@ -269,11 +272,11 @@ function describe(value: MessageStats): string {
           </div>
           <OaMarkdown v-if="props.message.content" class="ai-answer" :text="props.message.content" />
           <div class="ai-msg-actions">
-            <button v-if="!busy" type="button" class="ai-chat-mini-btn" @click="beginEdit">
+            <button v-if="!busy && !opening" type="button" class="ai-chat-mini-btn" @click="beginEdit">
               {{ t('edit') }}
             </button>
             <button
-              v-if="!busy"
+              v-if="!busy && !opening"
               type="button"
               class="ai-chat-mini-btn"
               @click="runTurn({ truncateFrom: props.message.id })"

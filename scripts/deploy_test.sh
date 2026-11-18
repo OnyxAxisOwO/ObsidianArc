@@ -213,6 +213,19 @@ make_refuses() {
 make_refuses shell-proof version 'PLUGINS=$(shell touch shell-proof)'
 make_refuses shell-proof version 'PACKAGES=pkgs/$(shell touch shell-proof)-1.0.arcx'
 make_refuses shell-proof version 'VERSION=v1$(shell touch shell-proof)'
+# GNU Make 4.4 expands every command-line variable into the version probe's
+# $(shell), not only the names the checks mention. A second value, and the
+# makefile's own foreach variable, must not run while the first is refused.
+# Make 4.3 never ran these; the probe is what started to.
+rm -f "$probe/shell-proof"
+if (cd "$probe" && make -f "$root/Makefile" version \
+    'PLUGINS=$(shell touch shell-proof)' \
+    'UNUSED=$(shell touch shell-proof)' \
+    '_arc_name=$(shell touch shell-proof)') >"$tmp/out" 2>&1; then
+  fail "make accepted a plugin name that runs a command"
+fi
+[ -e "$probe/shell-proof" ] && fail "make ran an unused command-line value as a command"
+grep -q "is refused" "$tmp/out" || fail "make does not say why it refused an unused command-line value"
 make_refuses newline-proof version "PLUGINS=alpha${nl}touch newline-proof"
 make_refuses newline-proof version "PACKAGES=alpha-1.0.arcx${nl}touch newline-proof"
 make_refuses newline-proof package "PLUGINS=alpha${nl}touch newline-proof"

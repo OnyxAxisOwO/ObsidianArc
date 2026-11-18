@@ -34,9 +34,9 @@ vi.mock('@/api/chat', () => ({
   }),
 }));
 
-const { activeID, archiveConversation, busy, conversations, flash, flushDeltas, justSentID, messages,
-  openConversation, pending, pendingID, recentReasoningID, removeConversation, resetChat, runTurn, showPending,
-  stoppable } =
+const { activeID, archiveConversation, busy, conversations, flash, flushDeltas, isEmpty, justSentID, messages,
+  openConversation, opening, pending, pendingID, recentReasoningID, removeConversation, resetChat, runTurn, showPending,
+  stoppable, switchTick } =
   await import('../src/chat/useChat');
 const { models, selectedID } = await import('../src/chat/useModels');
 
@@ -195,13 +195,173 @@ describe('switching conversations while a turn runs', () => {
     expect(getConversation).not.toHaveBeenCalled();
   });
 
+  // Opening a conversation from the rail used to clear the transcript first
+  // and read afterwards, which painted the greeting with the composer centred
+  // for the length of the request: the empty page flashed, and its layout moved
+  // twice, before the rows appeared. The old rows now stay until the new ones
+  // are in hand, and the rise starts with them rather than ahead of them.
+  it('keeps the open transcript up while the next conversation is being read', async () => {
+    await openConversation('A');
+    expect(messages.value[0]?.id).toBe('A-row');
+    const before = switchTick.value;
+
+    let finish: ((value: Awaited<ReturnType<typeof getConversation>>) => void) | undefined;
+    vi.mocked(getConversation).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+
+    const opening = openConversation('B');
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+
+    expect(activeID.value).toBe('B');
+    // Still A's rows, and still a conversation: not the empty page.
+    expect(messages.value[0]?.id).toBe('A-row');
+    expect(isEmpty.value).toBe(false);
+    // No rise until the conversation it introduces is on screen.
+    expect(switchTick.value).toBe(before);
+
+    finish!({
+      conversation: { id: 'B', title: 'B', model_id: 'm', pinned: false, message_count: 1, created_at: 0, updated_at: 0 },
+      messages: [{ id: 'B-row', seq: 1, role: 'assistant', content: 'B', created_at: 0 }],
+    });
+    await opening;
+
+    expect(messages.value[0]?.id).toBe('B-row');
+    expect(switchTick.value).toBe(before + 1);
+  });
+
+  // While the next conversation is read the previous one's rows are still on
+  // screen, but activeID already names the next. A send or a regenerate from
+  // those rows would rewind and write into the wrong thread.
+  it('sends nothing while the next conversation is still being read', async () => {
+    await openConversation('A');
+
+    let finish: ((value: Awaited<ReturnType<typeof getConversation>>) => void) | undefined;
+    vi.mocked(getConversation).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const opening = openConversation('B');
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+
+    expect(await runTurn({ truncateFrom: 'A-row' })).toBe('done');
+    expect(busy.value).toBe(false);
+    expect(messages.value[0]?.id).toBe('A-row');
+
+    finish!({
+      conversation: { id: 'B', title: 'B', model_id: 'm', pinned: false, message_count: 1, created_at: 0, updated_at: 0 },
+      messages: [{ id: 'B-row', seq: 1, role: 'assistant', content: 'B', created_at: 0 }],
+    });
+    await opening;
+
+    const running = runTurn({ content: 'hi' });
+    expect(busy.value).toBe(true);
+    turn.handlers?.onStart?.({ conversation_id: 'B', title: 'B', model_id: 'm', model_name: 'M' });
+    turn.finish?.();
+    await running;
+  });
+
+  // Reads can finish out of order, and the one that finishes last is not
+  // necessarily the conversation the reader chose last. Only that one may
+  // start the rise or scroll a transcript it does not own.
+  it('lets the last selection own the switch when reads finish out of order', async () => {
+    await openConversation('A');
+    const before = switchTick.value;
+
+    let finishB: ((value: Awaited<ReturnType<typeof getConversation>>) => void) | undefined;
+    vi.mocked(getConversation)
+      .mockImplementationOnce(() => new Promise((resolve) => { finishB = resolve; }))
+      .mockImplementationOnce(async () => ({
+        conversation: { id: 'C', title: 'C', model_id: 'm', pinned: false, message_count: 1, created_at: 0, updated_at: 0 },
+        messages: [{ id: 'C-row', seq: 1, role: 'assistant', content: 'C', created_at: 0 }],
+      }));
+
+    const openingB = openConversation('B');
+    await openConversation('C');
+    expect(messages.value[0]?.id).toBe('C-row');
+    expect(switchTick.value).toBe(before + 1);
+
+    finishB!({
+      conversation: { id: 'B', title: 'B', model_id: 'm', pinned: false, message_count: 1, created_at: 0, updated_at: 0 },
+      messages: [{ id: 'B-row', seq: 1, role: 'assistant', content: 'B', created_at: 0 }],
+    });
+    await openingB;
+
+    expect(activeID.value).toBe('C');
+    expect(messages.value[0]?.id).toBe('C-row');
+    expect(switchTick.value).toBe(before + 1);
+  });
+
+  // A double-click on a row used to be harmless because the first read cleared
+  // the transcript and the second call did nothing on an empty one. Now the old
+  // rows stay up, so a second click on an empty screen would start a second read
+  // and the first to finish could release the composer while the other is still
+  // out. The row is read once, and the composer stays held until it lands.
+  it('reads a conversation once when its row is clicked twice before the read lands', async () => {
+    vi.mocked(getConversation).mockClear();
+    let finish: ((value: Awaited<ReturnType<typeof getConversation>>) => void) | undefined;
+    vi.mocked(getConversation).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+
+    const first = openConversation('B');
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+    const second = openConversation('B');
+
+    expect(getConversation).toHaveBeenCalledTimes(1);
+    expect(opening.value).toBe(true);
+
+    finish!({
+      conversation: { id: 'B', title: 'B', model_id: 'm', pinned: false, message_count: 1, created_at: 0, updated_at: 0 },
+      messages: [{ id: 'B-row', seq: 1, role: 'assistant', content: 'B', created_at: 0 }],
+    });
+    await Promise.all([first, second]);
+
+    expect(messages.value[0]?.id).toBe('B-row');
+    expect(opening.value).toBe(false);
+  });
+
+  // Leaving B and coming back starts a second read of B. Both reads finish with
+  // `activeID` naming B, so only the newest one may write; the first one would
+  // otherwise put stale rows under the name and start a second rise.
+  it('lets the newest read of the same conversation win', async () => {
+    await openConversation('A');
+    const before = switchTick.value;
+
+    let finishFirstB: ((value: Awaited<ReturnType<typeof getConversation>>) => void) | undefined;
+    vi.mocked(getConversation)
+      .mockImplementationOnce(() => new Promise((resolve) => { finishFirstB = resolve; }))
+      .mockImplementationOnce(async () => ({
+        conversation: { id: 'C', title: 'C', model_id: 'm', pinned: false, message_count: 1, created_at: 0, updated_at: 0 },
+        messages: [{ id: 'C-row', seq: 1, role: 'assistant', content: 'C', created_at: 0 }],
+      }))
+      .mockImplementationOnce(async () => ({
+        conversation: { id: 'B', title: 'B', model_id: 'm', pinned: false, message_count: 1, created_at: 0, updated_at: 0 },
+        messages: [{ id: 'B-row', seq: 1, role: 'assistant', content: 'B', created_at: 0 }],
+      }));
+
+    const firstB = openConversation('B');
+    await vi.waitFor(() => expect(finishFirstB).toBeTypeOf('function'));
+    await openConversation('C');
+    await openConversation('B');
+
+    expect(messages.value[0]?.id).toBe('B-row');
+    expect(switchTick.value).toBe(before + 2);
+
+    finishFirstB!({
+      conversation: { id: 'B', title: 'B', model_id: 'm', pinned: false, message_count: 1, created_at: 0, updated_at: 0 },
+      messages: [{ id: 'B-stale', seq: 1, role: 'assistant', content: 'stale', created_at: 0 }],
+    });
+    await firstB;
+
+    expect(activeID.value).toBe('B');
+    expect(messages.value[0]?.id).toBe('B-row');
+    expect(switchTick.value).toBe(before + 2);
+    expect(opening.value).toBe(false);
+  });
+
   it('says so when the open conversation cannot be read, rather than showing it as empty', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await openConversation('A');
     vi.mocked(getConversation).mockRejectedValueOnce(new TypeError('Failed to fetch'));
     flash.value = '';
 
     await openConversation('B');
 
+    // A's rows must not remain under B's name now that nothing replaced them.
     expect(messages.value).toEqual([]);
     expect(activeID.value).toBe('B');
     expect(flash.value).toBe(t('failed'));

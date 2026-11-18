@@ -324,6 +324,17 @@ defineExpose({
         :rows="3"
         :hint="t('requestOverrideFieldHint')"
       />
+      <OaSelectField
+        v-model="form.imageResponseFormat"
+        :label="t('modelImageResponseFormat')"
+        :options="[
+          { value: '', label: t('modelImageResponseFormatDefault') },
+          { value: 'b64_json', label: t('modelImageResponseFormatB64') },
+          { value: 'url', label: t('modelImageResponseFormatURL') },
+          { value: 'auto', label: t('modelImageResponseFormatAuto') },
+        ]"
+        :hint="t('modelImageResponseFormatHint')"
+      />
     </AdminControlCard>
 
     <AdminControlCard id="secWeights" :title="t('secWeights')" :hint="t('weightsHint')">

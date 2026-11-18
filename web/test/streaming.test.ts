@@ -15,7 +15,7 @@ function frame(): Promise<void> {
 }
 
 function fresh() {
-  pending.value = { answer: '', reasoning: '', startedAt: 0 };
+  pending.value = { answer: '', reasoning: '', startedAt: 0, search: null };
 }
 
 /** Counts writes to `pending`, which is what a repaint of the answer costs. */

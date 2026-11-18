@@ -13,7 +13,7 @@
 // OaMarkdown), so a selection made in it does not survive the next frame. It is
 // whole again once the turn ends and the server's copy takes its place.
 
-import { onBeforeUnmount, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import OaMarkdown from '@/components/OaMarkdown.vue';
 import { t } from '@/composables/useI18n';
 import ChatThinking from './ChatThinking.vue';
@@ -63,6 +63,22 @@ function dotDelay(i: number): string {
 onBeforeUnmount(() => {
   if (timer) window.clearInterval(timer);
 });
+
+/**
+ * The line under the spinner. A search happens before the first token, so
+ * "thinking" would be a half-truth for the second or two the search takes;
+ * the server's search event replaces it with what actually happened.
+ */
+const waitingText = computed(() => {
+  const search = pending.value?.search;
+  if (!search) return t('thinking');
+  switch (search.state) {
+    case 'searching': return t('webSearching');
+    case 'found': return t('webSearchFound', { count: search.count });
+    case 'empty': return t('webSearchEmpty');
+    case 'failed': return t('webSearchUnavailable');
+  }
+});
 </script>
 
 <template>
@@ -79,7 +95,7 @@ onBeforeUnmount(() => {
       <span class="ai-dots" aria-hidden="true">
         <i v-for="n in 9" :key="n" :style="{ '--d': dotDelay(n - 1) }" />
       </span>
-      <span class="ai-shimmer">{{ t('thinking') }}</span>
+      <span class="ai-shimmer">{{ waitingText }}</span>
     </div>
 
     <!-- Under the answer, and under the spinner before there is one: the clock

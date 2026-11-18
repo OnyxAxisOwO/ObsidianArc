@@ -227,10 +227,23 @@ a handful of `ref`s in `stores/session.ts` and `chat/useChat.ts`.
 | --- | --- | --- |
 | Idle resident memory (SQLite, no traffic) | < 30 MB | ~16 MB |
 | Cold start to serving | < 100 ms | 28 ms |
-| Binary (SQLite + embedded SPA) | < 30 MB | 28.34 MB (24.64 MB `-tags nosqlite`, Linux amd64, Go 1.27.3), 0.41 MB of it the frontend's brotli copies and 0.41 MB the embedded zone database; this repository ships no plugin |
-| Frontend, on the wire | < 135 kB | 174.75 kB to open the chat with brotli (154.21 JS + 20.54 CSS); 207.96 kB with gzip (183.79 JS + 24.17 CSS), which the budget holds; the brotli is a copy compressed at build time, the gzip is Go's, made as it goes out |
+| Binary (SQLite + embedded SPA) | < 30 MB | 28.34 MB (24.64 MB `-tags nosqlite`, Linux amd64, Go 1.27.3), 0.42 MB of it the frontend's brotli copies and 0.41 MB the embedded zone database; this repository ships no plugin |
+| Frontend, on the wire | < 135 kB | 175.79 kB to open the chat with brotli (155.20 JS + 20.58 CSS); 209.16 kB with gzip (184.95 JS + 24.21 CSS), which the budget holds; the brotli is a copy compressed at build time, the gzip is Go's, made as it goes out |
 | Background goroutines at idle | 3 | 3 (request log, janitor, backup scheduler) |
 | Under load, 200 streamed turns at 20 concurrent | — | ~54 MB peak, 11 OS threads |
+
+Remeasured on 2026-11-14 after per-message web search joined the composer
+and, from main, the image lab appends the picked aspect ratio, a generation
+that finishes after the panel closes announces itself with a toast, and the
+bell marks both feeds read as it opens. The search switch is on the first
+screen: the wait it explains happens before the first token, so it is not a
+later chunk. First paint is 209.16 kB with Go's gzip (184.95 JS + 24.21 CSS)
+and 175.79 kB with brotli (155.20 JS + 20.58 CSS), past the previous 208 kB
+budget, which is now 210 kB because 209.16 does not fit in 209. Chinese adds
+21.10 kB gzip / 17.54 kB brotli; the backoffice's Chinese adds 39.06 kB gzip.
+The backoffice adds 180.81 kB JS + 15.86 kB CSS gzip. Linux amd64, Go 1.27.3,
+`-trimpath -ldflags="-s -w"`: 28,340,384 bytes (24,637,600 with `-tags nosqlite`);
+the brotli copies total 421,422 bytes. There are still 21 core assets.
 
 Remeasured on 2026-11-08 after adding optional API request-body recording: 28,324,000 bytes Linux amd64 (24,625,312 without SQLite), first paint 207.96 kB gzip / 174.88 kB brotli. Recording is off by default, capped at 256 KiB per request and loaded separately from log listings.
 
@@ -352,16 +365,17 @@ Remeasured on 2026-10-19 (UTC), after the build stopped writing gzip copies.
 Node's zlib picks its matching code by CPU: the same first paint gzipped at
 level 9 came to 201.27 kB on an ARM Mac and 201.89 kB on CI's x86 runner, so
 the figure the docs quote could not be reproduced by the test that holds them
-to it. Brotli's encoder showed no such difference (169.11 kB on both), so the
-build keeps its brotli copies and gzip is left to `httpx.Compress`, whose Go
-encoder at BestCompression gives the same bytes everywhere. A browser that
-takes only gzip receives 201.41 kB (178.60 JS + 22.81 CSS); one that takes
-brotli still receives 169.11 kB. The lazy chunks, gzip then brotli: backoffice
-170.65 / 137.12 kB plus 15.21 / 13.33 kB of stylesheet, Chinese dictionary
-20.35 / 16.92 kB, the backoffice's Chinese 37.25 / 30.87 kB, terminal 8.06 /
-7.36 kB plus 1.67 / 1.40 kB, math 3.76 / 3.25 kB, front page 4.17 / 3.68 kB
+to it. Brotli's encoder showed no such difference (169.74 kB in the latest
+build), so the build keeps its brotli copies and gzip is left to
+`httpx.Compress`, whose Go encoder at BestCompression gives the same bytes
+everywhere. A browser that
+takes only gzip receives 202.09 kB (179.23 JS + 22.86 CSS); one that takes
+brotli still receives 169.74 kB. The lazy chunks, gzip then brotli: backoffice
+171.30 / 137.49 kB plus 15.21 / 13.33 kB of stylesheet, Chinese dictionary
+20.45 / 17.00 kB, the backoffice's Chinese 37.49 / 31.08 kB, terminal 8.06 /
+7.35 kB plus 1.67 / 1.40 kB, math 3.76 / 3.26 kB, front page 4.17 / 3.68 kB
 plus 3.89 / 3.40 kB, landing page 3.12 / 2.75 kB plus 0.62 / 0.51 kB. The
-binary loses the gzip copies and is 27.98 MB (24.28 MB without SQLite), built
+binary loses the gzip copies and is 28.01 MB (24.31 MB without SQLite), built
 the same way as below. The bundle is unchanged. For the same reason the
 bundle test no longer holds the docs to the build's own gzip column (Node's
 zlib at its default level, 248.63 kB on the Mac against 249.16 kB on CI for
@@ -1030,19 +1044,19 @@ page, and the landing page (the intro or trial a signed-out visitor sees on an
 instance that chose one), each of those last two with its stylesheet. The vendors' model marks, the
 account menu's content and stylesheet, and the folder list's content and
 stylesheet, and the model details and their stylesheet are optional chunks too.
-What each reader actually downloads, as the server sends it (2026-11-04):
+What each reader actually downloads, as the server sends it (2026-11-14):
 
 | | gzip | brotli |
 | --- | --- | --- |
-| English, not an administrator | 207.41 kB | 174.18 kB |
-| Chinese, not an administrator | 228.37 kB | 191.58 kB |
-| …and a conversation containing a formula | 232.13 kB | 194.84 kB |
-| Chinese administrator, backoffice open | 462.45 kB | 381.42 kB |
+| English, not an administrator | 209.16 kB | 175.79 kB |
+| Chinese, not an administrator | 230.26 kB | 193.33 kB |
+| …and a conversation containing a formula | 234.02 kB | 196.59 kB |
+| Chinese administrator, backoffice open | 465.99 kB | 384.25 kB |
 | Anybody, once they open the terminal | +9.74 kB | +8.76 kB |
 | A visitor to an instance whose front door is the front page | +8.06 kB | +7.08 kB |
 | A signed-out visitor to an instance whose front door is the intro or trial | +3.74 kB | +3.25 kB |
 
-Provider sign-up completion adds 2.49 kB gzip / 2.20 kB brotli only when opened.
+Provider sign-up completion adds 2.48 kB gzip / 2.20 kB brotli only when opened.
 
 The baseline excludes the optional account menu, folder list and model marks.
 Accounts with folders fetch the folder chunk after the list is read, and the
@@ -1262,7 +1276,7 @@ Reasoning and answer are stored in separate columns (`messages.reasoning`,
 ```
 POST /api/chat            (SSE response)
   { conversation_id?, model_id, content, attachment_ids[],
-    reasoning: {enabled, effort}, regenerate_from_message_id? }
+    reasoning: {enabled, effort}, truncate_from_message_id?, web_search? }
 ```
 
 1. `RequireUser` → the session's user; `status = 'disabled'` is rejected here.
@@ -1274,9 +1288,20 @@ POST /api/chat            (SSE response)
    the user message, create the conversation if this is the first turn.
 5. `adapter.Chat` with `ctx` derived from `r.Context()`.
 6. Frames are written to the client as they arrive and flushed immediately:
-   `message_start`, `delta`, `reasoning`, `usage`, `done`, `error`.
+   `start`, `search`, `delta`, `reasoning`, `usage`, `done`, `error`.
 7. On completion **or** cancellation: persist the assistant message, write the
    usage ledger row, settle the quota reservation.
+
+`web_search` is a per-message choice, and the server honours it only while the
+operator has enabled `chat.web_search`; otherwise the turn is refused before
+the stream opens. When it is on, the server asks the configured endpoint
+(Bing's HTML by default, or a SearXNG-compatible JSON endpoint) before calling
+the provider and appends the titles, URLs and snippets to the system prompt
+inside an explicit "untrusted reference material" frame. A search failure is
+sent as `search {failed:true}` and the answer proceeds without it. The endpoint
+is an administrator setting, so it may deliberately name a service on the
+private network; a result URL is never fetched, which keeps a hostile page
+from turning the search into an SSRF probe.
 
 **Stopping** is the client closing the stream. That cancels `r.Context()`,
 which cancels the outbound `http.Request`, which closes the upstream

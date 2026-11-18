@@ -6,23 +6,50 @@
 
 BINARY  := obsidian-arc
 
-# The version is the git tag, and nowhere else: vMAJOR.MINOR.PATCH, cut as
-# AGENTS.md (Versions) describes. A build from a commit past the newest tag
-# says how far past — v1.0.0-14-g1a2b3c4 — and one from a tree with
+# GNU Make 4.4 expands every recursive variable it exports while it builds the
+# environment of $(shell) ("shell-export" in .FEATURES). Command-line variables
+# are exported and recursive, so a $(shell ...) in any of them runs during the
+# version probe below — a value the checks then refuse has already run, and so
+# has a name this file never reads. Make 4.3 did not export into $(shell).
+# Hold command-line variables out of that one probe, then export them again so
+# a recipe still inherits them (a build is often given CGO_ENABLED, or similar,
+# on the command line).
+# _arc_name is the foreach variable. override clears a command-line value of
+# that name first: foreach cannot rebind it otherwise, and $(origin) would
+# expand the payload. The name is not a setting; the value is discarded.
+override _arc_name :=
+$(foreach _arc_name,$(.VARIABLES),$(if $(filter command line,$(origin $(_arc_name))),$(eval unexport $(_arc_name))))
+# Names, paths, the platform and the version reach a shell, in recipes here and
+# through deploy.sh. A value from the command line or the environment is kept
+# as typed: $(value) does not expand it, and override is required because a
+# plain assignment does not replace a command-line value. Frozen, a later
+# reference cannot run a function hidden in the text. The version's own default
+# is the only $(shell), and it runs only when VERSION was not set.
+override PLUGINS := $(value PLUGINS)
+override PACKAGES := $(value PACKAGES)
+ifeq ($(origin ARCH),undefined)
+ARCH := amd64
+else
+override ARCH := $(value ARCH)
+endif
+ifeq ($(origin VERSION),undefined)
+# Once, here. A conditional assignment would run git every time VERSION is
+# mentioned, and a deploy mentions it twice — the binary's stamp and the
+# image's tag — so a commit landing between the two could make them disagree.
+# The frontend build in between can also rewrite the lockfile and turn a clean
+# tree -dirty. The version is the git tag and nowhere else: vMAJOR.MINOR.PATCH,
+# cut as AGENTS.md (Versions) describes. A build from a commit past the newest
+# tag says how far past — v1.0.0-14-g1a2b3c4 — and one from a tree with
 # uncommitted changes ends in -dirty, so whatever a server reports is either a
 # release that can be checked out again or plainly marked as not being one.
 # Before the first tag it is the bare commit, and outside a checkout "dev",
 # which is also what a plain `go build` leaves in.
-VERSION ?= $(shell git describe --tags --match 'v[0-9]*' --dirty --always 2>/dev/null || echo dev)
-# Expanded once, here. `?=` runs git every time VERSION is mentioned, and a
-# deploy mentions it twice — the binary's stamp and the image's tag — so a
-# commit landing between the two could make them disagree; and the frontend
-# build that runs in between can rewrite the lockfile and turn a clean tree
-# -dirty.
-# A value given on the command line or in the environment is kept as typed, so a
-# $(shell ...) in it does not run before the check below reads it. The override
-# is needed: an ordinary assignment does not replace a command-line value.
-override VERSION := $(if $(filter file,$(origin VERSION)),$(VERSION),$(value VERSION))
+VERSION := $(shell git describe --tags --match 'v[0-9]*' --dirty --always 2>/dev/null || echo dev)
+else
+override VERSION := $(value VERSION)
+endif
+$(foreach _arc_name,$(.VARIABLES),$(if $(filter command line,$(origin $(_arc_name))),$(eval export $(_arc_name))))
+override undefine _arc_name
 # git accepts $(...), quotes and semicolons in a tag name, and this value reaches
 # the shell in several recipes and, through deploy.sh, on the server. So it is
 # refused here, before anything uses it, unless every character is one a plain
@@ -47,16 +74,14 @@ GOFLAGS := -trimpath
 # core alone — which is also what a bare `go build ./cmd/server` produces.
 # An instance that runs plugins builds from wherever they live, with them
 # laid over this tree, and passes PLUGINS itself.
-PLUGINS ?=
 # Plugin packages (*.arcx) the deployment ships with, as paths, named the way
 # `arcpack build` names them (<name>-<version>.arcx). They travel in the image
 # and are installed, updated or taken over at boot — see OBSIDIAN_PLUGIN_DIR.
-PACKAGES ?=
 # Names and paths reach a shell. The package recipe copies the paths with an
 # unquoted loop, and the names go into dist/PLUGIN_LIST, which deploy.sh splices
 # into a command the server's shell runs. So a value holding anything a plain
 # file name would not is refused here, before any recipe runs, by the same
-# removal of allowed characters that VERSION gets below. A name holds letters,
+# removal of allowed characters that VERSION gets above. A name holds letters,
 # digits, dot, underscore, plus and minus; a path may also hold slashes. Neither
 # may start with a dash, which echo and cp read as an option.
 EMPTY :=
@@ -84,14 +109,9 @@ ALL_PLUGIN_TAGS := $(foreach p,$(notdir $(wildcard plugins/*)),plugin_$(p))
 # Where `make deploy` sends a release. The directory is the Arc Compose
 # project on the production host (see AGENTS.md: Arc, never Chat); the host
 # has no default, because guessing one is how a build lands on the wrong box.
-ARCH        ?= amd64
 # ARCH reaches the shell in the package recipe, in GOARCH= on the go build line
 # and in dist/ARCH, which deploy.sh reads back. So it is held to a platform name,
 # lower-case letters and digits as amd64 and arm64 are, before any recipe runs.
-# The override is the one VERSION uses: a value given on the command line or in
-# the environment is kept as typed, so a $(shell ...) in it is not run before the
-# check below reads it.
-override ARCH := $(if $(filter file,$(origin ARCH)),$(ARCH),$(value ARCH))
 ARCH_CHARS := a b c d e f g h i j k l m n o p q r s t u v w x y z 0 1 2 3 4 5 6 7 8 9
 ARCH_LEFT := $(ARCH)
 $(foreach c,$(ARCH_CHARS),$(eval ARCH_LEFT := $$(subst $(c),,$$(ARCH_LEFT))))
