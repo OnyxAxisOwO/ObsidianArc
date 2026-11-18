@@ -537,8 +537,8 @@ func TestAFailedBatchWriteIsLoggedWithItsCause(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
 	t.Cleanup(func() { slog.SetDefault(previous) })
 
-	// The table the batch is written to is gone, so the insert is refused.
-	if _, err := store.db.Exec(ctx, `DROP TABLE request_log`); err != nil {
+	// Renaming makes the insert fail while preserving the foreign keys to the log.
+	if _, err := store.db.Exec(ctx, `ALTER TABLE request_log RENAME TO unavailable_request_log`); err != nil {
 		t.Fatal(err)
 	}
 	store.Record(Entry{At: 1, Method: "GET", Path: "/api/x", Status: 200})
